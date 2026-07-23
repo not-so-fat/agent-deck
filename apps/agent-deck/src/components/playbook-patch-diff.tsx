@@ -3,7 +3,7 @@ import { patchPreviewHasChanges } from "@/lib/patch-preview";
 import { buildUnifiedDiffRows, hasDiffRows, type DiffRow } from "@/lib/line-diff";
 
 const diffPanelClass =
-  "max-h-[min(52vh,32rem)] max-w-full overflow-auto rounded-md border border-gray-800 bg-gray-950 font-mono text-xs leading-5";
+  "max-w-full overflow-x-auto rounded-md border border-gray-800 bg-gray-950 font-mono text-xs leading-5";
 
 function rowClass(kind: DiffRow["kind"]): string {
   switch (kind) {
