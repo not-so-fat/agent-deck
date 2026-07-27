@@ -34,6 +34,8 @@ import {
   generateId 
 } from '@agent-deck/shared';
 
+export const STORE_CONTENT_HASH = 'store_content_hash';
+
 export class DatabaseManager {
   private db: Database.Database;
 
@@ -391,11 +393,33 @@ export class DatabaseManager {
         FOREIGN KEY (deck_id) REFERENCES decks (id) ON DELETE CASCADE
       )
     `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS store_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
   }
 
   hasAnyServices(): boolean {
     const row = this.db.prepare('SELECT 1 FROM services LIMIT 1').get();
     return row !== undefined;
+  }
+
+  getStoreMeta(key: string): string | null {
+    const row = this.db
+      .prepare('SELECT value FROM store_meta WHERE key = ?')
+      .get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setStoreMeta(key: string, value: string): void {
+    this.db.prepare(`
+      INSERT INTO store_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
   }
 
   private createIndexes(): void {
