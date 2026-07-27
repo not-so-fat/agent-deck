@@ -99,6 +99,37 @@ function displayNameConflicts<T>(
     }));
 }
 
+function missingDeckReferences(snapshot: StoreSnapshot): string[] {
+  const serviceIds = new Set(snapshot.services.map(({ id }) => id));
+  const credentialIds = new Set(snapshot.credentials.map(({ id }) => id));
+  const playbookIds = new Set(snapshot.playbooks.map(({ id }) => id));
+  const errors: string[] = [];
+
+  for (const deck of snapshot.decks) {
+    for (const serviceId of deck.serviceIds) {
+      if (!serviceIds.has(serviceId)) {
+        errors.push(`Deck "${deck.name}" references missing service "${serviceId}"`);
+      }
+    }
+    for (const credentialId of deck.credentialIds) {
+      if (!credentialIds.has(credentialId)) {
+        errors.push(
+          `Deck "${deck.name}" references missing credential "${credentialId}"`,
+        );
+      }
+    }
+    for (const playbookId of deck.playbookIds) {
+      if (!playbookIds.has(playbookId)) {
+        errors.push(
+          `Deck "${deck.name}" references missing playbook "${playbookId}"`,
+        );
+      }
+    }
+  }
+
+  return errors;
+}
+
 export async function reindexStoreToSqlite(
   db: DatabaseManager,
   opts: { home?: string; force?: boolean } = {},
@@ -177,6 +208,14 @@ export async function reindexStoreToSqlite(
     playbooks: playbooks.entries.map(({ value }) => value),
     decks: decks.entries.map(({ value }) => value),
   };
+  const referenceErrors = missingDeckReferences(snapshot);
+  if (referenceErrors.length > 0) {
+    return {
+      ok: false,
+      error: `Store deck reference validation failed:\n${referenceErrors.join('\n')}`,
+    };
+  }
+
   const contentHash = await hashStoreTree(opts.home);
   try {
     db.applyStoreSnapshot(snapshot, contentHash);

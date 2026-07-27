@@ -237,6 +237,41 @@ describe('reindexStoreToSqlite', () => {
     expect(fixture.database.getStoreMeta(STORE_CONTENT_HASH)).toBe(before.hash);
   });
 
+  it('rejects a deck referencing a missing playbook without changing SQLite', async () => {
+    const fixture = await createFixture();
+    const before = {
+      services: await fixture.database.getAllServices(),
+      credentials: await fixture.database.getAllCredentials(),
+      playbooks: await fixture.database.getAllPlaybooks(),
+      decks: await fixture.database.getAllDecks(),
+      hash: fixture.database.getStoreMeta(STORE_CONTENT_HASH),
+    };
+    const deckPath = path.join(
+      storePaths(fixture.home).decksDir,
+      `${fixture.deck.id}.json`,
+    );
+    const deck = JSON.parse(await fs.readFile(deckPath, 'utf8')) as {
+      playbookIds: string[];
+    };
+    deck.playbookIds = ['pb_missing'];
+    await fs.writeFile(deckPath, `${JSON.stringify(deck, null, 2)}\n`);
+
+    const result = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('pb_missing'),
+    });
+    expect(await fixture.database.getAllServices()).toEqual(before.services);
+    expect(await fixture.database.getAllCredentials()).toEqual(before.credentials);
+    expect(await fixture.database.getAllPlaybooks()).toEqual(before.playbooks);
+    expect(await fixture.database.getAllDecks()).toEqual(before.decks);
+    expect(fixture.database.getStoreMeta(STORE_CONTENT_HASH)).toBe(before.hash);
+  });
+
   it('rejects an unknown manifest version before changing SQLite', async () => {
     const fixture = await createFixture();
     const before = await fixture.database.getAllDecks();
