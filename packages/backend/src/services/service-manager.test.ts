@@ -4,6 +4,7 @@ import { DatabaseManager } from '../models/database';
 import { MCPClientManager } from './mcp-client-manager';
 import { OAuthManager } from './oauth-manager';
 import { CreateServiceInput, ServiceCallInput } from '@agent-deck/shared';
+import { FileStoreWriter } from '../store/writer';
 
 // Mock the managers
 vi.mock('../models/database');
@@ -15,6 +16,7 @@ describe('ServiceManager', () => {
   let mockDbManager: any;
   let mockMCPClientManager: any;
   let mockOAuthManager: any;
+  let mockStoreWriter: FileStoreWriter;
 
   beforeEach(() => {
     // Reset mocks
@@ -43,6 +45,11 @@ describe('ServiceManager', () => {
       handleOAuthCallback: vi.fn(),
       refreshOAuthToken: vi.fn(),
     };
+    mockStoreWriter = {
+      writeService: vi.fn(),
+      deleteService: vi.fn(),
+      touchHash: vi.fn(),
+    } as unknown as FileStoreWriter;
 
     // Mock the constructors
     vi.mocked(DatabaseManager).mockImplementation(() => mockDbManager);
@@ -59,6 +66,8 @@ describe('ServiceManager', () => {
         has: vi.fn(),
         delete: vi.fn(),
       } as unknown as import('../vault/oauth-client-secret-vault').OAuthClientSecretVault,
+      undefined,
+      mockStoreWriter,
     );
   });
 

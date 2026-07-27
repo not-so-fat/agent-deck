@@ -44,4 +44,20 @@ describe('hashStoreTree', () => {
     const hashWithExcludedFiles = await hashStoreTree(home);
     expect(hashWithExcludedFiles).toBe(hashWithStoreOnly);
   });
+
+  it('ignores in-flight atomic write temp files', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-hash-tmp-'));
+    const { playbooksDir } = storePaths(home);
+    await fs.mkdir(playbooksDir, { recursive: true });
+    await writeFileAtomic(path.join(playbooksDir, 'pb_a.md'), 'stable');
+    const stableHash = await hashStoreTree(home);
+
+    await fs.writeFile(
+      path.join(playbooksDir, 'pb_a.md.123.456.tmp'),
+      'in-flight',
+      'utf8',
+    );
+
+    expect(await hashStoreTree(home)).toBe(stableHash);
+  });
 });

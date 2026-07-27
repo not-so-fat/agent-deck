@@ -28,6 +28,8 @@ import {
   resolveMcpErrorMessage,
 } from '../lib/mcp-connection-error';
 import { normalizeServiceToolResult } from '../lib/normalize-service-tool-result';
+import { storeServiceFromDb } from '../store/service-codec';
+import { FileStoreWriter } from '../store/writer';
 
 interface A2AManifest {
   endpoints?: Record<string, A2AEndpoint>;
@@ -49,8 +51,29 @@ export class ServiceManager {
     private oauthManager: OAuthManager,
     private clientSecrets: OAuthClientSecretVault,
     private credentialManager?: CredentialManager,
+    private storeWriter: FileStoreWriter = new FileStoreWriter(),
   ) {
     this.configManager = new ConfigManager();
+  }
+
+  private async writeToStore(service: Service): Promise<void> {
+    try {
+      await this.storeWriter.writeService(storeServiceFromDb(service));
+      await this.storeWriter.touchHash(this.db);
+    } catch (error) {
+      console.error(`Failed to write service ${service.id} to file store:`, error);
+      throw error;
+    }
+  }
+
+  private async deleteFromStore(id: string): Promise<void> {
+    try {
+      await this.storeWriter.deleteService(id);
+      await this.storeWriter.touchHash(this.db);
+    } catch (error) {
+      console.error(`Failed to delete service ${id} from file store:`, error);
+      throw error;
+    }
   }
 
   get mcpClientManager(): MCPClientManager {
@@ -99,6 +122,7 @@ export class ServiceManager {
 
     void this.probeInitialHealth(service.id);
 
+    await this.writeToStore((await this.db.getService(service.id)) ?? service);
     return service;
   }
 
@@ -245,7 +269,11 @@ export class ServiceManager {
     // Validate input
     const validatedInput = UpdateServiceSchema.parse(input);
     
-    return await this.db.updateService(id, validatedInput);
+    const service = await this.db.updateService(id, validatedInput);
+    if (service) {
+      await this.writeToStore(service);
+    }
+    return service;
   }
 
   async deleteService(id: string): Promise<boolean> {
@@ -274,7 +302,11 @@ export class ServiceManager {
       );
     }
     
-    return await this.db.deleteService(id);
+    const deleted = await this.db.deleteService(id);
+    if (deleted) {
+      await this.deleteFromStore(id);
+    }
+    return deleted;
   }
 
   private async prepareServiceForRemoteCall(service: Service): Promise<Service> {

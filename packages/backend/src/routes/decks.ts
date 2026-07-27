@@ -23,6 +23,48 @@ import { AgentDeckContextError, resolveAgentDeckId } from '../lib/agent-deck-con
 import { resolveDeckRef } from '../lib/deck-resolve';
 import { triggerWarningsForDeck } from '../playbooks/stub-workspace-sync';
 import { CredentialManager } from '../vault/credential-manager';
+import { DatabaseManager } from '../models/database';
+import { FileStoreWriter } from '../store/writer';
+
+async function flushDeck(
+  db: DatabaseManager,
+  deckId: string,
+  writer: FileStoreWriter,
+): Promise<void> {
+  try {
+    const deck = await db.getDeck(deckId);
+    if (!deck) {
+      throw new Error(`Deck not found after mutation: ${deckId}`);
+    }
+    await writer.writeDeck({
+      id: deck.id,
+      name: deck.name,
+      serviceIds: deck.services.map(({ id }) => id),
+      credentialIds: deck.credentials.map(({ id }) => id),
+      playbookIds: deck.playbooks.map(({ id }) => id),
+      createdAt: deck.createdAt,
+      updatedAt: deck.updatedAt,
+    });
+    await writer.touchHash(db);
+  } catch (error) {
+    console.error(`Failed to write deck ${deckId} to file store:`, error);
+    throw error;
+  }
+}
+
+async function deleteDeckFile(
+  db: DatabaseManager,
+  deckId: string,
+  writer: FileStoreWriter,
+): Promise<void> {
+  try {
+    await writer.deleteDeck(deckId);
+    await writer.touchHash(db);
+  } catch (error) {
+    console.error(`Failed to delete deck ${deckId} from file store:`, error);
+    throw error;
+  }
+}
 
 async function enrichDecksWithCredentialSecrets(
   credentialManager: CredentialManager,
@@ -66,11 +108,20 @@ interface ReorderDeckServicesRequest {
   Body: { serviceIds: string[] };
 }
 
-export async function registerDeckRoutes(fastify: FastifyInstance) {
+interface DeckRouteOptions {
+  storeWriter?: FileStoreWriter;
+}
+
+export async function registerDeckRoutes(
+  fastify: FastifyInstance,
+  options: DeckRouteOptions,
+) {
+  const storeWriter = options.storeWriter ?? new FileStoreWriter();
   // Create deck
   fastify.post<CreateDeckRequest>('/', async (request, reply) => {
     try {
       const deck = await fastify.db.createDeck(request.body);
+      await flushDeck(fastify.db, deck.id, storeWriter);
       
       const response: ApiResponse<Deck> = {
         success: true,
@@ -157,6 +208,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
 
         return reply.status(404).send(response);
       }
+      await flushDeck(fastify.db, deck.id, storeWriter);
 
       const [deckWithSecrets] = await enrichDecksWithCredentialSecrets(
         fastify.credentialManager,
@@ -275,6 +327,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
         
         return reply.status(404).send(response);
       }
+      await deleteDeckFile(fastify.db, request.params.id, storeWriter);
       
       const response: ApiResponse = {
         success: true,
@@ -330,6 +383,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
         serviceId: request.body.serviceId,
         position: request.body.position,
       });
+      await flushDeck(fastify.db, request.params.id, storeWriter);
       
       // Broadcast deck update via WebSocket
       fastify.broadcastDeckUpdate({
@@ -364,6 +418,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
         deckId: request.params.id,
         serviceId: request.body.serviceId,
       });
+      await flushDeck(fastify.db, request.params.id, storeWriter);
       
       // Broadcast deck update via WebSocket
       fastify.broadcastDeckUpdate({
@@ -398,6 +453,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
         deckId: request.params.id,
         serviceIds: request.body.serviceIds,
       });
+      await flushDeck(fastify.db, request.params.id, storeWriter);
       
       // Broadcast deck update via WebSocket
       fastify.broadcastDeckUpdate({
@@ -429,6 +485,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
       await requireBoundDeckScope(request, fastify.db, request.params.id);
 
       await fastify.db.clearDeckServices(request.params.id);
+      await flushDeck(fastify.db, request.params.id, storeWriter);
       
       // Broadcast deck update via WebSocket
       fastify.broadcastDeckUpdate({
@@ -466,6 +523,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
           credentialId: request.body.credentialId,
           position: request.body.position,
         });
+        await flushDeck(fastify.db, request.params.id, storeWriter);
 
         fastify.broadcastDeckUpdate({
           deckId: request.params.id,
@@ -502,6 +560,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
           deckId: request.params.id,
           credentialId: request.body.credentialId,
         });
+        await flushDeck(fastify.db, request.params.id, storeWriter);
 
         fastify.broadcastDeckUpdate({
           deckId: request.params.id,
@@ -539,6 +598,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
           playbookId: request.body.playbookId,
           position: request.body.position,
         });
+        await flushDeck(fastify.db, request.params.id, storeWriter);
 
         const playbook = await fastify.playbookManager.get(request.body.playbookId);
         const trigger_warnings = playbook
@@ -581,6 +641,7 @@ export async function registerDeckRoutes(fastify: FastifyInstance) {
           deckId: request.params.id,
           playbookId: request.body.playbookId,
         });
+        await flushDeck(fastify.db, request.params.id, storeWriter);
 
         fastify.broadcastDeckUpdate({
           deckId: request.params.id,

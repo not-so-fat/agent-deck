@@ -15,13 +15,35 @@ import {
 import { CredentialYamlSync } from './yaml-sync';
 import { SecretStore, VaultUnsupportedError } from './secret-store';
 import { buildCredentialAuthHeaders } from './credential-auth-headers';
+import { FileStoreWriter } from '../store/writer';
 
 export class CredentialManager {
   constructor(
     private db: DatabaseManager,
     private secretStore: SecretStore,
     private yamlSync: CredentialYamlSync = new CredentialYamlSync(),
+    private storeWriter: FileStoreWriter = new FileStoreWriter(),
   ) {}
+
+  private async writeToStore(credential: Credential): Promise<void> {
+    try {
+      await this.yamlSync.write(credential);
+      await this.storeWriter.touchHash(this.db);
+    } catch (error) {
+      console.error(`Failed to write credential ${credential.id} to file store:`, error);
+      throw error;
+    }
+  }
+
+  private async deleteFromStore(id: string): Promise<void> {
+    try {
+      await this.yamlSync.remove(id);
+      await this.storeWriter.touchHash(this.db);
+    } catch (error) {
+      console.error(`Failed to delete credential ${id} from file store:`, error);
+      throw error;
+    }
+  }
 
   async create(input: CreateCredentialInput): Promise<Credential> {
     const keychainAccount = input.keychainAccount ?? input.id;
@@ -43,7 +65,7 @@ export class CredentialManager {
       credential = await this.syncIconFromDocsUrl({ ...credential, hasSecret: true });
     }
 
-    await this.yamlSync.write(credential);
+    await this.writeToStore(credential);
     return { ...credential, hasSecret: true };
   }
 
@@ -176,7 +198,7 @@ export class CredentialManager {
       credential = await this.syncIconFromDocsUrl(credential);
     }
 
-    await this.yamlSync.write(credential);
+    await this.writeToStore(credential);
     return credential;
   }
 
@@ -201,7 +223,7 @@ export class CredentialManager {
     };
 
     await this.db.touchCredential(id);
-    await this.yamlSync.write(credential);
+    await this.writeToStore(credential);
     return credential;
   }
 
@@ -230,7 +252,7 @@ export class CredentialManager {
 
     const deleted = await this.db.deleteCredential(id);
     if (deleted) {
-      await this.yamlSync.remove(id);
+      await this.deleteFromStore(id);
       await removeCachedIcon(id);
     }
     return deleted;

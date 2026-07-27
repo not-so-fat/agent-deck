@@ -12,7 +12,7 @@ async function collectFiles(dir: string): Promise<string[]> {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         files.push(...(await collectFiles(fullPath)));
-      } else if (entry.isFile()) {
+      } else if (entry.isFile() && !entry.name.endsWith('.tmp')) {
         files.push(fullPath);
       }
     }

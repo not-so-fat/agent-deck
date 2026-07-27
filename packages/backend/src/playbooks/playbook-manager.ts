@@ -18,6 +18,7 @@ import {
   type PlaybookDependencyCatalog,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
+import { FileStoreWriter } from '../store/writer';
 
 export class PlaybookDependencyError extends Error {
   constructor(
@@ -30,7 +31,30 @@ export class PlaybookDependencyError extends Error {
 }
 
 export class PlaybookManager {
-  constructor(private db: DatabaseManager) {}
+  constructor(
+    private db: DatabaseManager,
+    private storeWriter: FileStoreWriter = new FileStoreWriter(),
+  ) {}
+
+  private async writeToStore(playbook: Playbook): Promise<void> {
+    try {
+      await this.storeWriter.writePlaybook(playbook);
+      await this.storeWriter.touchHash(this.db);
+    } catch (error) {
+      console.error(`Failed to write playbook ${playbook.id} to file store:`, error);
+      throw error;
+    }
+  }
+
+  private async deleteFromStore(id: string): Promise<void> {
+    try {
+      await this.storeWriter.deletePlaybook(id);
+      await this.storeWriter.touchHash(this.db);
+    } catch (error) {
+      console.error(`Failed to delete playbook ${id} from file store:`, error);
+      throw error;
+    }
+  }
 
   async create(input: CreatePlaybookInput): Promise<Playbook> {
     const defaults = derivePlaybookDefaults(input.title, input.id ? { id: input.id } : undefined);
@@ -45,10 +69,12 @@ export class PlaybookManager {
       throw new Error(`Playbook with title "${validated.title}" already exists`);
     }
 
-    return this.db.createPlaybook({
+    const playbook = await this.db.createPlaybook({
       ...validated,
       id: playbookId,
     });
+    await this.writeToStore(playbook);
+    return playbook;
   }
 
   async buildDependencyCatalog(): Promise<PlaybookDependencyCatalog> {
@@ -181,11 +207,19 @@ export class PlaybookManager {
 
   async update(id: string, input: UpdatePlaybookInput): Promise<Playbook | null> {
     const validated = UpdatePlaybookSchema.parse(input);
-    return this.db.updatePlaybook(id, validated);
+    const playbook = await this.db.updatePlaybook(id, validated);
+    if (playbook) {
+      await this.writeToStore(playbook);
+    }
+    return playbook;
   }
 
   async delete(id: string): Promise<boolean> {
-    return this.db.deletePlaybook(id);
+    const deleted = await this.db.deletePlaybook(id);
+    if (deleted) {
+      await this.deleteFromStore(id);
+    }
+    return deleted;
   }
 
   async addToDeck(input: AddPlaybookToDeckInput): Promise<void> {
