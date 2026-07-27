@@ -208,7 +208,6 @@ export async function registerDeckRoutes(
 
         return reply.status(404).send(response);
       }
-      await flushDeck(fastify.db, deck.id, storeWriter);
 
       const [deckWithSecrets] = await enrichDecksWithCredentialSecrets(
         fastify.credentialManager,
@@ -297,6 +296,8 @@ export async function registerDeckRoutes(
         
         return reply.status(404).send(response);
       }
+
+      await flushDeck(fastify.db, deck.id, storeWriter);
       
       const response: ApiResponse<Deck> = {
         success: true,
