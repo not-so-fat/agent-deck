@@ -31,12 +31,7 @@ function normalizeFrontmatterValue(value: unknown): unknown {
 }
 
 function normalizePlaybookBody(content: string): string {
-  const hadLeadingNewline = content.startsWith('\n');
-  let body = hadLeadingNewline ? content.slice(1) : content;
-  if (!hadLeadingNewline && body.endsWith('\n')) {
-    body = body.slice(0, -1);
-  }
-  return body;
+  return content.startsWith('\n') ? content.slice(1) : content;
 }
 
 function frontmatterToPlaybook(

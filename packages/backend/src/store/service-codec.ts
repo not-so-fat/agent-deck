@@ -3,7 +3,10 @@ import {
   type Service,
   type StoreService,
 } from '@agent-deck/shared';
-import { sanitizeServiceForExport } from '../export-import/sanitize-for-export';
+import {
+  sanitizeServiceForExport,
+  stripAuthorizationHeader,
+} from '../export-import/sanitize-for-export';
 
 export function serializeService(service: StoreService): string {
   const validated = StoreServiceSchema.parse(service);
@@ -11,7 +14,9 @@ export function serializeService(service: StoreService): string {
 }
 
 export function parseServiceJson(raw: string): StoreService {
-  return StoreServiceSchema.parse(JSON.parse(raw));
+  const parsed = StoreServiceSchema.parse(JSON.parse(raw));
+  const headers = stripAuthorizationHeader(parsed.headers);
+  return StoreServiceSchema.parse({ ...parsed, headers });
 }
 
 /** Build a store-safe service snapshot from a DB row. */

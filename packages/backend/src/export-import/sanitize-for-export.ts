@@ -1,7 +1,7 @@
 import type { BundleService } from '@agent-deck/shared';
 import type { Service } from '@agent-deck/shared';
 
-function stripAuthorizationHeader(
+export function stripAuthorizationHeader(
   headers?: Record<string, string> | null,
 ): Record<string, string> | undefined {
   if (!headers) {

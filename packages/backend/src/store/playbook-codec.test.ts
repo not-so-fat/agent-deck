@@ -6,7 +6,7 @@ describe('playbook-codec', () => {
     const input = {
       id: 'pb_demo',
       title: 'Demo',
-      body: 'Hello\n\nworld',
+      body: 'Hello\n\nworld\n',
       triggers: ['demo'],
       dependsOnCredentialIds: [],
       dependsOnServiceIds: ['svc-1'],
@@ -16,6 +16,20 @@ describe('playbook-codec', () => {
     const raw = serializePlaybook(input);
     expect(raw.startsWith('---\n')).toBe(true);
     expect(parsePlaybookMarkdown(raw)).toEqual(input);
+  });
+
+  it('preserves trailing newline on round-trip', () => {
+    const input = {
+      id: 'pb_demo',
+      title: 'Demo',
+      body: 'Hello\n',
+      triggers: [],
+      dependsOnCredentialIds: [],
+      dependsOnServiceIds: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    expect(parsePlaybookMarkdown(serializePlaybook(input))).toEqual(input);
   });
 
   it('omits exec and skill when undefined', () => {

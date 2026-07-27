@@ -40,6 +40,27 @@ describe('service-codec', () => {
     expect(raw).not.toContain('Authorization');
   });
 
+  it('strips Authorization header on parse', () => {
+    const raw = JSON.stringify(
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Linear',
+        type: 'mcp',
+        url: 'https://mcp.linear.app/mcp',
+        disabledToolNames: [],
+        headers: {
+          Authorization: 'Bearer secret',
+          'X-Custom': 'ok',
+        },
+      },
+      null,
+      2,
+    );
+    const parsed = parseServiceJson(raw);
+    expect(parsed.headers).toEqual({ 'X-Custom': 'ok' });
+    expect(parsed.headers).not.toHaveProperty('Authorization');
+  });
+
   it('storeServiceFromDb strips secrets and runtime fields', () => {
     const store = storeServiceFromDb(baseService());
     expect(store).not.toHaveProperty('localEnv');
