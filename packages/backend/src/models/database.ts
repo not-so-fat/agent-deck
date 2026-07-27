@@ -27,6 +27,10 @@ import {
   FeedbackSignal,
   FeedbackSignalSource,
   FeedbackSignalStatus,
+  StoreCredentialMeta,
+  StoreDeck,
+  StorePlaybookFile,
+  StoreService,
 } from '@agent-deck/shared';
 import { 
   serializeForDatabase, 
@@ -35,6 +39,13 @@ import {
 } from '@agent-deck/shared';
 
 export const STORE_CONTENT_HASH = 'store_content_hash';
+
+export type StoreSnapshot = {
+  services: StoreService[];
+  credentials: StoreCredentialMeta[];
+  playbooks: StorePlaybookFile[];
+  decks: StoreDeck[];
+};
 
 export class DatabaseManager {
   private db: Database.Database;
@@ -420,6 +431,207 @@ export class DatabaseManager {
       VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(key, value);
+  }
+
+  applyStoreSnapshot(snapshot: StoreSnapshot, contentHash: string): void {
+    const now = new Date().toISOString();
+    const existingCredentials = new Map(
+      (
+        this.db
+          .prepare(
+            'SELECT id, keychain_account, created_at, icon_url FROM credentials',
+          )
+          .all() as Array<{
+          id: string;
+          keychain_account: string;
+          created_at: string;
+          icon_url: string | null;
+        }>
+      ).map((row) => [row.id, row]),
+    );
+    const existingDecks = new Map(
+      (
+        this.db
+          .prepare('SELECT id, is_active FROM decks')
+          .all() as Array<{ id: string; is_active: number }>
+      ).map((row) => [row.id, row]),
+    );
+
+    const insertService = this.db.prepare(`
+      INSERT INTO services (
+        id, name, type, url, health, description, card_color, is_connected,
+        registered_at, updated_at, headers, credential_id, icon_url,
+        disabled_tools, oauth_client_id, oauth_client_secret,
+        oauth_authorization_url, oauth_token_url, oauth_redirect_uri,
+        oauth_scope, oauth_access_token, oauth_refresh_token,
+        oauth_token_expires_at, oauth_has_token, oauth_state, local_command,
+        local_args, local_working_dir, local_env
+      ) VALUES (
+        @id, @name, @type, @url, 'unknown', @description, @card_color, 0,
+        @registered_at, @updated_at, @headers, NULL, @icon_url,
+        @disabled_tools, @oauth_client_id, NULL, @oauth_authorization_url,
+        @oauth_token_url, @oauth_redirect_uri, @oauth_scope, NULL, NULL, NULL,
+        0, NULL, @local_command, @local_args, @local_working_dir, NULL
+      )
+    `);
+    const insertCredential = this.db.prepare(`
+      INSERT INTO credentials (
+        id, label, scheme, header_name, env_name, keychain_account, tags,
+        docs_url, icon_url, created_at, updated_at
+      ) VALUES (
+        @id, @label, @scheme, @header_name, @env_name, @keychain_account, @tags,
+        @docs_url, @icon_url, @created_at, @updated_at
+      )
+    `);
+    const insertPlaybook = this.db.prepare(`
+      INSERT INTO playbooks (
+        id, title, body, triggers, depends_on_credentials, depends_on_services,
+        exec_command, skill_path, created_at, updated_at
+      ) VALUES (
+        @id, @title, @body, @triggers, @depends_on_credentials,
+        @depends_on_services, @exec_command, @skill_path, @created_at, @updated_at
+      )
+    `);
+    const insertDeck = this.db.prepare(`
+      INSERT INTO decks (id, name, is_active, created_at, updated_at)
+      VALUES (@id, @name, @is_active, @created_at, @updated_at)
+    `);
+    const insertDeckService = this.db.prepare(`
+      INSERT INTO deck_services (deck_id, service_id, position)
+      VALUES (@deck_id, @service_id, @position)
+    `);
+    const insertDeckCredential = this.db.prepare(`
+      INSERT INTO deck_credentials (deck_id, credential_id, position)
+      VALUES (@deck_id, @credential_id, @position)
+    `);
+    const insertDeckPlaybook = this.db.prepare(`
+      INSERT INTO deck_playbooks (deck_id, playbook_id, position)
+      VALUES (@deck_id, @playbook_id, @position)
+    `);
+    const setContentHash = this.db.prepare(`
+      INSERT INTO store_meta (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `);
+
+    const replace = this.db.transaction(() => {
+      this.db.exec(`
+        DELETE FROM deck_services;
+        DELETE FROM deck_credentials;
+        DELETE FROM deck_playbooks;
+        DELETE FROM decks;
+        DELETE FROM services;
+        DELETE FROM credentials;
+        DELETE FROM playbooks;
+      `);
+
+      for (const service of snapshot.services) {
+        insertService.run({
+          id: service.id,
+          name: service.name,
+          type: service.type,
+          url: service.url,
+          description: service.description ?? null,
+          card_color: service.cardColor ?? '#7ed4da',
+          registered_at: now,
+          updated_at: now,
+          headers: service.headers ? JSON.stringify(service.headers) : null,
+          icon_url: service.iconUrl ?? null,
+          disabled_tools: JSON.stringify(service.disabledToolNames),
+          oauth_client_id: service.oauthClientId ?? null,
+          oauth_authorization_url: service.oauthAuthorizationUrl ?? null,
+          oauth_token_url: service.oauthTokenUrl ?? null,
+          oauth_redirect_uri: service.oauthRedirectUri ?? null,
+          oauth_scope: service.oauthScope ?? null,
+          local_command: service.localCommand ?? null,
+          local_args: service.localArgs ? JSON.stringify(service.localArgs) : null,
+          local_working_dir: service.localWorkingDir ?? null,
+        });
+      }
+
+      for (const credential of snapshot.credentials) {
+        const existing = existingCredentials.get(credential.id);
+        insertCredential.run({
+          id: credential.id,
+          label: credential.label,
+          scheme: credential.scheme,
+          header_name: credential.headerName ?? null,
+          env_name: credential.envName,
+          keychain_account: existing?.keychain_account ?? credential.id,
+          tags: JSON.stringify(credential.tags),
+          docs_url: credential.docsUrl ?? null,
+          icon_url: existing?.icon_url ?? null,
+          created_at: existing?.created_at ?? now,
+          updated_at: now,
+        });
+      }
+
+      for (const playbook of snapshot.playbooks) {
+        insertPlaybook.run({
+          id: playbook.id,
+          title: playbook.title,
+          body: playbook.body,
+          triggers: JSON.stringify(playbook.triggers),
+          depends_on_credentials: JSON.stringify(
+            playbook.dependsOnCredentialIds,
+          ),
+          depends_on_services: JSON.stringify(playbook.dependsOnServiceIds),
+          exec_command: playbook.exec ?? null,
+          skill_path: playbook.skill ?? null,
+          created_at: playbook.createdAt,
+          updated_at: playbook.updatedAt,
+        });
+      }
+
+      for (const deck of snapshot.decks) {
+        insertDeck.run({
+          id: deck.id,
+          name: deck.name,
+          is_active: existingDecks.get(deck.id)?.is_active ?? 0,
+          created_at: deck.createdAt,
+          updated_at: deck.updatedAt,
+        });
+      }
+
+      for (const deck of snapshot.decks) {
+        deck.serviceIds.forEach((serviceId, position) => {
+          insertDeckService.run({
+            deck_id: deck.id,
+            service_id: serviceId,
+            position,
+          });
+        });
+        deck.credentialIds.forEach((credentialId, position) => {
+          insertDeckCredential.run({
+            deck_id: deck.id,
+            credential_id: credentialId,
+            position,
+          });
+        });
+        deck.playbookIds.forEach((playbookId, position) => {
+          insertDeckPlaybook.run({
+            deck_id: deck.id,
+            playbook_id: playbookId,
+            position,
+          });
+        });
+      }
+
+      setContentHash.run(STORE_CONTENT_HASH, contentHash);
+    });
+
+    const foreignKeysEnabled =
+      Number(this.db.pragma('foreign_keys', { simple: true })) === 1;
+    if (foreignKeysEnabled) {
+      this.db.pragma('foreign_keys = OFF');
+    }
+    try {
+      replace();
+    } finally {
+      if (foreignKeysEnabled) {
+        this.db.pragma('foreign_keys = ON');
+      }
+    }
   }
 
   private createIndexes(): void {
