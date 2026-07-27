@@ -8,6 +8,7 @@ export * from './schemas/playbook-patch';
 export * from './schemas/feedback-signal';
 export * from './schemas/deck-display';
 export * from './schemas/export-bundle';
+export * from './schemas/store';
 export * from './schemas/session-bootstrap';
 
 // Additional types not covered by schemas
