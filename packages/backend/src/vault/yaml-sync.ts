@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { Credential } from '@agent-deck/shared';
 import { resolveAgentDeckHome } from '../lib/paths';
+import { serializeCredentialMeta } from '../store/credential-codec';
 
 export function getAgentDeckHome(): string {
   return resolveAgentDeckHome();
@@ -16,32 +17,18 @@ export class CredentialYamlSync {
     const dir = getCredentialsDir();
     await fs.mkdir(dir, { recursive: true });
 
-    const payload = {
+    const filePath = path.join(dir, `${credential.id}.yaml`);
+    const raw = serializeCredentialMeta({
       id: credential.id,
       label: credential.label,
       scheme: credential.scheme,
-      header_name: credential.headerName ?? null,
-      env_name: credential.envName,
+      headerName: credential.headerName ?? null,
+      envName: credential.envName,
       tags: credential.tags,
-      docs_url: credential.docsUrl ?? null,
-    };
+      docsUrl: credential.docsUrl ?? null,
+    });
 
-    const filePath = path.join(dir, `${credential.id}.yaml`);
-    const lines = [
-      `# Agent Deck credential metadata (secret stored in Keychain)`,
-      `id: ${payload.id}`,
-      `label: ${JSON.stringify(payload.label)}`,
-      `scheme: ${payload.scheme}`,
-      `header_name: ${payload.header_name === null ? 'null' : JSON.stringify(payload.header_name)}`,
-      `env_name: ${payload.env_name}`,
-      `tags: [${payload.tags.map((tag) => JSON.stringify(tag)).join(', ')}]`,
-      ...(payload.docs_url
-        ? [`docs_url: ${JSON.stringify(payload.docs_url)}`]
-        : []),
-      '',
-    ];
-
-    await fs.writeFile(filePath, lines.join('\n'), 'utf8');
+    await fs.writeFile(filePath, raw, 'utf8');
   }
 
   async remove(credentialId: string): Promise<void> {
