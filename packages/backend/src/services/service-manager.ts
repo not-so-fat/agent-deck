@@ -51,12 +51,16 @@ export class ServiceManager {
     private oauthManager: OAuthManager,
     private clientSecrets: OAuthClientSecretVault,
     private credentialManager?: CredentialManager,
-    private storeWriter: FileStoreWriter = new FileStoreWriter(),
+    private storeWriter?: FileStoreWriter,
   ) {
     this.configManager = new ConfigManager();
   }
 
   private async writeToStore(service: Service): Promise<void> {
+    if (!this.storeWriter) {
+      return;
+    }
+
     try {
       await this.storeWriter.writeService(storeServiceFromDb(service));
       await this.storeWriter.touchHash(this.db);
@@ -67,6 +71,10 @@ export class ServiceManager {
   }
 
   private async deleteFromStore(id: string): Promise<void> {
+    if (!this.storeWriter) {
+      return;
+    }
+
     try {
       await this.storeWriter.deleteService(id);
       await this.storeWriter.touchHash(this.db);

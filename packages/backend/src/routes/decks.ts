@@ -29,8 +29,12 @@ import { FileStoreWriter } from '../store/writer';
 async function flushDeck(
   db: DatabaseManager,
   deckId: string,
-  writer: FileStoreWriter,
+  writer?: FileStoreWriter,
 ): Promise<void> {
+  if (!writer) {
+    return;
+  }
+
   try {
     const deck = await db.getDeck(deckId);
     if (!deck) {
@@ -55,8 +59,12 @@ async function flushDeck(
 async function deleteDeckFile(
   db: DatabaseManager,
   deckId: string,
-  writer: FileStoreWriter,
+  writer?: FileStoreWriter,
 ): Promise<void> {
+  if (!writer) {
+    return;
+  }
+
   try {
     await writer.deleteDeck(deckId);
     await writer.touchHash(db);
@@ -116,7 +124,7 @@ export async function registerDeckRoutes(
   fastify: FastifyInstance,
   options: DeckRouteOptions,
 ) {
-  const storeWriter = options.storeWriter ?? new FileStoreWriter();
+  const storeWriter = options.storeWriter;
   // Create deck
   fastify.post<CreateDeckRequest>('/', async (request, reply) => {
     try {

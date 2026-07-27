@@ -30,6 +30,7 @@ import { registerFeedbackSignalRoutes } from '../routes/feedback-signals';
 import { getAgentDeckVersion } from '../lib/version';
 import { seedDefaultServicesIfEmpty } from '../data/seed-default-services';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
+import { FileStoreWriter } from '../store/writer';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -79,7 +80,8 @@ export async function createServer() {
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
   const oauthTokenVault = new OAuthTokenVault(secretStore, db);
   const oauthManager = new OAuthManager(db, oauthClientSecretVault, oauthTokenVault);
-  const credentialManager = new CredentialManager(db, secretStore);
+  const storeWriter = new FileStoreWriter();
+  const credentialManager = new CredentialManager(db, secretStore, undefined, storeWriter);
   const mcpClient = new MCPClientManager((serviceId) => oauthManager.getValidAccessToken(serviceId));
   const serviceManager = new ServiceManager(
     db,
@@ -87,9 +89,10 @@ export async function createServer() {
     oauthManager,
     oauthClientSecretVault,
     credentialManager,
+    storeWriter,
   );
   void serviceManager.backfillMissingIcons();
-  const playbookManager = new PlaybookManager(db);
+  const playbookManager = new PlaybookManager(db, storeWriter);
   const patchManager = new PatchManager(db, playbookManager);
   const collectionWarningService = new CollectionWarningService();
   const liveDisplayRegistry = new LiveDisplayRegistry();
@@ -97,7 +100,7 @@ export async function createServer() {
   // Register routes
   await fastify.register(registerWebSocketRoutes, { prefix: '/api/ws' });
   await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
-  await fastify.register(registerDeckRoutes, { prefix: '/api/decks' });
+  await fastify.register(registerDeckRoutes, { prefix: '/api/decks', storeWriter });
   await fastify.register(registerCredentialRoutes, { prefix: '/api/credentials' });
   await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
   await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });

@@ -33,10 +33,14 @@ export class PlaybookDependencyError extends Error {
 export class PlaybookManager {
   constructor(
     private db: DatabaseManager,
-    private storeWriter: FileStoreWriter = new FileStoreWriter(),
+    private storeWriter?: FileStoreWriter,
   ) {}
 
   private async writeToStore(playbook: Playbook): Promise<void> {
+    if (!this.storeWriter) {
+      return;
+    }
+
     try {
       await this.storeWriter.writePlaybook(playbook);
       await this.storeWriter.touchHash(this.db);
@@ -47,6 +51,10 @@ export class PlaybookManager {
   }
 
   private async deleteFromStore(id: string): Promise<void> {
+    if (!this.storeWriter) {
+      return;
+    }
+
     try {
       await this.storeWriter.deletePlaybook(id);
       await this.storeWriter.touchHash(this.db);

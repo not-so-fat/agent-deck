@@ -22,10 +22,14 @@ export class CredentialManager {
     private db: DatabaseManager,
     private secretStore: SecretStore,
     private yamlSync: CredentialYamlSync = new CredentialYamlSync(),
-    private storeWriter: FileStoreWriter = new FileStoreWriter(),
+    private storeWriter?: FileStoreWriter,
   ) {}
 
   private async writeToStore(credential: Credential): Promise<void> {
+    if (!this.storeWriter) {
+      return;
+    }
+
     try {
       await this.yamlSync.write(credential);
       await this.storeWriter.touchHash(this.db);
@@ -36,6 +40,10 @@ export class CredentialManager {
   }
 
   private async deleteFromStore(id: string): Promise<void> {
+    if (!this.storeWriter) {
+      return;
+    }
+
     try {
       await this.yamlSync.remove(id);
       await this.storeWriter.touchHash(this.db);
