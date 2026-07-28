@@ -13,11 +13,13 @@ import {
   parseBundleJson,
 } from './export-import';
 import { migrateSqliteToStore, reindexStoreToSqlite } from './store';
+import { FileStoreWriter } from './store/writer';
 
 /** Shared credential manager for the agent-deck CLI (vault + exec). */
 export function createCliCredentialManager(): CredentialManager {
   const db = new DatabaseManager(resolveDatabasePath());
-  return new CredentialManager(db, createSecretStore());
+  const storeWriter = new FileStoreWriter();
+  return new CredentialManager(db, createSecretStore(), undefined, storeWriter);
 }
 
 /**
@@ -26,7 +28,8 @@ export function createCliCredentialManager(): CredentialManager {
  */
 export function createCliCollectionAdmin() {
   const db = new DatabaseManager(resolveDatabasePath());
-  const playbooks = new PlaybookManager(db);
+  const storeWriter = new FileStoreWriter();
+  const playbooks = new PlaybookManager(db, storeWriter);
 
   return {
     async deleteService(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -48,6 +51,7 @@ export function createCliCollectionAdmin() {
       if (!deleted) {
         return { ok: false, error: `Service not found: ${id}` };
       }
+      await storeWriter.deleteService(id);
       return { ok: true };
     },
 
@@ -68,6 +72,7 @@ export function createCliCollectionAdmin() {
       if (!deleted) {
         return { ok: false, error: `Deck not found: ${id}` };
       }
+      await storeWriter.deleteDeck(id);
       return { ok: true };
     },
 
@@ -156,6 +161,8 @@ export function createCliExportImport() {
         if (report.status === 'failed') {
           return { ok: false, error: report.warnings.join('; ') || 'Import failed' };
         }
+        // Overwrite store files so reindex cannot wipe imported cards.
+        await migrateSqliteToStore(db, { force: true });
         return { ok: true, report };
       } catch (error) {
         const message =

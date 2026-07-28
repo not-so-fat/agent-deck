@@ -15,6 +15,7 @@ import {
   importBundle,
   ImportBundleError,
 } from '../export-import';
+import { migrateSqliteToStore } from '../store/migrate';
 
 function clientErrorResponse(error: unknown): { status: number; body: ApiResponse } {
   if (error instanceof DashboardOnlyError) {
@@ -51,6 +52,9 @@ export async function registerExportImportRoutes(fastify: FastifyInstance) {
     try {
       requireDashboardClient(request);
       const report = await importBundle(fastify.db, request.body);
+      if (report.status !== 'failed') {
+        await migrateSqliteToStore(fastify.db, { force: true });
+      }
       return reply.send({
         success: true,
         data: report,

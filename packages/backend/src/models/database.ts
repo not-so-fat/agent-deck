@@ -468,7 +468,7 @@ export class DatabaseManager {
         local_args, local_working_dir, local_env
       ) VALUES (
         @id, @name, @type, @url, 'unknown', @description, @card_color, 0,
-        @registered_at, @updated_at, @headers, NULL, @icon_url,
+        @registered_at, @updated_at, @headers, @credential_id, @icon_url,
         @disabled_tools, @oauth_client_id, NULL, @oauth_authorization_url,
         @oauth_token_url, @oauth_redirect_uri, @oauth_scope, NULL, NULL, NULL,
         0, NULL, @local_command, @local_args, @local_working_dir, NULL
@@ -536,6 +536,7 @@ export class DatabaseManager {
           registered_at: now,
           updated_at: now,
           headers: service.headers ? JSON.stringify(service.headers) : null,
+          credential_id: service.credentialId ?? null,
           icon_url: service.iconUrl ?? null,
           disabled_tools: JSON.stringify(service.disabledToolNames),
           oauth_client_id: service.oauthClientId ?? null,

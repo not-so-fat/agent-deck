@@ -43,7 +43,6 @@ export class PlaybookManager {
 
     try {
       await this.storeWriter.writePlaybook(playbook);
-      await this.storeWriter.touchHash(this.db);
     } catch (error) {
       console.error(`Failed to write playbook ${playbook.id} to file store:`, error);
       throw error;
@@ -57,7 +56,6 @@ export class PlaybookManager {
 
     try {
       await this.storeWriter.deletePlaybook(id);
-      await this.storeWriter.touchHash(this.db);
     } catch (error) {
       console.error(`Failed to delete playbook ${id} from file store:`, error);
       throw error;

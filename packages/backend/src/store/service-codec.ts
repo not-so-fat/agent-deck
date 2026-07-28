@@ -19,7 +19,11 @@ export function parseServiceJson(raw: string): StoreService {
   return StoreServiceSchema.parse({ ...parsed, headers });
 }
 
-/** Build a store-safe service snapshot from a DB row. */
+/** Build a store-safe service snapshot from a DB row (includes local credentialId). */
 export function storeServiceFromDb(service: Service): StoreService {
-  return StoreServiceSchema.parse(sanitizeServiceForExport(service));
+  const exported = sanitizeServiceForExport(service);
+  return StoreServiceSchema.parse({
+    ...exported,
+    ...(service.credentialId ? { credentialId: service.credentialId } : {}),
+  });
 }

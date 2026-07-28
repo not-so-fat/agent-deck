@@ -49,7 +49,6 @@ async function flushDeck(
       createdAt: deck.createdAt,
       updatedAt: deck.updatedAt,
     });
-    await writer.touchHash(db);
   } catch (error) {
     console.error(`Failed to write deck ${deckId} to file store:`, error);
     throw error;
@@ -57,7 +56,7 @@ async function flushDeck(
 }
 
 async function deleteDeckFile(
-  db: DatabaseManager,
+  _db: DatabaseManager,
   deckId: string,
   writer?: FileStoreWriter,
 ): Promise<void> {
@@ -67,7 +66,6 @@ async function deleteDeckFile(
 
   try {
     await writer.deleteDeck(deckId);
-    await writer.touchHash(db);
   } catch (error) {
     console.error(`Failed to delete deck ${deckId} from file store:`, error);
     throw error;

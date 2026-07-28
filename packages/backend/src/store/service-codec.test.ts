@@ -61,10 +61,30 @@ describe('service-codec', () => {
     expect(parsed.headers).not.toHaveProperty('Authorization');
   });
 
-  it('storeServiceFromDb strips secrets and runtime fields', () => {
+  it('storeServiceFromDb strips secrets and keeps local credentialId', () => {
     const store = storeServiceFromDb(baseService());
     expect(store).not.toHaveProperty('localEnv');
-    expect(store).not.toHaveProperty('credentialId');
+    expect(store.credentialId).toBe('cred_linear');
     expect(store.headers).toEqual({ 'X-Custom': 'ok' });
+  });
+
+  it('strips X-API-Key style headers on parse', () => {
+    const raw = JSON.stringify(
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'Linear',
+        type: 'mcp',
+        url: 'https://mcp.linear.app/mcp',
+        disabledToolNames: [],
+        headers: {
+          'X-API-Key': 'secret',
+          'X-Custom': 'ok',
+        },
+      },
+      null,
+      2,
+    );
+    const parsed = parseServiceJson(raw);
+    expect(parsed.headers).toEqual({ 'X-Custom': 'ok' });
   });
 });

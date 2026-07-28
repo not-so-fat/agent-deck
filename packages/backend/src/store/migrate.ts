@@ -100,7 +100,7 @@ function storeDeckFromDb(deck: Deck): StoreDeck {
 
 export async function migrateSqliteToStore(
   db: DatabaseManager,
-  opts: { home?: string; dryRun?: boolean } = {},
+  opts: { home?: string; dryRun?: boolean; force?: boolean } = {},
 ): Promise<StoreMigrateResult> {
   const paths = storePaths(opts.home);
   const writer = new FileStoreWriter(opts.home);
@@ -142,31 +142,33 @@ export async function migrateSqliteToStore(
     ),
   ];
   const manifestMissing = !(await fileExists(paths.manifest));
-  const missing = (
-    await Promise.all(
-      candidates.map(async (candidate) => ({
-        candidate,
-        exists: await fileExists(candidate.path),
-      })),
-    )
-  )
-    .filter(({ exists }) => !exists)
-    .map(({ candidate }) => candidate);
+  const toWrite = opts.force
+    ? candidates
+    : (
+        await Promise.all(
+          candidates.map(async (candidate) => ({
+            candidate,
+            exists: await fileExists(candidate.path),
+          })),
+        )
+      )
+        .filter(({ exists }) => !exists)
+        .map(({ candidate }) => candidate);
 
   const wrote = {
-    playbooks: missing.filter(({ kind }) => kind === 'playbooks').length,
-    services: missing.filter(({ kind }) => kind === 'services').length,
-    credentials: missing.filter(({ kind }) => kind === 'credentials').length,
-    decks: missing.filter(({ kind }) => kind === 'decks').length,
+    playbooks: toWrite.filter(({ kind }) => kind === 'playbooks').length,
+    services: toWrite.filter(({ kind }) => kind === 'services').length,
+    credentials: toWrite.filter(({ kind }) => kind === 'credentials').length,
+    decks: toWrite.filter(({ kind }) => kind === 'decks').length,
   };
   const writtenPaths = [
-    ...(manifestMissing ? [paths.manifest] : []),
-    ...missing.map((entry) => entry.path),
+    ...(manifestMissing || opts.force ? [paths.manifest] : []),
+    ...toWrite.map((entry) => entry.path),
   ];
 
   if (!opts.dryRun) {
     await writer.ensureLayout(MIGRATED_MANIFEST);
-    for (const entry of missing) {
+    for (const entry of toWrite) {
       switch (entry.kind) {
         case 'playbooks':
           await writer.writePlaybook(entry.value);

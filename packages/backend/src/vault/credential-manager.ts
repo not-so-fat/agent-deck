@@ -22,17 +22,15 @@ export class CredentialManager {
     private db: DatabaseManager,
     private secretStore: SecretStore,
     private yamlSync: CredentialYamlSync = new CredentialYamlSync(),
-    private storeWriter?: FileStoreWriter,
-  ) {}
+    /** Kept for call-site compatibility; credential YAML is always written. */
+    _storeWriter?: FileStoreWriter,
+  ) {
+    void _storeWriter;
+  }
 
   private async writeToStore(credential: Credential): Promise<void> {
-    if (!this.storeWriter) {
-      return;
-    }
-
     try {
       await this.yamlSync.write(credential);
-      await this.storeWriter.touchHash(this.db);
     } catch (error) {
       console.error(`Failed to write credential ${credential.id} to file store:`, error);
       throw error;
@@ -40,13 +38,8 @@ export class CredentialManager {
   }
 
   private async deleteFromStore(id: string): Promise<void> {
-    if (!this.storeWriter) {
-      return;
-    }
-
     try {
       await this.yamlSync.remove(id);
-      await this.storeWriter.touchHash(this.db);
     } catch (error) {
       console.error(`Failed to delete credential ${id} from file store:`, error);
       throw error;

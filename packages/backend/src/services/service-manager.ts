@@ -63,7 +63,6 @@ export class ServiceManager {
 
     try {
       await this.storeWriter.writeService(storeServiceFromDb(service));
-      await this.storeWriter.touchHash(this.db);
     } catch (error) {
       console.error(`Failed to write service ${service.id} to file store:`, error);
       throw error;
@@ -77,7 +76,6 @@ export class ServiceManager {
 
     try {
       await this.storeWriter.deleteService(id);
-      await this.storeWriter.touchHash(this.db);
     } catch (error) {
       console.error(`Failed to delete service ${id} from file store:`, error);
       throw error;
@@ -381,13 +379,18 @@ export class ServiceManager {
     }
 
     const discovered = await this.discoverServiceTools(serviceId);
+    let updated: Service | null;
     if (!Array.isArray(discovered)) {
-      return this.db.updateServiceDisabledTools(serviceId, input.disabledTools);
+      updated = await this.db.updateServiceDisabledTools(serviceId, input.disabledTools);
+    } else {
+      const knownNames = new Set(discovered.map((tool) => tool.name));
+      const pruned = input.disabledTools.filter((name) => knownNames.has(name));
+      updated = await this.db.updateServiceDisabledTools(serviceId, pruned);
     }
-
-    const knownNames = new Set(discovered.map((tool) => tool.name));
-    const pruned = input.disabledTools.filter((name) => knownNames.has(name));
-    return this.db.updateServiceDisabledTools(serviceId, pruned);
+    if (updated) {
+      await this.writeToStore(updated);
+    }
+    return updated;
   }
 
   private annotateToolEnabledState(

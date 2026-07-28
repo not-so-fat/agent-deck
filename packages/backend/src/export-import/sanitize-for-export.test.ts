@@ -55,6 +55,19 @@ describe('sanitizeServiceForExport', () => {
     expect(exported.headers).not.toHaveProperty('Authorization');
   });
 
+  it('strips X-API-Key and similar secret headers', () => {
+    const exported = sanitizeServiceForExport(
+      baseService({
+        headers: {
+          Authorization: 'Bearer token',
+          'X-API-Key': 'secret',
+          'X-Custom': 'ok',
+        },
+      }),
+    );
+    expect(exported.headers).toEqual({ 'X-Custom': 'ok' });
+  });
+
   it('keeps public config', () => {
     const exported = sanitizeServiceForExport(baseService());
     expect(exported).toMatchObject({

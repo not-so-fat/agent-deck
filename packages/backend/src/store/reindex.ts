@@ -105,6 +105,14 @@ function missingDeckReferences(snapshot: StoreSnapshot): string[] {
   const playbookIds = new Set(snapshot.playbooks.map(({ id }) => id));
   const errors: string[] = [];
 
+  for (const service of snapshot.services) {
+    if (service.credentialId && !credentialIds.has(service.credentialId)) {
+      errors.push(
+        `Service "${service.name}" references missing credential "${service.credentialId}"`,
+      );
+    }
+  }
+
   for (const deck of snapshot.decks) {
     for (const serviceId of deck.serviceIds) {
       if (!serviceIds.has(serviceId)) {

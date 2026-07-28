@@ -34,6 +34,12 @@ async function createFixture() {
     tags: ['remote'],
     hasSecret: true,
   });
+  const linkedService = await database.updateService(service.id, {
+    credentialId: credential.id,
+  });
+  if (!linkedService) {
+    throw new Error('Failed to link service credential');
+  }
   const playbook = await database.createPlaybook({
     id: 'pb_remote',
     title: 'Use remote',
@@ -60,7 +66,15 @@ async function createFixture() {
   });
 
   await migrateSqliteToStore(database, { home });
-  return { home, dbPath, database, service, credential, playbook, deck };
+  return {
+    home,
+    dbPath,
+    database,
+    service: linkedService,
+    credential,
+    playbook,
+    deck,
+  };
 }
 
 function closeDatabase(database: DatabaseManager): void {
@@ -97,6 +111,9 @@ describe('reindexStoreToSqlite', () => {
     expect((await restored.getAllServices()).map(({ id }) => id)).toEqual([
       fixture.service.id,
     ]);
+    expect((await restored.getAllServices())[0].credentialId).toBe(
+      fixture.credential.id,
+    );
     expect((await restored.getAllCredentials()).map(({ id }) => id)).toEqual([
       fixture.credential.id,
     ]);

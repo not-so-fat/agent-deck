@@ -25,8 +25,10 @@ export const StorePlaybookFileSchema = z
   })
   .strict();
 
-// Reuse bundle service shape (already create-safe)
-export const StoreServiceSchema = BundleServiceSchema;
+/** Create-safe service file shape; credentialId is local SoT (not in shareable export bundles). */
+export const StoreServiceSchema = BundleServiceSchema.extend({
+  credentialId: z.string().min(1).optional(),
+});
 
 export const StoreDeckSchema = z
   .object({

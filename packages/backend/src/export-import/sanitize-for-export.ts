@@ -1,6 +1,35 @@
 import type { BundleService } from '@agent-deck/shared';
 import type { Service } from '@agent-deck/shared';
 
+/** Header names that must never enter export bundles or the git-friendly store. */
+const SECRET_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'api-key',
+  'x-auth-token',
+  'x-access-token',
+  'x-secret-key',
+]);
+
+function isSecretHeaderName(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (SECRET_HEADER_NAMES.has(lower)) {
+    return true;
+  }
+  // Catch variants like X-Foo-Api-Key / My-Access-Token
+  return (
+    lower.includes('api-key') ||
+    lower.includes('access-token') ||
+    lower.includes('auth-token') ||
+    lower.endsWith('-secret') ||
+    lower.endsWith('-password')
+  );
+}
+
+/** Strip Authorization and other secret-like headers from service config snapshots. */
 export function stripAuthorizationHeader(
   headers?: Record<string, string> | null,
 ): Record<string, string> | undefined {
@@ -9,7 +38,7 @@ export function stripAuthorizationHeader(
   }
   const next: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === 'authorization') {
+    if (isSecretHeaderName(key)) {
       continue;
     }
     next[key] = value;
