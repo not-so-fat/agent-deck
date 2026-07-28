@@ -12,9 +12,11 @@ playbooks: pb_ai_codegen_prd, pb_product_principle
 
 ## 1. Product overview
 
-Agent Deck stores MCP services, playbooks, and deck layouts in local SQLite (`~/.agent-deck/`). Credentials and OAuth tokens live in Keychain and are **never** part of this feature. Users need to **port layouts** when switching machines or sharing a deck template.
+Agent Deck stores MCP services, playbooks, and deck layouts in a **file-backed store** under `~/.agent-deck/` (SQLite is a rebuildable cache). Credentials and OAuth tokens live in Keychain and are **never** part of this feature. Users need to **port layouts** when switching machines or sharing a deck template.
 
 This PRD specifies a **local-only** single-file `.agent-deck.json` bundle, CLI + dashboard export/import, and link-or-create import for cards (no `preserve_ids`, no secrets).
+
+**Complementary to file-store git sync:** users who track the on-disk store in their own git repo get continuous multi-laptop sync without export/import. Export/import remains the right tool for one-shot backup, deck templates, and hosts where git is not used — it does **not** replace the file store and is not superseded by it. See [STORE_FORMAT.md](./STORE_FORMAT.md).
 
 **Success criteria:**
 

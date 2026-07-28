@@ -133,6 +133,14 @@ OAuth redirect URI follows the backend you use (e.g. dev → `http://127.0.0.1:8
 
 **Data directories:** production `agent-deck start` uses `~/.agent-deck/`. Monorepo dev (`npm run dev:all`) uses `~/.agent-deck/dev/` so decks and OAuth credentials do not mix with production.
 
+### File store & git sync
+
+Collection cards and deck layouts are mirrored as files under the data home (`manifest.json`, `playbooks/`, `services/`, `credentials/`, `decks/`). SQLite is a rebuildable cache — do not commit `agent_deck.db`. Layout and format: [STORE_FORMAT.md](./STORE_FORMAT.md).
+
+**Agent Deck never runs git.** To sync across machines, initialize a git repo in your data home (or a subtree), ignore `*.db` and other local artifacts, commit the file tree, push/pull yourself, then run `agent-deck reindex` (or restart the backend). Keychain secrets and OAuth tokens stay on each machine.
+
+One-shot `.agent-deck.json` export/import remains for sharing a layout without git — see [PRD_EXPORT_IMPORT.md](./PRD_EXPORT_IMPORT.md).
+
 ### Secrets & OAuth storage
 
 Sensitive values use the same **OS secret store** as API keys (macOS Keychain; dev fallback file under `~/.agent-deck/`). **SQLite holds metadata only** — not plaintext secrets.
