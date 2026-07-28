@@ -20,6 +20,7 @@ import { runStatus } from './status';
 import { runStatusline } from './statusline';
 import { runMenubar } from './menubar';
 import { runStop } from './stop';
+import { runReindexCommand, runStoreCommand } from './store';
 import { runUpgrade } from './upgrade';
 import { runUseCommand } from './use';
 import { getAgentDeckVersion } from './version';
@@ -60,6 +61,8 @@ function printUsage() {
   agent-deck export all --output <path>
   agent-deck export deck <uuid> --output <path>
   agent-deck import <path>
+  agent-deck reindex
+  agent-deck store migrate [--dry-run]
   agent-deck import-feedback-signals <transcript-dir> [--backend-url URL] [--output <path>]
   agent-deck bootstrap [--host claude|cursor|all] [--workspace <path>] [--since <date>] [--limit <n>] [--out <dir>]
     Mine local Claude Code session history into playbook-proposal digests (offline).
@@ -328,6 +331,10 @@ export async function runCli(argv: string[]): Promise<number> {
       return runExportCommand(rest);
     case 'import':
       return runImportCommand(rest);
+    case 'reindex':
+      return runReindexCommand(rest);
+    case 'store':
+      return runStoreCommand(rest);
     case 'import-feedback-signals':
       return runImportFeedbackSignalsCommand(rest);
     case 'bootstrap':

@@ -12,6 +12,7 @@ import {
   ImportBundleError,
   parseBundleJson,
 } from './export-import';
+import { migrateSqliteToStore, reindexStoreToSqlite } from './store';
 
 /** Shared credential manager for the agent-deck CLI (vault + exec). */
 export function createCliCredentialManager(): CredentialManager {
@@ -170,6 +171,22 @@ export function createCliExportImport() {
 }
 
 export type CliExportImport = ReturnType<typeof createCliExportImport>;
+
+/** File-backed store operations for the CLI. */
+export function createCliStore() {
+  const db = new DatabaseManager(resolveDatabasePath());
+
+  return {
+    migrate(opts: { dryRun?: boolean } = {}) {
+      return migrateSqliteToStore(db, opts);
+    },
+    reindex() {
+      return reindexStoreToSqlite(db, { force: true });
+    },
+  };
+}
+
+export type CliStore = ReturnType<typeof createCliStore>;
 
 export { PlaybookDependencyError, ExportBundleError, ImportBundleError };
 

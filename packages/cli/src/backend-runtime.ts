@@ -78,6 +78,44 @@ export function createExportImport(): CliExportImport {
   return createCliExportImport();
 }
 
+export type CliStore = {
+  migrate(opts?: { dryRun?: boolean }): Promise<{
+    wrote: {
+      playbooks: number;
+      services: number;
+      credentials: number;
+      decks: number;
+    };
+    dryRun: boolean;
+    paths: string[];
+  }>;
+  reindex(): Promise<
+    | {
+        ok: true;
+        counts: {
+          playbooks: number;
+          services: number;
+          credentials: number;
+          decks: number;
+        };
+        warnings: string[];
+        contentHash: string;
+      }
+    | { ok: false; error: string; conflicts?: unknown[] }
+  >;
+};
+
+export function createStore(): CliStore {
+  const cliRuntime = require.resolve('@agent-deck/backend/cli-runtime', {
+    paths: [getCliPackageRoot()],
+  });
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { createCliStore } = require(cliRuntime) as {
+    createCliStore: () => CliStore;
+  };
+  return createCliStore();
+}
+
 export function parseConnections(value: string | undefined): string[] {
   if (!value?.trim()) {
     return [];

@@ -31,6 +31,7 @@ import { getAgentDeckVersion } from '../lib/version';
 import { seedDefaultServicesIfEmpty } from '../data/seed-default-services';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { FileStoreWriter } from '../store/writer';
+import { ensureStoreReady } from '../store/startup';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -76,6 +77,7 @@ export async function createServer() {
   if (seededCount > 0) {
     console.log(`Seeded ${seededCount} default MCP service cards`);
   }
+  await ensureStoreReady(db);
   const secretStore = createSecretStore();
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
   const oauthTokenVault = new OAuthTokenVault(secretStore, db);
