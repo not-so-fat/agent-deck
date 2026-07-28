@@ -9,7 +9,7 @@
       "name": "agent-deck",
       "source": "./",
       "description": "Decks of MCP tools, keys, and self-improving playbooks that bind per-workspace.",
-      "version": "1.5.1",
+      "version": "1.5.2",
       "author": {
         "name": "not-so-fat",
         "url": "https://github.com/not-so-fat"

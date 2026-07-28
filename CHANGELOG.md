@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.5.2 — 2026-07-27
+
+### File-backed store (git-friendly sync)
+
+- **Canonical file tree** under Agent Deck home: `playbooks/*.md`, `services/*.json`, `credentials/*.yaml`, `decks/*.json`, `manifest.json` — SQLite remains a rebuildable cache
+- **Migrate / reindex:** `agent-deck store migrate [--dry-run]` dumps SQLite → files; `agent-deck reindex` rebuilds SQLite from files (also auto on startup when the tree hash changes)
+- **Dual-write:** dashboard/CLI mutations update files; import force-flushes the store so reindex cannot wipe imported cards
+- **Secrets stay local:** Keychain + OAuth tokens never enter the tree; secret-like HTTP headers stripped from service files
+- **Docs:** [STORE_FORMAT.md](./docs/STORE_FORMAT.md) — user-owned git sync (Agent Deck never runs git)
+
+### After upgrade
+
+- Restart the backend once so first-run migrate can write the store tree (or run `agent-deck store migrate`)
+- To sync laptops: put the store dirs + `manifest.json` in your own git repo; after `git pull`, run `agent-deck reindex` (or restart)
+
 ## 1.5.1 — 2026-07-23
 
 ### Session-history bootstrap
