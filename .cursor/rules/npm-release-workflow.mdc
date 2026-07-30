@@ -15,8 +15,9 @@ Canonical checklist: [docs/PUBLISHING.md](../../docs/PUBLISHING.md). Integration
 3. `npm install` && `npm run build:release`
 4. **Integration smoke** — `npm run release:smoke` (also runs inside `build:release`; blocks publish on failure)
 5. Commit on `main`: `Ship X.Y.Z: <short why>.`
-6. Push `main` (user publishes npm unless they ask you to run `npm run publish:packages`)
-7. **After npm publish:** `npm run release:tag:push` (git tag + GitHub Release from `CHANGELOG.md`)
+6. Push `main`
+7. **Human only:** `npm run publish:packages` (OTP / 2FA) — agent does **not** run npm publish
+8. **Agent:** after npm shows the new version (`npm view @agent-deck/cli version`), run `npm run release:tag:push` (git tag + GitHub Release from `CHANGELOG.md`)
 
 ## Git tags (required every npm release)
 
@@ -30,16 +31,18 @@ If the ship commit is already pushed and HEAD moved, tag explicitly: `node scrip
 
 ## Agent behavior
 
-- **Do not** publish to npm unless the user explicitly asks.
-- **Do** run version bump, changelog, commit, push, and `release:tag:push` when they say publish/ship/release.
-- **Do** ensure `npm run release:smoke` passes before publish (included in `build:release`).
-- **Do** run `release:tag:push` after npm publish — creates annotated tag and GitHub Release (requires `gh` CLI).
-- One-time historical tags: `npm run release:tag:backfill` (already done; do not re-run unless asked).
+- **Never** run `npm publish` / `publish:packages` — that is the human’s only release step (OTP).
+- **Do** version bump, changelog, `build:release`, commit, push `main` when they ask to ship/release.
+- **Do** `npm run release:tag:push` after confirming the version is on npm (`npm view @agent-deck/cli version`).
+- **Do** backfill missing `v*` tags / GitHub Releases when a Ship commit has no tag (or tag exists locally but not on origin / no `gh release`).
+- **Do** ensure `npm run release:smoke` passes before asking the human to publish.
+- One-time historical tags: `npm run release:tag:backfill` (already done for early history; re-run with `--push --github-release` only for gaps).
 
 ## Do not
 
 - Tag without a matching `CHANGELOG.md` section
-- Tag or publish without a GitHub Release when `gh` is available
+- Leave a Ship on `main` without `vX.Y.Z` + GitHub Release after npm is live
 - Use lightweight tags or non-`v` prefix
 - Bump version without syncing all packages
 - Publish if `release:smoke` fails — move unfinished bullets to **Pending publish** in CHANGELOG
+- Ask the human to run `release:tag:push` — that is agent work

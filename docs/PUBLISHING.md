@@ -41,8 +41,10 @@ Tag every npm release so `git checkout v1.2.1` matches what shipped.
 
 ### After publish
 
+**Handoff:** human runs **only** `npm run publish:packages` (OTP). Agent then runs tag + GitHub Release:
+
 ```bash
-# Tag current HEAD (reads version from package.json), push, and create GitHub Release from CHANGELOG
+# Agent: after npm view shows the new version
 npm run release:tag:push
 ```
 
@@ -82,16 +84,23 @@ Dev repo (`npm run dev:all`) uses `:8000` / `:3001` so both can run together —
 
 Tests must pass first (`npm test`). Publish is blocked if any workspace test fails.
 
+**Human (OTP only):**
+
 ```bash
 npm run publish:packages
+```
+
+**Agent (after npm shows the new version):**
+
+```bash
 npm run release:tag:push
 ```
 
 `release:tag:push` tags the ship commit, pushes `vX.Y.Z`, and creates a GitHub Release with notes from `CHANGELOG.md` (requires `gh` CLI).
 
-This runs the full test suite, `build:release`, then publishes shared → backend → cli.
+`publish:packages` runs the full test suite, `build:release`, then publishes shared → backend → cli.
 
-Or step by step:
+Or step by step (human):
 
 ```bash
 npm run build:release
