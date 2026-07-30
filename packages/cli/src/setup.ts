@@ -321,7 +321,7 @@ function printNextSteps(
     step += 1;
   }
   console.log('');
-  console.log('Optional: AGENT_DECK_AUTO_UPGRADE=1 agent-deck start  (check npm for updates on start)');
+  console.log('Updates: managed install auto-updates by default (agent-deck install). Opt out: AGENT_DECK_DISABLE_AUTOUPDATER=1');
 }
 
 export function shouldStartAfterSetup(exitCode: number): boolean {

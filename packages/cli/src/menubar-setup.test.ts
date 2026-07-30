@@ -35,6 +35,7 @@ describe('menubar setup', () => {
     const content = fs.readFileSync(result.pluginPath, 'utf8');
     expect(content.startsWith('#!/usr/bin/env bash')).toBe(true);
     expect(content).toContain('menubar');
+    expect(content).toContain('.local/bin/agent-deck');
     expect(content).not.toContain('statusline');
 
     const mode = fs.statSync(result.pluginPath).mode & 0o777;

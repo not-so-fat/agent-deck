@@ -165,17 +165,27 @@ claude mcp add --scope user --transport http agent-deck http://127.0.0.1:1110/mc
 
 Add `--start` to launch Agent Deck after writing config.
 
-### Auto-upgrade
+### Managed install + auto-upgrade
+
+**Recommended:** managed home install (Claude-style). Existing decks/credentials are untouched.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/not-so-fat/agent_deck/main/scripts/install.sh | bash
+# or: npx @agent-deck/cli@latest install
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 | Command / env | Behavior |
 |---------------|----------|
-| `agent-deck upgrade` | Fetch latest from npm and `npm install -g @agent-deck/cli@latest` |
+| `agent-deck install` | Unpack `@agent-deck/cli` into `~/.agent-deck/versions/`, point `current`, write `~/.local/bin/agent-deck` |
+| `agent-deck upgrade` | Managed: download + activate; npm-global: `npm install -g @agent-deck/cli@latest` |
 | `agent-deck upgrade --check` | Show if an update exists |
-| `AGENT_DECK_AUTO_UPGRADE=1` | On `start`, upgrade before launching (global install) |
-| (default on `start`) | Once per 24h, notify if a newer version is on npm |
-| `AGENT_DECK_NO_UPDATE_CHECK=1` | Disable update notification on start |
+| (managed default) | Background check ≤1×/24h; download pending; activate on next `start`/`doctor`/`upgrade` (never on statusline/menubar) |
+| `AGENT_DECK_DISABLE_AUTOUPDATER=1` | Disable background check/download/activate (manual `upgrade` still works) |
+| `AGENT_DECK_AUTO_UPGRADE=1` | npm-global only: upgrade via `npm i -g` on `start` |
+| `AGENT_DECK_NO_UPDATE_CHECK=1` | npm-global only: disable update notification on start |
 
-`npx @agent-deck/cli@latest` always resolves latest from npm; auto-upgrade helps **global** installs stay current.
+Windows: use `npm install -g` until a managed shim exists.
 
 Optional env:
 
@@ -183,7 +193,7 @@ Optional env:
 |----------|---------|---------|
 | `AGENT_DECK_PORT` | `1111` | API + dashboard (dev repo uses `8000` for API) |
 | `AGENT_DECK_MCP_PORT` | `1110` | MCP HTTP endpoint (dev repo uses `3001`) |
-| `AGENT_DECK_HOME` | `~/.agent-deck` | Database and credential metadata |
+| `AGENT_DECK_HOME` | `~/.agent-deck` | Database, credential metadata, and managed `versions/` |
 
 ## Development vs published
 

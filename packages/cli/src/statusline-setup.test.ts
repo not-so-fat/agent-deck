@@ -23,6 +23,8 @@ describe('statusline-setup', () => {
     const mode = fs.statSync(scriptPath).mode & 0o777;
     expect(mode & 0o111).not.toBe(0);
     expect(fs.readFileSync(scriptPath, 'utf8')).toContain('agent-deck statusline');
+    expect(fs.readFileSync(scriptPath, 'utf8')).toContain('.local/bin/agent-deck');
+    expect(fs.readFileSync(scriptPath, 'utf8')).toContain('current/node_modules/@agent-deck/cli');
   });
 
   it('merges statusLine into Claude settings.json without timer polling', () => {

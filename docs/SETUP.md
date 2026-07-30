@@ -108,11 +108,17 @@ Menubar-only refresh: `npm run setup:dev -- --menubar`
 ## Quick start (npm / end users)
 
 ```bash
-npx @agent-deck/cli@latest setup --client cursor --start
+# Recommended: managed install (auto-updates; existing ~/.agent-deck data kept)
+curl -fsSL https://raw.githubusercontent.com/not-so-fat/agent_deck/main/scripts/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+agent-deck setup --client cursor --start
+
+# One-shot without curl:
+# npx @agent-deck/cli@latest install && npx @agent-deck/cli@latest setup --client cursor --start
 # Dashboard → http://127.0.0.1:1111  (dev repo uses :8000 / :3000)
 ```
 
-See [PUBLISHING.md](./PUBLISHING.md) and [README](../README.md).
+See [PUBLISHING.md](./PUBLISHING.md) and [README](../README.md). Design: [managed CLI auto-upgrade](./superpowers/specs/2026-07-30-managed-cli-auto-upgrade-design.md).
 
 ### IDE deck indicator (optional)
 

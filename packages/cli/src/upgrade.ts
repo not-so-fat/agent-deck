@@ -3,10 +3,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import {
+  activateVersion,
+  compareSemver,
+  detectInstallKind,
+  fetchLatestVersion as fetchLatestManaged,
+  installCliVersionToPrefix,
+  readCurrentManagedVersion,
+  runManagedCliEntryHooks,
+} from './managed';
 import { getAgentDeckVersion } from './version';
 
 const PACKAGE_NAME = '@agent-deck/cli';
-const REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface VersionCache {
@@ -47,38 +55,17 @@ function writeCache(latest: string): void {
   fs.writeFileSync(cachePath(), `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 }
 
-export function compareSemver(a: string, b: string): number {
-  const parse = (value: string) => value.replace(/^v/, '').split('.').map((part) => Number.parseInt(part, 10) || 0);
-  const left = parse(a);
-  const right = parse(b);
-
-  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0);
-    if (diff !== 0) {
-      return diff > 0 ? 1 : -1;
-    }
-  }
-
-  return 0;
-}
+export { compareSemver };
 
 export async function fetchLatestVersion(): Promise<string | null> {
-  try {
-    const response = await fetch(REGISTRY_URL, {
-      headers: { accept: 'application/json' },
-    });
-    if (!response.ok) {
-      return null;
-    }
-    const data = (await response.json()) as { version?: string };
-    return data.version ?? null;
-  } catch {
-    return null;
-  }
+  return fetchLatestManaged();
 }
 
 export async function checkForUpgrade(options: { force?: boolean } = {}): Promise<UpgradeCheckResult> {
-  const current = getAgentDeckVersion();
+  const current =
+    detectInstallKind() === 'managed'
+      ? (readCurrentManagedVersion() ?? getAgentDeckVersion())
+      : getAgentDeckVersion();
   const cache = readCache();
 
   if (!options.force && cache?.latest) {
@@ -117,43 +104,98 @@ function runNpmInstallGlobal(version: string): Promise<number> {
   });
 }
 
+function parseToVersion(args: string[]): string | undefined {
+  const idx = args.indexOf('--to');
+  if (idx >= 0) {
+    return args[idx + 1];
+  }
+  return undefined;
+}
+
 export async function runUpgrade(args: string[]): Promise<number> {
   const checkOnly = args.includes('--check');
-  const result = await checkForUpgrade({ force: true });
+  const toVersion = parseToVersion(args);
 
-  if (!result.latest) {
+  if (detectInstallKind() === 'managed') {
+    const current = readCurrentManagedVersion() ?? getAgentDeckVersion();
+    const latest = toVersion ?? (await fetchLatestVersion());
+    if (!latest) {
+      console.error('Could not reach npm registry to check for updates.');
+      return 1;
+    }
+
+    console.log(`Current: ${current}`);
+    console.log(`Latest:  ${latest}`);
+    console.log('Install: managed');
+
+    if (!toVersion && compareSemver(latest, current) <= 0) {
+      console.log('Already on the latest version.');
+      return 0;
+    }
+
+    if (checkOnly) {
+      console.log('Update available. Run: agent-deck upgrade');
+      return 0;
+    }
+
+    console.log(`Upgrading managed install ${PACKAGE_NAME} → ${latest} ...`);
+    const result = await installCliVersionToPrefix(latest);
+    if (!result.ok) {
+      console.error(`Upgrade failed: ${result.error}`);
+      return 1;
+    }
+    activateVersion(latest);
+    console.log('Upgrade complete. Restart any running Agent Deck process.');
+    return 0;
+  }
+
+  const result = await checkForUpgrade({ force: true });
+  const target = toVersion ?? result.latest;
+
+  if (!target) {
     console.error('Could not reach npm registry to check for updates.');
     return 1;
   }
 
   console.log(`Current: ${result.current}`);
-  console.log(`Latest:  ${result.latest}`);
+  console.log(`Latest:  ${target}`);
+  console.log('Install: npm-global (or unknown)');
 
-  if (!result.updateAvailable) {
+  if (!toVersion && !result.updateAvailable) {
     console.log('Already on the latest version.');
     return 0;
   }
 
   if (checkOnly) {
     console.log('Update available. Run: agent-deck upgrade');
+    console.log('Tip: agent-deck install  # managed install with auto-updates (data unchanged)');
     return 0;
   }
 
-  console.log(`Upgrading ${PACKAGE_NAME} → ${result.latest} ...`);
-  const code = await runNpmInstallGlobal(result.latest);
+  console.log(`Upgrading ${PACKAGE_NAME} → ${target} ...`);
+  const code = await runNpmInstallGlobal(target);
   if (code === 0) {
     console.log('Upgrade complete. Restart any running Agent Deck process.');
+    console.log('Tip: agent-deck install  # switch CLI binary to managed auto-updates (data unchanged)');
   } else {
     console.error('Upgrade failed. Try manually:');
-    console.error(`  npm install -g ${PACKAGE_NAME}@${result.latest}`);
-    console.error('Or use without global install:');
-    console.error(`  npx ${PACKAGE_NAME}@${result.latest} start`);
+    console.error(`  npm install -g ${PACKAGE_NAME}@${target}`);
+    console.error('Or managed install:');
+    console.error(`  npx ${PACKAGE_NAME}@latest install`);
   }
 
   return code;
 }
 
 export async function maybeAutoUpgradeOnStart(): Promise<void> {
+  if (detectInstallKind() === 'managed') {
+    const { activated } = runManagedCliEntryHooks({ allowActivate: true });
+    if (activated) {
+      console.log(`[agent-deck] Activated managed version ${activated}`);
+    }
+    return;
+  }
+
   const enabled =
     process.env.AGENT_DECK_AUTO_UPGRADE === '1' ||
     process.env.AGENT_DECK_AUTO_UPGRADE === 'true';
@@ -175,6 +217,10 @@ export async function maybeAutoUpgradeOnStart(): Promise<void> {
 }
 
 export async function notifyIfUpdateAvailable(): Promise<void> {
+  if (detectInstallKind() === 'managed') {
+    return;
+  }
+
   if (
     process.env.AGENT_DECK_AUTO_UPGRADE === '1' ||
     process.env.AGENT_DECK_AUTO_UPGRADE === 'true' ||
@@ -190,6 +236,6 @@ export async function notifyIfUpdateAvailable(): Promise<void> {
   }
 
   console.log(
-    `[agent-deck] Update available: ${result.current} → ${result.latest}  (agent-deck upgrade, or npx ${PACKAGE_NAME}@latest start)`,
+    `[agent-deck] Update available: ${result.current} → ${result.latest}  (agent-deck upgrade, or agent-deck install)`,
   );
 }

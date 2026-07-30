@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 1.6.0 — 2026-07-30
+
+### Managed CLI install + auto-upgrade
+
+- **Recommended install:** `agent-deck install` (or `scripts/install.sh`) unpacks into `~/.agent-deck/versions/`, points `current`, writes `~/.local/bin/agent-deck` — **existing decks/credentials untouched**
+- **Auto-update on by default** for managed installs: background npm check ≤1×/24h, download pending version, activate on next `start` / `doctor` / `upgrade` (never on statusline/menubar)
+- **Opt out:** `AGENT_DECK_DISABLE_AUTOUPDATER=1`
+- **`upgrade`:** managed path activates the version tree; npm-global path still uses `npm i -g` (compat)
+- **statusline / menubar:** prefer managed launcher before PATH / npm global / `npx`
+- **Docs:** README, SETUP, PUBLISHING; design `docs/superpowers/specs/2026-07-30-managed-cli-auto-upgrade-design.md`
+- **Release smoke:** asserts managed modules in dist + offline activate without wiping data home
+
+### After upgrade
+
+- New users: `curl -fsSL …/scripts/install.sh | bash` then `export PATH="$HOME/.local/bin:$PATH"`
+- Existing `npm i -g` users: optional `agent-deck install` (CLI binary only — no data migration); put `~/.local/bin` first on PATH
+- Re-run `agent-deck setup --client cursor|claude` so statusline/menubar wrappers pick the managed launcher
+- Restart any running Agent Deck daemon after managed activate
+
 ## 1.5.3 — 2026-07-29
 
 ### Fixes

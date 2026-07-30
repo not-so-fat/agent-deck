@@ -203,6 +203,16 @@ if [ -n "\${SETUP_CLI:-}" ]; then
   run_setup_cli || true
 fi
 
+MANAGED_LAUNCHER="\${HOME}/.local/bin/agent-deck"
+if [ -x "$MANAGED_LAUNCHER" ]; then
+  exec "$MANAGED_LAUNCHER" menubar
+fi
+
+MANAGED_BIN="\${AGENT_DECK_HOME:-$HOME/.agent-deck}/current/node_modules/@agent-deck/cli/dist/bin.js"
+if [ -f "$MANAGED_BIN" ]; then
+  exec "$NODE_BIN" "$MANAGED_BIN" menubar
+fi
+
 GLOBAL_CLI="$(npm root -g 2>/dev/null)/@agent-deck/cli/dist/bin.js"
 if [ -f "$GLOBAL_CLI" ]; then
   exec "$NODE_BIN" "$GLOBAL_CLI" menubar

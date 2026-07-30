@@ -52,6 +52,20 @@ export NO_COLOR=1
 export FORCE_COLOR=0
 export NPM_CONFIG_COLOR=false
 
+MANAGED_LAUNCHER="\${HOME}/.local/bin/agent-deck"
+if [ -x "$MANAGED_LAUNCHER" ]; then
+  exec "$MANAGED_LAUNCHER" statusline "$@"
+fi
+
+MANAGED_BIN="\${AGENT_DECK_HOME:-$HOME/.agent-deck}/current/node_modules/@agent-deck/cli/dist/bin.js"
+if [ -f "$MANAGED_BIN" ]; then
+  NODE_BIN="\${NODE_BIN:-}"
+  if [ -z "$NODE_BIN" ] && command -v node >/dev/null 2>&1; then
+    NODE_BIN="$(command -v node)"
+  fi
+  exec "\${NODE_BIN:-node}" "$MANAGED_BIN" statusline "$@"
+fi
+
 if command -v agent-deck >/dev/null 2>&1; then
   exec agent-deck statusline "$@"
 fi

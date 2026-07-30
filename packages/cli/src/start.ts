@@ -8,6 +8,14 @@ import { maybeAutoUpgradeOnStart, notifyIfUpdateAvailable } from './upgrade';
 import { getAgentDeckVersion } from './version';
 import { parseCliBackendPort, parseCliMcpPort } from './defaults';
 import {
+  detectInstallKind,
+  localBinLauncherPath,
+  readCurrentManagedVersion,
+  readUpdateState,
+  resolveCurrentVersionDir,
+  runManagedCliEntryHooks,
+} from './managed';
+import {
   appendDaemonLogLine,
   openDaemonLogFd,
   resolveCliEntry,
@@ -422,6 +430,11 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
 }
 
 export async function runDoctor(): Promise<number> {
+  const { activated } = runManagedCliEntryHooks({ allowActivate: true });
+  if (activated) {
+    console.log(`[agent-deck] Activated managed version ${activated}`);
+  }
+
   const nodeMajor = getNodeMajor();
   let ok = true;
 
@@ -463,6 +476,21 @@ export async function runDoctor(): Promise<number> {
   }
 
   console.log(`Package version ${getAgentDeckVersion()}`);
+
+  const kind = detectInstallKind();
+  console.log(`Install kind: ${kind}`);
+  if (kind === 'managed') {
+    const current = readCurrentManagedVersion();
+    const currentDir = resolveCurrentVersionDir();
+    console.log(`Managed current: ${current ?? '(unknown)'} (${currentDir ?? 'missing'})`);
+    console.log(`Launcher: ${localBinLauncherPath()}`);
+    const pending = readUpdateState()?.pendingVersion;
+    if (pending) {
+      console.log(`Pending managed version: ${pending} (activates on next start/doctor/upgrade)`);
+    }
+  } else {
+    console.log('Tip: agent-deck install  # managed CLI + auto-updates (decks/data unchanged)');
+  }
 
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const backendPort = parseCliBackendPort(process.env.AGENT_DECK_PORT);

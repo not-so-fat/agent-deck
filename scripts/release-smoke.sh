@@ -32,12 +32,17 @@ if [[ ! -f "$CLI_DIST/bin.js" ]]; then
 fi
 
 # --- 1. Tarball must include installer modules ---
-for required in bin.js statusline.js statusline-setup.js setup.js; do
+for required in bin.js statusline.js statusline-setup.js setup.js install.js; do
   if [[ ! -f "$CLI_DIST/$required" ]]; then
     fail "dist/$required missing from CLI build (would not ship on npm)"
   fi
 done
-pass "CLI dist contains statusline + setup modules"
+for required in managed/paths.js managed/activate.js managed/updater.js managed/npm-prefix-install.js; do
+  if [[ ! -f "$CLI_DIST/$required" ]]; then
+    fail "dist/$required missing from CLI build (managed install)"
+  fi
+done
+pass "CLI dist contains statusline + setup + managed install modules"
 
 # --- 2. npm pack fidelity ---
 PACK_DIR="$(mktemp -d)"
@@ -202,5 +207,31 @@ if [[ -f "$CHANGELOG" ]]; then
   ' "$CHANGELOG" || fail "CHANGELOG $VERSION still lists setup/statusline under Pending publish — ship or move to pending"
 fi
 pass "CHANGELOG pending section check passed"
+
+# --- 7. Managed install activate (offline; no data wipe) ---
+export AGENT_DECK_HOME="$SMOKE_HOME/.agent-deck-managed"
+export AGENT_DECK_LOCAL_BIN="$SMOKE_HOME/.local/bin"
+mkdir -p "$AGENT_DECK_HOME"
+echo 'keep-me' >"$AGENT_DECK_HOME/agent_deck.db"
+SMOKE_VER="0.0.0-smoke"
+SEED_BIN="$AGENT_DECK_HOME/versions/$SMOKE_VER/node_modules/@agent-deck/cli/dist/bin.js"
+mkdir -p "$(dirname "$SEED_BIN")"
+echo '#!/usr/bin/env node
+console.log("managed-ok")
+' >"$SEED_BIN"
+node -e "
+const { activateVersion } = require('$CLI_DIST/managed/activate.js');
+activateVersion('$SMOKE_VER');
+" || fail "activateVersion failed"
+[[ -L "$AGENT_DECK_HOME/current" ]] || fail "managed current symlink missing"
+[[ -x "$AGENT_DECK_LOCAL_BIN/agent-deck" ]] || fail "managed launcher missing"
+[[ "$(cat "$AGENT_DECK_HOME/agent_deck.db")" == "keep-me" ]] || fail "managed activate wiped data home"
+if ! grep -q 'node_modules/@agent-deck/cli/dist/bin.js' "$AGENT_DECK_LOCAL_BIN/agent-deck"; then
+  fail "managed launcher body unexpected"
+fi
+if ! grep -q '\.local/bin/agent-deck' "$SCRIPT_PATH"; then
+  fail "statusline.sh must prefer managed launcher at ~/.local/bin/agent-deck"
+fi
+pass "managed install activate + statusline prefers launcher"
 
 pass "PASS — release integration smoke (log: $LOG)"

@@ -22,6 +22,7 @@ import { runMenubar } from './menubar';
 import { runStop } from './stop';
 import { runReindexCommand, runStoreCommand } from './store';
 import { runUpgrade } from './upgrade';
+import { runInstall } from './install';
 import { runUseCommand } from './use';
 import { getAgentDeckVersion } from './version';
 
@@ -48,7 +49,8 @@ function printUsage() {
   agent-deck menubar
   agent-deck setup --client cursor|claude|claude-desktop [--scope global|project] [--start]
   agent-deck use <deck> [--client cursor|claude|both] [--refresh] [--mcp-port PORT]
-  agent-deck upgrade [--check]
+  agent-deck install [--to VERSION] [--migrate-cli] [--purge-global]
+  agent-deck upgrade [--check] [--to VERSION]
   agent-deck doctor
   agent-deck debug-mcp
   agent-deck --version
@@ -313,6 +315,8 @@ export async function runCli(argv: string[]): Promise<number> {
     }
     case 'use':
       return runUseCommand(rest);
+    case 'install':
+      return runInstall(rest);
     case 'upgrade':
       return runUpgrade(rest);
     case 'doctor':
