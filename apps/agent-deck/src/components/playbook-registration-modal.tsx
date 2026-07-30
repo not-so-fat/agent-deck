@@ -121,7 +121,7 @@ export default function PlaybookRegistrationModal({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="playbook-triggers">Triggers (comma-separated)</Label>
+            <Label htmlFor="playbook-triggers">Triggers (comma-separated, max 16)</Label>
             <Input
               id="playbook-triggers"
               placeholder="check inbox, review applicants"

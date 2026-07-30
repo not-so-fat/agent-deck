@@ -1,20 +1,34 @@
 import { z } from 'zod';
 import { normalizeTriggers } from '../utils/trigger-hygiene';
 
-export const PlaybookTriggersSchema = z
-  .array(z.string())
-  .transform((triggers, ctx) => {
-    try {
-      return normalizeTriggers(triggers);
-    } catch (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: error instanceof Error ? error.message : 'Invalid triggers',
-      });
-      return z.NEVER;
-    }
-  })
-  .default([]);
+function makeTriggersSchema(maxCount: number | null | undefined) {
+  return z
+    .array(z.string())
+    .transform((triggers, ctx) => {
+      try {
+        // undefined → default create cap (16); null → no count cap
+        return maxCount === undefined
+          ? normalizeTriggers(triggers)
+          : normalizeTriggers(triggers, { maxCount });
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: error instanceof Error ? error.message : 'Invalid triggers',
+        });
+        return z.NEVER;
+      }
+    })
+    .default([]);
+}
+
+/** Create / genesis — hard max 16. */
+export const PlaybookTriggersSchema = makeTriggersSchema(undefined);
+
+/**
+ * Update / set_triggers — normalize without count cap.
+ * Count policy (grandfather) is enforced in PlaybookManager / PatchManager.
+ */
+export const PlaybookTriggersUpdateSchema = makeTriggersSchema(null);
 
 export const PlaybookIdSchema = z
   .string()
@@ -24,7 +38,7 @@ export const PlaybookSchema = z.object({
   id: PlaybookIdSchema,
   title: z.string().min(1, 'Title is required'),
   body: z.string().default(''),
-  triggers: PlaybookTriggersSchema,
+  triggers: PlaybookTriggersUpdateSchema,
   dependsOnCredentialIds: z.array(z.string()).default([]),
   dependsOnServiceIds: z.array(z.string()).default([]),
   exec: z.string().optional(),
@@ -44,7 +58,15 @@ export const CreatePlaybookSchema = z.object({
   skill: z.string().optional(),
 });
 
-export const UpdatePlaybookSchema = CreatePlaybookSchema.partial().omit({ id: true });
+export const UpdatePlaybookSchema = z.object({
+  title: z.string().min(1, 'Title is required').optional(),
+  body: z.string().optional(),
+  triggers: PlaybookTriggersUpdateSchema.optional(),
+  dependsOnCredentialIds: z.array(z.string()).optional(),
+  dependsOnServiceIds: z.array(z.string()).optional(),
+  exec: z.string().optional(),
+  skill: z.string().optional(),
+});
 
 export const DashboardRegisterPlaybookSchema = CreatePlaybookSchema.extend({
   autoDetectDependencies: z.boolean().default(true),

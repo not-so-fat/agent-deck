@@ -75,7 +75,7 @@ Patch detail (`apps/agent-deck/src/pages/playbook-patches.tsx` area) renders per
 
 | Req | Requirement | Acceptance |
 |-----|-------------|------------|
-| R1 | `normalizeTriggers` applied at all four write boundaries. | Unit: padded/dup/multiline inputs → normalized storage; >16 triggers or >80 chars → Zod error. |
+| R1 | `normalizeTriggers` at write boundaries; create hard-caps at 16; update uses grandfather count policy. | Unit: padded/dup inputs → normalized; create >16 → error; update keep/shrink over-cap → ok; grow → error. |
 | R2 | `detectTriggerConflicts` classifies exact / subsumes / overlap. | Unit table incl. the live pb_product_principle × pb_ui_principle pair → ≥ 3 conflicts detected with correct levels. |
 | R3 | Propose persists conflicts; accept recomputes. | Integration: genesis with colliding trigger → patch row carries conflicts; deck edited before accept → accept-time list reflects new state. |
 | R4 | MCP write responses carry `trigger_warnings`. | http test: `register_playbook` colliding with deck playbook → warnings present, playbook created. |
@@ -98,7 +98,7 @@ Patch detail (`apps/agent-deck/src/pages/playbook-patches.tsx` area) renders per
 | Question | Default if undecided |
 |----------|---------------------|
 | Jaccard threshold for `overlap` | 0.6; tune only with telemetry, not by feel |
-| Max triggers per playbook | 16 (stub description budget); raise only if the stub cap in the sync design rises |
+| Max triggers per playbook | 16 on **create**; **update** may keep/shrink legacy over-cap lists (see [trigger-count-grandfather](./2026-07-29-trigger-count-grandfather-design.md)) |
 | Do `exact` conflicts block patch **accept**? | No — warn with required confirmation click in dashboard |
 
 ## Milestones

@@ -11,6 +11,7 @@ import {
   type PlaybookPatchListItem,
   type PlaybookPatchSource,
   type ProposePlaybookPatchResult,
+  assertTriggerCountPolicy,
   generateShortId,
   derivePlaybookDefaults,
   generateId,
@@ -201,6 +202,10 @@ export class PatchManager {
     if (!dryRun.ok) {
       throw new PatchConflictError(dryRun.conflict);
     }
+    assertTriggerCountPolicy(dryRun.value.triggers.length, {
+      mode: 'update',
+      previousCount: playbook.triggers.length,
+    });
     const bodyUnchanged = dryRun.value.body === playbook.body;
     const triggersUnchanged =
       JSON.stringify(dryRun.value.triggers) === JSON.stringify(playbook.triggers);

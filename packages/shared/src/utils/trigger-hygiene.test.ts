@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   detectTriggerConflicts,
   normalizeTriggers,
+  assertTriggerCountPolicy,
+  triggerErrorMessage,
   TriggerValidationError,
 } from './trigger-hygiene';
 
@@ -38,9 +40,58 @@ describe('normalizeTriggers', () => {
     expect(() => normalizeTriggers(['x'.repeat(81)])).toThrow(TriggerValidationError);
   });
 
-  it('rejects more than 16 triggers', () => {
+  it('rejects more than 16 triggers by default', () => {
     const many = Array.from({ length: 17 }, (_, index) => `trigger ${index}`);
     expect(() => normalizeTriggers(many)).toThrow(TriggerValidationError);
+  });
+
+  it('allows more than 16 triggers when maxCount is null (store round-trip)', () => {
+    const many = Array.from({ length: 20 }, (_, index) => `trigger ${index}`);
+    expect(normalizeTriggers(many, { maxCount: null })).toHaveLength(20);
+  });
+});
+
+describe('assertTriggerCountPolicy', () => {
+  it('rejects create over 16', () => {
+    expect(() => assertTriggerCountPolicy(17, { mode: 'create' })).toThrow(
+      TriggerValidationError,
+    );
+  });
+
+  it('allows update that keeps or shrinks an over-cap list', () => {
+    expect(() =>
+      assertTriggerCountPolicy(20, { mode: 'update', previousCount: 20 }),
+    ).not.toThrow();
+    expect(() =>
+      assertTriggerCountPolicy(18, { mode: 'update', previousCount: 20 }),
+    ).not.toThrow();
+  });
+
+  it('rejects update that grows an over-cap list', () => {
+    expect(() =>
+      assertTriggerCountPolicy(21, { mode: 'update', previousCount: 20 }),
+    ).toThrow(/do not ask the user/);
+  });
+
+  it('rejects update that grows past 16 from under the cap', () => {
+    expect(() =>
+      assertTriggerCountPolicy(17, { mode: 'update', previousCount: 10 }),
+    ).toThrow(TriggerValidationError);
+  });
+
+  it('prefers userMessage for dashboard clients', () => {
+    try {
+      assertTriggerCountPolicy(21, { mode: 'update', previousCount: 20 });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(TriggerValidationError);
+      expect(
+        triggerErrorMessage(error as TriggerValidationError, false),
+      ).toMatch(/Remove some first/);
+      expect(
+        triggerErrorMessage(error as TriggerValidationError, true),
+      ).toMatch(/do not ask the user/);
+    }
   });
 });
 

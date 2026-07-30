@@ -3,6 +3,8 @@ import {
   ApiResponse,
   ProposePlaybookPatchSchema,
   RejectPlaybookPatchSchema,
+  TriggerValidationError,
+  triggerErrorMessage,
   type PatchPreview,
   type PlaybookPatch,
   type PlaybookPatchListItem,
@@ -66,6 +68,12 @@ export async function registerPlaybookPatchRoutes(fastify: FastifyInstance) {
         return reply.status(409).send({
           success: false,
           error: error.message,
+        } satisfies ApiResponse);
+      }
+      if (error instanceof TriggerValidationError) {
+        return reply.status(400).send({
+          success: false,
+          error: triggerErrorMessage(error, true),
         } satisfies ApiResponse);
       }
       const status = error instanceof AgentDeckContextError ? 400 : 400;

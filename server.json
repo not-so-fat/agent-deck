@@ -3,7 +3,7 @@
   "name": "io.github.not-so-fat/agent-deck",
   "title": "Agent Deck",
   "description": "Switch what your agent knows — decks of tools, keys, and self-improving playbooks.",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "websiteUrl": "https://github.com/not-so-fat/agent_deck",
   "repository": {
     "url": "https://github.com/not-so-fat/agent_deck",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@agent-deck/cli",
-      "version": "1.5.2",
+      "version": "1.5.3",
       "transport": {
         "type": "streamable-http",
         "url": "http://127.0.0.1:1110/mcp"

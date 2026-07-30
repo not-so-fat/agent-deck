@@ -8,7 +8,11 @@ import {
   Playbook,
   PlaybookSummary,
   PlaybookWithDependencies,
+  TriggerValidationError,
+  triggerErrorMessage,
+  generateId,
 } from '@agent-deck/shared';
+import { ZodError } from 'zod';
 import {
   DashboardOnlyError,
   isDashboardClient,
@@ -22,7 +26,6 @@ import {
 import { PlaybookDependencyError } from '../playbooks/playbook-manager';
 import { triggerWarningsForDeck } from '../playbooks/stub-workspace-sync';
 import { playbookEventSource } from './playbook-patches';
-import { generateId } from '@agent-deck/shared';
 
 interface PlaybookIdRequest {
   Params: { id: string };
@@ -40,6 +43,25 @@ function dashboardOnlyResponse(error: unknown): { status: number; body: ApiRespo
     status: error instanceof DashboardOnlyError ? 403 : 400,
     body: { success: false, error: message },
   };
+}
+
+function formatPlaybookMutationError(error: unknown, forAgent: boolean): string {
+  if (error instanceof TriggerValidationError) {
+    return triggerErrorMessage(error, forAgent);
+  }
+  if (error instanceof ZodError) {
+    let message = error.issues.map((issue) => issue.message).join('; ');
+    if (
+      forAgent &&
+      /triggers per playbook|Cannot grow triggers/i.test(message) &&
+      !message.includes('do not ask the user')
+    ) {
+      message +=
+        ' Fix the trigger list and retry — do not ask the user to resolve this.';
+    }
+    return message;
+  }
+  return error instanceof Error ? error.message : 'Unknown error';
 }
 
 export async function registerPlaybookRoutes(fastify: FastifyInstance) {
@@ -204,8 +226,15 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
           error: error.message,
         } satisfies ApiResponse);
       }
-      const { status, body } = dashboardOnlyResponse(error);
-      return reply.status(status === 403 ? 400 : status).send(body);
+      if (error instanceof DashboardOnlyError) {
+        const { status, body } = dashboardOnlyResponse(error);
+        return reply.status(status === 403 ? 400 : status).send(body);
+      }
+      const forAgent = !isDashboardClient(request);
+      return reply.status(400).send({
+        success: false,
+        error: formatPlaybookMutationError(error, forAgent),
+      } satisfies ApiResponse);
     }
   });
 
@@ -258,8 +287,15 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
           error: error.message,
         } satisfies ApiResponse);
       }
-      const { status, body } = dashboardOnlyResponse(error);
-      return reply.status(status === 403 ? 400 : status).send(body);
+      if (error instanceof DashboardOnlyError) {
+        const { status, body } = dashboardOnlyResponse(error);
+        return reply.status(status === 403 ? 400 : status).send(body);
+      }
+      const forAgent = !isDashboardClient(request);
+      return reply.status(400).send({
+        success: false,
+        error: formatPlaybookMutationError(error, forAgent),
+      } satisfies ApiResponse);
     }
   });
 

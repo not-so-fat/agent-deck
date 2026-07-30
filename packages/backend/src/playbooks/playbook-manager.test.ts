@@ -78,4 +78,39 @@ describe('PlaybookManager', () => {
     expect(playbook.dependencies.credentials).toHaveLength(1);
     expect(playbook.dependencies.credentials[0].label).toBe('Ashby');
   });
+
+  it('updates body on a legacy playbook with more than 16 triggers', async () => {
+    const triggers = Array.from({ length: 20 }, (_, index) => `trigger ${index}`);
+    const created = await db.createPlaybook({
+      id: 'pb_legacy_triggers',
+      title: 'Legacy triggers',
+      body: 'old\n',
+      triggers,
+    });
+
+    const updated = await manager.update(created.id, { body: 'new body\n' });
+    expect(updated?.body).toBe('new body\n');
+    expect(updated?.triggers).toHaveLength(20);
+  });
+
+  it('allows shrinking an over-cap trigger list and rejects growth', async () => {
+    const triggers = Array.from({ length: 20 }, (_, index) => `trigger ${index}`);
+    const created = await db.createPlaybook({
+      id: 'pb_legacy_triggers',
+      title: 'Legacy triggers',
+      body: 'body\n',
+      triggers,
+    });
+
+    const shrunk = await manager.update(created.id, {
+      triggers: triggers.slice(0, 18),
+    });
+    expect(shrunk?.triggers).toHaveLength(18);
+
+    await expect(
+      manager.update(created.id, {
+        triggers: [...triggers.slice(0, 18), 'extra new'],
+      }),
+    ).rejects.toThrow(/do not ask the user/);
+  });
 });

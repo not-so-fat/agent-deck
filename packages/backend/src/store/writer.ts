@@ -74,9 +74,16 @@ export class FileStoreWriter {
 
   async writePlaybook(playbook: StorePlaybookFile): Promise<void> {
     const { playbooksDir } = storePaths(this.home);
+    let serialized: string;
+    try {
+      serialized = serializePlaybook(playbook);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to serialize playbook ${playbook.id}: ${detail}`);
+    }
     await writeFileAtomic(
       path.join(playbooksDir, `${playbook.id}.md`),
-      serializePlaybook(playbook),
+      serialized,
     );
   }
 

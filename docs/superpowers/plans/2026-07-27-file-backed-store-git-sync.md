@@ -129,8 +129,9 @@ Expected: FAIL (module not found)
 ```ts
 // packages/shared/src/schemas/store.ts
 import { z } from 'zod';
-import { PlaybookIdSchema, PlaybookTriggersSchema } from './playbook';
+import { PlaybookIdSchema } from './playbook';
 import { BundleServiceSchema } from './export-bundle';
+import { normalizeTriggers } from '../utils/trigger-hygiene';
 
 export const StoreManifestSchema = z
   .object({
@@ -140,12 +141,28 @@ export const StoreManifestSchema = z
   })
   .strict();
 
+/** Store files round-trip legacy rows; create/update APIs keep max 16. */
+export const StorePlaybookTriggersSchema = z
+  .array(z.string())
+  .transform((triggers, ctx) => {
+    try {
+      return normalizeTriggers(triggers, { maxCount: null });
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error instanceof Error ? error.message : 'Invalid triggers',
+      });
+      return z.NEVER;
+    }
+  })
+  .default([]);
+
 export const StorePlaybookFileSchema = z
   .object({
     id: PlaybookIdSchema,
     title: z.string().min(1),
     body: z.string().default(''),
-    triggers: PlaybookTriggersSchema,
+    triggers: StorePlaybookTriggersSchema,
     dependsOnCredentialIds: z.array(z.string()).default([]),
     dependsOnServiceIds: z.array(z.string()).default([]),
     exec: z.string().optional(),

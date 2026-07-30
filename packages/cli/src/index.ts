@@ -62,7 +62,7 @@ function printUsage() {
   agent-deck export deck <uuid> --output <path>
   agent-deck import <path>
   agent-deck reindex
-  agent-deck store migrate [--dry-run]
+  agent-deck store migrate [--dry-run] [--force]
   agent-deck import-feedback-signals <transcript-dir> [--backend-url URL] [--output <path>]
   agent-deck bootstrap [--host claude|cursor|all] [--workspace <path>] [--since <date>] [--limit <n>] [--out <dir>]
     Mine local Claude Code session history into playbook-proposal digests (offline).

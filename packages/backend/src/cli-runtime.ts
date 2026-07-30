@@ -184,7 +184,7 @@ export function createCliStore() {
   const db = new DatabaseManager(resolveDatabasePath());
 
   return {
-    migrate(opts: { dryRun?: boolean } = {}) {
+    migrate(opts: { dryRun?: boolean; force?: boolean } = {}) {
       return migrateSqliteToStore(db, opts);
     },
     reindex() {

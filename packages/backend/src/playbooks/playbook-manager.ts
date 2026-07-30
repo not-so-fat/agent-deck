@@ -13,6 +13,7 @@ import {
   RemovePlaybookFromDeckInput,
   UpdatePlaybookInput,
   UpdatePlaybookSchema,
+  assertTriggerCountPolicy,
   buildPlaybookSearchText,
   detectPlaybookDependencies,
   type PlaybookDependencyCatalog,
@@ -212,7 +213,19 @@ export class PlaybookManager {
   }
 
   async update(id: string, input: UpdatePlaybookInput): Promise<Playbook | null> {
+    const existing = await this.db.getPlaybook(id);
+    if (!existing) {
+      return null;
+    }
+
     const validated = UpdatePlaybookSchema.parse(input);
+    if (validated.triggers !== undefined) {
+      assertTriggerCountPolicy(validated.triggers.length, {
+        mode: 'update',
+        previousCount: existing.triggers.length,
+      });
+    }
+
     const playbook = await this.db.updatePlaybook(id, validated);
     if (playbook) {
       await this.writeToStore(playbook);

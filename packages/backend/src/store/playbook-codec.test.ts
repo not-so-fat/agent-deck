@@ -48,6 +48,21 @@ describe('playbook-codec', () => {
     expect(raw).not.toMatch(/skill:/);
   });
 
+  it('round-trips more than 16 triggers from legacy rows', () => {
+    const triggers = Array.from({ length: 20 }, (_, index) => `trigger ${index}`);
+    const input = {
+      id: 'pb_legacy',
+      title: 'Legacy',
+      body: 'Body\n',
+      triggers,
+      dependsOnCredentialIds: [],
+      dependsOnServiceIds: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    expect(parsePlaybookMarkdown(serializePlaybook(input))).toEqual(input);
+  });
+
   it('coerces null exec and skill to undefined on parse', () => {
     const raw = `---
 id: pb_demo

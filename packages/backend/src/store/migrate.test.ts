@@ -126,6 +126,29 @@ afterEach(async () => {
 });
 
 describe('migrateSqliteToStore', () => {
+  it('migrates playbooks with more than 16 triggers (legacy DB rows)', async () => {
+    const { home, database } = await createDatabase();
+    const triggers = Array.from({ length: 20 }, (_, index) => `trigger ${index}`);
+    const playbook = await database.createPlaybook({
+      id: 'pb_many_triggers',
+      title: 'Many Triggers',
+      body: 'Body\n',
+      triggers,
+    });
+
+    const result = await migrateSqliteToStore(database, { home });
+
+    expect(result.wrote.playbooks).toBe(1);
+    expect(
+      parsePlaybookMarkdown(
+        await fs.readFile(
+          path.join(storePaths(home).playbooksDir, 'pb_many_triggers.md'),
+          'utf8',
+        ),
+      ).triggers,
+    ).toEqual(playbook.triggers);
+  });
+
   it('writes every SQLite entity with preserved ids, ordering, and safe data', async () => {
     const { home, database } = await createDatabase();
     const seeded = await seedDatabase(database);
@@ -253,5 +276,21 @@ describe('migrateSqliteToStore', () => {
       paths: [missing],
     });
     await expect(fs.access(missing)).resolves.toBeUndefined();
+  });
+
+  it('rewrites existing files when force is set', async () => {
+    const { home, database } = await createDatabase();
+    await seedDatabase(database);
+    const paths = storePaths(home);
+    await migrateSqliteToStore(database, { home });
+
+    const playbookPath = path.join(paths.playbooksDir, 'pb_a.md');
+    await fs.writeFile(playbookPath, 'stale\n', 'utf8');
+
+    const result = await migrateSqliteToStore(database, { home, force: true });
+    expect(result.wrote.playbooks).toBe(2);
+    expect(parsePlaybookMarkdown(await fs.readFile(playbookPath, 'utf8')).id).toBe(
+      'pb_a',
+    );
   });
 });

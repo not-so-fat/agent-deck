@@ -1,14 +1,14 @@
 import { createStore } from './backend-runtime';
 
 type StoreArgs =
-  | { ok: true; command: 'migrate'; dryRun: boolean }
+  | { ok: true; command: 'migrate'; dryRun: boolean; force: boolean }
   | { ok: false; error: string };
 
 type ReindexArgs = { ok: true } | { ok: false; error: string };
 
 function printStoreUsage(): void {
   console.log(`Usage:
-  agent-deck store migrate [--dry-run]`);
+  agent-deck store migrate [--dry-run] [--force]`);
 }
 
 function printReindexUsage(): void {
@@ -26,16 +26,19 @@ export function parseStoreArgs(args: string[]): StoreArgs {
   }
 
   let dryRun = false;
+  let force = false;
   for (const arg of args.slice(1)) {
     if (arg === '--dry-run') {
       dryRun = true;
+    } else if (arg === '--force') {
+      force = true;
     } else if (arg === '--help' || arg === '-h') {
       return { ok: false, error: 'help' };
     } else {
       return { ok: false, error: `Unknown argument: ${arg}` };
     }
   }
-  return { ok: true, command: 'migrate', dryRun };
+  return { ok: true, command: 'migrate', dryRun, force };
 }
 
 export function parseReindexArgs(args: string[]): ReindexArgs {
@@ -59,7 +62,10 @@ export async function runStoreCommand(args: string[]): Promise<number> {
   }
 
   try {
-    const result = await createStore().migrate({ dryRun: parsed.dryRun });
+    const result = await createStore().migrate({
+      dryRun: parsed.dryRun,
+      force: parsed.force,
+    });
     console.log(JSON.stringify(result, null, 2));
     return 0;
   } catch (error: unknown) {

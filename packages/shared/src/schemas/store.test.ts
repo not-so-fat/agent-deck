@@ -30,6 +30,21 @@ describe('store schemas', () => {
     expect(r.success).toBe(false);
   });
 
+  it('accepts more than 16 triggers (legacy SQLite round-trip)', () => {
+    const triggers = Array.from({ length: 20 }, (_, index) => `trigger ${index}`);
+    const parsed = StorePlaybookFileSchema.parse({
+      id: 'pb_legacy',
+      title: 'Legacy',
+      body: '',
+      triggers,
+      dependsOnCredentialIds: [],
+      dependsOnServiceIds: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(parsed.triggers).toHaveLength(20);
+  });
+
   it('parses deck with ordered ids', () => {
     const deck = StoreDeckSchema.parse({
       id: '11111111-1111-4111-8111-111111111111',

@@ -74,7 +74,7 @@ export function yamlSingleQuote(value: string): string {
 }
 
 export function sanitizeStubTriggers(triggers: string[]): string[] {
-  return normalizeTriggers(triggers);
+  return normalizeTriggers(triggers, { maxCount: null });
 }
 
 export function buildStubDescription(playbook: PlaybookStubInput): string {

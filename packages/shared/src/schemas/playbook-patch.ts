@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { PlaybookIdSchema, PlaybookTriggersSchema } from './playbook';
+import { PlaybookIdSchema, PlaybookTriggersSchema, PlaybookTriggersUpdateSchema } from './playbook';
 import type { TriggerConflict } from '../utils/trigger-hygiene';
 
 export const PlaybookPatchIdSchema = z
@@ -52,7 +52,9 @@ export const RemoveItemOpSchema = z.object({
 
 export const SetTriggersOpSchema = z.object({
   op: z.literal('set_triggers').describe('Replace the playbook trigger phrases'),
-  triggers: PlaybookTriggersSchema.describe('New trigger list'),
+  triggers: PlaybookTriggersUpdateSchema.describe(
+    'New trigger list (count policy enforced against the current playbook)',
+  ),
 });
 
 export const RewriteBodyOpSchema = z.object({

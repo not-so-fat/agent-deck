@@ -7,6 +7,7 @@ describe('store CLI args', () => {
       ok: true,
       command: 'migrate',
       dryRun: false,
+      force: false,
     });
   });
 
@@ -15,13 +16,23 @@ describe('store CLI args', () => {
       ok: true,
       command: 'migrate',
       dryRun: true,
+      force: false,
+    });
+  });
+
+  it('parses store migrate --force', () => {
+    expect(parseStoreArgs(['migrate', '--force'])).toEqual({
+      ok: true,
+      command: 'migrate',
+      dryRun: false,
+      force: true,
     });
   });
 
   it('rejects unknown store arguments', () => {
-    expect(parseStoreArgs(['migrate', '--force'])).toEqual({
+    expect(parseStoreArgs(['migrate', '--wat'])).toEqual({
       ok: false,
-      error: 'Unknown argument: --force',
+      error: 'Unknown argument: --wat',
     });
   });
 

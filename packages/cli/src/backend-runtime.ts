@@ -79,7 +79,7 @@ export function createExportImport(): CliExportImport {
 }
 
 export type CliStore = {
-  migrate(opts?: { dryRun?: boolean }): Promise<{
+  migrate(opts?: { dryRun?: boolean; force?: boolean }): Promise<{
     wrote: {
       playbooks: number;
       services: number;

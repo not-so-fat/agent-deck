@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.5.3 — 2026-07-29
+
+### Fixes
+
+- **Trigger count grandfather:** create still hard-caps at 16; update/`set_triggers` may keep or shrink legacy over-cap lists (never grow). Body/title updates no longer re-validate stored triggers through the create cap. Stub sync no longer throws on count. Agent/MCP rejects include a fix-and-retry hint (do not ask the user); dashboard create keeps actionable max-16 copy.
+- **Store migrate + legacy triggers:** file codecs no longer apply the create max of 16 triggers, so SQLite→files migrate completes for older playbooks
+- **CLI:** `agent-deck store migrate --force` rewrites existing store files from SQLite (was library-only; CLI previously rejected the flag)
+
+### After upgrade
+
+- Restart the backend (or rebuild from this commit) so the trigger grandfather and migrate fixes load
+- If migrate aborted mid-run earlier: `agent-deck store migrate` fills missing files; use `--force` only to rewrite from SQLite
+
 ## 1.5.2 — 2026-07-27
 
 ### File-backed store (git-friendly sync)

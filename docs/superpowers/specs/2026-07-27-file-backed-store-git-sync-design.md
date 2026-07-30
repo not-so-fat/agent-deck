@@ -99,7 +99,7 @@ skill: null
 Playbook body markdown…
 ```
 
-Frontmatter field set should match the playbook Zod schema (ids, title, triggers, deps, optional exec/skill). Persist `createdAt` / `updatedAt` in frontmatter (ISO) so git and reindex do not depend on filesystem mtime.
+Frontmatter field set should match the **store** playbook schema (ids, title, triggers, deps, optional exec/skill, timestamps). Persist `createdAt` / `updatedAt` in frontmatter (ISO) so git and reindex do not depend on filesystem mtime. Store triggers must round-trip legacy SQLite rows (including more than 16); the create/update API max of 16 does not apply at the file boundary.
 
 ### Service / deck JSON
 
@@ -138,7 +138,7 @@ Freshness: store a content hash of the tree (or `manifest.json` + sorted file ha
 | Command | Behavior |
 |---------|----------|
 | `agent-deck reindex` | Force rebuild DB ← files; print summary (created/updated/removed counts, warnings) |
-| `agent-deck store migrate` | Ensure SQLite → files dump (idempotent); optional `--dry-run` |
+| `agent-deck store migrate` | Ensure SQLite → files dump (presence-only by default); optional `--dry-run`, `--force` (rewrite existing files) |
 
 Dashboard “Reload from files” is optional follow-up; CLI is required for v1.
 
@@ -220,7 +220,7 @@ Learning-loop append tables stay SQLite-only in v1 so frequent `playbook_events`
 2. Store writer (atomic flush per entity) + reader/reindexer.
 3. Wire playbook/service/credential/deck mutations through dual-write.
 4. Startup: migrate-if-needed → maybe-reindex.
-5. CLI: `reindex`, `store migrate [--dry-run]`.
+5. CLI: `reindex`, `store migrate [--dry-run] [--force]`.
 6. Tests: round-trip dump → wipe DB → reindex; dual-write after update; reject bad manifest version.
 7. Docs: git sync explanation; link from README / SETUP / PRD_EXPORT_IMPORT as complementary.
 
