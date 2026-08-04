@@ -22,9 +22,13 @@ describe('statusline-setup', () => {
     expect(fs.existsSync(scriptPath)).toBe(true);
     const mode = fs.statSync(scriptPath).mode & 0o777;
     expect(mode & 0o111).not.toBe(0);
-    expect(fs.readFileSync(scriptPath, 'utf8')).toContain('agent-deck statusline');
-    expect(fs.readFileSync(scriptPath, 'utf8')).toContain('.local/bin/agent-deck');
-    expect(fs.readFileSync(scriptPath, 'utf8')).toContain('current/node_modules/@agent-deck/cli');
+    const body = fs.readFileSync(scriptPath, 'utf8');
+    expect(body).toContain('agent-deck statusline');
+    expect(body).toContain('.local/bin/agent-deck');
+    expect(body).toContain('current/node_modules/@agent-deck/cli');
+    // set -e must not abort when `npm root -g` fails
+    expect(body).toContain('npm root -g 2>/dev/null || true');
+    expect(body).toContain('◆ Agent Deck offline');
   });
 
   it('merges statusLine into Claude settings.json without timer polling', () => {

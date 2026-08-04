@@ -84,14 +84,22 @@ if [ -z "$NODE_BIN" ]; then
   NODE_BIN=node
 fi
 ${bakedSetupCli}
-GLOBAL_CLI="$(npm root -g 2>/dev/null)/@agent-deck/cli/dist/bin.js"
-if [ -f "$GLOBAL_CLI" ]; then
+# npm root can fail (missing npm, broken prefix) — must not abort under set -e
+NPM_ROOT="$(npm root -g 2>/dev/null || true)"
+GLOBAL_CLI="\${NPM_ROOT}/@agent-deck/cli/dist/bin.js"
+if [ -n "$NPM_ROOT" ] && [ -f "$GLOBAL_CLI" ]; then
   exec "$NODE_BIN" "$GLOBAL_CLI" statusline "$@"
 fi
 
 export NPM_CONFIG_FETCH_TIMEOUT=10000
 export NPM_CONFIG_FETCH_RETRIES=1
-exec npx -y @agent-deck/cli@latest statusline "$@" 2>/dev/null
+if command -v npx >/dev/null 2>&1; then
+  exec npx -y @agent-deck/cli@latest statusline "$@" 2>/dev/null
+fi
+
+# Host contract: always one ◆ line, exit 0 (never fail the IDE statusline).
+printf '%s\\n' '◆ Agent Deck offline'
+exit 0
 `;
 }
 

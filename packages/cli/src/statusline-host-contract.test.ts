@@ -18,6 +18,10 @@ const HOST_TIMEOUT_MS = 2000;
 /** Soft budget — hang regression is HOST_TIMEOUT_MS; allow load under full suite. */
 const HOST_BUDGET_MS = 1500;
 
+function nodeOnlyPath(): string {
+  return [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter);
+}
+
 type HostRunResult = {
   stdout: string;
   stderr: string;
@@ -90,8 +94,14 @@ function spawnStatuslineHost(
 }
 
 function assertHostContract(result: HostRunResult): void {
-  expect(result.ms).toBeLessThan(HOST_BUDGET_MS);
-  expect(result.code).toBe(0);
+  expect(
+    result.ms,
+    `statusline too slow (${result.ms}ms). stderr=${JSON.stringify(result.stderr)}`,
+  ).toBeLessThan(HOST_BUDGET_MS);
+  expect(
+    result.code,
+    `statusline exit ${result.code}. stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
+  ).toBe(0);
 
   const lines = result.stdout
     .trimEnd()
@@ -112,6 +122,7 @@ describe('statusline host contract (subprocess POC)', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
@@ -140,15 +151,25 @@ describe('statusline host contract (subprocess POC)', () => {
   });
 
   it('installed statusline.sh respects the same host contract', async () => {
-    vi.stubEnv('HOME', tmpHome);
+    expect(fs.existsSync(CLI_BIN), `CLI dist missing at ${CLI_BIN} — build packages/cli first`).toBe(
+      true,
+    );
+    // Prefer os.homedir mock (same as statusline-setup.test) over HOME races across files.
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
     const { scriptPath } = installStatuslineScript();
     expect(fs.existsSync(scriptPath)).toBe(true);
+    expect(fs.readFileSync(scriptPath, 'utf8')).toContain(CLI_BIN);
 
     const payload = JSON.stringify({ cwd: process.cwd() });
     const result = await spawnStatuslineHost(payload, {
       closeStdin: false,
       command: [scriptPath],
-      env: { HOME: tmpHome },
+      env: {
+        HOME: tmpHome,
+        // Avoid PATH picking a global agent-deck / broken npm — exercise baked SETUP_CLI.
+        PATH: nodeOnlyPath(),
+        NODE_BIN: process.execPath,
+      },
     });
 
     assertHostContract(result);

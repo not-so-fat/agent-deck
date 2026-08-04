@@ -9,6 +9,7 @@
 - **Edit custom headers on remote MCP cards:** service details always shows Custom Headers (including when empty or unhealthy); Edit → JSON editor; invalid JSON is blocked client-side (no PUT); values masked in view mode
 - **Non-MCP cards:** keep read-only Custom Headers badge/list when headers are present (edit UI is remote `mcp` only)
 - **MCP client cache:** updating `headers` on a remote `mcp` service invalidates the cached transport so a rotated Bearer/API key is used on the next call
+- **statusline.sh:** `npm root -g` failure no longer aborts under `set -e` (was exit 1 / host-contract flake); fall through to offline ◆ line
 
 ### After upgrade
 
