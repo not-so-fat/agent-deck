@@ -9,12 +9,16 @@
 - **Edit custom headers on remote MCP cards:** service details always shows Custom Headers (including when empty or unhealthy); Edit → JSON editor; invalid JSON is blocked client-side (no PUT); values masked in view mode
 - **Non-MCP cards:** keep read-only Custom Headers badge/list when headers are present (edit UI is remote `mcp` only)
 - **MCP client cache:** updating `headers` on a remote `mcp` service invalidates the cached transport so a rotated Bearer/API key is used on the next call
+
+### CLI
+
 - **statusline.sh:** `npm root -g` failure no longer aborts under `set -e` (was exit 1 / host-contract flake); fall through to offline ◆ line
 
 ### After upgrade
 
 - Restart the Agent Deck daemon (or rebuild from this commit) so the dashboard and backend pick up header edit + cache invalidation
 - Open a remote MCP card → Custom Headers → Edit to rotate a bad token without re-registering
+- Re-run `agent-deck setup --client cursor|claude` (or let setup rewrite `~/.agent-deck/bin/statusline.sh`) so the statusline wrapper picks up the `npm root` fix
 
 ## 1.6.0 — 2026-07-30
 
