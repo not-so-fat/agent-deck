@@ -2,7 +2,8 @@ import { Service } from "@agent-deck/shared";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Database, Brain, ExternalLink, Wrench, User, Calendar, Activity, Bolt } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Database, Brain, ExternalLink, Wrench, User, Calendar, Activity, Bolt, AlertTriangle } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { apiRequest } from "@/lib/queryClient";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -10,6 +11,12 @@ import { useToast } from "@/hooks/use-toast";
 import McpToolsPanel from "@/components/mcp-tools-panel";
 import { OAuthConnectPanel } from "@/components/oauth-connect-panel";
 import { invalidateDashboardServiceQueries } from "@/lib/invalidate-dashboard-queries";
+import {
+  formatHeadersForEditor,
+  hasCustomHeaders,
+  maskedHeadersEntries,
+  parseHeadersJson,
+} from "@/lib/service-headers";
 
 
 // API response type that matches the backend
@@ -99,6 +106,10 @@ export default function ServiceDetailsModal({
   const [editingDescription, setEditingDescription] = useState<string>('');
   const [isUpdatingName, setIsUpdatingName] = useState(false);
   const [isUpdatingDescription, setIsUpdatingDescription] = useState(false);
+  const [isEditingHeaders, setIsEditingHeaders] = useState(false);
+  const [headersJson, setHeadersJson] = useState('{\n  \n}');
+  const [headersJsonError, setHeadersJsonError] = useState<string | null>(null);
+  const [isUpdatingHeaders, setIsUpdatingHeaders] = useState(false);
   const [currentService, setCurrentService] = useState<Service | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   
@@ -109,6 +120,10 @@ export default function ServiceDetailsModal({
   const activeService =
     service && currentService?.id === service.id ? currentService : service;
   const apiService = activeService as unknown as APIService;
+  const activeHeaders =
+    (apiService?.headers && typeof apiService.headers === 'object'
+      ? (apiService.headers as Record<string, string>)
+      : null);
   
   // Ensure we have a valid service before running queries
   const hasValidService = Boolean(apiService && apiService.id && apiService.url);
@@ -347,6 +362,8 @@ export default function ServiceDetailsModal({
   useEffect(() => {
     if (!isOpen) {
       setCurrentService(null);
+      setIsEditingHeaders(false);
+      setHeadersJsonError(null);
       oauthResolvedThisSession.current = false;
       oauthCompletionHandled.current = false;
       return;
@@ -355,6 +372,8 @@ export default function ServiceDetailsModal({
       setCurrentService(service);
       setEditingName(service.name || '');
       setEditingDescription(service.description || '');
+      setIsEditingHeaders(false);
+      setHeadersJsonError(null);
     }
   }, [service, isOpen]);
 
@@ -507,6 +526,62 @@ export default function ServiceDetailsModal({
     }
   };
 
+  const beginHeadersEdit = () => {
+    setHeadersJson(formatHeadersForEditor(activeHeaders));
+    setHeadersJsonError(null);
+    setIsEditingHeaders(true);
+  };
+
+  const cancelHeadersEdit = () => {
+    setIsEditingHeaders(false);
+    setHeadersJsonError(null);
+    setHeadersJson(formatHeadersForEditor(activeHeaders));
+  };
+
+  const handleHeadersSave = async () => {
+    if (!activeService) return;
+
+    const parsed = parseHeadersJson(headersJson);
+    if (!parsed.ok) {
+      setHeadersJsonError(parsed.error);
+      return;
+    }
+
+    setIsUpdatingHeaders(true);
+    try {
+      const response = await apiRequest('PUT', `/api/services/${activeService.id}`, {
+        headers: parsed.headers,
+      });
+      if (!response.ok) {
+        throw new Error('Failed to update headers');
+      }
+
+      const nextHeaders =
+        Object.keys(parsed.headers).length > 0 ? parsed.headers : undefined;
+      setCurrentService({
+        ...(activeService as Service),
+        headers: nextHeaders,
+      });
+      setIsEditingHeaders(false);
+      setHeadersJsonError(null);
+      invalidateDashboardServiceQueries(queryClient, activeService.id);
+      queryClient.invalidateQueries({ queryKey: ['/api/decks'] });
+      toast({
+        title: 'Headers updated',
+        description: 'Custom headers saved. Reconnecting with the new values.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Update failed',
+        description:
+          error instanceof Error ? error.message : 'Failed to update headers. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsUpdatingHeaders(false);
+    }
+  };
+
   const handleDialogOpenChange = (open: boolean) => {
     if (open) {
       return;
@@ -648,7 +723,7 @@ export default function ServiceDetailsModal({
                       <Badge variant="outline" className="border-blue-500/30 text-blue-300">
                         {apiService.type.toUpperCase()}
                       </Badge>
-                        {service.headers && typeof service.headers === 'object' && Object.keys(service.headers as Record<string, any>).length > 0 && (
+                        {apiService.type === 'mcp' && hasCustomHeaders(activeHeaders) && (
                           <Badge variant="outline" className="border-green-500/30 text-green-300">
                             Custom Headers
                           </Badge>
@@ -666,12 +741,86 @@ export default function ServiceDetailsModal({
                     <div className="text-xs text-gray-400 break-all bg-black/20 p-2 rounded border border-white/10">
                       {apiService.url || 'No URL available'}
                     </div>
-                    {service.headers && typeof service.headers === 'object' && Object.keys(service.headers as Record<string, any>).length > 0 && (
-                      <div className="text-xs text-gray-400 bg-black/20 p-2 rounded border border-white/10">
-                        <p className="font-semibold mb-1">Custom Headers:</p>
-                        <pre className="text-xs overflow-x-auto">
-                          {JSON.stringify(service.headers as Record<string, any>, null, 2)}
-                        </pre>
+                    {apiService.type === 'mcp' && (
+                      <div
+                        className="text-xs text-gray-400 bg-black/20 p-2 rounded border border-white/10"
+                        data-testid="custom-headers-section"
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <p className="font-semibold text-gray-300">Custom Headers</p>
+                          {!isEditingHeaders && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 px-2 text-xs text-teal-300 hover:text-teal-200"
+                              onClick={beginHeadersEdit}
+                              data-testid="button-edit-headers"
+                            >
+                              Edit
+                            </Button>
+                          )}
+                        </div>
+                        {isEditingHeaders ? (
+                          <div className="space-y-2">
+                            <Textarea
+                              value={headersJson}
+                              onChange={(e) => {
+                                setHeadersJson(e.target.value);
+                                if (headersJsonError) {
+                                  setHeadersJsonError(null);
+                                }
+                              }}
+                              rows={6}
+                              className="bg-white/10 border-white/20 text-white placeholder-gray-400 resize-none font-mono text-xs"
+                              data-testid="textarea-edit-headers"
+                              disabled={isUpdatingHeaders}
+                            />
+                            {headersJsonError && (
+                              <p
+                                className="text-red-400 text-xs flex items-center gap-1"
+                                data-testid="headers-json-error"
+                              >
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                                {headersJsonError}
+                              </p>
+                            )}
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                onClick={cancelHeadersEdit}
+                                disabled={isUpdatingHeaders}
+                                data-testid="button-cancel-headers"
+                              >
+                                Cancel
+                              </Button>
+                              <Button
+                                size="sm"
+                                className="h-7 px-3 text-xs bg-teal-600 hover:bg-teal-500"
+                                onClick={handleHeadersSave}
+                                disabled={isUpdatingHeaders}
+                                data-testid="button-save-headers"
+                              >
+                                {isUpdatingHeaders ? 'Saving…' : 'Save'}
+                              </Button>
+                            </div>
+                          </div>
+                        ) : hasCustomHeaders(activeHeaders) ? (
+                          <ul className="space-y-1 font-mono" data-testid="headers-masked-list">
+                            {maskedHeadersEntries(activeHeaders).map(({ name, masked }) => (
+                              <li key={name}>
+                                <span className="text-gray-300">{name}</span>
+                                <span className="text-gray-500">: </span>
+                                <span>{masked}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-gray-500" data-testid="headers-empty-state">
+                            No custom headers. Add Bearer or API key headers to authenticate.
+                          </p>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1001,12 +1150,14 @@ export default function ServiceDetailsModal({
                         <p>• Service ID: {service?.id}</p>
                         <p>• Target URL: {apiService?.url}</p>
                         <p>• Request: GET /api/services/{service?.id}/tools</p>
-                        {apiService?.headers && (
+                        {hasCustomHeaders(activeHeaders) && (
                           <div>
                             <p><strong>📋 Headers sent:</strong></p>
-                            <pre className="text-xs overflow-x-auto">
-                              {JSON.stringify(apiService.headers, null, 2)}
-                            </pre>
+                            <ul className="text-xs font-mono">
+                              {maskedHeadersEntries(activeHeaders).map(({ name, masked }) => (
+                                <li key={name}>{name}: {masked}</li>
+                              ))}
+                            </ul>
                           </div>
                         )}
                         <div className="mt-2">
@@ -1046,12 +1197,14 @@ export default function ServiceDetailsModal({
                   </pre>
                   <p><strong>Service URL:</strong> {apiService?.url}</p>
                   <p><strong>Service ID:</strong> {apiService?.id}</p>
-                  {apiService?.headers && (
+                  {hasCustomHeaders(activeHeaders) && (
                     <div>
                       <p><strong>Custom Headers:</strong></p>
-                      <pre className="bg-black/30 p-2 rounded text-xs overflow-x-auto">
-                        {JSON.stringify(apiService.headers, null, 2)}
-                      </pre>
+                      <ul className="bg-black/30 p-2 rounded text-xs font-mono">
+                        {maskedHeadersEntries(activeHeaders).map(({ name, masked }) => (
+                          <li key={name}>{name}: {masked}</li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </div>

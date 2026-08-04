@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.6.1 — 2026-08-04
+
+### Dashboard
+
+- **Edit custom headers on remote MCP cards:** service details always shows Custom Headers (including when empty or unhealthy); Edit → JSON editor; invalid JSON is blocked client-side (no PUT); values masked in view mode
+- **MCP client cache:** updating `headers` on a remote `mcp` service invalidates the cached transport so a rotated Bearer/API key is used on the next call
+
+### After upgrade
+
+- Restart the Agent Deck daemon (or rebuild from this commit) so the dashboard and backend pick up header edit + cache invalidation
+- Open a remote MCP card → Custom Headers → Edit to rotate a bad token without re-registering
+
 ## 1.6.0 — 2026-07-30
 
 ### Managed CLI install + auto-upgrade

@@ -185,6 +185,46 @@ describe('ServiceManager', () => {
 
       expect(mockDbManager.updateService).toHaveBeenCalledWith(serviceId, updateInput);
       expect(result).toEqual(expectedService);
+      expect(mockMCPClientManager.invalidateClient).not.toHaveBeenCalled();
+    });
+
+    it('invalidates cached MCP client when headers are updated on a remote mcp service', async () => {
+      const serviceId = '123e4567-e89b-12d3-a456-426614174000';
+      const updateInput = {
+        headers: { Authorization: 'Bearer new-token' },
+      };
+      const expectedService = {
+        id: serviceId,
+        name: 'Test Service',
+        type: 'mcp' as const,
+        url: 'https://example.com',
+        headers: updateInput.headers,
+      };
+
+      mockDbManager.updateService.mockResolvedValue(expectedService);
+
+      const result = await serviceManager.updateService(serviceId, updateInput);
+
+      expect(result).toEqual(expectedService);
+      expect(mockMCPClientManager.invalidateClient).toHaveBeenCalledWith(serviceId);
+    });
+
+    it('does not invalidate MCP client when headers update a local-mcp service', async () => {
+      const serviceId = '123e4567-e89b-12d3-a456-426614174000';
+      const updateInput = {
+        headers: { Authorization: 'Bearer new-token' },
+      };
+      mockDbManager.updateService.mockResolvedValue({
+        id: serviceId,
+        name: 'Local',
+        type: 'local-mcp',
+        url: 'local://test',
+        headers: updateInput.headers,
+      });
+
+      await serviceManager.updateService(serviceId, updateInput);
+
+      expect(mockMCPClientManager.invalidateClient).not.toHaveBeenCalled();
     });
 
     it('should delete a service', async () => {

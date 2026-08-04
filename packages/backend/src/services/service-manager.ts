@@ -278,6 +278,10 @@ export class ServiceManager {
     const service = await this.db.updateService(id, validatedInput);
     if (service) {
       await this.writeToStore(service);
+      // Header auth changes must drop the cached transport (old Authorization).
+      if (validatedInput.headers !== undefined && service.type === 'mcp') {
+        this.mcpClient.invalidateClient(id);
+      }
     }
     return service;
   }
