@@ -66,10 +66,6 @@ if [ -f "$MANAGED_BIN" ]; then
   exec "\${NODE_BIN:-node}" "$MANAGED_BIN" statusline "$@"
 fi
 
-if command -v agent-deck >/dev/null 2>&1; then
-  exec agent-deck statusline "$@"
-fi
-
 NODE_BIN="\${NODE_BIN:-}"
 if [ -z "$NODE_BIN" ] && command -v node >/dev/null 2>&1; then
   NODE_BIN="$(command -v node)"
@@ -83,7 +79,14 @@ fi
 if [ -z "$NODE_BIN" ]; then
   NODE_BIN=node
 fi
+# Prefer the CLI that installed this script before PATH agent-deck.
+# PATH often has an absolute ~/.local/bin/agent-deck from another HOME; with a
+# fresh HOME (release-smoke / tests) that launcher prints nothing useful.
 ${bakedSetupCli}
+if command -v agent-deck >/dev/null 2>&1; then
+  exec agent-deck statusline "$@"
+fi
+
 # npm root can fail (missing npm, broken prefix) — must not abort under set -e
 NPM_ROOT="$(npm root -g 2>/dev/null || true)"
 GLOBAL_CLI="\${NPM_ROOT}/@agent-deck/cli/dist/bin.js"

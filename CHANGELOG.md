@@ -13,6 +13,7 @@
 ### CLI
 
 - **statusline.sh:** `npm root -g` failure no longer aborts under `set -e` (was exit 1 / host-contract flake); fall through to offline ◆ line
+- **statusline.sh:** prefer baked setup CLI before PATH `agent-deck` so a managed launcher from another home cannot steal the process (release-smoke empty stdout)
 
 ### After upgrade
 
