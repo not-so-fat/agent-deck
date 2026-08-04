@@ -220,6 +220,29 @@ describe('PatchManager', () => {
     expect(linked?.linkedPatchId).toBeNull();
   });
 
+  it('rejects a proposed patch without a reason', async () => {
+    const playbook = await playbookManager.create({
+      title: 'Test',
+      body: '## Gotchas\n- Keep it short.\n',
+      triggers: [],
+    });
+    const result = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Noisy lesson.' }],
+        rationale: 'low quality',
+      },
+      'ide',
+      null,
+    );
+    if (result.kind === 'signal_only') throw new Error('expected patch');
+
+    const rejected = await patchManager.reject(result.patch.id);
+    expect(rejected?.status).toBe('rejected');
+    expect(rejected?.rejectionReason).toBeNull();
+  });
+
   it('signal_only logs open signal without a patch row', async () => {
     const playbook = await playbookManager.create({
       title: 'Test',
@@ -338,6 +361,238 @@ describe('PatchManager', () => {
     const freed = await db.getFeedbackSignal(signal.id);
     expect(freed?.linkedPatchId).toBeNull();
     expect(freed?.status).toBe('open');
+  });
+
+  it('supersedes an open patch and re-links its signals to the successor', async () => {
+    const playbook = await playbookManager.create({
+      title: 'Test',
+      body: '## Gotchas\n- Keep it short.\n',
+      triggers: [],
+    });
+
+    const first = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Weak lesson.' }],
+        rationale: 'First take',
+        evidence: {
+          failure_summary: 'Wrong generalization',
+          user_feedback_excerpt: 'that does not make sense',
+        },
+      },
+      'ide',
+      null,
+    );
+    if (first.kind === 'signal_only') throw new Error('expected patch');
+    const firstSignalId = first.signal!.id;
+
+    const second = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Better lesson.' }],
+        rationale: 'Revised take',
+        evidence: {
+          failure_summary: 'Wrong generalization',
+          user_feedback_excerpt: 'change it to this instead',
+        },
+        supersedes: [first.patch.id],
+      },
+      'ide',
+      null,
+    );
+    if (second.kind === 'signal_only') throw new Error('expected patch');
+
+    expect(second.superseded).toEqual([first.patch.id]);
+    const old = await db.getPlaybookPatch(first.patch.id);
+    expect(old?.status).toBe('superseded');
+    expect(old?.supersededBy).toBe(second.patch.id);
+
+    const proposed = await db.listPlaybookPatches('proposed');
+    expect(proposed.map((p) => p.id)).toEqual([second.patch.id]);
+
+    const moved = await db.getFeedbackSignal(firstSignalId);
+    expect(moved?.status).toBe('open');
+    expect(moved?.linkedPatchId).toBe(second.patch.id);
+
+    await patchManager.accept(second.patch.id);
+    expect((await db.getFeedbackSignal(firstSignalId))?.status).toBe('actioned');
+  });
+
+  it('leaves independent open patches when supersedes is omitted', async () => {
+    const playbook = await playbookManager.create({
+      title: 'Test',
+      body: '## Gotchas\n- Keep it short.\n',
+      triggers: [],
+    });
+
+    const first = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Lesson A.' }],
+        rationale: 'Problem A',
+        evidence: {
+          failure_summary: 'A',
+          user_feedback_excerpt: 'fix A',
+        },
+      },
+      'ide',
+      null,
+    );
+    if (first.kind === 'signal_only') throw new Error('expected patch');
+
+    const second = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Lesson B.' }],
+        rationale: 'Problem B',
+        evidence: {
+          failure_summary: 'B',
+          user_feedback_excerpt: 'fix B',
+        },
+      },
+      'ide',
+      null,
+    );
+    if (second.kind === 'signal_only') throw new Error('expected patch');
+
+    expect(second.superseded).toEqual([]);
+    const proposed = await db.listPlaybookPatches('proposed');
+    expect(proposed.map((p) => p.id).sort()).toEqual(
+      [first.patch.id, second.patch.id].sort(),
+    );
+  });
+
+  it('rejects supersedes that are not proposed or for another playbook', async () => {
+    const playbook = await playbookManager.create({
+      title: 'Test',
+      body: '## Gotchas\n- Keep it short.\n',
+      triggers: [],
+    });
+    const other = await playbookManager.create({
+      title: 'Other',
+      body: '## Gotchas\n- Other.\n',
+      triggers: [],
+    });
+
+    const first = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Lesson.' }],
+        rationale: 'First',
+      },
+      'ide',
+      null,
+    );
+    if (first.kind === 'signal_only') throw new Error('expected patch');
+    await patchManager.reject(first.patch.id, 'nope');
+
+    await expect(
+      patchManager.propose(
+        {
+          kind: 'update',
+          playbook_id: playbook.id,
+          ops: [{ op: 'add_item', section: 'Gotchas', text: 'Retry.' }],
+          rationale: 'Retry',
+          supersedes: [first.patch.id],
+        },
+        'ide',
+        null,
+      ),
+    ).rejects.toThrow(/not proposed/);
+
+    const otherOpen = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: other.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Other lesson.' }],
+        rationale: 'Other',
+      },
+      'ide',
+      null,
+    );
+    if (otherOpen.kind === 'signal_only') throw new Error('expected patch');
+
+    await expect(
+      patchManager.propose(
+        {
+          kind: 'update',
+          playbook_id: playbook.id,
+          ops: [{ op: 'add_item', section: 'Gotchas', text: 'Cross.' }],
+          rationale: 'Cross',
+          supersedes: [otherOpen.patch.id],
+        },
+        'ide',
+        null,
+      ),
+    ).rejects.toThrow(/same playbook/);
+  });
+
+  it('lists compact open patch summaries for a playbook', async () => {
+    const playbook = await playbookManager.create({
+      title: 'Test',
+      body: '## Gotchas\n- Keep it short.\n',
+      triggers: [],
+    });
+
+    const proposed = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Cite sources.' }],
+        rationale: 'Citation rule',
+        evidence: {
+          failure_summary: 'Missed citation',
+          user_feedback_excerpt: 'cite the source',
+        },
+      },
+      'ide',
+      null,
+    );
+    if (proposed.kind === 'signal_only') throw new Error('expected patch');
+
+    const summaries = await patchManager.listOpenPatchSummaries(playbook.id);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      id: proposed.patch.id,
+      kind: 'update',
+      rationale: 'Citation rule',
+      failureSummary: 'Missed citation',
+      userFeedbackExcerpt: 'cite the source',
+    });
+  });
+
+  it('human reject still unlinks signals (supersede path does not)', async () => {
+    const playbook = await playbookManager.create({
+      title: 'Test',
+      body: '## Gotchas\n- Keep it short.\n',
+      triggers: [],
+    });
+
+    const result = await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: 'Lesson.' }],
+        rationale: 'Take',
+        evidence: {
+          failure_summary: 'x',
+          user_feedback_excerpt: 'y',
+        },
+      },
+      'ide',
+      null,
+    );
+    if (result.kind === 'signal_only') throw new Error('expected patch');
+
+    await patchManager.reject(result.patch.id, 'not useful');
+    const signal = await db.getFeedbackSignal(result.signal!.id);
+    expect(signal?.linkedPatchId).toBeNull();
+    expect(signal?.status).toBe('open');
   });
 
   it('does not mutate immutable signal fields on status update', async () => {

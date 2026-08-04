@@ -32,7 +32,7 @@ Deck playbooks are task recipes — thin trigger stubs from \`agent-deck use\` p
 
 **When the user corrects your output** (the write trigger — no need to have called \`get_playbook\` earlier in the session):
 
-**Update case** (a playbook covered this task): fix the output, then \`propose_playbook_patch\` with item ops — prefer one \`add_item\` to Gotchas/Checklist; include \`evidence.user_feedback_excerpt\` as a short verbatim quote of the correction.
+**Update case** (a playbook covered this task): fix the output, then \`get_playbook\` and read \`openPatches\`. If an open proposal addresses the **same** lesson, pass its \`id\`(s) in \`supersedes\` and fold into one better \`propose_playbook_patch\` (do not file a sibling). If open patches are different problems, omit \`supersedes\`. Prefer one \`add_item\` to Gotchas/Checklist; include \`evidence.user_feedback_excerpt\` as a short verbatim quote of the correction.
 
 **Genesis case** (no playbook covered the task): before ending, \`propose_playbook_patch { kind: "create", new_playbook: { title, triggers, body with one gotcha } }\` — a few lines is the right size.
 

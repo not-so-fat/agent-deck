@@ -18,7 +18,7 @@ Today (`docs/superpowers/specs/2026-07-11-playbook-learning-loop-design.md`, shi
 
 This PRD adds a durable capture layer (`feedback_signals`) written through MCP `propose_playbook_patch` (incl. `signal_only`), plus a **dashboard data-review table** on `/feedback-signals`: filter by playbook and status, discard noise, copy selected rows **including ids** for an IDE agent to paste back as `propose_playbook_patch` with `signal_ids`. Capture = MCP; analysis = dashboard → agent chat. No Anthropic (or other LLM) SDK in the backend; no dedicated list/discard MCP tools.
 
-**Redesign vs first ship:** Feedback is not a bolted-on “unreviewed backlog” on the patches page. It is durable correction **data** for playbook enhancement. Status rename: `unreviewed` → `open`. Propose **links** signals (parks them to avoid duplicate work); **accept** marks `actioned`. Reject/stale clears the link so signals remain a source for new proposals.
+**Redesign vs first ship:** Feedback is not a bolted-on “unreviewed backlog” on the patches page. It is durable correction **data** for playbook enhancement. Status rename: `unreviewed` → `open`. Propose **links** signals (parks them to avoid duplicate work); **accept** marks `actioned`. Reject/stale clears the link so signals remain a source for new proposals. Supersede (proposal lineage) re-links to the successor instead of clearing — see playbook-patch-supersede design.
 
 **Success criteria:**
 
@@ -55,7 +55,7 @@ This PRD adds a durable capture layer (`feedback_signals`) written through MCP `
 - [ ] Row is written even when the resulting patch proposal is rejected or goes stale later
 - [ ] Row fields (`failure_summary`, `user_feedback_excerpt`, `corrected_output_hint?`) are immutable after insert; only `status` and `linked_patch_id` change
 - [ ] Immediate kinds insert the signal as `status: "open"` with `linked_patch_id` set to the new patch; curation submits with `signal_ids` create **no** new row and only link referenced open (linkable) ids; `signal_only` inserts as `open` with `linked_patch_id: null`
-- [ ] On patch **accept**, linked signal(s) become `actioned`; on **reject** or **stale**, clear `linked_patch_id` and leave/return status `open` (still a good source for a new proposal)
+- [ ] On patch **accept**, linked signal(s) become `actioned`; on **reject** or **stale**, clear `linked_patch_id` and leave/return status `open` (still a good source for a new proposal). On **supersede** (see playbook-patch-supersede design), re-link to the successor instead of clearing — reject/stale unlink rules do not apply.
 
 *v1 / redesign*
 
@@ -131,6 +131,7 @@ This PRD adds a durable capture layer (`feedback_signals`) written through MCP `
 | F2.3 | Discard via `POST /api/feedback-signals/discard` → `discarded`, never delete | US-3 |
 | F2.4 | Dashboard Copy for agent always embeds signal `id`s; harness paste recipe; **no** list/discard MCP | US-3 |
 | F2.5 | Rejecting or staling a patch clears `linked_patch_id` on linked signals; status `open` | US-1 |
+| F2.5a | Superseding a patch re-links its open signals to the successor (`open` / new patch id); does not clear | US-1 |
 | F2.6 | Accepting a patch sets linked signals to `actioned` | US-1 |
 | F2.7 | Own page `/feedback-signals`; remove bolted-on backlog from patches page | US-3 |
 
@@ -207,6 +208,7 @@ Implementation: Zod in `packages/shared/src/schemas/feedback-signal.ts`.
 | Dashboard discard | `discarded` |
 | Linked patch **accepted** | `actioned` / keep patch id |
 | Linked patch **rejected** or **stale** | `open` / `null` |
+| Linked patch **superseded** | `open` / successor patch id (re-link; not clear) |
 
 **Linkable:** `status = open` and not already linked to a `proposed` patch. Unknown / non-linkable ids ignored — still create the patch (OD-3).
 

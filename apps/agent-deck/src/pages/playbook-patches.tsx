@@ -12,7 +12,6 @@ import {
 } from "@/lib/playbook-patches";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { PlaybookPatchDiff } from "@/components/playbook-patch-diff";
 import {
@@ -29,6 +28,7 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "proposed", label: "Waiting" },
   { value: "accepted", label: "Accepted" },
   { value: "rejected", label: "Rejected" },
+  { value: "superseded", label: "Superseded" },
   { value: "stale", label: "Stale" },
   { value: "all", label: "All" },
 ];
@@ -54,6 +54,8 @@ function statusBadgeClass(status: PlaybookPatch["status"]): string {
       return "border-emerald-500/40 text-emerald-200";
     case "rejected":
       return "border-rose-500/40 text-rose-200";
+    case "superseded":
+      return "border-violet-500/40 text-violet-200";
     case "stale":
       return "border-amber-500/40 text-amber-200";
   }
@@ -61,8 +63,6 @@ function statusBadgeClass(status: PlaybookPatch["status"]): string {
 
 export default function PlaybookPatchesPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
-  const [rejectOpen, setRejectOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("proposed");
   const [page, setPage] = useState(0);
   const { toast } = useToast();
@@ -70,16 +70,12 @@ export default function PlaybookPatchesPage() {
 
   function selectPatch(id: string) {
     setSelectedId(id);
-    setRejectReason("");
-    setRejectOpen(false);
   }
 
   function setFilter(next: StatusFilter) {
     setStatusFilter(next);
     setPage(0);
     setSelectedId(null);
-    setRejectReason("");
-    setRejectOpen(false);
   }
 
   const { data: proposedPatches = [] } = useQuery({
@@ -125,8 +121,6 @@ export default function PlaybookPatchesPage() {
     onSuccess: () => {
       toast({ title: "Patch accepted" });
       setSelectedId(null);
-      setRejectReason("");
-      setRejectOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["/api/playbook-patches"] });
       void queryClient.invalidateQueries({ queryKey: ["/api/playbooks"] });
       // Stale-conflict accept reopens linked signals — refresh badge/backlog.
@@ -138,13 +132,10 @@ export default function PlaybookPatchesPage() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
-      rejectPlaybookPatch(id, reason),
+    mutationFn: (id: string) => rejectPlaybookPatch(id),
     onSuccess: () => {
       toast({ title: "Patch rejected" });
       setSelectedId(null);
-      setRejectReason("");
-      setRejectOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["/api/playbook-patches"] });
       void queryClient.invalidateQueries({ queryKey: ["/api/feedback-signals"] });
     },
@@ -325,6 +316,25 @@ export default function PlaybookPatchesPage() {
                       <p className="mt-1">{selected.rejectionReason}</p>
                     </div>
                   )}
+                  {selected.status === "superseded" && selected.supersededBy && (
+                    <div className="rounded-md border border-violet-500/40 bg-violet-500/10 p-3 text-sm text-violet-100">
+                      <p className="text-xs font-medium uppercase tracking-wide text-violet-300/80">
+                        Superseded by
+                      </p>
+                      <button
+                        type="button"
+                        className="mt-1 font-mono text-sm underline-offset-2 hover:underline"
+                        onClick={() => {
+                          const successorId = selected.supersededBy!;
+                          setStatusFilter("all");
+                          setPage(0);
+                          selectPatch(successorId);
+                        }}
+                      >
+                        {selected.supersededBy}
+                      </button>
+                    </div>
+                  )}
                   {(() => {
                     const evidence = parseEvidence(selected);
                     if (!evidence) return null;
@@ -380,38 +390,13 @@ export default function PlaybookPatchesPage() {
                       Accept
                     </Button>
                     <Button
-                      variant={rejectOpen ? "secondary" : "destructive"}
-                      onClick={() => {
-                        setRejectOpen((open) => {
-                          if (open) setRejectReason("");
-                          return !open;
-                        });
-                      }}
+                      variant="destructive"
+                      onClick={() => rejectMutation.mutate(selected.id)}
                       disabled={rejectMutation.isPending}
                     >
-                      {rejectOpen ? "Cancel reject" : "Reject"}
+                      Reject
                     </Button>
                   </div>
-                  {rejectOpen && (
-                    <div className="space-y-2 rounded-md border border-gray-800 bg-gray-900/80 p-3">
-                      <Textarea
-                        autoFocus
-                        placeholder="Rejection reason (required)"
-                        value={rejectReason}
-                        onChange={(e) => setRejectReason(e.target.value)}
-                        className="min-h-[88px] bg-gray-950"
-                      />
-                      <Button
-                        variant="destructive"
-                        disabled={!rejectReason.trim() || rejectMutation.isPending}
-                        onClick={() =>
-                          rejectMutation.mutate({ id: selected.id, reason: rejectReason.trim() })
-                        }
-                      >
-                        Confirm reject
-                      </Button>
-                    </div>
-                  )}
                 </div>
               ) : (
                 <div className="shrink-0 border-t border-gray-800 bg-gray-950 px-4 py-3 text-sm text-gray-500 sm:px-5">

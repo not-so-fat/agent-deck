@@ -5,6 +5,7 @@ import {
   ProposePlaybookPatchSchema,
   type FeedbackSignal,
   type FeedbackSignalSource,
+  type OpenPlaybookPatchSummary,
   type PatchOp,
   type PatchPreview,
   type PlaybookPatch,
@@ -37,6 +38,13 @@ export class PatchNoChangeError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PatchNoChangeError';
+  }
+}
+
+export class PatchSupersedeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PatchSupersedeError';
   }
 }
 
@@ -97,6 +105,84 @@ export class PatchManager {
     }
   }
 
+  private async validateSupersedes(
+    supersedes: string[] | undefined,
+    playbookId: string | null,
+  ): Promise<string[]> {
+    if (!supersedes || supersedes.length === 0) return [];
+    if (!playbookId) {
+      throw new PatchSupersedeError(
+        'supersedes requires a playbook_id (genesis supersede is not supported)',
+      );
+    }
+
+    for (const id of supersedes) {
+      const target = await this.db.getPlaybookPatch(id);
+      if (!target) {
+        throw new PatchSupersedeError(`Patch not found: ${id}`);
+      }
+      if (target.status !== 'proposed') {
+        throw new PatchSupersedeError(
+          `Patch ${id} is not proposed (status=${target.status})`,
+        );
+      }
+      if (target.playbookId !== playbookId) {
+        throw new PatchSupersedeError(
+          `Patch ${id} must target the same playbook as this proposal`,
+        );
+      }
+    }
+    return supersedes;
+  }
+
+  /**
+   * Mark named proposed patches superseded by successorId and re-link their signals.
+   * Does not unlink (reject/stale path). Call validateSupersedes first.
+   */
+  private async applySupersedes(
+    supersedes: string[],
+    successorId: string,
+  ): Promise<string[]> {
+    const applied: string[] = [];
+    for (const id of supersedes) {
+      const marked = await this.db.markPlaybookPatchSuperseded(id, successorId);
+      if (!marked) {
+        throw new PatchSupersedeError(`Failed to supersede patch ${id}`);
+      }
+      await this.db.relinkSignalsForPatch(id, successorId);
+      applied.push(id);
+    }
+    return applied;
+  }
+
+  async listOpenPatchSummaries(playbookId: string): Promise<OpenPlaybookPatchSummary[]> {
+    const patches = await this.db.listProposedPatchesForPlaybook(playbookId);
+    return patches.map((patch) => {
+      let failureSummary: string | null = null;
+      let userFeedbackExcerpt: string | null = null;
+      if (patch.evidenceJson) {
+        try {
+          const evidence = JSON.parse(patch.evidenceJson) as {
+            failure_summary?: string;
+            user_feedback_excerpt?: string;
+          };
+          failureSummary = evidence.failure_summary ?? null;
+          userFeedbackExcerpt = evidence.user_feedback_excerpt ?? null;
+        } catch {
+          // leave nulls
+        }
+      }
+      return {
+        id: patch.id,
+        kind: patch.kind,
+        rationale: patch.rationale,
+        failureSummary,
+        userFeedbackExcerpt,
+        createdAt: patch.createdAt,
+      };
+    });
+  }
+
   async propose(
     input: ProposePlaybookPatchInput,
     source: PlaybookPatchSource,
@@ -151,6 +237,8 @@ export class PatchManager {
         [fields.deck_id],
       );
 
+      const toSupersede = await this.validateSupersedes(validated.supersedes, null);
+
       const patch = await this.db.createPlaybookPatch({
         id: this.newPatchId(),
         kind: 'create',
@@ -163,9 +251,11 @@ export class PatchManager {
         conflictsJson: conflicts.length > 0 ? JSON.stringify(conflicts) : null,
       });
 
+      const superseded = await this.applySupersedes(toSupersede, patch.id);
+
       if (curationSubmit) {
         await this.linkCuratedSignals(validated.signal_ids, patch.id);
-        return { kind: 'create', patch, signal: null };
+        return { kind: 'create', patch, signal: null, superseded };
       }
 
       const signal = await this.writeSignal({
@@ -179,7 +269,7 @@ export class PatchManager {
         linkedPatchId: patch.id,
         status: 'open',
       });
-      return { kind: 'create', patch, signal };
+      return { kind: 'create', patch, signal, superseded };
     }
 
     if (!validated.playbook_id) {
@@ -221,6 +311,11 @@ export class PatchManager {
       triggers: dryRun.value.triggers,
     });
 
+    const toSupersede = await this.validateSupersedes(
+      validated.supersedes,
+      validated.playbook_id,
+    );
+
     const patch = await this.db.createPlaybookPatch({
       id: this.newPatchId(),
       kind: validated.kind,
@@ -233,9 +328,11 @@ export class PatchManager {
       conflictsJson: conflicts.length > 0 ? JSON.stringify(conflicts) : null,
     });
 
+    const superseded = await this.applySupersedes(toSupersede, patch.id);
+
     if (curationSubmit) {
       await this.linkCuratedSignals(validated.signal_ids, patch.id);
-      return { kind: validated.kind, patch, signal: null };
+      return { kind: validated.kind, patch, signal: null, superseded };
     }
 
     const signal = await this.writeSignal({
@@ -249,7 +346,7 @@ export class PatchManager {
       linkedPatchId: patch.id,
       status: 'open',
     });
-    return { kind: validated.kind, patch, signal };
+    return { kind: validated.kind, patch, signal, superseded };
   }
 
   async preview(patchId: string): Promise<PatchPreview | null> {
@@ -403,13 +500,15 @@ export class PatchManager {
     return accepted!;
   }
 
-  async reject(patchId: string, reason: string): Promise<PlaybookPatch | null> {
+  async reject(patchId: string, reason: string | null = null): Promise<PlaybookPatch | null> {
     const patch = await this.db.getPlaybookPatch(patchId);
     if (!patch) return null;
     if (patch.status !== 'proposed') {
       throw new Error(`Patch is not proposed (status=${patch.status})`);
     }
-    const updated = await this.db.updatePlaybookPatchStatus(patchId, 'rejected', reason);
+    const normalized =
+      typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : null;
+    const updated = await this.db.updatePlaybookPatchStatus(patchId, 'rejected', normalized);
     await this.db.reopenSignalsForPatch(patchId);
     return updated;
   }

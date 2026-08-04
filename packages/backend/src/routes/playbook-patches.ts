@@ -15,7 +15,11 @@ import {
 } from '@agent-deck/shared';
 import { requireDashboardClient } from '../lib/client-scope';
 import { AgentDeckContextError, resolveAgentDeckId } from '../lib/agent-deck-context';
-import { PatchConflictError, PatchNoChangeError } from '../playbooks/patch-manager';
+import {
+  PatchConflictError,
+  PatchNoChangeError,
+  PatchSupersedeError,
+} from '../playbooks/patch-manager';
 
 function headerValue(request: { headers: Record<string, unknown> }, name: string): string | undefined {
   const value = request.headers[name];
@@ -58,12 +62,29 @@ export async function registerPlaybookPatchRoutes(fastify: FastifyInstance) {
       }
       // Keep `data` a flat PlaybookPatch (top-level `id`/`playbookId`) — agent-dealer's
       // proposePlaybookPatch adapter reads json.data.id directly and would break otherwise.
-      // `signal` rides alongside as an extra field so MCP can surface signal_id.
+      // `signal` / `superseded` / `kind` ride alongside so MCP can surface them.
       return reply.status(201).send({
         success: true,
-        data: { ...result.patch, signal: result.signal },
-      } satisfies ApiResponse<PlaybookPatch & { signal: FeedbackSignal | null }>);
+        data: {
+          ...result.patch,
+          kind: result.kind,
+          signal: result.signal,
+          superseded: result.superseded,
+        },
+      } satisfies ApiResponse<
+        PlaybookPatch & {
+          kind: ProposePlaybookPatchResult['kind'];
+          signal: FeedbackSignal | null;
+          superseded: string[];
+        }
+      >);
     } catch (error) {
+      if (error instanceof PatchSupersedeError) {
+        return reply.status(400).send({
+          success: false,
+          error: error.message,
+        } satisfies ApiResponse);
+      }
       if (error instanceof PatchConflictError || error instanceof PatchNoChangeError) {
         return reply.status(409).send({
           success: false,
@@ -139,8 +160,8 @@ export async function registerPlaybookPatchRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { id: string } }>('/:id/reject', async (request, reply) => {
     try {
       requireDashboardClient(request);
-      const { reason } = RejectPlaybookPatchSchema.parse(request.body);
-      const patch = await fastify.patchManager.reject(request.params.id, reason);
+      const { reason } = RejectPlaybookPatchSchema.parse(request.body ?? {});
+      const patch = await fastify.patchManager.reject(request.params.id, reason ?? null);
       if (!patch) {
         return reply.status(404).send({ success: false, error: 'Patch not found' } satisfies ApiResponse);
       }

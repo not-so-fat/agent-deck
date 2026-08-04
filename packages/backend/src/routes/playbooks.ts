@@ -5,6 +5,7 @@ import {
   AgentUpdatePlaybookSchema,
   DashboardRegisterPlaybookSchema,
   DashboardUpdatePlaybookSchema,
+  OpenPlaybookPatchSummary,
   Playbook,
   PlaybookSummary,
   PlaybookWithDependencies,
@@ -171,7 +172,14 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
         source: playbookEventSource(request),
       });
 
-      return reply.send({ success: true, data: playbook } satisfies ApiResponse<PlaybookWithDependencies>);
+      const openPatches = await fastify.patchManager.listOpenPatchSummaries(playbook.id);
+
+      return reply.send({
+        success: true,
+        data: { ...playbook, openPatches },
+      } satisfies ApiResponse<
+        PlaybookWithDependencies & { openPatches: OpenPlaybookPatchSummary[] }
+      >);
     } catch (error) {
       return reply.status(500).send({
         success: false,

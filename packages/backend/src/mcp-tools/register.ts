@@ -284,7 +284,7 @@ function registerRuntimeTools(host: McpToolHost): void {
   r('propose_playbook_patch', {
     title: 'Propose Playbook Patch',
     description:
-      'Default way to improve playbooks from user corrections. Creates a dashboard review proposal (or kind=signal_only to log without proposing). Prefer add_item to Gotchas/Checklist. Use signal_only when not yet generalizable. When curating from the Feedback table, pass signal_ids (every consumed id) so rows link to the proposal; they become actioned on accept.',
+      'Default way to improve playbooks from user corrections. Creates a dashboard review proposal (or kind=signal_only to log without proposing). Prefer add_item to Gotchas/Checklist. Use signal_only when not yet generalizable. When revising the same lesson as an open proposal, pass supersedes with those pp_* ids (from get_playbook openPatches). When curating from the Feedback table, pass signal_ids (every consumed id) so rows link to the proposal; they become actioned on accept.',
     inputSchema: {
       kind: z.enum(['create', 'update', 'merge', 'retire', 'signal_only']),
       playbook_id: z.string().optional(),
@@ -315,8 +315,14 @@ function registerRuntimeTools(host: McpToolHost): void {
         .array(z.string())
         .optional()
         .describe('Open feedback signal ids to link to this patch (actioned when the patch is accepted)'),
+      supersedes: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Open proposed patch ids (pp_*) this proposal replaces — same playbook / same lesson. From get_playbook openPatches.',
+        ),
     },
-  }, async ({ kind, playbook_id, ops, new_playbook, rationale, evidence, signal_ids }) => {
+  }, async ({ kind, playbook_id, ops, new_playbook, rationale, evidence, signal_ids, supersedes }) => {
     try {
       const deckId = await host.getBoundDeckId();
       const result = await host.callBackendAPI('/api/playbook-patches', {
@@ -335,6 +341,7 @@ function registerRuntimeTools(host: McpToolHost): void {
           rationale,
           evidence,
           signal_ids,
+          supersedes,
         }),
       });
       if (result?.kind === 'signal_only') {
@@ -351,9 +358,10 @@ function registerRuntimeTools(host: McpToolHost): void {
         : [];
       return host.toolResult({
         ...patch,
-        kind: result?.kind,
+        kind: result?.kind ?? patch?.kind,
         // Null when curation submit (signal_ids) — no new signal row.
-        signal_id: result?.signal?.id ?? null,
+        signal_id: result?.signal?.id ?? patch?.signal?.id ?? null,
+        superseded: result?.superseded ?? patch?.superseded ?? [],
         trigger_warnings: triggerWarnings,
       });
     } catch (error) {

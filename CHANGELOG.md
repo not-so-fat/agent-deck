@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.6.2 — 2026-08-04
+
+### Playbook review queue
+
+- **Supersede open proposals:** `propose_playbook_patch` accepts `supersedes: ["pp_…"]`; targets become `superseded` with `supersededBy`, signals re-link to the successor (reject/stale still unlink)
+- **`get_playbook` → `openPatches`:** compact open proposals so agents can replace the same lesson instead of stacking duplicates
+- **Harness / stubs:** check `openPatches` and pass `supersedes` when revising the same lesson
+- **Dashboard:** Superseded filter + successor link; **Reject** is one click (reason optional)
+
+### After upgrade
+
+- Restart the Agent Deck daemon (or rebuild from this commit) so backend/MCP pick up supersede + optional reject
+- Re-run `agent-deck setup --client cursor|claude` (or `use --refresh`) so harness/stubs mention `openPatches` / `supersedes`
+- Open Playbook review queue → Waiting should show one live proposal per lesson after agents pass `supersedes`
+
 ## 1.6.1 — 2026-08-04
 
 ### Dashboard

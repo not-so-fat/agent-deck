@@ -173,6 +173,7 @@ export class DatabaseManager {
     this.dropColumnIfExists('decks', 'description');
 
     this.addColumnIfMissing('playbook_patches', 'conflicts_json', 'TEXT');
+    this.addColumnIfMissing('playbook_patches', 'superseded_by', 'TEXT');
 
     // Feedback redesign: unreviewed → open (link-on-propose / actioned-on-accept).
     if (this.tableExists('feedback_signals')) {
@@ -1690,6 +1691,7 @@ export class DatabaseManager {
       conflictsJson: row.conflicts_json ?? null,
       status: row.status,
       rejectionReason: row.rejection_reason ?? null,
+      supersededBy: row.superseded_by ?? null,
       createdAt: row.created_at,
       resolvedAt: row.resolved_at ?? null,
     };
@@ -1765,6 +1767,51 @@ export class DatabaseManager {
     });
     if (result.changes === 0) return null;
     return this.getPlaybookPatch(id);
+  }
+
+  async markPlaybookPatchSuperseded(
+    id: string,
+    successorId: string,
+  ): Promise<PlaybookPatch | null> {
+    const resolvedAt = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE playbook_patches SET
+          status = 'superseded',
+          superseded_by = @superseded_by,
+          resolved_at = @resolved_at
+         WHERE id = @id AND status = 'proposed'`,
+      )
+      .run({
+        id,
+        superseded_by: successorId,
+        resolved_at: resolvedAt,
+      });
+    if (result.changes === 0) return null;
+    return this.getPlaybookPatch(id);
+  }
+
+  async listProposedPatchesForPlaybook(playbookId: string): Promise<PlaybookPatch[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM playbook_patches
+         WHERE playbook_id = ? AND status = 'proposed'
+         ORDER BY created_at DESC`,
+      )
+      .all(playbookId) as any[];
+    return rows.map((row) => this.mapPlaybookPatchRow(row));
+  }
+
+  /** Move open signals from one patch to another (supersede); keep status open. */
+  async relinkSignalsForPatch(fromPatchId: string, toPatchId: string): Promise<number> {
+    const result = this.db
+      .prepare(
+        `UPDATE feedback_signals
+         SET linked_patch_id = @to_patch_id
+         WHERE linked_patch_id = @from_patch_id AND status = 'open'`,
+      )
+      .run({ from_patch_id: fromPatchId, to_patch_id: toPatchId });
+    return result.changes;
   }
 
   async createPlaybookVersion(input: {

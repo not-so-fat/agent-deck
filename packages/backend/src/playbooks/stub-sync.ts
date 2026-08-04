@@ -127,7 +127,7 @@ export function buildCursorStubFile(playbook: PlaybookStubInput): string {
     'Playbook body lives on the deck — **never** copy procedure steps into this file.',
     '',
     `1. \`bind_workspace\` if needed, then \`get_playbook("${playbook.id}")\` before following steps.`,
-    '2. On user correction: `propose_playbook_patch` — `add_item` for gotchas; `amend_item` only for exact list lines; `rewrite_body` for prose (not `update_playbook` unless they directed an edit).',
+    '2. On user correction: check `openPatches` on `get_playbook`; if same lesson, pass `supersedes` with those `pp_*` ids. `propose_playbook_patch` — `add_item` for gotchas; `amend_item` only for exact list lines; `rewrite_body` for prose (not `update_playbook` unless they directed an edit).',
     STUB_MARKER_END,
     '',
   ].join('\n');
@@ -149,7 +149,7 @@ export function buildClaudeStubFile(playbook: PlaybookStubInput, slug?: string):
     'Playbook body lives on the deck — **never** copy procedure steps into this file.',
     '',
     `1. \`bind_workspace\` if needed, then \`get_playbook("${playbook.id}")\` before following steps.`,
-    '2. On user correction: `propose_playbook_patch` — `add_item` for gotchas; `amend_item` only for exact list lines; `rewrite_body` for prose (not `update_playbook` unless they directed an edit).',
+    '2. On user correction: check `openPatches` on `get_playbook`; if same lesson, pass `supersedes` with those `pp_*` ids. `propose_playbook_patch` — `add_item` for gotchas; `amend_item` only for exact list lines; `rewrite_body` for prose (not `update_playbook` unless they directed an edit).',
     STUB_MARKER_END,
     '',
   ].join('\n');

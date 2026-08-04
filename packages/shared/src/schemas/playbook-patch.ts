@@ -18,7 +18,13 @@ export const ProposePlaybookPatchKindSchema = z.enum([
   'signal_only',
 ]);
 
-export const PlaybookPatchStatusSchema = z.enum(['proposed', 'accepted', 'rejected', 'stale']);
+export const PlaybookPatchStatusSchema = z.enum([
+  'proposed',
+  'accepted',
+  'rejected',
+  'stale',
+  'superseded',
+]);
 
 export const PlaybookPatchSourceSchema = z.enum(['ide', 'dealer', 'hook', 'harvester']);
 
@@ -98,6 +104,8 @@ export const ProposePlaybookPatchSchema = z
     evidence: PatchEvidenceSchema.optional(),
     /** When submitting a curated revision, link these open signals to the new patch (actioned on accept). */
     signal_ids: z.array(z.string().regex(/^fs_[a-z0-9_]+$/)).optional(),
+    /** Proposed patch ids this proposal replaces (same playbook / same lesson). */
+    supersedes: z.array(PlaybookPatchIdSchema).optional(),
   })
   .superRefine((val, ctx) => {
     if (val.kind === 'signal_only') {
@@ -129,11 +137,19 @@ export const ProposePlaybookPatchSchema = z
           path: ['signal_ids'],
         });
       }
+      if (val.supersedes !== undefined && val.supersedes.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'supersedes must not be set for signal_only',
+          path: ['supersedes'],
+        });
+      }
     }
   });
 
 export const RejectPlaybookPatchSchema = z.object({
-  reason: z.string().min(1),
+  /** Optional — empty/omitted is fine for bulk triage. */
+  reason: z.string().optional(),
 });
 
 export type PatchEvidence = z.infer<typeof PatchEvidenceSchema>;
@@ -154,8 +170,20 @@ export type PlaybookPatch = {
   conflictsJson: string | null;
   status: z.infer<typeof PlaybookPatchStatusSchema>;
   rejectionReason: string | null;
+  /** Successor patch id when status is superseded. */
+  supersededBy: string | null;
   createdAt: string;
   resolvedAt: string | null;
+};
+
+/** Compact open proposal summary returned on get_playbook. */
+export type OpenPlaybookPatchSummary = {
+  id: string;
+  kind: z.infer<typeof PlaybookPatchKindSchema>;
+  rationale: string;
+  failureSummary: string | null;
+  userFeedbackExcerpt: string | null;
+  createdAt: string;
 };
 
 /** Result of propose when kind is signal_only (no playbook_patches row). */
@@ -170,6 +198,8 @@ export type ProposePatchResult = {
   patch: PlaybookPatch;
   /** Null when curation submit (`signal_ids`); otherwise new signal still `open` + linked. */
   signal: import('./feedback-signal').FeedbackSignal | null;
+  /** Patch ids marked superseded by this propose (empty when none). */
+  superseded: string[];
 };
 
 export type ProposePlaybookPatchResult = ProposeSignalOnlyResult | ProposePatchResult;

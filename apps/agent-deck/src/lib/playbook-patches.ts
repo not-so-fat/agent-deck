@@ -35,9 +35,14 @@ export async function acceptPlaybookPatch(id: string): Promise<PlaybookPatch> {
 
 export async function rejectPlaybookPatch(
   id: string,
-  reason: string,
+  reason?: string,
 ): Promise<PlaybookPatch> {
-  const res = await apiRequest("POST", `/api/playbook-patches/${id}/reject`, { reason });
+  const trimmed = reason?.trim();
+  const res = await apiRequest(
+    "POST",
+    `/api/playbook-patches/${id}/reject`,
+    trimmed ? { reason: trimmed } : {},
+  );
   return parseApi<PlaybookPatch>(res);
 }
 
