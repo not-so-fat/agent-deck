@@ -723,7 +723,7 @@ export default function ServiceDetailsModal({
                       <Badge variant="outline" className="border-blue-500/30 text-blue-300">
                         {apiService.type.toUpperCase()}
                       </Badge>
-                        {apiService.type === 'mcp' && hasCustomHeaders(activeHeaders) && (
+                        {hasCustomHeaders(activeHeaders) && (
                           <Badge variant="outline" className="border-green-500/30 text-green-300">
                             Custom Headers
                           </Badge>
@@ -741,7 +741,7 @@ export default function ServiceDetailsModal({
                     <div className="text-xs text-gray-400 break-all bg-black/20 p-2 rounded border border-white/10">
                       {apiService.url || 'No URL available'}
                     </div>
-                    {apiService.type === 'mcp' && (
+                    {apiService.type === 'mcp' ? (
                       <div
                         className="text-xs text-gray-400 bg-black/20 p-2 rounded border border-white/10"
                         data-testid="custom-headers-section"
@@ -822,6 +822,21 @@ export default function ServiceDetailsModal({
                           </p>
                         )}
                       </div>
+                    ) : (
+                      hasCustomHeaders(activeHeaders) && (
+                        <div className="text-xs text-gray-400 bg-black/20 p-2 rounded border border-white/10">
+                          <p className="font-semibold mb-1">Custom Headers:</p>
+                          <ul className="space-y-1 font-mono">
+                            {maskedHeadersEntries(activeHeaders).map(({ name, masked }) => (
+                              <li key={name}>
+                                <span className="text-gray-300">{name}</span>
+                                <span className="text-gray-500">: </span>
+                                <span>{masked}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )
                     )}
                   </div>
                 </div>
