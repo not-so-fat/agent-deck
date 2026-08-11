@@ -23,6 +23,7 @@ import { AgentDeckContextError, resolveAgentDeckId } from '../lib/agent-deck-con
 import { resolveDeckRef } from '../lib/deck-resolve';
 import { triggerWarningsForDeck } from '../playbooks/stub-workspace-sync';
 import { CredentialManager } from '../vault/credential-manager';
+import { ServiceHeaderVault } from '../vault/service-header-vault';
 import { DatabaseManager } from '../models/database';
 import { FileStoreWriter } from '../store/writer';
 
@@ -82,6 +83,36 @@ async function enrichDecksWithCredentialSecrets(
       credentials: deck.credentials
         ? await credentialManager.applySecretStatus(deck.credentials)
         : [],
+    })),
+  );
+}
+
+/**
+ * Overlay each deck service's secret headers (Authorization / API keys) from the
+ * vault. Deck services come straight from a DB join, so — like single-service
+ * reads — they must re-merge vault secrets for the dashboard. Agent responses are
+ * still stripped downstream by {@link applyDeckScope}.
+ */
+async function enrichDeckServicesWithSecretHeaders(
+  headerVault: ServiceHeaderVault | undefined,
+  decks: Deck[],
+): Promise<Deck[]> {
+  if (!headerVault) {
+    return decks;
+  }
+  return Promise.all(
+    decks.map(async (deck) => ({
+      ...deck,
+      services: deck.services
+        ? await Promise.all(
+            deck.services.map(async (service) => {
+              const secret = await headerVault.get(service.id);
+              return secret
+                ? { ...service, headers: { ...(service.headers ?? {}), ...secret } }
+                : service;
+            }),
+          )
+        : deck.services,
     })),
   );
 }
@@ -177,9 +208,9 @@ export async function registerDeckRoutes(
         } satisfies ApiResponse<DeckListEntry[]>);
       }
 
-      const decksWithSecrets = await enrichDecksWithCredentialSecrets(
-        fastify.credentialManager,
-        decks,
+      const decksWithSecrets = await enrichDeckServicesWithSecretHeaders(
+        fastify.serviceHeaderVault,
+        await enrichDecksWithCredentialSecrets(fastify.credentialManager, decks),
       );
       const scopedDecks = decksWithSecrets.map((deck) =>
         applyDeckScope(deck, scope, visibleDeckId),
@@ -215,10 +246,12 @@ export async function registerDeckRoutes(
         return reply.status(404).send(response);
       }
 
-      const [deckWithSecrets] = await enrichDecksWithCredentialSecrets(
-        fastify.credentialManager,
-        [deck],
-      );
+      const [deckWithSecrets] = getClientScope(request) === 'dashboard'
+        ? await enrichDeckServicesWithSecretHeaders(
+            fastify.serviceHeaderVault,
+            await enrichDecksWithCredentialSecrets(fastify.credentialManager, [deck]),
+          )
+        : await enrichDecksWithCredentialSecrets(fastify.credentialManager, [deck]);
 
       const response: ApiResponse<Deck> = {
         success: true,
@@ -263,9 +296,9 @@ export async function registerDeckRoutes(
         }
       }
 
-      const [deckWithSecrets] = await enrichDecksWithCredentialSecrets(
-        fastify.credentialManager,
-        [deck],
+      const [deckWithSecrets] = await enrichDeckServicesWithSecretHeaders(
+        fastify.serviceHeaderVault,
+        await enrichDecksWithCredentialSecrets(fastify.credentialManager, [deck]),
       );
       const scopedDeck = applyDeckScope(deckWithSecrets, scope, visibleDeckId);
       const playbookSummaries = await fastify.playbookManager.listSummariesForDeck(deck.id);

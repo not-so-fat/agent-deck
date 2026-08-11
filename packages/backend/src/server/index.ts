@@ -18,7 +18,7 @@ import { registerCredentialRoutes } from '../routes/credentials';
 import { registerScopeRoutes } from '../routes/scope';
 import { registerPlaybookRoutes } from '../routes/playbooks';
 import { ServiceStatusUpdate, DeckUpdate, WebSocketMessage } from '@agent-deck/shared';
-import { createSecretStore, CredentialManager, OAuthClientSecretVault, OAuthTokenVault } from '../vault';
+import { createSecretStore, CredentialManager, OAuthClientSecretVault, OAuthTokenVault, ServiceHeaderVault } from '../vault';
 import { resolveDatabasePath } from '../lib/paths';
 import { CollectionWarningService } from '../services/collection-warning-service';
 import { registerCollectionRoutes } from '../routes/collection';
@@ -81,6 +81,7 @@ export async function createServer() {
   const secretStore = createSecretStore();
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
   const oauthTokenVault = new OAuthTokenVault(secretStore, db);
+  const serviceHeaderVault = new ServiceHeaderVault(secretStore);
   const oauthManager = new OAuthManager(db, oauthClientSecretVault, oauthTokenVault);
   const storeWriter = new FileStoreWriter();
   const credentialManager = new CredentialManager(db, secretStore, undefined, storeWriter);
@@ -92,8 +93,10 @@ export async function createServer() {
     oauthClientSecretVault,
     credentialManager,
     storeWriter,
+    serviceHeaderVault,
   );
   void serviceManager.backfillMissingIcons();
+  void serviceManager.migrateSecretHeadersToVault();
   const playbookManager = new PlaybookManager(db, storeWriter);
   const patchManager = new PatchManager(db, playbookManager);
   const collectionWarningService = new CollectionWarningService();
@@ -153,6 +156,7 @@ export async function createServer() {
   fastify.decorate('oauthManager', oauthManager);
   fastify.decorate('oauthClientSecretVault', oauthClientSecretVault);
   fastify.decorate('oauthTokenVault', oauthTokenVault);
+  fastify.decorate('serviceHeaderVault', serviceHeaderVault);
   fastify.decorate('credentialManager', credentialManager);
   fastify.decorate('playbookManager', playbookManager);
   fastify.decorate('patchManager', patchManager);
@@ -187,6 +191,7 @@ declare module 'fastify' {
     oauthManager: OAuthManager;
     oauthClientSecretVault: OAuthClientSecretVault;
     oauthTokenVault: OAuthTokenVault;
+    serviceHeaderVault: ServiceHeaderVault;
     credentialManager: CredentialManager;
     playbookManager: PlaybookManager;
     patchManager: PatchManager;

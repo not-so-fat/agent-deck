@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Custom MCP headers persist again
+
+- **Fix:** secret custom headers (Authorization / Bearer / API keys) set on an MCP card no longer vanish. They were stripped by the git-synced file store and then wiped from SQLite on the next store reindex/restart, so the card showed "No custom headers."
+- **New `ServiceHeaderVault`:** secret headers now live in the local secret store (Keychain), keyed per service — mirroring OAuth-token handling. Non-secret headers stay on the service row + git store; secrets never touch git and survive reindex/restart.
+- Reads (`GET /api/services`, deck payloads) merge vault secrets back for the dashboard (masked in the UI); agent-scoped responses still strip them.
+- After upgrading, re-enter any auth header that was already lost once — it will stick from then on.
+
 ## 1.6.2 — 2026-08-04
 
 ### Playbook review queue

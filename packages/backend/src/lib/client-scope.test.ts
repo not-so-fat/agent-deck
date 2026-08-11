@@ -74,4 +74,29 @@ describe('sanitizeServiceForAgent', () => {
     const sanitized = sanitizeServiceForAgent(service);
     expect(sanitized.headers).toEqual({ 'X-Trace': 'ok' });
   });
+
+  it('strips every header the vault treats as secret (same classifier)', () => {
+    // These are secret to splitSecretHeaders/the git store; the agent strip must
+    // classify them identically or the read-merge would leak them to agents.
+    const service: Service = {
+      id: 'svc-3',
+      name: 'API',
+      type: 'mcp',
+      url: 'https://example.com/mcp',
+      health: 'healthy',
+      cardColor: '#000',
+      isConnected: true,
+      registeredAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      headers: {
+        Cookie: 'session=xyz',
+        'Proxy-Authorization': 'Basic abc',
+        'X-Secret-Key': 'k',
+        'My-Access-Token': 'heuristic-match',
+        'X-Tenant': 'acme',
+      },
+    };
+
+    expect(sanitizeServiceForAgent(service).headers).toEqual({ 'X-Tenant': 'acme' });
+  });
 });

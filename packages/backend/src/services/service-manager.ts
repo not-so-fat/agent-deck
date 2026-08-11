@@ -30,6 +30,8 @@ import {
 import { normalizeServiceToolResult } from '../lib/normalize-service-tool-result';
 import { storeServiceFromDb } from '../store/service-codec';
 import { FileStoreWriter } from '../store/writer';
+import { ServiceHeaderVault } from '../vault/service-header-vault';
+import { splitSecretHeaders } from '../export-import/sanitize-for-export';
 
 interface A2AManifest {
   endpoints?: Record<string, A2AEndpoint>;
@@ -52,8 +54,44 @@ export class ServiceManager {
     private clientSecrets: OAuthClientSecretVault,
     private credentialManager?: CredentialManager,
     private storeWriter?: FileStoreWriter,
+    private headerVault?: ServiceHeaderVault,
   ) {
     this.configManager = new ConfigManager();
+  }
+
+  /**
+   * Overlay a service's secret headers (Authorization / API keys) from the vault
+   * onto its non-secret headers. Secrets live only in the vault, never in SQLite
+   * or the git store, so reads must re-merge them for the dashboard + connections.
+   */
+  private async withVaultHeaders(service: Service): Promise<Service> {
+    if (!this.headerVault) {
+      return service;
+    }
+    const secret = await this.headerVault.get(service.id);
+    if (!secret) {
+      return service;
+    }
+    return { ...service, headers: { ...(service.headers ?? {}), ...secret } };
+  }
+
+  /**
+   * Persist a header update: secret headers go to the vault (kept out of SQLite +
+   * git), non-secret headers stay on the row. Returns the headers to write to the
+   * DB row. No-op passthrough when no vault is configured (legacy path).
+   */
+  private async persistSecretHeaders(
+    serviceId: string,
+    headers: Record<string, string> | undefined,
+  ): Promise<Record<string, string> | undefined> {
+    if (!this.headerVault || headers === undefined) {
+      return headers;
+    }
+    const { secret, nonSecret } = splitSecretHeaders(headers);
+    await this.headerVault.set(serviceId, secret);
+    // Normalize empty to undefined so the row stores null — matching createService,
+    // so "only-secret headers" doesn't write "{}" and dirty the git-synced store.
+    return Object.keys(nonSecret).length > 0 ? nonSecret : undefined;
   }
 
   private async writeToStore(service: Service): Promise<void> {
@@ -97,9 +135,22 @@ export class ServiceManager {
       throw new Error(`Service with name "${validatedInput.name}" already exists`);
     }
     
+    // Hold secret headers back from the DB row; they belong in the vault.
+    let secretHeaders: Record<string, string> = {};
+    if (this.headerVault && validatedInput.headers !== undefined) {
+      const split = splitSecretHeaders(validatedInput.headers);
+      secretHeaders = split.secret;
+      validatedInput.headers =
+        Object.keys(split.nonSecret).length > 0 ? split.nonSecret : undefined;
+    }
+
     // Create service in database
     const service = await this.db.createService(validatedInput);
-    
+
+    if (this.headerVault && Object.keys(secretHeaders).length > 0) {
+      await this.headerVault.set(service.id, secretHeaders);
+    }
+
     // Try to discover OAuth configuration if it's an MCP service
     if (service.type === 'mcp' && !service.oauthClientId) {
       try {
@@ -129,7 +180,34 @@ export class ServiceManager {
     void this.probeInitialHealth(service.id);
 
     await this.writeToStore((await this.db.getService(service.id)) ?? service);
-    return service;
+    // Merge the just-vaulted secret headers back so the 201 body matches get/update.
+    return this.withVaultHeaders(service);
+  }
+
+  /**
+   * One-shot upgrade: move secret headers still sitting in the SQLite row into the
+   * vault, so a future store reindex can't wipe survivors that predate this feature.
+   * Idempotent — after it runs, rows carry only non-secret headers.
+   */
+  async migrateSecretHeadersToVault(): Promise<void> {
+    if (!this.headerVault) {
+      return;
+    }
+    for (const service of await this.db.getAllServices()) {
+      if (!service.headers) {
+        continue;
+      }
+      const { secret, nonSecret } = splitSecretHeaders(service.headers);
+      if (Object.keys(secret).length === 0) {
+        continue;
+      }
+      // A value already in the vault is newer than the legacy row — keep it.
+      const existing = (await this.headerVault.get(service.id)) ?? {};
+      await this.headerVault.set(service.id, { ...secret, ...existing });
+      await this.db.updateService(service.id, {
+        headers: Object.keys(nonSecret).length > 0 ? nonSecret : undefined,
+      });
+    }
   }
 
   private probeInitialHealth(serviceId: string): void {
@@ -206,17 +284,18 @@ export class ServiceManager {
     }
 
     if (!this.shouldResolveIcon(service)) {
-      return service;
+      return this.withVaultHeaders(service);
     }
 
     const result = await cacheIconForService(serviceId, service.url);
     if (!result.iconPath) {
-      return service;
+      return this.withVaultHeaders(service);
     }
 
-    return await this.db.updateService(serviceId, {
+    const updated = await this.db.updateService(serviceId, {
       iconUrl: serviceIconApiPath(serviceId),
     });
+    return updated ? this.withVaultHeaders(updated) : null;
   }
 
   private shouldResolveIcon(service: Service): boolean {
@@ -249,7 +328,8 @@ export class ServiceManager {
   }
 
   async getService(id: string): Promise<Service | null> {
-    return await this.db.getService(id);
+    const service = await this.db.getService(id);
+    return service ? this.withVaultHeaders(service) : null;
   }
 
   async getAllServices(): Promise<Service[]> {
@@ -257,16 +337,16 @@ export class ServiceManager {
     return Promise.all(
       services.map(async (service) => {
         if (!this.shouldResolveIcon(service)) {
-          return service;
+          return this.withVaultHeaders(service);
         }
 
         const missingIconUrl = !service.iconUrl;
         const missingCacheFile = service.iconUrl && !(await serviceIconFileExists(service.id));
         if (missingIconUrl || missingCacheFile) {
           const updated = await this.refreshServiceIcon(service.id);
-          return updated ?? service;
+          return this.withVaultHeaders(updated ?? service);
         }
-        return service;
+        return this.withVaultHeaders(service);
       }),
     );
   }
@@ -274,14 +354,19 @@ export class ServiceManager {
   async updateService(id: string, input: UpdateServiceInput): Promise<Service | null> {
     // Validate input
     const validatedInput = UpdateServiceSchema.parse(input);
-    
+
+    const headersUpdated = validatedInput.headers !== undefined;
+    // Route secret headers to the vault; only non-secret headers reach the row.
+    validatedInput.headers = await this.persistSecretHeaders(id, validatedInput.headers);
+
     const service = await this.db.updateService(id, validatedInput);
     if (service) {
       await this.writeToStore(service);
       // Header auth changes must drop the cached transport (old Authorization).
-      if (validatedInput.headers !== undefined && service.type === 'mcp') {
+      if (headersUpdated && service.type === 'mcp') {
         this.mcpClient.invalidateClient(id);
       }
+      return this.withVaultHeaders(service);
     }
     return service;
   }
@@ -315,6 +400,7 @@ export class ServiceManager {
     const deleted = await this.db.deleteService(id);
     if (deleted) {
       await this.deleteFromStore(id);
+      await this.headerVault?.delete(id);
     }
     return deleted;
   }
@@ -324,6 +410,14 @@ export class ServiceManager {
       typeof service.headers === 'string'
         ? (JSON.parse(service.headers) as Record<string, string>)
         : { ...(service.headers ?? {}) };
+
+    // Secret headers live in the vault, not on the row — merge them for the call.
+    if (this.headerVault) {
+      const secret = await this.headerVault.get(service.id);
+      if (secret) {
+        Object.assign(headers, secret);
+      }
+    }
 
     if (service.credentialId && this.credentialManager) {
       const credentialHeaders = await this.credentialManager.resolveHttpHeaders(service.credentialId);
@@ -393,6 +487,7 @@ export class ServiceManager {
     }
     if (updated) {
       await this.writeToStore(updated);
+      return this.withVaultHeaders(updated);
     }
     return updated;
   }
