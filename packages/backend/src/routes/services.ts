@@ -157,7 +157,8 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
 
       const response: ApiResponse<Service> = {
         success: true,
-        data: service,
+        // refreshServiceIcon merges vault secret headers — strip them for agents.
+        data: isDashboardClient(request) ? service : sanitizeServiceForAgent(service),
       };
 
       return reply.send(response);
@@ -318,7 +319,8 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
 
       return reply.send({
         success: true,
-        data: service,
+        // updateToolSettings merges vault secret headers — strip them for agents.
+        data: isDashboardClient(request) ? service : sanitizeServiceForAgent(service),
       } satisfies ApiResponse<Service>);
     } catch (error) {
       const scoped = boundDeckScopeResponse(error);

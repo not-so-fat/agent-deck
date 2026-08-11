@@ -284,17 +284,18 @@ export class ServiceManager {
     }
 
     if (!this.shouldResolveIcon(service)) {
-      return service;
+      return this.withVaultHeaders(service);
     }
 
     const result = await cacheIconForService(serviceId, service.url);
     if (!result.iconPath) {
-      return service;
+      return this.withVaultHeaders(service);
     }
 
-    return await this.db.updateService(serviceId, {
+    const updated = await this.db.updateService(serviceId, {
       iconUrl: serviceIconApiPath(serviceId),
     });
+    return updated ? this.withVaultHeaders(updated) : null;
   }
 
   private shouldResolveIcon(service: Service): boolean {
@@ -486,6 +487,7 @@ export class ServiceManager {
     }
     if (updated) {
       await this.writeToStore(updated);
+      return this.withVaultHeaders(updated);
     }
     return updated;
   }

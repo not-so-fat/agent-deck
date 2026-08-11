@@ -170,6 +170,15 @@ describe('ServiceManager custom secret headers', () => {
     expect(prepared.headers.Authorization).toBe('Bearer call-me');
   });
 
+  it('updateToolSettings returns secret headers merged (dashboard state stays intact)', async () => {
+    const id = await createWithHeaders({ Authorization: 'Bearer keep', 'X-Tenant': 'acme' });
+
+    const updated = await manager.updateToolSettings(id, { disabledTools: [] });
+
+    // Toggling a tool must not drop the masked headers from the dashboard's state.
+    expect(updated?.headers).toEqual({ Authorization: 'Bearer keep', 'X-Tenant': 'acme' });
+  });
+
   it('clears the vault when the service is deleted', async () => {
     const id = await createWithHeaders({ Authorization: 'Bearer bye' });
     await manager.deleteService(id);
