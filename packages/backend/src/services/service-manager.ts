@@ -180,7 +180,34 @@ export class ServiceManager {
     void this.probeInitialHealth(service.id);
 
     await this.writeToStore((await this.db.getService(service.id)) ?? service);
-    return service;
+    // Merge the just-vaulted secret headers back so the 201 body matches get/update.
+    return this.withVaultHeaders(service);
+  }
+
+  /**
+   * One-shot upgrade: move secret headers still sitting in the SQLite row into the
+   * vault, so a future store reindex can't wipe survivors that predate this feature.
+   * Idempotent — after it runs, rows carry only non-secret headers.
+   */
+  async migrateSecretHeadersToVault(): Promise<void> {
+    if (!this.headerVault) {
+      return;
+    }
+    for (const service of await this.db.getAllServices()) {
+      if (!service.headers) {
+        continue;
+      }
+      const { secret, nonSecret } = splitSecretHeaders(service.headers);
+      if (Object.keys(secret).length === 0) {
+        continue;
+      }
+      // A value already in the vault is newer than the legacy row — keep it.
+      const existing = (await this.headerVault.get(service.id)) ?? {};
+      await this.headerVault.set(service.id, { ...secret, ...existing });
+      await this.db.updateService(service.id, {
+        headers: Object.keys(nonSecret).length > 0 ? nonSecret : undefined,
+      });
+    }
   }
 
   private probeInitialHealth(serviceId: string): void {

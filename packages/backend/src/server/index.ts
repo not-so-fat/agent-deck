@@ -96,6 +96,7 @@ export async function createServer() {
     serviceHeaderVault,
   );
   void serviceManager.backfillMissingIcons();
+  void serviceManager.migrateSecretHeadersToVault();
   const playbookManager = new PlaybookManager(db, storeWriter);
   const patchManager = new PatchManager(db, playbookManager);
   const collectionWarningService = new CollectionWarningService();

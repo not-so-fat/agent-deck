@@ -81,6 +81,37 @@ describe('ServiceManager custom secret headers', () => {
     });
   });
 
+  it('createService returns the secret headers merged (201 body matches get/update)', async () => {
+    const created = await manager.createService({
+      name: 'with-secret',
+      type: 'mcp',
+      url: 'https://example.com/mcp',
+      headers: { Authorization: 'Bearer created', 'X-Tenant': 'acme' },
+    });
+
+    expect(created.headers).toEqual({
+      Authorization: 'Bearer created',
+      'X-Tenant': 'acme',
+    });
+  });
+
+  it('migrateSecretHeadersToVault moves legacy row secrets into the vault', async () => {
+    // Simulate a pre-upgrade row: secret header written straight to SQLite,
+    // bypassing the split (this is what a reindex could still wipe).
+    const legacy = await db.createService({
+      name: 'legacy',
+      type: 'mcp',
+      url: 'https://example.com/legacy',
+      headers: { Authorization: 'Bearer legacy', 'X-Tenant': 'acme' },
+    });
+
+    await manager.migrateSecretHeadersToVault();
+
+    const row = await db.getService(legacy.id);
+    expect(row?.headers).toEqual({ 'X-Tenant': 'acme' });
+    expect(await headerVault.get(legacy.id)).toEqual({ Authorization: 'Bearer legacy' });
+  });
+
   it('survives a store reindex that rebuilds the DB row without the secret', async () => {
     const id = await createWithHeaders({ Authorization: 'Bearer keep-me' });
 

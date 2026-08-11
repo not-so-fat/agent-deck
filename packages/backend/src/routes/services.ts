@@ -58,12 +58,13 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   fastify.post<CreateServiceRequest>('/', async (request, reply) => {
     try {
       const service = await fastify.serviceManager.createService(request.body);
-      
+
       const response: ApiResponse<Service> = {
         success: true,
-        data: service,
+        // createService now merges vault secret headers — strip them for agents.
+        data: isDashboardClient(request) ? service : sanitizeServiceForAgent(service),
       };
-      
+
       return reply.status(201).send(response);
     } catch (error) {
       const response: ApiResponse = {
