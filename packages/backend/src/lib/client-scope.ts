@@ -6,31 +6,9 @@ import {
   Deck,
   Service,
 } from '@agent-deck/shared';
+import { stripAuthorizationHeader } from '../export-import/sanitize-for-export';
 
 export type ClientScope = 'dashboard' | 'agent';
-
-const SECRET_HEADER_NAMES = new Set([
-  'authorization',
-  'x-api-key',
-  'api-key',
-  'x-auth-token',
-  'x-access-token',
-]);
-
-function stripSecretHeaders(
-  headers?: Record<string, string> | null,
-): Record<string, string> | undefined {
-  if (!headers) {
-    return undefined;
-  }
-  const next = { ...headers };
-  for (const key of Object.keys(next)) {
-    if (SECRET_HEADER_NAMES.has(key.toLowerCase())) {
-      delete next[key];
-    }
-  }
-  return Object.keys(next).length > 0 ? next : undefined;
-}
 
 /** Remove secrets from service payloads returned to agent clients. */
 export function sanitizeServiceForAgent(service: Service): Service {
@@ -40,7 +18,8 @@ export function sanitizeServiceForAgent(service: Service): Service {
     oauthAccessToken: undefined,
     oauthRefreshToken: undefined,
     oauthState: undefined,
-    headers: stripSecretHeaders(service.headers),
+    // Same secret-header classifier as the vault split + git store — one source of truth.
+    headers: stripAuthorizationHeader(service.headers),
     localEnv: undefined,
   };
 }

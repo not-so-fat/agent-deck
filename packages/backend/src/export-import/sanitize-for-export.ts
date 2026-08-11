@@ -46,6 +46,29 @@ export function stripAuthorizationHeader(
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+/**
+ * Partition headers into secret vs non-secret using the same classifier the
+ * export/store path uses. Secret headers belong in the local ServiceHeaderVault;
+ * non-secret headers stay on the service row and in the git-synced store.
+ */
+export function splitSecretHeaders(headers?: Record<string, string> | null): {
+  secret: Record<string, string>;
+  nonSecret: Record<string, string>;
+} {
+  const secret: Record<string, string> = {};
+  const nonSecret: Record<string, string> = {};
+  if (headers) {
+    for (const [key, value] of Object.entries(headers)) {
+      if (isSecretHeaderName(key)) {
+        secret[key] = value;
+      } else {
+        nonSecret[key] = value;
+      }
+    }
+  }
+  return { secret, nonSecret };
+}
+
 function presentString(value: string | null | undefined): string | undefined {
   return value == null || value === '' ? undefined : value;
 }

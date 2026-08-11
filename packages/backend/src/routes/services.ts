@@ -12,6 +12,7 @@ import {
 } from '@agent-deck/shared';
 import {
   isDashboardClient,
+  sanitizeServiceForAgent,
 } from '../lib/client-scope';
 import {
   boundDeckScopeResponse,
@@ -78,8 +79,9 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   fastify.get('/', async (request, reply) => {
     try {
       const services = await fastify.serviceManager.getAllServices();
+      const dashboard = isDashboardClient(request);
 
-      if (isDashboardClient(request)) {
+      if (dashboard) {
         const now = Date.now();
         if (now - lastBackgroundHealthProbeAt >= BACKGROUND_HEALTH_PROBE_COOLDOWN_MS) {
           lastBackgroundHealthProbeAt = now;
@@ -91,7 +93,8 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
 
       const response: ApiResponse<Service[]> = {
         success: true,
-        data: services,
+        // Secret headers (from the vault) are merged on read — strip them for agents.
+        data: dashboard ? services : services.map(sanitizeServiceForAgent),
       };
       
       return reply.send(response);
@@ -183,16 +186,17 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
       
       const response: ApiResponse<Service> = {
         success: true,
-        data: service,
+        // Secret headers (from the vault) are merged on read — strip them for agents.
+        data: isDashboardClient(request) ? service : sanitizeServiceForAgent(service),
       };
-      
+
       return reply.send(response);
     } catch (error) {
       const response: ApiResponse = {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
       };
-      
+
       return reply.status(500).send(response);
     }
   });
@@ -213,16 +217,17 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
       
       const response: ApiResponse<Service> = {
         success: true,
-        data: service,
+        // getService/updateService merge vault secret headers — strip for agents.
+        data: isDashboardClient(request) ? service : sanitizeServiceForAgent(service),
       };
-      
+
       return reply.send(response);
     } catch (error) {
       const response: ApiResponse = {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
       };
-      
+
       return reply.status(400).send(response);
     }
   });
