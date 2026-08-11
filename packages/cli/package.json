@@ -1,6 +1,6 @@
 {
   "name": "@agent-deck/cli",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Local MCP proxy — decks of tools, keys, and self-improving playbooks",
   "license": "MIT",
   "bin": {
@@ -40,8 +40,8 @@
     "prepublishOnly": "node ../../scripts/pre-publish-check.mjs && npm run build"
   },
   "dependencies": {
-    "@agent-deck/backend": "^1.6.2",
-    "@agent-deck/shared": "^1.6.2"
+    "@agent-deck/backend": "^1.6.3",
+    "@agent-deck/shared": "^1.6.3"
   },
   "devDependencies": {
     "@types/node": "^20.11.5",

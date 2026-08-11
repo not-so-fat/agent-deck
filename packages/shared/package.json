@@ -1,6 +1,6 @@
 {
   "name": "@agent-deck/shared",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Shared types, schemas, and utilities for Agent Deck",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
