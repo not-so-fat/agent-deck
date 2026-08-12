@@ -4,6 +4,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
+  AGENT_DECK_DECK_ID_HEADER,
   countDeckCards,
   formatDisplayLine,
 } from '@agent-deck/shared';
@@ -567,6 +568,20 @@ export class AgentDeckMCPServer {
     return typeof value === 'string' ? value : undefined;
   }
 
+  /**
+   * Pre-bind a newly-initialized session to the deck the client advertised via the
+   * `x-agent-deck-deck-id` header (written into the workspace's MCP config by
+   * `agent-deck use`). Removes the "agent forgot to call bind_workspace" gap; an
+   * explicit bind_workspace / switch_bound_deck later still overrides it.
+   */
+  private applyConnectionDeck(sessionId: string, req: Request): void {
+    const raw = req.headers[AGENT_DECK_DECK_ID_HEADER];
+    const deckId = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+    if (deckId) {
+      this.sessionBinding.setDeckId(sessionId, deckId);
+    }
+  }
+
   private async handleMcpPost(req: Request, res: Response): Promise<void> {
     const sessionIdHeader = this.getSessionIdHeader(req);
     const existing = sessionIdHeader ? this.sessions.get(sessionIdHeader) : undefined;
@@ -603,6 +618,7 @@ export class AgentDeckMCPServer {
       onsessioninitialized: (sessionId) => {
         sessionEntry = { transport, server };
         this.sessions.set(sessionId, sessionEntry);
+        this.applyConnectionDeck(sessionId, req);
       },
     });
 

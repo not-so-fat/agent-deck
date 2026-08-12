@@ -35,6 +35,30 @@ describe('buildAgentDeckEntry', () => {
       args: ['-y', 'supergateway', '--streamableHttp', 'http://127.0.0.1:3001/mcp'],
     });
   });
+
+  it('carries the deck as a header when deckId is given (claude/cursor)', () => {
+    expect(buildAgentDeckEntry('claude', { host: '127.0.0.1', mcpPort: 3001 }, 'deck-123')).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:3001/mcp',
+      headers: { 'x-agent-deck-deck-id': 'deck-123' },
+    });
+    expect(buildAgentDeckEntry('cursor', { host: '127.0.0.1', mcpPort: 3001 }, 'deck-123')).toEqual({
+      url: 'http://127.0.0.1:3001/mcp',
+      headers: { 'x-agent-deck-deck-id': 'deck-123' },
+    });
+  });
+
+  it('passes the deck header via supergateway for claude-desktop', () => {
+    expect(
+      buildAgentDeckEntry('claude-desktop', { host: '127.0.0.1', mcpPort: 3001 }, 'deck-123'),
+    ).toEqual({
+      command: 'npx',
+      args: [
+        '-y', 'supergateway', '--streamableHttp', 'http://127.0.0.1:3001/mcp',
+        '--header', 'x-agent-deck-deck-id:deck-123',
+      ],
+    });
+  });
 });
 
 describe('compareSemver', () => {
