@@ -574,9 +574,9 @@ export class AgentDeckMCPServer {
    * `agent-deck use`). Removes the "agent forgot to call bind_workspace" gap; an
    * explicit bind_workspace / switch_bound_deck later still overrides it.
    */
-  private applyConnectionDeck(sessionId: string, req: Request): void {
-    const raw = req.headers[AGENT_DECK_DECK_ID_HEADER];
-    const deckId = (Array.isArray(raw) ? raw[0] : raw)?.trim();
+  private preBindSessionDeck(sessionId: string, req: Request): void {
+    const value = req.headers[AGENT_DECK_DECK_ID_HEADER];
+    const deckId = typeof value === 'string' ? value.trim() : undefined;
     if (deckId) {
       this.sessionBinding.setDeckId(sessionId, deckId);
     }
@@ -618,7 +618,7 @@ export class AgentDeckMCPServer {
       onsessioninitialized: (sessionId) => {
         sessionEntry = { transport, server };
         this.sessions.set(sessionId, sessionEntry);
-        this.applyConnectionDeck(sessionId, req);
+        this.preBindSessionDeck(sessionId, req);
       },
     });
 
