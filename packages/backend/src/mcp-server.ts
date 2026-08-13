@@ -139,26 +139,30 @@ export class AgentDeckMCPServer {
     const snapshot = this.sessionBinding.getBinding(sessionId);
     // A deck bind is what makes a session live; the workspace may be absent
     // (header/auto-bound sessions surface in the dashboard without a folder).
-    const deck = await this.callBackendAPI('/api/scope/deck');
+    const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
     if (!deck?.id || !deck?.name) {
       return;
     }
 
     const clientName = this.sessions.get(sessionId)?.server.server.getClientVersion()?.name;
-    const result = await this.callBackendAPI('/api/scope/live-display', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mcpSessionId: sessionId,
-        workspaceRoot: snapshot.workspaceRoot,
-        deckId: deck.id,
-        deckName: deck.name,
-        source: resolveDeckBindingSource(snapshot),
-        clientName,
-        cardCounts: countDeckCards(deck),
-        updatedAt: new Date().toISOString(),
-      }),
-    });
+    const result = await this.callBackendAPI(
+      '/api/scope/live-display',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mcpSessionId: sessionId,
+          workspaceRoot: snapshot.workspaceRoot,
+          deckId: deck.id,
+          deckName: deck.name,
+          source: resolveDeckBindingSource(snapshot),
+          clientName,
+          cardCounts: countDeckCards(deck),
+          updatedAt: new Date().toISOString(),
+        }),
+      },
+      sessionId,
+    );
     if (result && typeof result.badge === 'string') {
       this.badgeBySession.set(sessionId, result.badge);
     }
@@ -196,12 +200,20 @@ export class AgentDeckMCPServer {
     }
   }
 
-  private async callBackendAPI(endpoint: string, init: RequestInit = {}): Promise<any> {
+  private async callBackendAPI(
+    endpoint: string,
+    init: RequestInit = {},
+    sessionId?: string,
+  ): Promise<any> {
     try {
+      // Pin the session explicitly when given, so an async call (e.g. the
+      // fire-and-forget register at init) isn't scoped to whichever request
+      // last set activeSessionId.
+      const headers = this.sessionBinding.getAgentHeaders(sessionId ?? this.getSessionId());
       const response = await fetch(`${this.backendUrl}${endpoint}`, {
         ...init,
         headers: {
-          ...this.getAgentHeaders(),
+          ...headers,
           ...(init.headers ?? {}),
         },
       });
@@ -616,7 +628,6 @@ export class AgentDeckMCPServer {
       onsessioninitialized: (sessionId) => {
         sessionEntry = { transport, server };
         this.sessions.set(sessionId, sessionEntry);
-        this.preBindSessionDeck(sessionId, req);
       },
     });
 
@@ -639,11 +650,15 @@ export class AgentDeckMCPServer {
     }
     this.activeSessionId = transport.sessionId;
 
-    // Surface header/auto-bound sessions in the dashboard's live list. Runs after
-    // activeSessionId is set so the deck fetch resolves this session. bind_workspace
-    // sessions register on their own tool call; this only covers the header path.
-    if (transport.sessionId && this.sessionBinding.hasSessionDeckOverride(transport.sessionId)) {
-      void this.registerLiveDisplay(transport.sessionId).catch(() => {});
+    // Pre-bind this session to the deck the client advertised (agent-deck use).
+    // Done here (after handleRequest) rather than only in onsessioninitialized so
+    // it also covers the fallback path where that callback does not fire; setDeckId
+    // is idempotent. Then surface header/auto-bound sessions in the dashboard list.
+    if (transport.sessionId) {
+      this.preBindSessionDeck(transport.sessionId, req);
+      if (this.sessionBinding.hasSessionDeckOverride(transport.sessionId)) {
+        void this.registerLiveDisplay(transport.sessionId).catch(() => {});
+      }
     }
   }
 

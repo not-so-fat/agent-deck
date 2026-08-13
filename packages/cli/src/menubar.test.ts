@@ -48,6 +48,16 @@ describe('renderMenubar', () => {
     expect(output).toContain('cursor · 12s');
   });
 
+  it('workspace-less (auto-bound) session groups under the deck name, no crash', () => {
+    const output = renderMenubar(
+      [binding({ workspaceRoot: undefined, deckName: 'Dev', badge: 'owl' })],
+      NOW,
+    );
+    expect(output).toContain('◆ Dev');
+    expect(output).toContain('⌘owl');
+    expect(output).not.toContain('undefined');
+  });
+
   it('multiple sessions: count title, rows grouped by workspace', () => {
     const output = renderMenubar(
       [

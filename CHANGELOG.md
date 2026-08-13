@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Deck auto-bind
+
+- `agent-deck use <deck>` stamps the deck as an `x-agent-deck-deck-id` header into the workspace's project MCP config; the MCP server pre-binds each session to that deck on connect, so deck-scoped tools work without the agent calling `bind_workspace`. Folders that never ran `use` stay unbound.
+- **After upgrading:** run `agent-deck use --refresh` in each folder that already ran `use` (to rewrite the MCP config with the header), then restart the IDE's MCP host.
+- Known limitation: header auto-bind carries no workspace path, so it only makes deck-scoped tools work — the terminal statusline stays *Unbound*, stub sync does not run on connect, and the dashboard/menubar group these sessions under `◆ <deck>`. Use `bind_workspace` to attach a folder for the statusline + stubs.
+
 ## 1.6.3 — 2026-08-11
 
 ### Custom MCP headers persist again

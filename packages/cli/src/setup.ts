@@ -12,6 +12,7 @@ import {
   type McpEndpoint,
   type SetupScope,
 } from './mcp-config';
+import { readUseManifest } from './playbook-stubs';
 import { installStatusline, type StatuslineClient } from './statusline-setup';
 import { isDarwinPlatform, setupMenubar } from './menubar-setup';
 import { CLI_DEFAULT_MCP_PORT, parseCliMcpPort } from './defaults';
@@ -269,7 +270,11 @@ export async function runSetup(args: string[]): Promise<number> {
   }
 
   const configPath = resolveConfigPath(client, scope);
-  const entry = buildAgentDeckEntry(client, endpoint);
+  // Don't clobber an existing project deck bind: if this folder ran `agent-deck
+  // use`, keep its auto-bind header instead of writing a bare entry.
+  const deckId =
+    scope === 'project' ? readUseManifest(process.cwd())?.deckId : undefined;
+  const entry = buildAgentDeckEntry(client, endpoint, deckId);
   const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
   writeJsonFile(configPath, merged);
 
