@@ -8,7 +8,8 @@ import { assignBadge } from './badge';
 
 export type LiveDisplayEntry = {
   mcpSessionId: string;
-  workspaceRoot: string;
+  /** Absent for header/auto-bound sessions (deck without a known folder). */
+  workspaceRoot?: string;
   deckId: string;
   deckName: string;
   source: Exclude<DeckDisplaySource, 'unbound'>;
@@ -63,7 +64,9 @@ export class LiveDisplayRegistry {
     while (true) {
       let best: LiveDisplayEntry | null = null;
       for (const entry of this.bySessionId.values()) {
-        if (normalizeWorkspaceRoot(entry.workspaceRoot) !== current) {
+        // Header/auto-bound sessions have no folder — they never match a workspace,
+        // so they only appear in the dashboard list, never the per-folder statusline.
+        if (!entry.workspaceRoot || normalizeWorkspaceRoot(entry.workspaceRoot) !== current) {
           continue;
         }
         if (!best || entry.updatedAt > best.updatedAt) {

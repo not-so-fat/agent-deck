@@ -12,7 +12,8 @@ import { resolveDeckDisplay } from '../scope/display';
 
 const LiveDisplayBodySchema = z.object({
   mcpSessionId: z.string().min(1),
-  workspaceRoot: z.string().min(1),
+  // Absent for header/auto-bound sessions (deck without a known folder).
+  workspaceRoot: z.string().min(1).optional(),
   deckId: z.string().uuid(),
   deckName: z.string().min(1),
   source: DeckDisplaySourceSchema.exclude(['unbound']),

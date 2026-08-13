@@ -137,10 +137,8 @@ export class AgentDeckMCPServer {
 
   private async registerLiveDisplay(sessionId: string): Promise<void> {
     const snapshot = this.sessionBinding.getBinding(sessionId);
-    if (!snapshot.workspaceRoot) {
-      return;
-    }
-
+    // A deck bind is what makes a session live; the workspace may be absent
+    // (header/auto-bound sessions surface in the dashboard without a folder).
     const deck = await this.callBackendAPI('/api/scope/deck');
     if (!deck?.id || !deck?.name) {
       return;
@@ -640,6 +638,13 @@ export class AgentDeckMCPServer {
       this.sessions.set(transport.sessionId, { transport, server });
     }
     this.activeSessionId = transport.sessionId;
+
+    // Surface header/auto-bound sessions in the dashboard's live list. Runs after
+    // activeSessionId is set so the deck fetch resolves this session. bind_workspace
+    // sessions register on their own tool call; this only covers the header path.
+    if (transport.sessionId && this.sessionBinding.hasSessionDeckOverride(transport.sessionId)) {
+      void this.registerLiveDisplay(transport.sessionId);
+    }
   }
 
   private async handleMcpSessionRequest(req: Request, res: Response): Promise<void> {
