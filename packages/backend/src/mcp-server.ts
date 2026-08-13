@@ -643,7 +643,7 @@ export class AgentDeckMCPServer {
     // activeSessionId is set so the deck fetch resolves this session. bind_workspace
     // sessions register on their own tool call; this only covers the header path.
     if (transport.sessionId && this.sessionBinding.hasSessionDeckOverride(transport.sessionId)) {
-      void this.registerLiveDisplay(transport.sessionId);
+      void this.registerLiveDisplay(transport.sessionId).catch(() => {});
     }
   }
 
