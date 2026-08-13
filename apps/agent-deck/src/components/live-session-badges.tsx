@@ -29,16 +29,23 @@ export default function LiveSessionBadges({ highlightDeckId }: LiveSessionBadges
   const now = useMemo(() => new Date(), [data]);
 
   const grouped = useMemo(() => {
-    const byWorkspace = new Map<string, LiveBinding[]>();
+    // Group by workspace; header/auto-bound sessions have no folder, so group
+    // those under their deck name instead.
+    const byGroup = new Map<string, { label: string; rows: LiveBinding[] }>();
     for (const row of bindings) {
-      const group = byWorkspace.get(row.workspaceRoot) ?? [];
-      group.push(row);
-      byWorkspace.set(row.workspaceRoot, group);
+      const key = row.workspaceRoot || `deck:${row.deckId}`;
+      const label = row.workspaceRoot
+        ? `${workspaceBasename(row.workspaceRoot)}/`
+        : `◆ ${row.deckName}`;
+      const group = byGroup.get(key) ?? { label, rows: [] };
+      group.rows.push(row);
+      byGroup.set(key, group);
     }
-    return [...byWorkspace.entries()]
+    return [...byGroup.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([workspaceRoot, rows]) => ({
-        workspaceRoot,
+      .map(([key, { label, rows }]) => ({
+        key,
+        label,
         rows: [...rows].sort((a, b) =>
           a.lastActivityAt < b.lastActivityAt ? 1 : -1,
         ),
@@ -85,10 +92,10 @@ export default function LiveSessionBadges({ highlightDeckId }: LiveSessionBadges
           </p>
         </div>
         <div className="max-h-64 overflow-y-auto p-2">
-          {grouped.map(({ workspaceRoot, rows }) => (
-            <div key={workspaceRoot} className="mb-2 last:mb-0">
+          {grouped.map(({ key, label, rows }) => (
+            <div key={key} className="mb-2 last:mb-0">
               <p className="px-1 pb-1 text-[10px] uppercase tracking-wide text-gray-500">
-                {workspaceBasename(workspaceRoot)}/
+                {label}
               </p>
               <ul className="space-y-1">
                 {rows.map((row) => {

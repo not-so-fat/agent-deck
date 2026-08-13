@@ -29,6 +29,23 @@ describe('LiveDisplayRegistry', () => {
     expect(registry.findForWorkspace(workspace)?.deckName).toBe('Newer');
   });
 
+  it('lists a workspace-less (auto-bound) entry but never matches it to a folder', () => {
+    const registry = new LiveDisplayRegistry();
+    registry.upsert({
+      mcpSessionId: 'auto',
+      deckId: '33333333-3333-4333-8333-333333333333',
+      deckName: 'Dev',
+      source: 'session_override',
+      cardCounts: { mcp: 1, credentials: 0, playbooks: 0 },
+      updatedAt: '2026-07-02T15:33:00.000Z',
+    });
+
+    // Appears in the dashboard list…
+    expect(registry.list().map((e) => e.deckName)).toEqual(['Dev']);
+    // …but has no folder, so the per-workspace statusline never picks it up.
+    expect(registry.findForWorkspace(path.resolve('/repo'))).toBeNull();
+  });
+
   it('walks up to parent workspace binds', () => {
     const registry = new LiveDisplayRegistry();
     const workspace = path.resolve('/repo');

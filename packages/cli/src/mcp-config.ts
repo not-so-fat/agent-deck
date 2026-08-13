@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { AGENT_DECK_DECK_ID_HEADER } from '@agent-deck/shared';
+
 import { sanitizeJsonText } from './strip-ansi';
 
 export type McpClient = 'cursor' | 'claude' | 'claude-desktop';
@@ -45,24 +47,34 @@ export function resolveConfigPath(
   }
 }
 
-export function buildAgentDeckEntry(client: McpClient, endpoint: McpEndpoint): Record<string, unknown> {
+/**
+ * MCP client entry for the agent-deck server. When `deckId` is given, the deck is
+ * carried as a request header (`x-agent-deck-deck-id`) so the server pre-binds this
+ * workspace's session to that deck on connect — no `bind_workspace` call needed.
+ * The id is a portable UUID (safe to commit); the absolute workspace path is not,
+ * so it is intentionally omitted.
+ */
+export function buildAgentDeckEntry(
+  client: McpClient,
+  endpoint: McpEndpoint,
+  deckId?: string,
+): Record<string, unknown> {
   const url = buildMcpUrl(endpoint);
+  const headers = deckId ? { [AGENT_DECK_DECK_ID_HEADER]: deckId } : undefined;
 
   if (client === 'claude-desktop') {
-    return {
-      command: 'npx',
-      args: ['-y', 'supergateway', '--streamableHttp', url],
-    };
+    const args = ['-y', 'supergateway', '--streamableHttp', url];
+    if (deckId) {
+      args.push('--header', `${AGENT_DECK_DECK_ID_HEADER}:${deckId}`);
+    }
+    return { command: 'npx', args };
   }
 
   if (client === 'claude') {
-    return {
-      type: 'http',
-      url,
-    };
+    return headers ? { type: 'http', url, headers } : { type: 'http', url };
   }
 
-  return { url };
+  return headers ? { url, headers } : { url };
 }
 
 export function readJsonFile(filePath: string): Record<string, unknown> {

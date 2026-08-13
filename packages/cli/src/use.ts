@@ -148,7 +148,7 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   if (!parsed.skipMcp) {
     for (const client of clientsToWrite(parsed.clients)) {
       const configPath = resolveConfigPath(client, 'project', parsed.workspaceRoot);
-      const entry = buildAgentDeckEntry(client, endpoint);
+      const entry = buildAgentDeckEntry(client, endpoint, deck.id);
       const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
       writeJsonFile(configPath, merged);
       mcpWritten.push({ client, path: configPath });

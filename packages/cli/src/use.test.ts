@@ -66,9 +66,13 @@ describe('agent-deck use', () => {
       true,
     );
     const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')) as {
-      mcpServers: Record<string, { url?: string }>;
+      mcpServers: Record<string, { url?: string; headers?: Record<string, string> }>;
     };
     expect(mcp.mcpServers['agent-deck']?.url).toContain('/mcp');
+    // The deck is stamped as the auto-bind header.
+    expect(mcp.mcpServers['agent-deck']?.headers?.['x-agent-deck-deck-id']).toBe(
+      result.deck.id,
+    );
   });
 
   it('refresh falls back to manifest deckName when deckId is stale', async () => {

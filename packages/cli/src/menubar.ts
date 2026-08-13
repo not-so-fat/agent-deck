@@ -46,16 +46,23 @@ export function renderMenubar(bindings: LiveBinding[] | null, now: Date): string
 
   const lines = [title, '---'];
 
-  const byWorkspace = new Map<string, LiveBinding[]>();
+  // Group by workspace; header/auto-bound sessions have no folder, so group
+  // those under their deck name instead.
+  const byGroup = new Map<string, { label: string; rows: LiveBinding[] }>();
   for (const row of bindings) {
-    const group = byWorkspace.get(row.workspaceRoot) ?? [];
-    group.push(row);
-    byWorkspace.set(row.workspaceRoot, group);
+    const key = row.workspaceRoot || `deck:${row.deckId}`;
+    const label = row.workspaceRoot
+      ? `${path.basename(row.workspaceRoot)}/`
+      : `◆ ${truncateName(row.deckName)}`;
+    const group = byGroup.get(key) ?? { label, rows: [] };
+    group.rows.push(row);
+    byGroup.set(key, group);
   }
 
-  for (const workspaceRoot of [...byWorkspace.keys()].sort()) {
-    lines.push(`${path.basename(workspaceRoot)}/ | size=11 color=gray`);
-    const rows = [...byWorkspace.get(workspaceRoot)!].sort((a, b) =>
+  for (const key of [...byGroup.keys()].sort()) {
+    const { label, rows: groupRows } = byGroup.get(key)!;
+    lines.push(`${label} | size=11 color=gray`);
+    const rows = [...groupRows].sort((a, b) =>
       a.lastActivityAt < b.lastActivityAt ? 1 : -1,
     );
     for (const row of rows) {

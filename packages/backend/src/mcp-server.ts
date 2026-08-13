@@ -4,6 +4,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
+  AGENT_DECK_DECK_ID_HEADER,
   countDeckCards,
   formatDisplayLine,
 } from '@agent-deck/shared';
@@ -136,30 +137,32 @@ export class AgentDeckMCPServer {
 
   private async registerLiveDisplay(sessionId: string): Promise<void> {
     const snapshot = this.sessionBinding.getBinding(sessionId);
-    if (!snapshot.workspaceRoot) {
-      return;
-    }
-
-    const deck = await this.callBackendAPI('/api/scope/deck');
+    // A deck bind is what makes a session live; the workspace may be absent
+    // (header/auto-bound sessions surface in the dashboard without a folder).
+    const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
     if (!deck?.id || !deck?.name) {
       return;
     }
 
     const clientName = this.sessions.get(sessionId)?.server.server.getClientVersion()?.name;
-    const result = await this.callBackendAPI('/api/scope/live-display', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mcpSessionId: sessionId,
-        workspaceRoot: snapshot.workspaceRoot,
-        deckId: deck.id,
-        deckName: deck.name,
-        source: resolveDeckBindingSource(snapshot),
-        clientName,
-        cardCounts: countDeckCards(deck),
-        updatedAt: new Date().toISOString(),
-      }),
-    });
+    const result = await this.callBackendAPI(
+      '/api/scope/live-display',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mcpSessionId: sessionId,
+          workspaceRoot: snapshot.workspaceRoot,
+          deckId: deck.id,
+          deckName: deck.name,
+          source: resolveDeckBindingSource(snapshot),
+          clientName,
+          cardCounts: countDeckCards(deck),
+          updatedAt: new Date().toISOString(),
+        }),
+      },
+      sessionId,
+    );
     if (result && typeof result.badge === 'string') {
       this.badgeBySession.set(sessionId, result.badge);
     }
@@ -197,12 +200,20 @@ export class AgentDeckMCPServer {
     }
   }
 
-  private async callBackendAPI(endpoint: string, init: RequestInit = {}): Promise<any> {
+  private async callBackendAPI(
+    endpoint: string,
+    init: RequestInit = {},
+    sessionId?: string,
+  ): Promise<any> {
     try {
+      // Pin the session explicitly when given, so an async call (e.g. the
+      // fire-and-forget register at init) isn't scoped to whichever request
+      // last set activeSessionId.
+      const headers = this.sessionBinding.getAgentHeaders(sessionId ?? this.getSessionId());
       const response = await fetch(`${this.backendUrl}${endpoint}`, {
         ...init,
         headers: {
-          ...this.getAgentHeaders(),
+          ...headers,
           ...(init.headers ?? {}),
         },
       });
@@ -567,6 +578,20 @@ export class AgentDeckMCPServer {
     return typeof value === 'string' ? value : undefined;
   }
 
+  /**
+   * Pre-bind a newly-initialized session to the deck the client advertised via the
+   * `x-agent-deck-deck-id` header (written into the workspace's MCP config by
+   * `agent-deck use`). Removes the "agent forgot to call bind_workspace" gap; an
+   * explicit bind_workspace / switch_bound_deck later still overrides it.
+   */
+  private preBindSessionDeck(sessionId: string, req: Request): void {
+    const value = req.headers[AGENT_DECK_DECK_ID_HEADER];
+    const deckId = typeof value === 'string' ? value.trim() : undefined;
+    if (deckId) {
+      this.sessionBinding.setDeckId(sessionId, deckId);
+    }
+  }
+
   private async handleMcpPost(req: Request, res: Response): Promise<void> {
     const sessionIdHeader = this.getSessionIdHeader(req);
     const existing = sessionIdHeader ? this.sessions.get(sessionIdHeader) : undefined;
@@ -624,6 +649,17 @@ export class AgentDeckMCPServer {
       this.sessions.set(transport.sessionId, { transport, server });
     }
     this.activeSessionId = transport.sessionId;
+
+    // Pre-bind this session to the deck the client advertised (agent-deck use).
+    // Done here (after handleRequest) rather than only in onsessioninitialized so
+    // it also covers the fallback path where that callback does not fire; setDeckId
+    // is idempotent. Then surface header/auto-bound sessions in the dashboard list.
+    if (transport.sessionId) {
+      this.preBindSessionDeck(transport.sessionId, req);
+      if (this.sessionBinding.hasSessionDeckOverride(transport.sessionId)) {
+        void this.registerLiveDisplay(transport.sessionId).catch(() => {});
+      }
+    }
   }
 
   private async handleMcpSessionRequest(req: Request, res: Response): Promise<void> {
