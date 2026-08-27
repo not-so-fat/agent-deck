@@ -209,7 +209,9 @@ export default function ServiceDetailsModal({
     enabled: hasValidService && apiService.type === 'mcp' && isOpen && oauthRequired,
     refetchInterval: (query) => {
       const data = query.state.data;
-      if (data?.authenticated) {
+      // Stop polling once auth is good OR refresh failed — retrying a dead
+      // refresh token every 2s hammers the provider until Connect/close.
+      if (data?.authenticated || data?.refreshFailed) {
         return false;
       }
       return 2000;
