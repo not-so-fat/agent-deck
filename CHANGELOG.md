@@ -12,10 +12,9 @@
 
 ### OAuth silent refresh (stop daily Connect)
 
-- **Status endpoint** (`GET /api/oauth/:serviceId/status`) calls `getValidAccessToken` before reporting auth — expired access tokens renew silently when a refresh token exists; returns `refreshFailed` when renewal fails.
+- **Status endpoint** (`GET /api/oauth/:serviceId/status`) renews expired access tokens silently when a refresh token exists — concurrent renewals for the same card are deduped so rotation-safe providers do not invalidate each other; returns `refreshFailed` when renewal fails.
 - **Collection warnings:** `oauth_expired` only when there is **no** refresh token (expired-but-refreshable is not an error on the home view).
 - **Dashboard MCP card:** authenticated + refreshable shows `Access expires … · renews automatically`; refresh failure still prompts Connect.
-- **Single-flight refresh** per service so concurrent status polls / tool calls cannot race Linear-style refresh-token rotation.
 
 ### After upgrade
 
