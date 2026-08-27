@@ -99,7 +99,7 @@ export async function createServer() {
   void serviceManager.migrateSecretHeadersToVault();
   const playbookManager = new PlaybookManager(db, storeWriter);
   const patchManager = new PatchManager(db, playbookManager);
-  const collectionWarningService = new CollectionWarningService();
+  const collectionWarningService = new CollectionWarningService(oauthManager);
   const liveDisplayRegistry = new LiveDisplayRegistry();
 
   // Register routes

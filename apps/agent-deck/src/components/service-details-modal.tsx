@@ -18,6 +18,42 @@ import {
   parseHeadersJson,
 } from "@/lib/service-headers";
 
+type OAuthUiStatus =
+  | 'not_required'
+  | 'authenticated'
+  | 'authenticated_refreshable'
+  | 'expired'
+  | 'refresh_failed'
+  | 'required';
+
+function isOAuthUsable(status: OAuthUiStatus): boolean {
+  return (
+    status === 'not_required' ||
+    status === 'authenticated' ||
+    status === 'authenticated_refreshable'
+  );
+}
+
+function formatOAuthExpiry(expiresAt?: string): string {
+  if (!expiresAt) {
+    return 'unknown';
+  }
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) {
+    return 'soon';
+  }
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) {
+    return `in ${minutes} minute${minutes === 1 ? '' : 's'}`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) {
+    return `in ${hours} hour${hours === 1 ? '' : 's'}`;
+  }
+  const days = Math.round(hours / 24);
+  return `in ${days} day${days === 1 ? '' : 's'}`;
+}
+
 
 // API response type that matches the backend
 interface APIService {
@@ -166,6 +202,7 @@ export default function ServiceDetailsModal({
         isExpired: boolean;
         authenticated: boolean;
         hasRefreshToken: boolean;
+        refreshFailed?: boolean;
         expiresAt?: string;
       };
     },
@@ -179,24 +216,41 @@ export default function ServiceDetailsModal({
     },
   });
 
-  const getOAuthStatus = () => {
+  const getOAuthStatus = (): {
+    status: OAuthUiStatus;
+    message: string | null;
+  } => {
     if (!oauthRequired) {
-      return { status: 'not_required' as const, message: null };
+      return { status: 'not_required', message: null };
+    }
+
+    if (oauthStatusData?.refreshFailed) {
+      return {
+        status: 'refresh_failed',
+        message: 'OAuth renewal failed — please re-authenticate',
+      };
     }
 
     if (oauthStatusData?.authenticated) {
-      return { status: 'authenticated' as const, message: null };
+      if (oauthStatusData.hasRefreshToken && oauthStatusData.expiresAt) {
+        const expiry = formatOAuthExpiry(oauthStatusData.expiresAt);
+        return {
+          status: 'authenticated_refreshable',
+          message: `Access expires ${expiry} · renews automatically`,
+        };
+      }
+      return { status: 'authenticated', message: null };
     }
 
     if (oauthStatusData?.hasToken && oauthStatusData?.isExpired) {
       return {
-        status: 'expired' as const,
+        status: 'expired',
         message: 'OAuth Token Expired - Please re-authenticate',
       };
     }
 
     return {
-      status: 'required' as const,
+      status: 'required',
       message: 'OAuth 2.0 Authentication Required',
     };
   };
@@ -237,7 +291,7 @@ export default function ServiceDetailsModal({
         throw error;
       }
     },
-    enabled: hasValidService && (apiService.type === 'mcp' || apiService.type === 'local-mcp') && isOpen && (apiService.type === 'local-mcp' || oauthStatus.status === 'authenticated' || oauthStatus.status === 'not_required'),
+    enabled: hasValidService && (apiService.type === 'mcp' || apiService.type === 'local-mcp') && isOpen && (apiService.type === 'local-mcp' || isOAuthUsable(oauthStatus.status)),
     staleTime: 0,
     gcTime: 2 * 60 * 1000,
   });
@@ -252,7 +306,7 @@ export default function ServiceDetailsModal({
 
     const canLoadTools =
       apiService.type === 'local-mcp' ||
-      oauthStatus.status === 'authenticated' ||
+      isOAuthUsable(oauthStatus.status) ||
       oauthStatus.status === 'not_required';
     if (!canLoadTools || mcpToolsLoading || mcpToolsError) {
       return;
@@ -314,7 +368,7 @@ export default function ServiceDetailsModal({
     isOpen,
     oauthRequired: mcpDiscoveryData?.data?.oauth?.required,
     oauthStatus: oauthStatus.status,
-    toolsQueryEnabled: hasValidService && (apiService.type === 'mcp' || apiService.type === 'local-mcp') && isOpen && (apiService.type === 'local-mcp' || oauthStatus.status === 'authenticated' || oauthStatus.status === 'not_required'),
+    toolsQueryEnabled: hasValidService && (apiService.type === 'mcp' || apiService.type === 'local-mcp') && isOpen && (apiService.type === 'local-mcp' || isOAuthUsable(oauthStatus.status)),
     mcpToolsLoading
   });
 
@@ -855,7 +909,7 @@ export default function ServiceDetailsModal({
                       ? 'Healthy'
                       : apiService.health === 'unhealthy'
                         ? 'Unreachable'
-                        : oauthStatus.status === 'required' || oauthStatus.status === 'expired'
+                        : oauthStatus.status === 'required' || oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed'
                           ? 'Auth required'
                           : 'Unknown'}
                   </Badge>
@@ -1106,16 +1160,23 @@ export default function ServiceDetailsModal({
               </div>
             )}
 
+            {service?.type === 'mcp' && oauthStatus.status === 'authenticated_refreshable' && (
+              <div className="bg-green-500/15 border border-green-500/30 rounded-lg p-4 mb-4">
+                <h3 className="text-green-300 font-semibold mb-2">✓ OAuth connected</h3>
+                <p className="text-green-100 text-sm">{oauthStatus.message}</p>
+              </div>
+            )}
+
             {/* OAuth Status Warning - Show when OAuth is required, expired, or not authenticated */}
-            {service?.type === 'mcp' && oauthStatus.status !== 'authenticated' && oauthStatus.status !== 'not_required' && (
-              <div className={`${oauthStatus.status === 'expired' ? 'bg-red-500/20 border-red-500/30' : 'bg-orange-500/20 border-orange-500/30'} rounded-lg p-4 mb-4`}>
-                <h3 className={`${oauthStatus.status === 'expired' ? 'text-red-300' : 'text-orange-300'} font-semibold mb-2`}>
-                  {oauthStatus.status === 'expired' ? '⏰ Token Expired' : '🔐 Authentication Required'}
+            {service?.type === 'mcp' && !isOAuthUsable(oauthStatus.status) && oauthStatus.status !== 'not_required' && (
+              <div className={`${oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed' ? 'bg-red-500/20 border-red-500/30' : 'bg-orange-500/20 border-orange-500/30'} rounded-lg p-4 mb-4`}>
+                <h3 className={`${oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed' ? 'text-red-300' : 'text-orange-300'} font-semibold mb-2`}>
+                  {oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed' ? '⏰ Token Expired' : '🔐 Authentication Required'}
                 </h3>
-                <div className={`${oauthStatus.status === 'expired' ? 'text-red-200' : 'text-orange-200'} text-sm space-y-2`}>
+                <div className={`${oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed' ? 'text-red-200' : 'text-orange-200'} text-sm space-y-2`}>
                   <p><strong>{oauthStatus.message}</strong></p>
-                  <p>{oauthStatus.status === 'expired' 
-                    ? 'Your OAuth token has expired. Please re-authenticate to continue using this service.'
+                  <p>{oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed'
+                    ? 'Your OAuth token has expired or could not be renewed. Please re-authenticate to continue using this service.'
                     : 'This MCP server requires OAuth authentication to access its tools. Please authenticate to continue.'
                   }</p>
                   

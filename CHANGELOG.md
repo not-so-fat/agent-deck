@@ -8,6 +8,20 @@
 - **After upgrading:** run `agent-deck use --refresh` in each folder that already ran `use` (to rewrite the MCP config with the header), then restart the IDE's MCP host.
 - Known limitation: header auto-bind carries no workspace path, so it only makes deck-scoped tools work — the terminal statusline stays *Unbound*, stub sync does not run on connect, and the dashboard/menubar group these sessions under `◆ <deck>`. Use `bind_workspace` to attach a folder for the statusline + stubs.
 
+## 1.6.4 — 2026-08-27
+
+### OAuth silent refresh (stop daily Connect)
+
+- **Status endpoint** (`GET /api/oauth/:serviceId/status`) calls `getValidAccessToken` before reporting auth — expired access tokens renew silently when a refresh token exists; returns `refreshFailed` when renewal fails.
+- **Collection warnings:** `oauth_expired` only when there is **no** refresh token (expired-but-refreshable is not an error on the home view).
+- **Dashboard MCP card:** authenticated + refreshable shows `Access expires … · renews automatically`; refresh failure still prompts Connect.
+- **Single-flight refresh** per service so concurrent status polls / tool calls cannot race Linear-style refresh-token rotation.
+
+### After upgrade
+
+- Restart the Agent Deck daemon (or rebuild from this commit) so status + warnings pick up silent refresh
+- Open a Linear (or other short-TTL OAuth) card — expect the green renews-automatically line instead of daily re-Connect after access TTL
+
 ## 1.6.3 — 2026-08-11
 
 ### Custom MCP headers persist again

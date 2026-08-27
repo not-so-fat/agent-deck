@@ -145,4 +145,73 @@ describe('OAuthManager PKCE', () => {
     expect(await oauthManager.isTokenExpired(serviceId)).toBe(false);
     expect(await oauthManager.getValidAccessToken(serviceId)).toBe('long-lived-token');
   });
+
+  it('deduplicates concurrent refresh requests for one service', async () => {
+    const services = await db.getAllServices();
+    const serviceId = services[0]!.id;
+    const pastExpiry = new Date(Date.now() - 60_000).toISOString();
+    await tokens.set(serviceId, 'expired-access', 'refresh-token', pastExpiry);
+
+    let refreshCount = 0;
+    const fetchMock = vi.fn().mockImplementation(async () => {
+      refreshCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        ok: true,
+        headers: {
+          get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+        },
+        text: async () =>
+          JSON.stringify({
+            access_token: `access-${refreshCount}`,
+            refresh_token: 'refresh-token',
+            expires_in: 3600,
+            token_type: 'Bearer',
+          }),
+      };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const [first, second] = await Promise.all([
+      oauthManager.getValidAccessToken(serviceId),
+      oauthManager.getValidAccessToken(serviceId),
+    ]);
+
+    expect(first).toBe('access-1');
+    expect(second).toBe('access-1');
+    expect(refreshCount).toBe(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps prior refresh token when provider omits rotation', async () => {
+    const services = await db.getAllServices();
+    const serviceId = services[0]!.id;
+    await tokens.set(serviceId, 'access-token', 'keep-this-refresh');
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      text: async () =>
+        JSON.stringify({
+          access_token: 'new-access',
+          expires_in: 3600,
+          token_type: 'Bearer',
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await oauthManager.refreshOAuthToken({
+      serviceId,
+      refreshToken: 'keep-this-refresh',
+    });
+
+    const bundle = await tokens.get(serviceId);
+    expect(bundle?.accessToken).toBe('new-access');
+    expect(bundle?.refreshToken).toBe('keep-this-refresh');
+
+    vi.unstubAllGlobals();
+  });
 });
