@@ -328,18 +328,31 @@ export async function registerOAuthRoutes(fastify: FastifyInstance) {
         return reply.status(404).send(response);
       }
 
-      const isExpired = await fastify.oauthManager.isTokenExpired(request.params.serviceId);
-      const hasToken = await fastify.oauthManager.hasOAuthTokens(request.params.serviceId);
-      const authenticated = hasToken && !isExpired;
-      
+      const serviceId = request.params.serviceId;
+      const hasToken = await fastify.oauthManager.hasOAuthTokens(serviceId);
+      const hasRefreshToken = await fastify.oauthManager.hasRefreshToken(serviceId);
+      let refreshFailed = false;
+
+      if (hasToken) {
+        const accessToken = await fastify.oauthManager.getValidAccessToken(serviceId);
+        if (!accessToken && hasRefreshToken) {
+          refreshFailed = true;
+        }
+      }
+
+      const refreshedService = await fastify.db.getService(serviceId);
+      const isExpired = await fastify.oauthManager.isTokenExpired(serviceId);
+      const authenticated = hasToken && !isExpired && !refreshFailed;
+
       const response: ApiResponse = {
         success: true,
         data: {
           hasToken,
           isExpired,
           authenticated,
-          hasRefreshToken: await fastify.oauthManager.hasRefreshToken(request.params.serviceId),
-          expiresAt: service.oauthTokenExpiresAt,
+          hasRefreshToken,
+          refreshFailed,
+          expiresAt: refreshedService?.oauthTokenExpiresAt ?? service.oauthTokenExpiresAt,
         },
       };
       

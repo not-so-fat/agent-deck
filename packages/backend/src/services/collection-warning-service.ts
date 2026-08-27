@@ -11,6 +11,7 @@ import {
   type Service,
 } from '@agent-deck/shared';
 import { MCPDiscoveryService } from './mcp-discovery-service';
+import type { OAuthManager } from './oauth-manager';
 
 export type CollectionWarningsPayload = {
   total: number;
@@ -25,6 +26,8 @@ const OAUTH_PROBE_TTL_MS = 5 * 60 * 1000;
 export class CollectionWarningService {
   private discoveryService = new MCPDiscoveryService();
   private oauthRequiredCache = new Map<string, { required: boolean; expiresAt: number }>();
+
+  constructor(private oauthManager?: OAuthManager) {}
 
   private emptyByKind(): Record<CollectionWarningKind, number> {
     return {
@@ -111,13 +114,36 @@ export class CollectionWarningService {
       }),
     );
 
+    const refreshTokenByServiceId: Record<string, boolean> = {};
+    if (this.oauthManager) {
+      await Promise.all(
+        services.map(async (service) => {
+          if (service.type !== 'mcp') {
+            return;
+          }
+          const oauthLikely =
+            service.oauthClientId ||
+            service.oauthAuthorizationUrl ||
+            service.oauthTokenUrl ||
+            serviceWarningContext[service.id]?.oauthRequired;
+          if (!oauthLikely) {
+            return;
+          }
+          refreshTokenByServiceId[service.id] = await this.oauthManager!.hasRefreshToken(service.id);
+        }),
+      );
+    }
+
     const servicesMap: Record<string, CollectionCardWarning[]> = {};
     const credentialsMap: Record<string, CollectionCardWarning[]> = {};
     const playbooksMap: Record<string, CollectionCardWarning[]> = {};
     const byKind = this.emptyByKind();
 
     for (const service of services) {
-      const warnings = getServiceWarnings(service, serviceWarningContext[service.id]);
+      const warnings = getServiceWarnings(service, {
+        ...serviceWarningContext[service.id],
+        hasRefreshToken: refreshTokenByServiceId[service.id],
+      });
       if (warnings.length > 0) {
         servicesMap[service.id] = warnings;
         for (const warning of warnings) {

@@ -71,6 +71,21 @@ describe('collection-warnings', () => {
     expect(expired.some((warning) => warning.kind === 'oauth_expired')).toBe(true);
   });
 
+  it('does not flag oauth expired when refresh token can renew access', () => {
+    const refreshable = getServiceWarnings(
+      {
+        ...baseService,
+        id: '44444444-4444-4444-4444-444444444444',
+        oauthClientId: 'client',
+        oauthAccessToken: 'token',
+        oauthTokenExpiresAt: '2020-01-01T00:00:00.000Z',
+      },
+      { hasRefreshToken: true },
+    );
+
+    expect(refreshable.some((warning) => warning.kind === 'oauth_expired')).toBe(false);
+  });
+
   it('flags missing credential secrets and playbook dependencies', () => {
     expect(
       getCredentialWarnings({

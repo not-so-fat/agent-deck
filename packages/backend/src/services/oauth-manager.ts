@@ -38,6 +38,7 @@ interface OAuthStateEntry {
 
 export class OAuthManager {
   private oauthStates = new Map<string, OAuthStateEntry>();
+  private refreshInFlight = new Map<string, Promise<OAuthToken>>();
 
   getOAuthState(state: string): string | undefined {
     return this.oauthStates.get(state)?.serviceId;
@@ -229,6 +230,19 @@ export class OAuthManager {
   }
 
   async refreshOAuthToken(input: OAuthRefreshInput): Promise<OAuthToken> {
+    const inFlight = this.refreshInFlight.get(input.serviceId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const refreshPromise = this.performRefreshOAuthToken(input).finally(() => {
+      this.refreshInFlight.delete(input.serviceId);
+    });
+    this.refreshInFlight.set(input.serviceId, refreshPromise);
+    return refreshPromise;
+  }
+
+  private async performRefreshOAuthToken(input: OAuthRefreshInput): Promise<OAuthToken> {
     const service = await this.db.getService(input.serviceId);
     if (!service) {
       throw new Error(`Service ${input.serviceId} not found`);

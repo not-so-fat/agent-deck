@@ -35,6 +35,8 @@ export function isOAuthTokenExpiringSoon(expiresAt?: string): boolean {
 export type ServiceWarningContext = {
   /** Live MCP discovery — OAuth required even before client credentials are stored. */
   oauthRequired?: boolean;
+  /** When true, expired access tokens can renew silently — do not warn oauth_expired. */
+  hasRefreshToken?: boolean;
 };
 
 function mcpHasOAuthConfig(service: Service): boolean {
@@ -91,6 +93,9 @@ export function getServiceWarnings(
   }
 
   if (!isOAuthSessionValid(service)) {
+    if (context.hasRefreshToken) {
+      return warnings;
+    }
     warnings.push({
       kind: 'oauth_expired',
       message: 'OAuth token expired — re-authenticate',
