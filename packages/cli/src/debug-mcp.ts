@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { isTcpPortOpen, listListeningPids, probeAgentDeck } from './ports';
-import { parseCliBackendPort, parseCliMcpPort } from './defaults';
+import { readCliBackendPort, parseCliMcpPort } from './defaults';
 
 async function fetchText(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; body: string }> {
   try {
@@ -74,7 +74,7 @@ function readClaudeMcpEntry(): string | null {
 
 export async function runDebugMcp(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
-  const backendPort = parseCliBackendPort(process.env.AGENT_DECK_PORT);
+  const backendPort = readCliBackendPort();
   const mcpPort = parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
   const mcpUrl = `http://${host}:${mcpPort}`;
 

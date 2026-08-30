@@ -4,7 +4,7 @@ import {
   resolveStatusLineWorkspace,
   StatusLinePayloadSchema,
 } from '@agent-deck/shared';
-import { parseCliBackendPort, CLI_DEFAULT_BACKEND_PORT } from './defaults';
+import { parseCliBackendPort, CLI_DEFAULT_BACKEND_PORT, resolveCliBackendPortEnv } from './defaults';
 import { stripAnsi } from './strip-ansi';
 
 const DEFAULT_TIMEOUT_MS = 1500;
@@ -92,8 +92,9 @@ async function fetchDisplay(
 }
 
 export function resolveBackendPorts(): number[] {
-  if (process.env.AGENT_DECK_PORT?.trim()) {
-    return [parseCliBackendPort(process.env.AGENT_DECK_PORT)];
+  const envPort = resolveCliBackendPortEnv();
+  if (envPort?.trim()) {
+    return [parseCliBackendPort(envPort)];
   }
 
   if (process.env.AGENT_DECK_DEV === '1' || process.env.AGENT_DECK_DEV === 'true') {

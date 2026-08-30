@@ -193,14 +193,18 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
   });
 
   fastify.get('/bindings', async (_request, reply) => {
-    const data = fastify.liveDisplayRegistry.list().map((entry) => ({
+    const entries = fastify.liveDisplayRegistry.list();
+    const modes = fastify.trustedSessionStore.getRuntimeSessionModesByMcpSessionIds(
+      entries.map((entry) => entry.mcpSessionId),
+    );
+    const data = entries.map((entry) => ({
       badge: entry.badge,
       deckId: entry.deckId,
       deckName: entry.deckName,
       source: entry.source,
       workspaceRoot: entry.workspaceRoot,
       clientName: entry.clientName,
-      mode: fastify.trustedSessionStore.getRuntimeSessionModeByMcpSessionId(entry.mcpSessionId) ?? undefined,
+      mode: modes.get(entry.mcpSessionId) ?? undefined,
       cardCounts: entry.cardCounts,
       updatedAt: entry.updatedAt,
       lastActivityAt: entry.lastActivityAt,

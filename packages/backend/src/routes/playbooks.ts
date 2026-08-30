@@ -1,4 +1,4 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   ApiResponse,
   DashboardRegisterPlaybookSchema,
@@ -46,6 +46,27 @@ function formatPlaybookMutationError(error: unknown): string {
     return error.issues.map((issue) => issue.message).join('; ');
   }
   return error instanceof Error ? error.message : 'Unknown error';
+}
+
+async function sendPlaybookWithOpenPatches(
+  fastify: FastifyInstance,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  playbook: PlaybookWithDependencies,
+) {
+  await fastify.db.recordPlaybookEvent({
+    id: generateId(),
+    playbookId: playbook.id,
+    event: 'fetched',
+    source: playbookEventSource(request),
+  });
+  const openPatches = await fastify.patchManager.listOpenPatchSummaries(playbook.id);
+  return reply.send({
+    success: true,
+    data: { ...playbook, openPatches },
+  } satisfies ApiResponse<
+    PlaybookWithDependencies & { openPatches: OpenPlaybookPatchSummary[] }
+  >);
 }
 
 export async function registerPlaybookRoutes(fastify: FastifyInstance) {
@@ -136,19 +157,7 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
             error: 'Playbook not found',
           } satisfies ApiResponse);
         }
-        await fastify.db.recordPlaybookEvent({
-          id: generateId(),
-          playbookId: playbook.id,
-          event: 'fetched',
-          source: playbookEventSource(request),
-        });
-        const openPatches = await fastify.patchManager.listOpenPatchSummaries(playbook.id);
-        return reply.send({
-          success: true,
-          data: { ...playbook, openPatches },
-        } satisfies ApiResponse<
-          PlaybookWithDependencies & { openPatches: OpenPlaybookPatchSummary[] }
-        >);
+        return sendPlaybookWithOpenPatches(fastify, request, reply, playbook);
       }
 
       await requirePlaybookOnBoundDeck(request, fastify.db, request.params.id);
@@ -160,20 +169,7 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
         } satisfies ApiResponse);
       }
 
-      await fastify.db.recordPlaybookEvent({
-        id: generateId(),
-        playbookId: playbook.id,
-        event: 'fetched',
-        source: playbookEventSource(request),
-      });
-      const openPatches = await fastify.patchManager.listOpenPatchSummaries(playbook.id);
-
-      return reply.send({
-        success: true,
-        data: { ...playbook, openPatches },
-      } satisfies ApiResponse<
-        PlaybookWithDependencies & { openPatches: OpenPlaybookPatchSummary[] }
-      >);
+      return sendPlaybookWithOpenPatches(fastify, request, reply, playbook);
     } catch (error) {
       const scoped = boundDeckScopeResponse(error);
       if (scoped.error_code) {

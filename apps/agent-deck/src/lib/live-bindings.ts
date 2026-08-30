@@ -102,6 +102,7 @@ export function groupLiveBindings(bindings: LiveBinding[]): LiveSessionGroup[] {
 
   for (const orphan of orphans) {
     let attached = false;
+    // Same deck in multiple workspaces: attach to the first matching group (Map iteration order).
     for (const group of workspaceGroups.values()) {
       if (group.deckIds.has(orphan.deckId)) {
         group.rows.push(orphan);

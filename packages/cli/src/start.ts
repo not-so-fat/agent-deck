@@ -6,7 +6,7 @@ import { clearRunState, writeRunState } from './runtime-state';
 import { runStop } from './stop';
 import { maybeAutoUpgradeOnStart, notifyIfUpdateAvailable } from './upgrade';
 import { getAgentDeckVersion } from './version';
-import { parseCliBackendPort, parseCliMcpPort } from './defaults';
+import { readCliBackendPort, parseCliMcpPort } from './defaults';
 import {
   detectInstallKind,
   localBinLauncherPath,
@@ -161,7 +161,7 @@ function buildSupervisorArgs(options: StartOptions): string[] {
 }
 
 async function runDaemonLauncher(options: StartOptions): Promise<number> {
-  const backendPort = options.backendPort ?? parseCliBackendPort(process.env.AGENT_DECK_PORT);
+  const backendPort = options.backendPort ?? readCliBackendPort();
   const mcpPort = options.mcpPort ?? parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const backendUrl = `http://${host}:${backendPort}`;
@@ -240,7 +240,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
 
   const supervisor = isSupervisorMode(options);
   if (options.daemon && !supervisor) {
-    const backendPort = options.backendPort ?? parseCliBackendPort(process.env.AGENT_DECK_PORT);
+    const backendPort = options.backendPort ?? readCliBackendPort();
     const mcpPort = options.mcpPort ?? parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
     const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
 
@@ -267,7 +267,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   }
 
   const ioMode: SpawnIoMode = supervisor ? 'file' : 'inherit';
-  const backendPort = options.backendPort ?? parseCliBackendPort(process.env.AGENT_DECK_PORT);
+  const backendPort = options.backendPort ?? readCliBackendPort();
   const mcpPort = options.mcpPort ?? parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const backendUrl = `http://${host}:${backendPort}`;
@@ -514,7 +514,7 @@ export async function runDoctor(): Promise<number> {
   }
 
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
-  const backendPort = parseCliBackendPort(process.env.AGENT_DECK_PORT);
+  const backendPort = readCliBackendPort();
   const mcpPort = parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
   const probe = await probeAgentDeck(host, backendPort, mcpPort);
   if (probe.backendUp && probe.mcpUp) {

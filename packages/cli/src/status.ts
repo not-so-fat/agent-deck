@@ -1,11 +1,11 @@
 import { formatPortConflict, isTcpPortOpen, probeAgentDeck } from './ports';
 import { isProcessAlive, readRunState } from './runtime-state';
 import { getAgentDeckVersion } from './version';
-import { parseCliBackendPort, parseCliMcpPort } from './defaults';
+import { readCliBackendPort, parseCliMcpPort } from './defaults';
 
 export async function runStatus(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
-  const backendPort = parseCliBackendPort(process.env.AGENT_DECK_PORT);
+  const backendPort = readCliBackendPort();
   const mcpPort = parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
 
   const probe = await probeAgentDeck(host, backendPort, mcpPort);

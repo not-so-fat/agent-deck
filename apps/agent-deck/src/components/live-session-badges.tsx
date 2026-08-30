@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { LiveBinding } from '@agent-deck/shared';
 import { Radio, Shield } from 'lucide-react';
@@ -35,7 +36,7 @@ export function LiveSessionBadgesPanel({
     ? bindings.filter((row) => row.deckId === highlightDeckId).length
     : 0;
 
-  const grouped = groupLiveBindings(bindings);
+  const grouped = useMemo(() => groupLiveBindings(bindings), [bindings]);
 
   return (
     <>

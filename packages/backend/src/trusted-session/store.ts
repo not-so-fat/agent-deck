@@ -322,14 +322,25 @@ export class TrustedSessionStore {
   }
 
   getRuntimeSessionModeByMcpSessionId(mcpSessionId: string): AgentSessionMode | null {
+    return this.getRuntimeSessionModesByMcpSessionIds([mcpSessionId]).get(mcpSessionId) ?? null;
+  }
+
+  getRuntimeSessionModesByMcpSessionIds(mcpSessionIds: string[]): Map<string, AgentSessionMode> {
+    const uniqueIds = [...new Set(mcpSessionIds.filter(Boolean))];
+    if (uniqueIds.length === 0) {
+      return new Map();
+    }
+
     const now = nowIso();
-    const row = this.db
+    const placeholders = uniqueIds.map(() => '?').join(', ');
+    const rows = this.db
       .prepare(
-        `SELECT mode FROM runtime_sessions
-         WHERE mcp_session_id = ? AND revoked_at IS NULL AND expires_at > ?`,
+        `SELECT mcp_session_id, mode FROM runtime_sessions
+         WHERE mcp_session_id IN (${placeholders}) AND revoked_at IS NULL AND expires_at > ?`,
       )
-      .get(mcpSessionId, now) as { mode: AgentSessionMode } | undefined;
-    return row?.mode ?? null;
+      .all(...uniqueIds, now) as Array<{ mcp_session_id: string; mode: AgentSessionMode }>;
+
+    return new Map(rows.map((row) => [row.mcp_session_id, row.mode]));
   }
 
   revokePendingGrant(grantId: string): void {

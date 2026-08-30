@@ -1,6 +1,6 @@
 import { listListeningPids, probeAgentDeck } from './ports';
 import { clearRunState, isProcessAlive, readRunState } from './runtime-state';
-import { parseCliBackendPort, parseCliMcpPort } from './defaults';
+import { readCliBackendPort, parseCliMcpPort } from './defaults';
 
 function terminatePid(pid: number, label: string): boolean {
   if (!isProcessAlive(pid)) {
@@ -30,7 +30,7 @@ async function waitForShutdown(host: string, backendPort: number, mcpPort: numbe
 
 export async function runStop(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
-  const backendPort = parseCliBackendPort(process.env.AGENT_DECK_PORT);
+  const backendPort = readCliBackendPort();
   const mcpPort = parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
 
   const state = readRunState();

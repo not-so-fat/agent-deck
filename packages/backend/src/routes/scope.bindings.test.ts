@@ -24,6 +24,7 @@ async function buildApp() {
   app.decorate('liveDisplayRegistry', new LiveDisplayRegistry());
   app.decorate('trustedSessionStore', {
     getRuntimeSessionModeByMcpSessionId: () => null,
+    getRuntimeSessionModesByMcpSessionIds: () => new Map(),
   } as unknown as TrustedSessionStore);
   await app.register(registerScopeRoutes, { prefix: '/api/scope' });
   return app;
