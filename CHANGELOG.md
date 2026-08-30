@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.7.0 — 2026-08-31
+
 ### Trusted agent sessions (NOT-45) + bound-deck containment (NOT-44)
 
 - **Workspace grants:** `agent-deck use <deck>` issues a private grant (file + macOS keychain), writes a non-secret MCP launcher config, and removes deck UUIDs from tracked MCP JSON.
@@ -16,11 +18,21 @@
 - **NOT-44 containment:** agents only see/call services on the bound deck (`RESOURCE_OUT_OF_SCOPE` on cross-deck HTTP/MCP); credential/playbook off-deck reads and deck mutations return structured `error_code`; live-session popover shows session mode + rows for the deck being edited.
 - **Migration:** `agent-deck use --refresh` diagnoses only — run explicit `agent-deck use <deck>` to (re)issue grants.
 
-### Deck auto-bind (superseded — remove on 1.7.0 ship)
+### Dashboard frontend
 
-- `agent-deck use <deck>` stamps the deck as an `x-agent-deck-deck-id` header into the workspace's project MCP config; the MCP server pre-binds each session to that deck on connect, so deck-scoped tools work without the agent calling `bind_workspace`. Folders that never ran `use` stay unbound.
-- **After upgrading:** run `agent-deck use --refresh` in each folder that already ran `use` (to rewrite the MCP config with the header), then restart the IDE's MCP host.
-- Known limitation: header auto-bind carries no workspace path, so it only makes deck-scoped tools work — the terminal statusline stays *Unbound*, stub sync does not run on connect, and the dashboard/menubar group these sessions under `◆ <deck>`. Use `bind_workspace` to attach a folder for the statusline + stubs.
+- **React 19:** bump `react` / `react-dom` to 19.2.8; `@testing-library/react` v16; root `overrides` + Vite dedupe for a single React copy in the monorepo.
+
+### Dependencies
+
+- Bump openid-client, Radix UI (accordion, hover-card), jsdom (dev), and HOL plugin scanner GitHub Action.
+
+### After upgrade
+
+- Restart the Agent Deck daemon (or `agent-deck install` / managed activate) so backend, MCP, and dashboard pick up trusted sessions + containment.
+- In **each workspace** that uses Agent Deck MCP: run `agent-deck use <deck>` (not just `--refresh`) to issue the workspace grant, then restart the IDE MCP host (Cursor / Claude Code).
+- Re-run `agent-deck setup --client cursor|claude` if statusline/menubar wrappers are stale.
+- For agent-admin deck edits: approve elevation at `/admin/approve` (or menubar pending-approval link) before `bind_workspace` / deck mutations.
+- Expect agents to stay within the bound deck — cross-deck service/playbook access returns `RESOURCE_OUT_OF_SCOPE`.
 
 ## 1.6.4 — 2026-08-27
 

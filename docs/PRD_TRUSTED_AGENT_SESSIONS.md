@@ -1,8 +1,9 @@
 ---
-status: draft
+status: shipped
 linear: NOT-45
 related: NOT-44
 playbooks: pb_ai_codegen_prd, pb_product_principle
+shipped: 1.7.0
 ---
 
 # Trusted agent sessions & ephemeral admin mode — AI Codegen PRD
