@@ -10,10 +10,9 @@ import {
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
 import { registerExportImportRoutes } from './export-import';
+import { dashboardAuthHeaders } from '../test/auth-fixtures';
 
-const dashboardHeaders = {
-  [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_DASHBOARD_CLIENT,
-};
+const dashboardHeaders = dashboardAuthHeaders();
 const agentHeaders = {
   [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
 };

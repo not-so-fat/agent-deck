@@ -2,8 +2,8 @@
  * MCP tool exposure tiers — keep the agent runtime path small.
  *
  * AGENT_DECK_MCP_TOOL_PROFILE:
- *   runtime  — bind, read bound deck, playbooks, proxy (~9 tools)
- *   standard — runtime + deck editing + create_deck (default, ~16 tools)
+ *   runtime  — bind, read bound deck, playbooks, proxy (~12 tools)
+ *   standard — runtime + deck editing + admin elevation (~20 tools)
  *   legacy   — standard + deprecated aliases (compat during host cache refresh)
  *
  * Rare ops (delete card, import/export) are CLI / dashboard — not MCP profiles.

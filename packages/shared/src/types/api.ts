@@ -1,10 +1,11 @@
+import type { TrustedSessionErrorCode } from '../schemas/trusted-session';
 import type { McpErrorCode, ServiceToolErrorDetails } from './service';
 
 export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
   error?: string;
-  error_code?: McpErrorCode;
+  error_code?: McpErrorCode | TrustedSessionErrorCode;
   details?: ServiceToolErrorDetails;
   message?: string;
 }

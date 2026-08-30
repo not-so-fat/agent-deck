@@ -51,8 +51,9 @@ function dashboardOnlyResponse(error: unknown): { status: number; body: ApiRespo
 
 export async function registerCredentialRoutes(fastify: FastifyInstance) {
   // Metadata for all registered credentials (no secret values) — agent-safe for linking to decks
-  fastify.get('/collection', async (_request, reply) => {
+  fastify.get('/collection', async (request, reply) => {
     try {
+      requireDashboardClient(request);
       const credentials = await fastify.credentialManager.list();
       const response: ApiResponse<Credential[]> = {
         success: true,

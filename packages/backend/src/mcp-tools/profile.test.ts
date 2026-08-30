@@ -23,23 +23,25 @@ describe('resolveMcpToolProfile', () => {
 describe('tool tiers by profile', () => {
   it('runtime stays under the recommended budget', () => {
     const names = listToolNamesForProfile('runtime');
-    expect(names.length).toBeLessThanOrEqual(10);
+    expect(names.length).toBeLessThanOrEqual(12);
     expect(names).toContain('bind_workspace');
     expect(names).toContain('call_service_tool');
     expect(names).not.toContain('manage_deck_card');
     expect(names).not.toContain('create_deck');
   });
 
-  it('standard includes editing tools and create_deck, not rare deletes or legacy aliases', () => {
+  it('standard includes admin elevation tools and editing tools', () => {
     const names = listToolNamesForProfile('standard');
     expect(names).toContain('manage_deck_card');
     expect(names).toContain('list_collection');
     expect(names).toContain('create_deck');
+    expect(names).toContain('request_admin_elevation');
+    expect(names).toContain('exit_admin_mode');
     expect(names).not.toContain('delete_service');
     expect(names).not.toContain('delete_playbook');
     expect(names).not.toContain('add_service_to_bound_deck');
     expect(names).not.toContain('list_playbooks');
-    expect(names.length).toBeLessThanOrEqual(18);
+    expect(names.length).toBeLessThanOrEqual(20);
   });
 
   it('legacy adds deprecated aliases', () => {

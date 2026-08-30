@@ -14,12 +14,14 @@ import {
 import {
   applyDeckScope,
   getClientScope,
+  isDashboardClient,
 } from '../lib/client-scope';
 import {
   boundDeckScopeResponse,
   requireBoundDeckScope,
 } from '../lib/bound-deck-scope';
 import { AgentDeckContextError, resolveAgentDeckId } from '../lib/agent-deck-context';
+import { requireAgentAdmin, requireDashboard, RoutePolicyError, sendRoutePolicyError } from '../lib/route-policy';
 import { resolveDeckRef } from '../lib/deck-resolve';
 import { triggerWarningsForDeck } from '../playbooks/stub-workspace-sync';
 import { CredentialManager } from '../vault/credential-manager';
@@ -157,6 +159,9 @@ export async function registerDeckRoutes(
   // Create deck
   fastify.post<CreateDeckRequest>('/', async (request, reply) => {
     try {
+      if (!isDashboardClient(request)) {
+        requireAgentAdmin(request);
+      }
       const deck = await fastify.db.createDeck(request.body);
       await flushDeck(fastify.db, deck.id, storeWriter);
       
@@ -167,6 +172,9 @@ export async function registerDeckRoutes(
       
       return reply.status(201).send(response);
     } catch (error) {
+      if (error instanceof RoutePolicyError) {
+        return sendRoutePolicyError(reply, error);
+      }
       const response: ApiResponse = {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -180,34 +188,24 @@ export async function registerDeckRoutes(
   fastify.get('/', async (request, reply) => {
     try {
       const scope = getClientScope(request);
-      let visibleDeckId: string | undefined;
 
       if (scope === 'agent') {
-        try {
-          visibleDeckId = await resolveAgentDeckId(request, fastify.db);
-        } catch (error) {
-          if (!(error instanceof AgentDeckContextError)) {
-            throw error;
-          }
+        const visibleDeckId = await resolveAgentDeckId(request, fastify.db);
+        const deck = await fastify.db.getDeck(visibleDeckId);
+        if (!deck) {
+          return reply.send({ success: true, data: [] } satisfies ApiResponse<DeckListEntry[]>);
         }
-      }
-
-      const decks = await fastify.db.getAllDecks();
-
-      if (scope === 'agent') {
-        const list: DeckListEntry[] = decks.map((deck) => ({
+        const list: DeckListEntry[] = [{
           id: deck.id,
           name: deck.name,
           isActive: deck.isActive,
           cardCounts: countDeckCards(deck),
-        }));
-
-        return reply.send({
-          success: true,
-          data: list,
-        } satisfies ApiResponse<DeckListEntry[]>);
+        }];
+        return reply.send({ success: true, data: list } satisfies ApiResponse<DeckListEntry[]>);
       }
 
+      let visibleDeckId: string | undefined;
+      const decks = await fastify.db.getAllDecks();
       const decksWithSecrets = await enrichDeckServicesWithSecretHeaders(
         fastify.serviceHeaderVault,
         await enrichDecksWithCredentialSecrets(fastify.credentialManager, decks),

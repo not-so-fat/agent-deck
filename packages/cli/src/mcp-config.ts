@@ -2,8 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { AGENT_DECK_DECK_ID_HEADER } from '@agent-deck/shared';
-
 import { sanitizeJsonText } from './strip-ansi';
 
 export type McpClient = 'cursor' | 'claude' | 'claude-desktop';
@@ -48,33 +46,35 @@ export function resolveConfigPath(
 }
 
 /**
- * MCP client entry for the agent-deck server. When `deckId` is given, the deck is
- * carried as a request header (`x-agent-deck-deck-id`) so the server pre-binds this
- * workspace's session to that deck on connect — no `bind_workspace` call needed.
- * The id is a portable UUID (safe to commit); the absolute workspace path is not,
- * so it is intentionally omitted.
+ * MCP client entry for the agent-deck server. Uses the trusted local launcher,
+ * which reads the private workspace grant at runtime — no deck id in tracked config.
  */
-export function buildAgentDeckEntry(
-  client: McpClient,
-  endpoint: McpEndpoint,
-  deckId?: string,
-): Record<string, unknown> {
+export function buildAgentDeckEntry(client: McpClient, endpoint: McpEndpoint): Record<string, unknown> {
   const url = buildMcpUrl(endpoint);
-  const headers = deckId ? { [AGENT_DECK_DECK_ID_HEADER]: deckId } : undefined;
 
   if (client === 'claude-desktop') {
-    const args = ['-y', 'supergateway', '--streamableHttp', url];
-    if (deckId) {
-      args.push('--header', `${AGENT_DECK_DECK_ID_HEADER}:${deckId}`);
-    }
-    return { command: 'npx', args };
+    return {
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+    };
   }
 
   if (client === 'claude') {
-    return headers ? { type: 'http', url, headers } : { type: 'http', url };
+    return {
+      type: 'stdio',
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+    };
   }
 
-  return headers ? { url, headers } : { url };
+  return {
+    command: 'agent-deck',
+    args: ['mcp-launch'],
+    env: {
+      AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
+      AGENT_DECK_HOST: endpoint.host,
+    },
+  };
 }
 
 export function readJsonFile(filePath: string): Record<string, unknown> {

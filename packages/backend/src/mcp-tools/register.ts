@@ -4,6 +4,7 @@ import type { StubBindSyncResult } from '../playbooks/stub-sync';
 import { resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
+import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard } from './policy';
 
 type RegisterToolFn = (
   name: string,
@@ -15,6 +16,7 @@ export type McpToolHost = {
   registerTool: RegisterToolFn;
   profile: McpToolProfile;
   getSessionId(): string;
+  getMode(): 'normal' | 'agent-admin';
   getAgentHeaders(): Record<string, string>;
   getBoundDeckId(): Promise<string>;
   callBackendAPI(endpoint: string, init?: RequestInit): Promise<any>;
@@ -30,9 +32,20 @@ export type McpToolHost = {
       workspaceRoot?: string;
       deckId?: string;
       deckSource?: string;
+      runtimeSessionId?: string;
+      mode?: 'normal' | 'agent-admin';
     };
     setWorkspace(sessionId: string, workspaceRoot: string): void;
     setDeckId(sessionId: string, deckId: string): void;
+    setTrustedSession(
+      sessionId: string,
+      input: {
+        runtimeSessionId: string;
+        deckId: string;
+        workspaceRoot?: string;
+        mode?: 'normal' | 'agent-admin';
+      },
+    ): void;
     hasSessionDeckOverride(sessionId: string): boolean;
   };
   badgeBySession: Map<string, string>;
@@ -67,8 +80,15 @@ function registerRuntimeTools(host: McpToolHost): void {
   }, async ({ workspaceRoot, deckId }) => {
     try {
       const sessionId = host.getSessionId();
-      host.sessionBinding.setWorkspace(sessionId, workspaceRoot);
+      const current = host.sessionBinding.getBinding(sessionId);
       const deck = await host.fetchDeck(deckId);
+      if (current.deckId && current.deckId !== deck.id) {
+        const denied = requireMcpAdmin(host);
+        if (denied) {
+          return denied;
+        }
+      }
+      host.sessionBinding.setWorkspace(sessionId, workspaceRoot);
       host.sessionBinding.setDeckId(sessionId, deck.id);
       let stubSync: StubBindSyncResult | null = null;
       try {
@@ -117,6 +137,10 @@ function registerRuntimeTools(host: McpToolHost): void {
       'Switch the deck for this MCP session only. Use when multiple agent sessions share the same workspace path.',
     inputSchema: { deckId: z.string().min(1) },
   }, async ({ deckId }) => {
+    const denied = requireMcpAdmin(host);
+    if (denied) {
+      return denied;
+    }
     try {
       const sessionId = host.getSessionId();
       const snapshot = host.sessionBinding.getBinding(sessionId);
@@ -200,8 +224,12 @@ function registerRuntimeTools(host: McpToolHost): void {
     inputSchema: {},
   }, async () => {
     try {
-      const decks = await host.callBackendAPI('/api/decks');
-      return host.toolResult(decks);
+      if (host.getMode() === 'agent-admin') {
+        const decks = await host.callBackendAPI('/api/decks');
+        return host.toolResult(decks);
+      }
+      const deck = await host.callBackendAPI('/api/scope/deck');
+      return host.toolResult(deck ? [{ id: deck.id, name: deck.name, cardCounts: countDeckCards(deck) }] : []);
     } catch (error) {
       return host.toolError(error);
     }
@@ -257,25 +285,56 @@ function registerRuntimeTools(host: McpToolHost): void {
       auto_detect_dependencies: z.boolean().optional(),
     },
   }, async ({ playbook_id, ...args }) => {
+    const denied = requireMcpDashboard();
+    if (denied) return denied;
+    return mcpPolicyError('DASHBOARD_REQUIRED');
+  });
+
+  r('request_admin_elevation', {
+    title: 'Request Admin Elevation',
+    description: 'Request ephemeral agent-admin mode for deck administration. Opens dashboard approval.',
+    inputSchema: {},
+  }, async () => {
     try {
-      const playbook = await host.callBackendAPI(
-        `/api/playbooks/${encodeURIComponent(playbook_id)}`,
-        {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: args.title,
-            body: args.body,
-            triggers: args.triggers,
-            exec: args.exec,
-            skill: args.skill,
-            dependsOnCredentialIds: args.depends_on_credential_ids,
-            dependsOnServiceIds: args.depends_on_service_ids,
-            autoDetectDependencies: args.auto_detect_dependencies,
-          }),
-        },
-      );
-      return host.toolResult(playbook);
+      const binding = host.sessionBinding.getBinding(host.getSessionId());
+      const runtimeSessionId = binding.runtimeSessionId;
+      if (!runtimeSessionId) {
+        return mcpPolicyError('GRANT_REQUIRED');
+      }
+      const result = await host.callBackendAPI('/api/trusted-session/admin/request-elevation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runtimeSessionId }),
+      });
+      return host.toolResult(result);
+    } catch (error) {
+      return host.toolError(error);
+    }
+  });
+
+  r('exit_admin_mode', {
+    title: 'Exit Admin Mode',
+    description: 'Downgrade this session from agent-admin back to normal mode.',
+    inputSchema: {},
+  }, async () => {
+    try {
+      const binding = host.sessionBinding.getBinding(host.getSessionId());
+      const runtimeSessionId = binding.runtimeSessionId;
+      if (!runtimeSessionId) {
+        return mcpPolicyError('GRANT_REQUIRED');
+      }
+      await host.callBackendAPI('/api/trusted-session/admin/exit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runtimeSessionId }),
+      });
+      host.sessionBinding.setTrustedSession(host.getSessionId(), {
+        runtimeSessionId,
+        deckId: binding.deckId ?? '',
+        workspaceRoot: binding.workspaceRoot,
+        mode: 'normal',
+      });
+      return host.toolResult({ mode: 'normal' });
     } catch (error) {
       return host.toolError(error);
     }
@@ -441,6 +500,8 @@ function registerEditingTools(host: McpToolHost): void {
       ordered_card_ids: z.array(z.string()).optional(),
     },
   }, async (input) => {
+    const denied = requireMcpAdmin(host);
+    if (denied) return denied;
     try {
       const result = await executeManageDeckCard(host, input);
       return host.toolResult(result);
@@ -457,6 +518,8 @@ function registerEditingTools(host: McpToolHost): void {
       card_type: cardTypeSchema.optional(),
     },
   }, async (input) => {
+    const denied = requireMcpAdmin(host);
+    if (denied) return denied;
     try {
       const result = await executeListCollection(host, input);
       return host.toolResult(result);
@@ -481,28 +544,10 @@ function registerEditingTools(host: McpToolHost): void {
       add_to_bound_deck: z.boolean().optional(),
       auto_detect_dependencies: z.boolean().optional(),
     },
-  }, async (args) => {
-    try {
-      const playbook = await host.callBackendAPI('/api/playbooks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: args.title,
-          body: args.body,
-          triggers: args.triggers,
-          id: args.playbook_id,
-          exec: args.exec,
-          skill: args.skill,
-          dependsOnCredentialIds: args.depends_on_credential_ids,
-          dependsOnServiceIds: args.depends_on_service_ids,
-          addToBoundDeck: args.add_to_bound_deck,
-          autoDetectDependencies: args.auto_detect_dependencies,
-        }),
-      });
-      return host.toolResult(playbook);
-    } catch (error) {
-      return host.toolError(error);
-    }
+  }, async () => {
+    const denied = requireMcpDashboard();
+    if (denied) return denied;
+    return mcpPolicyError('DASHBOARD_REQUIRED');
   });
 
   r('register_service', {
@@ -524,28 +569,10 @@ function registerEditingTools(host: McpToolHost): void {
       add_to_bound_deck: z.boolean().optional(),
       position: z.number().optional(),
     },
-  }, async (args) => {
-    try {
-      const { add_to_bound_deck, position, ...serviceInput } = args;
-      const service = await host.callBackendAPI('/api/services', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(serviceInput),
-      });
-
-      if (add_to_bound_deck !== false) {
-        await executeManageDeckCard(host, {
-          action: 'link',
-          card_type: 'service',
-          card_id: service.id,
-          position,
-        });
-      }
-
-      return host.toolResult(service);
-    } catch (error) {
-      return host.toolError(error);
-    }
+  }, async () => {
+    const denied = requireMcpDashboard();
+    if (denied) return denied;
+    return mcpPolicyError('DASHBOARD_REQUIRED');
   });
 
   r('update_service', {
@@ -566,16 +593,9 @@ function registerEditingTools(host: McpToolHost): void {
       localEnv: z.record(z.string()).optional(),
     },
   }, async ({ service_id, ...updates }) => {
-    try {
-      const service = await host.callBackendAPI(`/api/services/${service_id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-      return host.toolResult(service);
-    } catch (error) {
-      return host.toolError(error);
-    }
+    const denied = requireMcpDashboard();
+    if (denied) return denied;
+    return mcpPolicyError('DASHBOARD_REQUIRED');
   });
 
   r('update_service_tool_settings', {
@@ -585,17 +605,10 @@ function registerEditingTools(host: McpToolHost): void {
       service_id: z.string(),
       disabled_tools: z.array(z.string()),
     },
-  }, async ({ service_id, disabled_tools }) => {
-    try {
-      const service = await host.callBackendAPI(`/api/services/${service_id}/tool-settings`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ disabledTools: disabled_tools }),
-      });
-      return host.toolResult(service);
-    } catch (error) {
-      return host.toolError(error);
-    }
+  }, async () => {
+    const denied = requireMcpDashboard();
+    if (denied) return denied;
+    return mcpPolicyError('DASHBOARD_REQUIRED');
   });
 
   r('create_deck', {
@@ -605,6 +618,8 @@ function registerEditingTools(host: McpToolHost): void {
       name: z.string(),
     },
   }, async ({ name }) => {
+    const denied = requireMcpAdmin(host);
+    if (denied) return denied;
     try {
       const deck = await host.callBackendAPI('/api/decks', {
         method: 'POST',
@@ -815,6 +830,7 @@ export function listToolNamesForProfile(profile: McpToolProfile): string[] {
     registerTool: collector,
     profile,
     getSessionId: () => 'stub',
+    getMode: () => 'normal' as const,
     getAgentHeaders: () => ({}),
     getBoundDeckId: async () => 'deck',
     callBackendAPI: async () => ({}),
@@ -826,6 +842,7 @@ export function listToolNamesForProfile(profile: McpToolProfile): string[] {
       getBinding: () => ({}),
       setWorkspace: () => {},
       setDeckId: () => {},
+      setTrustedSession: () => {},
       hasSessionDeckOverride: () => false,
     },
     badgeBySession: new Map(),

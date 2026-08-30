@@ -68,6 +68,7 @@ function formatPlaybookMutationError(error: unknown, forAgent: boolean): string 
 export async function registerPlaybookRoutes(fastify: FastifyInstance) {
   fastify.get('/collection', async (request, reply) => {
     try {
+      requireDashboardClient(request);
       const playbooks = await fastify.playbookManager.list();
       return reply.send({ success: true, data: playbooks } satisfies ApiResponse<Playbook[]>);
     } catch (error) {

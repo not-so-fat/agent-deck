@@ -12,10 +12,9 @@ import { DatabaseManager } from '../models/database';
 import { PlaybookManager } from '../playbooks/playbook-manager';
 import { PatchManager } from '../playbooks/patch-manager';
 import { registerPlaybookPatchRoutes } from './playbook-patches';
+import { dashboardAuthHeaders } from '../test/auth-fixtures';
 
-const dashboardHeaders = {
-  [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_DASHBOARD_CLIENT,
-};
+const dashboardHeaders = dashboardAuthHeaders();
 const agentHeaders = {
   [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
 };

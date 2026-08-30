@@ -2083,6 +2083,10 @@ export class DatabaseManager {
   }
 
   // Cleanup
+  getSqliteDatabase(): Database.Database {
+    return this.db;
+  }
+
   close(): void {
     this.db.close();
   }

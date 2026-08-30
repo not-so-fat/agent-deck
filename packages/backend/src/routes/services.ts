@@ -18,6 +18,12 @@ import {
   boundDeckScopeResponse,
   requireServiceOnBoundDeck,
 } from '../lib/bound-deck-scope';
+import {
+  requireDashboard,
+  RoutePolicyError,
+  sendRoutePolicyError,
+} from '../lib/route-policy';
+import { resolveAgentDeckId } from '../lib/agent-deck-context';
 
 let lastBackgroundHealthProbeAt = 0;
 const BACKGROUND_HEALTH_PROBE_COOLDOWN_MS = 30_000;
@@ -57,6 +63,7 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   // Create service
   fastify.post<CreateServiceRequest>('/', async (request, reply) => {
     try {
+      requireDashboard(request);
       const service = await fastify.serviceManager.createService(request.body);
 
       const response: ApiResponse<Service> = {
@@ -67,6 +74,9 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
 
       return reply.status(201).send(response);
     } catch (error) {
+      if (error instanceof RoutePolicyError) {
+        return sendRoutePolicyError(reply, error);
+      }
       const response: ApiResponse = {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -79,8 +89,19 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   // Get all services
   fastify.get('/', async (request, reply) => {
     try {
-      const services = await fastify.serviceManager.getAllServices();
       const dashboard = isDashboardClient(request);
+
+      if (!dashboard) {
+        const deckId = await resolveAgentDeckId(request, fastify.db);
+        const deck = await fastify.db.getDeck(deckId);
+        const services = deck?.services ?? [];
+        return reply.send({
+          success: true,
+          data: services.map(sanitizeServiceForAgent),
+        } satisfies ApiResponse<Service[]>);
+      }
+
+      const services = await fastify.serviceManager.getAllServices();
 
       if (dashboard) {
         const now = Date.now();
@@ -175,6 +196,10 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   // Get service by ID
   fastify.get<ServiceIdRequest>('/:id', async (request, reply) => {
     try {
+      if (!isDashboardClient(request)) {
+        await requireServiceOnBoundDeck(request, fastify.db, request.params.id);
+      }
+
       const service = await fastify.serviceManager.getService(request.params.id);
       
       if (!service) {
@@ -194,18 +219,27 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
 
       return reply.send(response);
     } catch (error) {
+      const scoped = boundDeckScopeResponse(error);
+      if (scoped.error_code) {
+        return reply.status(scoped.status).send({
+          success: false,
+          error: scoped.message,
+          error_code: scoped.error_code,
+        } satisfies ApiResponse);
+      }
       const response: ApiResponse = {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
       };
 
-      return reply.status(500).send(response);
+      return reply.status(scoped.status).send(response);
     }
   });
 
   // Update service
   fastify.put<UpdateServiceRequest>('/:id', async (request, reply) => {
     try {
+      requireDashboard(request);
       const service = await fastify.serviceManager.updateService(request.params.id, request.body);
       
       if (!service) {
@@ -225,6 +259,9 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
 
       return reply.send(response);
     } catch (error) {
+      if (error instanceof RoutePolicyError) {
+        return sendRoutePolicyError(reply, error);
+      }
       const response: ApiResponse = {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -237,6 +274,7 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   // Delete service
   fastify.delete<ServiceIdRequest>('/:id', async (request, reply) => {
     try {
+      requireDashboard(request);
       const deleted = await fastify.serviceManager.deleteService(request.params.id);
       
       if (!deleted) {
@@ -275,6 +313,10 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   // Discover service tools
   fastify.get<ServiceIdRequest>('/:id/tools', async (request, reply) => {
     try {
+      if (!isDashboardClient(request)) {
+        await requireServiceOnBoundDeck(request, fastify.db, request.params.id);
+      }
+
       const forAgent = !isDashboardClient(request);
       const tools = await fastify.serviceManager.discoverServiceTools(request.params.id, {
         forAgent,
@@ -294,12 +336,12 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
       
       return reply.send(response);
     } catch (error) {
-      const response: ApiResponse = {
+      const scoped = boundDeckScopeResponse(error);
+      return reply.status(scoped.status).send({
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-      
-      return reply.status(500).send(response);
+        error: scoped.message,
+        error_code: scoped.error_code,
+      } satisfies ApiResponse);
     }
   });
 
@@ -334,6 +376,8 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   // Call service tool
   fastify.post<ServiceCallRequest>('/:id/call', async (request, reply) => {
     try {
+      await requireServiceOnBoundDeck(request, fastify.db, request.params.id);
+
       const result = await fastify.serviceManager.callServiceTool({
         serviceId: request.params.id,
         toolName: request.body.toolName,
@@ -350,12 +394,12 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
       
       return reply.send(response);
     } catch (error) {
-      const response: ApiResponse = {
+      const scoped = boundDeckScopeResponse(error);
+      return reply.status(scoped.status).send({
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-      
-      return reply.status(500).send(response);
+        error: scoped.message,
+        error_code: scoped.error_code,
+      } satisfies ApiResponse);
     }
   });
 

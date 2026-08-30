@@ -417,7 +417,28 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
 
   if (options.openBrowser && uiDist) {
     const open = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    spawn(open, [backendUrl], { stdio: 'ignore', shell: process.platform === 'win32' });
+    void (async () => {
+      let target = backendUrl;
+      try {
+        const { readAdminSecret } = await import('./admin-secret');
+        const secret = await readAdminSecret();
+        if (secret) {
+          const nonceRes = await fetch(`${backendUrl}/api/dashboard-auth/bootstrap/nonce`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${secret}` },
+          });
+          if (nonceRes.ok) {
+            const body = (await nonceRes.json()) as { data?: { nonce?: string } };
+            if (body.data?.nonce) {
+              target = `${backendUrl}/?bootstrap=${encodeURIComponent(body.data.nonce)}`;
+            }
+          }
+        }
+      } catch {
+        // open without bootstrap nonce
+      }
+      spawn(open, [target], { stdio: 'ignore', shell: process.platform === 'win32' });
+    })();
   }
 
   process.on('SIGINT', () => void shutdown(0));

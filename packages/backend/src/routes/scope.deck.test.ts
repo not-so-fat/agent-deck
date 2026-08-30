@@ -6,13 +6,14 @@ import path from 'node:path';
 import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
-  AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
 import { PlaybookManager } from '../playbooks/playbook-manager';
 import { registerScopeRoutes } from './scope';
 import { registerDeckRoutes } from './decks';
+import { agentSessionHeaders } from '../test/auth-fixtures';
+import { TrustedSessionStore } from '../trusted-session/store';
 
 const agentHeaders = {
   [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
@@ -58,6 +59,7 @@ describe('agent scope and deck list routes', () => {
     app.decorate('credentialManager', {
       applySecretStatus: async (credentials: unknown[]) => credentials,
     });
+    app.decorate('trustedSessionStore', new TrustedSessionStore(db.getSqliteDatabase()));
     await app.register(registerScopeRoutes, { prefix: '/api/scope' });
     await app.register(registerDeckRoutes, { prefix: '/api/decks' });
   });
@@ -74,7 +76,7 @@ describe('agent scope and deck list routes', () => {
       url: '/api/scope/deck',
       headers: {
         ...agentHeaders,
-        [AGENT_DECK_DECK_ID_HEADER]: deckId,
+        ...agentSessionHeaders(db, deckId),
         [AGENT_DECK_WORKSPACE_HEADER]: '/repo',
       },
     });
@@ -102,7 +104,10 @@ describe('agent scope and deck list routes', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/decks',
-      headers: agentHeaders,
+      headers: {
+        ...agentHeaders,
+        ...agentSessionHeaders(db, deckId),
+      },
     });
 
     expect(response.statusCode).toBe(200);
@@ -121,7 +126,10 @@ describe('agent scope and deck list routes', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/decks/dev',
-      headers: agentHeaders,
+      headers: {
+        ...agentHeaders,
+        ...agentSessionHeaders(db, deckId),
+      },
     });
 
     expect(response.statusCode).toBe(200);

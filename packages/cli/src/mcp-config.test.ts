@@ -11,52 +11,40 @@ describe('mergeMcpServerConfig', () => {
           memory: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] },
         },
       },
-      { url: 'http://127.0.0.1:3001/mcp' },
+      { command: 'agent-deck', args: ['mcp-launch'] },
     );
 
     expect(merged.mcpServers).toEqual({
       memory: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] },
-      'agent-deck': { url: 'http://127.0.0.1:3001/mcp' },
+      'agent-deck': { command: 'agent-deck', args: ['mcp-launch'] },
     });
   });
 });
 
 describe('buildAgentDeckEntry', () => {
-  it('uses http type for claude', () => {
+  it('uses stdio launcher for claude', () => {
     expect(buildAgentDeckEntry('claude', { host: '127.0.0.1', mcpPort: 3001 })).toEqual({
-      type: 'http',
-      url: 'http://127.0.0.1:3001/mcp',
+      type: 'stdio',
+      command: 'agent-deck',
+      args: ['mcp-launch'],
     });
   });
 
-  it('uses supergateway bridge for claude-desktop', () => {
+  it('uses agent-deck launcher for claude-desktop', () => {
     expect(buildAgentDeckEntry('claude-desktop', { host: '127.0.0.1', mcpPort: 3001 })).toEqual({
-      command: 'npx',
-      args: ['-y', 'supergateway', '--streamableHttp', 'http://127.0.0.1:3001/mcp'],
+      command: 'agent-deck',
+      args: ['mcp-launch'],
     });
   });
 
-  it('carries the deck as a header when deckId is given (claude/cursor)', () => {
-    expect(buildAgentDeckEntry('claude', { host: '127.0.0.1', mcpPort: 3001 }, 'deck-123')).toEqual({
-      type: 'http',
-      url: 'http://127.0.0.1:3001/mcp',
-      headers: { 'x-agent-deck-deck-id': 'deck-123' },
-    });
-    expect(buildAgentDeckEntry('cursor', { host: '127.0.0.1', mcpPort: 3001 }, 'deck-123')).toEqual({
-      url: 'http://127.0.0.1:3001/mcp',
-      headers: { 'x-agent-deck-deck-id': 'deck-123' },
-    });
-  });
-
-  it('passes the deck header via supergateway for claude-desktop', () => {
-    expect(
-      buildAgentDeckEntry('claude-desktop', { host: '127.0.0.1', mcpPort: 3001 }, 'deck-123'),
-    ).toEqual({
-      command: 'npx',
-      args: [
-        '-y', 'supergateway', '--streamableHttp', 'http://127.0.0.1:3001/mcp',
-        '--header', 'x-agent-deck-deck-id:deck-123',
-      ],
+  it('uses agent-deck launcher for cursor with endpoint env', () => {
+    expect(buildAgentDeckEntry('cursor', { host: '127.0.0.1', mcpPort: 3001 })).toEqual({
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+      env: {
+        AGENT_DECK_MCP_PORT: '3001',
+        AGENT_DECK_HOST: '127.0.0.1',
+      },
     });
   });
 });

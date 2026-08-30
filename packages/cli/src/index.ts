@@ -24,6 +24,7 @@ import { runReindexCommand, runStoreCommand } from './store';
 import { runUpgrade } from './upgrade';
 import { runInstall } from './install';
 import { runUseCommand } from './use';
+import { runMcpLaunch } from './mcp-launcher';
 import { getAgentDeckVersion } from './version';
 
 type VaultManager = {
@@ -315,6 +316,8 @@ export async function runCli(argv: string[]): Promise<number> {
     }
     case 'use':
       return runUseCommand(rest);
+    case 'mcp-launch':
+      return runMcpLaunch();
     case 'install':
       return runInstall(rest);
     case 'upgrade':
