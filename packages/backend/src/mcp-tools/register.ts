@@ -83,14 +83,37 @@ function registerRuntimeTools(host: McpToolHost): void {
       const sessionId = host.getSessionId();
       const current = host.sessionBinding.getBinding(sessionId);
       const deck = await host.fetchDeck(deckId);
-      if (current.deckId && current.deckId !== deck.id) {
-        const denied = await requireMcpAdmin(host);
-        if (denied) {
-          return denied;
+      let bindResult: Record<string, unknown> | undefined;
+
+      if (current.runtimeSessionId) {
+        if (current.deckId && current.deckId !== deck.id) {
+          const denied = await requireMcpAdmin(host);
+          if (denied) {
+            return denied;
+          }
         }
+        bindResult = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
+        })) as Record<string, unknown>;
+        host.sessionBinding.setTrustedSession(sessionId, {
+          runtimeSessionId: current.runtimeSessionId,
+          deckId: String(bindResult?.deckId ?? deck.id),
+          workspaceRoot,
+          mode: (bindResult?.mode as 'normal' | 'agent-admin' | undefined) ?? current.mode ?? 'normal',
+        });
+      } else {
+        if (current.deckId && current.deckId !== deck.id) {
+          const denied = await requireMcpAdmin(host);
+          if (denied) {
+            return denied;
+          }
+        }
+        host.sessionBinding.setWorkspace(sessionId, workspaceRoot);
+        host.sessionBinding.setDeckId(sessionId, deck.id);
       }
-      host.sessionBinding.setWorkspace(sessionId, workspaceRoot);
-      host.sessionBinding.setDeckId(sessionId, deck.id);
+
       let stubSync: StubBindSyncResult | null = null;
       try {
         stubSync = await host.syncWorkspaceOnBind(workspaceRoot, deck);
@@ -102,8 +125,16 @@ function registerRuntimeTools(host: McpToolHost): void {
       const response: Record<string, unknown> = {
         ...payload,
         deck_name: deck.name,
-        message: 'Session bound to deck.',
+        message: bindResult?.grantRotated
+          ? 'Workspace grant rotated to new deck. Peer sessions revoked.'
+          : 'Session bound to deck.',
       };
+      if (bindResult?.grantRotated) {
+        response.grant_rotated = true;
+        response.peers_revoked = bindResult.peersRevoked;
+        response.previous_deck_workspace_count = bindResult.previousDeckWorkspaceCount;
+        response.grant_refresh_note = bindResult.grantRefreshNote;
+      }
       if (stubSync) {
         response.stubs = {
           created: stubSync.stubs.cursor.created + stubSync.stubs.claude.created,
@@ -135,7 +166,7 @@ function registerRuntimeTools(host: McpToolHost): void {
   r('switch_bound_deck', {
     title: 'Switch Bound Deck',
     description:
-      'Switch the deck for this MCP session only. Use when multiple agent sessions share the same workspace path.',
+      'Persistently bind this workspace to another deck (requires agent-admin). Rotates the workspace grant and revokes peer sessions.',
     inputSchema: { deckId: z.string().min(1) },
   }, async ({ deckId }) => {
     const denied = await requireMcpAdmin(host);
@@ -146,8 +177,27 @@ function registerRuntimeTools(host: McpToolHost): void {
       const sessionId = host.getSessionId();
       const snapshot = host.sessionBinding.getBinding(sessionId);
       const deck = await host.fetchDeck(deckId);
-      host.sessionBinding.setDeckId(sessionId, deck.id);
       const workspaceRoot = snapshot.workspaceRoot;
+      if (!workspaceRoot) {
+        return host.toolError(new Error('workspaceRoot missing — call bind_workspace first'));
+      }
+      if (!snapshot.runtimeSessionId) {
+        return host.toolError(new Error('GRANT_REQUIRED'));
+      }
+
+      const bound = await host.callBackendAPI('/api/trusted-session/bind-workspace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
+      }) as Record<string, unknown>;
+
+      host.sessionBinding.setTrustedSession(sessionId, {
+        runtimeSessionId: snapshot.runtimeSessionId,
+        deckId: String(bound.deckId ?? deck.id),
+        workspaceRoot,
+        mode: (bound.mode as 'normal' | 'agent-admin' | undefined) ?? 'agent-admin',
+      });
+
       let stubSync: StubBindSyncResult | null = null;
       if (workspaceRoot) {
         try {
@@ -161,8 +211,16 @@ function registerRuntimeTools(host: McpToolHost): void {
       const response: Record<string, unknown> = {
         ...payload,
         deck_name: deck.name,
-        message: 'Session deck switched. Other sessions are unchanged.',
+        message: bound.grantRotated
+          ? 'Workspace grant rotated. Peer sessions on the old grant were revoked.'
+          : 'Already bound to this deck.',
       };
+      if (bound.grantRotated) {
+        response.grant_rotated = true;
+        response.peers_revoked = bound.peersRevoked;
+        response.previous_deck_workspace_count = bound.previousDeckWorkspaceCount;
+        response.grant_refresh_note = bound.grantRefreshNote;
+      }
       if (stubSync) {
         response.stubs = {
           created: stubSync.stubs.cursor.created + stubSync.stubs.claude.created,

@@ -505,6 +505,65 @@ export class TrustedSessionStore {
     return row.count;
   }
 
+  /**
+   * C8: elevated-agent deck change — rotate grant, rebind approving session, revoke peers.
+   * Plaintext grant secret is stored hashed only; caller must run `agent-deck use` to refresh local grant file.
+   */
+  rotateGrantForElevatedSession(
+    runtimeSessionId: string,
+    newDeckId: string,
+  ): { session: RuntimeSession; peersRevoked: number; grantId: string } | null {
+    const row = this.getRuntimeSessionRow(runtimeSessionId);
+    if (!row || row.revoked_at || Date.parse(row.expires_at) <= Date.now()) {
+      return null;
+    }
+    if (row.mode !== 'agent-admin') {
+      return null;
+    }
+    if (row.deck_id === newDeckId) {
+      const session = this.touchRuntimeSession(runtimeSessionId);
+      return session
+        ? { session, peersRevoked: 0, grantId: row.workspace_grant_id }
+        : null;
+    }
+
+    const oldGrantId = row.workspace_grant_id;
+    const secret = generateGrantSecret();
+    const pending = this.createPendingGrant(row.workspace_key_id, newDeckId, secret);
+    const activated = this.activateGrant(pending.id);
+    if (!activated) {
+      this.revokePendingGrant(pending.id);
+      return null;
+    }
+
+    const revokedAt = nowIso();
+    const peersRevoked = this.db
+      .prepare(
+        `UPDATE runtime_sessions SET revoked_at = ?
+         WHERE workspace_grant_id = ? AND id != ? AND revoked_at IS NULL`,
+      )
+      .run(revokedAt, oldGrantId, runtimeSessionId).changes;
+
+    const now = nowIso();
+    const adminExpiresAt = row.admin_expires_at;
+    this.db
+      .prepare(
+        `UPDATE runtime_sessions
+         SET workspace_grant_id = ?, deck_id = ?, last_seen_at = ?, expires_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        activated.id,
+        newDeckId,
+        now,
+        addMs(now, RUNTIME_SESSION_LEASE_MS),
+        runtimeSessionId,
+      );
+
+    const session = this.toRuntimeSession(this.getRuntimeSessionRow(runtimeSessionId)!);
+    return { session, peersRevoked, grantId: activated.id };
+  }
+
   expireStaleSessions(): number {
     const now = nowIso();
     const downgrade = this.db.prepare(

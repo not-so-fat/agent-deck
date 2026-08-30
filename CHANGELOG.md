@@ -8,6 +8,8 @@
 - **Runtime sessions:** MCP connects with grant Bearer auth; backend establishes a runtime session (`x-agent-deck-session-id`) — forged deck/client headers no longer expand authority.
 - **Agent-admin:** `request_admin_elevation` / `exit_admin_mode` MCP tools; dashboard cookie bootstrap replaces spoofable `x-agent-deck-client` header. MCP admin gates read live runtime session mode from the backend after dashboard approval (not a stale in-memory cache).
 - **C7 grant protocol:** `agent-deck use` stages the grant locally, then activates server-side; pending grants are unusable until activation succeeds.
+- **C8 deck change:** agent-admin `bind_workspace` / `switch_bound_deck` rotate the workspace grant, revoke peer sessions, and surface `grant_refresh_note` to run `agent-deck use <deck>` before MCP reconnect.
+- **Dashboard admin approval:** `/admin/approve` page for elevation challenges (menubar/deep link from `request_admin_elevation`).
 - **NOT-44 containment:** agents only see/call services on the bound deck (`RESOURCE_OUT_OF_SCOPE` on cross-deck `/:id/call` and `/:id/tools`); collection routes dashboard-only.
 - **Migration:** `agent-deck use --refresh` diagnoses only — run explicit `agent-deck use <deck>` to (re)issue grants.
 

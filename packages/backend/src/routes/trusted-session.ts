@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { RuntimeSession } from '@agent-deck/shared';
 import {
   AGENT_DECK_DASHBOARD_COOKIE,
   AGENT_DECK_SESSION_HEADER,
@@ -35,6 +36,47 @@ function requireRuntimeSessionOwnership(request: FastifyRequest, runtimeSessionI
   if (!sessionHeader || sessionHeader !== runtimeSessionId.trim()) {
     throw new TrustedAuthError('GRANT_REQUIRED', 'Runtime session ownership required');
   }
+}
+
+function assertWorkspaceScope(
+  store: TrustedSessionStore,
+  workspaceKeyId: string,
+  workspaceRoot: string,
+): void {
+  const key = store.getWorkspaceKeyById(workspaceKeyId);
+  if (!key) {
+    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+  }
+  const digest = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRoot));
+  if (key.path_digest !== digest) {
+    throw new TrustedAuthError(
+      'WORKSPACE_SCOPE_MISMATCH',
+      'Request targets a different workspace; elevation cannot override it',
+    );
+  }
+}
+
+function resolveRuntimeSessionFromHeader(
+  request: FastifyRequest,
+  store: TrustedSessionStore,
+): RuntimeSession {
+  const sessionHeader = request.headers[AGENT_DECK_SESSION_HEADER];
+  const sessionId = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
+  if (!sessionId) {
+    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+  }
+  const row = store.getRuntimeSessionRow(sessionId);
+  if (!row || row.revoked_at) {
+    throw new TrustedAuthError('SESSION_REVOKED', 'Grant rotation or explicit revocation ended the session');
+  }
+  if (Date.parse(row.expires_at) <= Date.now()) {
+    throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
+  }
+  const session = store.touchRuntimeSession(sessionId);
+  if (!session) {
+    throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
+  }
+  return session;
 }
 
 export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
@@ -174,6 +216,70 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
       throw error;
     }
   });
+
+  fastify.post<{ Body: { workspaceRoot: string; deckId: string } }>(
+    '/bind-workspace',
+    async (request, reply) => {
+      try {
+        const { workspaceRoot, deckId } = request.body;
+        if (!workspaceRoot?.trim() || !deckId?.trim()) {
+          return reply.status(400).send({ success: false, error: 'workspaceRoot and deckId required' });
+        }
+
+        const session = resolveRuntimeSessionFromHeader(request, store);
+        assertWorkspaceScope(store, session.workspaceKey, workspaceRoot);
+
+        const deck = await fastify.db.getDeck(deckId);
+        if (!deck) {
+          return reply.status(404).send({ success: false, error: 'Deck not found' });
+        }
+
+        if (session.deckId === deckId) {
+          return reply.send({
+            success: true,
+            data: {
+              deckId: session.deckId,
+              deckName: deck.name,
+              mode: session.mode,
+              grantRotated: false,
+              peersRevoked: 0,
+            },
+          });
+        }
+
+        if (session.mode !== 'agent-admin') {
+          throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
+        }
+
+        const workspaceCount = store.countWorkspacesForDeck(session.deckId);
+        const rotated = store.rotateGrantForElevatedSession(session.sessionId, deckId);
+        if (!rotated) {
+          throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
+        }
+
+        const newDeck = await fastify.db.getDeck(rotated.session.deckId);
+
+        return reply.send({
+          success: true,
+          data: {
+            deckId: rotated.session.deckId,
+            deckName: newDeck?.name ?? deck.name,
+            mode: rotated.session.mode,
+            grantRotated: true,
+            peersRevoked: rotated.peersRevoked,
+            previousDeckWorkspaceCount: workspaceCount,
+            grantRefreshNote:
+              'Run `agent-deck use <deck>` in this workspace to refresh the local grant file before the next MCP reconnect.',
+          },
+        });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
 
   fastify.post<{ Body: { runtimeSessionId: string } }>(
     '/admin/request-elevation',

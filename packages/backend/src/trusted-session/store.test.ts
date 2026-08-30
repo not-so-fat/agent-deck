@@ -81,4 +81,40 @@ describe('TrustedSessionStore', () => {
     expect(reused?.sessionId).toBe(first.sessionId);
     expect(reused?.mode).toBe('agent-admin');
   });
+
+  it('rotates grant for elevated session and revokes peers (C8)', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const workspace = store.getOrCreateWorkspaceKey('c8-rotate');
+    const secret = generateGrantSecret();
+    const pending = store.createPendingGrant(workspace.id, 'deck-a', secret);
+    store.activateGrant(pending.id);
+    const grant = store.findActiveGrantBySecret(secret)!;
+
+    const admin = store.createRuntimeSession({
+      workspaceKeyId: workspace.id,
+      workspaceGrantId: grant.id,
+      deckId: 'deck-a',
+      mcpSessionId: 'mcp-admin',
+    });
+    store.elevateSessionToAdmin(admin.sessionId);
+
+    const peer = store.createRuntimeSession({
+      workspaceKeyId: workspace.id,
+      workspaceGrantId: grant.id,
+      deckId: 'deck-a',
+      mcpSessionId: 'mcp-peer',
+    });
+
+    const rotated = store.rotateGrantForElevatedSession(admin.sessionId, 'deck-b');
+    expect(rotated?.session.deckId).toBe('deck-b');
+    expect(rotated?.peersRevoked).toBe(1);
+
+    const peerRow = store.getRuntimeSessionRow(peer.sessionId);
+    expect(peerRow?.revoked_at).toBeTruthy();
+
+    const adminRow = store.getRuntimeSessionRow(admin.sessionId);
+    expect(adminRow?.revoked_at).toBeFalsy();
+    expect(adminRow?.mode).toBe('agent-admin');
+  });
 });
