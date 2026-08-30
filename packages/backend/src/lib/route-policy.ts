@@ -43,14 +43,8 @@ export function requireAgentAdmin(request: FastifyRequest): void {
     throw new RoutePolicyError('GRANT_REQUIRED', 'No valid workspace grant');
   }
 
-  const row = request.server.trustedSessionStore.getRuntimeSessionRow(sessionId.trim());
-  if (!row || row.revoked_at || row.mode !== 'agent-admin') {
-    throw new RoutePolicyError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
-  }
-  if (Date.parse(row.expires_at) <= Date.now()) {
-    throw new RoutePolicyError('SESSION_INVALID', 'Runtime session absent or expired');
-  }
-  if (row.admin_expires_at && Date.parse(row.admin_expires_at) <= Date.now()) {
+  const session = request.server.trustedSessionStore.touchRuntimeSession(sessionId.trim());
+  if (!session || session.mode !== 'agent-admin') {
     throw new RoutePolicyError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
   }
 }

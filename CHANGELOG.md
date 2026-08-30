@@ -6,7 +6,8 @@
 
 - **Workspace grants:** `agent-deck use <deck>` issues a private grant (file + macOS keychain), writes a non-secret MCP launcher config, and removes deck UUIDs from tracked MCP JSON.
 - **Runtime sessions:** MCP connects with grant Bearer auth; backend establishes a runtime session (`x-agent-deck-session-id`) — forged deck/client headers no longer expand authority.
-- **Agent-admin:** `request_admin_elevation` / `exit_admin_mode` MCP tools; dashboard cookie bootstrap replaces spoofable `x-agent-deck-client` header.
+- **Agent-admin:** `request_admin_elevation` / `exit_admin_mode` MCP tools; dashboard cookie bootstrap replaces spoofable `x-agent-deck-client` header. MCP admin gates read live runtime session mode from the backend after dashboard approval (not a stale in-memory cache).
+- **C7 grant protocol:** `agent-deck use` stages the grant locally, then activates server-side; pending grants are unusable until activation succeeds.
 - **NOT-44 containment:** agents only see/call services on the bound deck (`RESOURCE_OUT_OF_SCOPE` on cross-deck `/:id/call` and `/:id/tools`); collection routes dashboard-only.
 - **Migration:** `agent-deck use --refresh` diagnoses only — run explicit `agent-deck use <deck>` to (re)issue grants.
 

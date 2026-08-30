@@ -12,6 +12,7 @@ import {
   trustedSessionError,
 } from '@agent-deck/shared';
 
+import { parseBearerToken } from '../lib/http-auth';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from './admin-secret';
 import type { TrustedSessionStore } from './store';
 
@@ -45,13 +46,6 @@ export class TrustedAuthError extends Error {
 const dashboardSessions = new Map<string, { expiresAt: number }>();
 const DASHBOARD_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
-function parseBearerToken(request: FastifyRequest): string | null {
-  const header = request.headers.authorization;
-  if (!header || typeof header !== 'string' || !header.startsWith('Bearer ')) {
-    return null;
-  }
-  return header.slice('Bearer '.length).trim() || null;
-}
 
 function parseDashboardCookie(request: FastifyRequest): string | null {
   const cookieHeader = request.headers.cookie;

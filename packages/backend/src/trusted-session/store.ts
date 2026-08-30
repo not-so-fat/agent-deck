@@ -301,6 +301,69 @@ export class TrustedSessionStore {
     return this.toRuntimeSession(this.getRuntimeSessionRow(id)!);
   }
 
+  findActiveRuntimeSessionForMcp(mcpSessionId: string, grantId: string): RuntimeSession | null {
+    const now = nowIso();
+    const row = this.db
+      .prepare(
+        `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+                last_seen_at, expires_at, admin_expires_at, revoked_at
+         FROM runtime_sessions
+         WHERE mcp_session_id = ? AND workspace_grant_id = ?
+           AND revoked_at IS NULL AND expires_at > ?`,
+      )
+      .get(mcpSessionId, grantId, now) as RuntimeSessionRow | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    const touched = this.touchRuntimeSession(row.id);
+    return touched;
+  }
+
+  revokePendingGrant(grantId: string): void {
+    const revokedAt = nowIso();
+    this.db
+      .prepare(
+        `UPDATE workspace_grants SET status = 'revoked', revoked_at = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(revokedAt, grantId);
+  }
+
+  createDashboardNonce(nonce: string, expiresAtIso: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO dashboard_nonces (nonce, expires_at, created_at) VALUES (?, ?, ?)`,
+      )
+      .run(nonce, expiresAtIso, nowIso());
+  }
+
+  consumeDashboardNonce(nonce: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT nonce, expires_at, consumed_at FROM dashboard_nonces WHERE nonce = ?`,
+      )
+      .get(nonce) as { nonce: string; expires_at: string; consumed_at: string | null } | undefined;
+
+    if (!row || row.consumed_at || Date.parse(row.expires_at) <= Date.now()) {
+      return false;
+    }
+
+    this.db
+      .prepare(`UPDATE dashboard_nonces SET consumed_at = ? WHERE nonce = ?`)
+      .run(nowIso(), nonce);
+    return true;
+  }
+
+  expireDashboardNonces(): number {
+    const now = nowIso();
+    const result = this.db
+      .prepare(`DELETE FROM dashboard_nonces WHERE expires_at <= ? OR consumed_at IS NOT NULL`)
+      .run(now);
+    return result.changes;
+  }
+
   getRuntimeSessionRow(sessionId: string): RuntimeSessionRow | null {
     return (
       (this.db

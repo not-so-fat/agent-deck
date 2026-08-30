@@ -1,13 +1,15 @@
 import { randomBytes } from 'node:crypto';
 
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   AGENT_DECK_DASHBOARD_COOKIE,
+  AGENT_DECK_SESSION_HEADER,
   DASHBOARD_NONCE_TTL_MS,
   canonicalizeWorkspacePath,
   digestCanonicalWorkspacePath,
 } from '@agent-deck/shared';
 
+import { parseBearerToken } from '../lib/http-auth';
 import {
   createDashboardSessionToken,
   sendTrustedAuthError,
@@ -18,14 +20,21 @@ import { parseDashboardCookie, validateDashboardSessionToken } from '../lib/dash
 import type { TrustedSessionStore } from '../trusted-session/store';
 import { generateGrantSecret } from '../trusted-session/store';
 
-const dashboardNonces = new Map<string, number>();
-
-function parseBearerToken(request: FastifyRequest): string | null {
-  const header = request.headers.authorization;
-  if (!header || typeof header !== 'string' || !header.startsWith('Bearer ')) {
-    return null;
+async function requireTrustedWriterBearer(request: FastifyRequest): Promise<void> {
+  const bearer = parseBearerToken(request);
+  const expected = await readAdminSecretFromEnvOrFile();
+  if (!bearer || !expected || !verifyAdminSecret(bearer, expected)) {
+    throw new TrustedAuthError('DASHBOARD_REQUIRED', 'Trusted writer authentication required');
   }
-  return header.slice('Bearer '.length).trim() || null;
+}
+
+/** Caller must own the runtime session (session header matches body id). */
+function requireRuntimeSessionOwnership(request: FastifyRequest, runtimeSessionId: string): void {
+  const header = request.headers[AGENT_DECK_SESSION_HEADER];
+  const sessionHeader = typeof header === 'string' ? header.trim() : '';
+  if (!sessionHeader || sessionHeader !== runtimeSessionId.trim()) {
+    throw new TrustedAuthError('GRANT_REQUIRED', 'Runtime session ownership required');
+  }
 }
 
 export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
@@ -35,11 +44,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     '/workspace-grants/issue',
     async (request, reply) => {
       try {
-        const bearer = parseBearerToken(request);
-        const expected = await readAdminSecretFromEnvOrFile();
-        if (!bearer || !expected || !verifyAdminSecret(bearer, expected)) {
-          throw new TrustedAuthError('DASHBOARD_REQUIRED', 'Trusted writer authentication required');
-        }
+        await requireTrustedWriterBearer(request);
 
         const { workspaceRoot, deckId } = request.body;
         if (!workspaceRoot?.trim() || !deckId?.trim()) {
@@ -56,7 +61,6 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         const workspaceKey = store.getOrCreateWorkspaceKey(digest);
         const secret = generateGrantSecret();
         const pending = store.createPendingGrant(workspaceKey.id, deckId, secret);
-        const activated = store.activateGrant(pending.id);
 
         return reply.send({
           success: true,
@@ -66,7 +70,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             deckId,
             deckName: deck.name,
             secret,
-            status: activated?.status ?? 'pending',
+            status: 'pending' as const,
           },
         });
       } catch (error) {
@@ -78,6 +82,99 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     },
   );
 
+  fastify.post<{ Params: { grantId: string } }>(
+    '/workspace-grants/:grantId/revoke-pending',
+    async (request, reply) => {
+      try {
+        await requireTrustedWriterBearer(request);
+        store.revokePendingGrant(request.params.grantId);
+        return reply.send({ success: true });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.post<{ Params: { grantId: string } }>(
+    '/workspace-grants/:grantId/activate',
+    async (request, reply) => {
+      try {
+        await requireTrustedWriterBearer(request);
+
+        const { grantId } = request.params;
+        const activated = store.activateGrant(grantId);
+        if (!activated) {
+          return reply.status(409).send({
+            success: false,
+            error: 'Grant not pending or not found',
+          });
+        }
+
+        const deck = await fastify.db.getDeck(activated.deck_id);
+
+        return reply.send({
+          success: true,
+          data: {
+            grantId: activated.id,
+            deckId: activated.deck_id,
+            deckName: deck?.name,
+            status: activated.status,
+          },
+        });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.get('/runtime-session', async (request, reply) => {
+    try {
+      const sessionHeader = request.headers[AGENT_DECK_SESSION_HEADER];
+      const sessionId = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
+      if (!sessionId) {
+        throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+      }
+
+      const row = store.getRuntimeSessionRow(sessionId);
+      if (!row || row.revoked_at) {
+        throw new TrustedAuthError('SESSION_REVOKED', 'Grant rotation or explicit revocation ended the session');
+      }
+      if (Date.parse(row.expires_at) <= Date.now()) {
+        throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
+      }
+
+      const session = store.touchRuntimeSession(sessionId);
+      if (!session) {
+        throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
+      }
+
+      const deck = await fastify.db.getDeck(session.deckId);
+
+      return reply.send({
+        success: true,
+        data: {
+          sessionId: session.sessionId,
+          deckId: session.deckId,
+          deckName: deck?.name,
+          mode: session.mode,
+          expiresAt: session.expiresAt,
+          adminExpiresAt: session.adminExpiresAt,
+        },
+      });
+    } catch (error) {
+      if (error instanceof TrustedAuthError) {
+        return sendTrustedAuthError(reply, error);
+      }
+      throw error;
+    }
+  });
+
   fastify.post<{ Body: { runtimeSessionId: string } }>(
     '/admin/request-elevation',
     async (request, reply) => {
@@ -86,6 +183,8 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         if (!runtimeSessionId?.trim()) {
           return reply.status(400).send({ success: false, error: 'runtimeSessionId required' });
         }
+
+        requireRuntimeSessionOwnership(request, runtimeSessionId);
 
         const row = store.getRuntimeSessionRow(runtimeSessionId);
         if (!row || row.revoked_at) {
@@ -149,17 +248,26 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
   fastify.post<{ Body: { runtimeSessionId: string } }>(
     '/admin/exit',
     async (request, reply) => {
-      const { runtimeSessionId } = request.body;
-      if (!runtimeSessionId?.trim()) {
-        return reply.status(400).send({ success: false, error: 'runtimeSessionId required' });
-      }
+      try {
+        const { runtimeSessionId } = request.body;
+        if (!runtimeSessionId?.trim()) {
+          return reply.status(400).send({ success: false, error: 'runtimeSessionId required' });
+        }
 
-      const downgraded = store.downgradeSessionToNormal(runtimeSessionId);
-      if (!downgraded) {
-        return reply.status(404).send({ success: false, error: 'Session not found' });
-      }
+        requireRuntimeSessionOwnership(request, runtimeSessionId);
 
-      return reply.send({ success: true, data: { session: downgraded } });
+        const downgraded = store.downgradeSessionToNormal(runtimeSessionId);
+        if (!downgraded) {
+          return reply.status(404).send({ success: false, error: 'Session not found' });
+        }
+
+        return reply.send({ success: true, data: { session: downgraded } });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
     },
   );
 
@@ -177,12 +285,18 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
         }
 
-        const session = store.createRuntimeSession({
-          workspaceKeyId: grant.workspace_key_id,
-          workspaceGrantId: grant.id,
-          deckId: grant.deck_id,
-          mcpSessionId,
-        });
+        let session;
+        if (mcpSessionId?.trim()) {
+          session = store.findActiveRuntimeSessionForMcp(mcpSessionId.trim(), grant.id);
+        }
+        if (!session) {
+          session = store.createRuntimeSession({
+            workspaceKeyId: grant.workspace_key_id,
+            workspaceGrantId: grant.id,
+            deckId: grant.deck_id,
+            mcpSessionId: mcpSessionId?.trim(),
+          });
+        }
 
         const deck = await fastify.db.getDeck(session.deckId);
 
@@ -208,32 +322,33 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
 }
 
 export async function registerDashboardAuthRoutes(fastify: FastifyInstance) {
+  const store = fastify.trustedSessionStore;
+
   fastify.post('/bootstrap/nonce', async (request, reply) => {
-    const bearer = parseBearerToken(request);
-    const expected = await readAdminSecretFromEnvOrFile();
-    if (!bearer || !expected || !verifyAdminSecret(bearer, expected)) {
-      return sendTrustedAuthError(
-        reply,
-        new TrustedAuthError('DASHBOARD_REQUIRED', 'Dashboard bootstrap authentication required'),
-      );
+    try {
+      await requireTrustedWriterBearer(request);
+
+      const nonce = randomBytes(24).toString('base64url');
+      const expiresAt = new Date(Date.now() + DASHBOARD_NONCE_TTL_MS).toISOString();
+      store.createDashboardNonce(nonce, expiresAt);
+
+      return reply.send({ success: true, data: { nonce, expiresInMs: DASHBOARD_NONCE_TTL_MS } });
+    } catch (error) {
+      if (error instanceof TrustedAuthError) {
+        return sendTrustedAuthError(reply, error);
+      }
+      throw error;
     }
-
-    const nonce = randomBytes(24).toString('base64url');
-    dashboardNonces.set(nonce, Date.now() + DASHBOARD_NONCE_TTL_MS);
-
-    return reply.send({ success: true, data: { nonce, expiresInMs: DASHBOARD_NONCE_TTL_MS } });
   });
 
   fastify.post<{ Body: { nonce: string } }>('/bootstrap/session', async (request, reply) => {
     const { nonce } = request.body;
-    const expiresAt = dashboardNonces.get(nonce);
-    dashboardNonces.delete(nonce);
-
-    if (!expiresAt || expiresAt <= Date.now()) {
+    if (!store.consumeDashboardNonce(nonce)) {
       return reply.status(410).send({ success: false, error: 'Bootstrap nonce expired or invalid' });
     }
 
     const token = createDashboardSessionToken();
+    // Secure omitted intentionally — dashboard is localhost-http in v1.
     reply.header(
       'Set-Cookie',
       `${AGENT_DECK_DASHBOARD_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/`,

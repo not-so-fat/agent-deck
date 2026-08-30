@@ -23,14 +23,20 @@ function bodyMessage(code: TrustedSessionErrorCode): string {
   }
 }
 
-export function requireMcpAdmin(host: McpToolHost): ReturnType<typeof mcpPolicyError> | null {
+/** Reads live runtime session mode from backend (source of truth after dashboard approval). */
+export async function requireMcpAdmin(host: McpToolHost): Promise<ReturnType<typeof mcpPolicyError> | null> {
   if (process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK === '1') {
     return null;
   }
-  if (host.getMode() !== 'agent-admin') {
-    return mcpPolicyError('ADMIN_REQUIRED');
+  try {
+    const { mode } = await host.refreshRuntimeSession();
+    if (mode !== 'agent-admin') {
+      return mcpPolicyError('ADMIN_REQUIRED');
+    }
+    return null;
+  } catch {
+    return mcpPolicyError('GRANT_REQUIRED');
   }
-  return null;
 }
 
 export function requireMcpDashboard(): ReturnType<typeof mcpPolicyError> | null {

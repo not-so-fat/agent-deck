@@ -110,6 +110,18 @@ export async function createServer() {
   fastify.decorate('db', db);
   fastify.decorate('trustedSessionStore', trustedSessionStore);
 
+  const sweepStaleSessions = () => {
+    try {
+      trustedSessionStore.expireStaleSessions();
+      trustedSessionStore.expireDashboardNonces();
+    } catch (error) {
+      fastify.log.warn({ err: error }, 'trusted-session stale sweep failed');
+    }
+  };
+  sweepStaleSessions();
+  const staleSessionTimer = setInterval(sweepStaleSessions, 60_000);
+  staleSessionTimer.unref?.();
+
   // Register routes
   await fastify.register(registerWebSocketRoutes, { prefix: '/api/ws' });
   await fastify.register(registerServiceRoutes, { prefix: '/api/services' });

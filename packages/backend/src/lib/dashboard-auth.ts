@@ -2,6 +2,7 @@ import type { FastifyRequest } from 'fastify';
 
 import { AGENT_DECK_DASHBOARD_COOKIE } from '@agent-deck/shared';
 
+import { parseBearerToken } from '../lib/http-auth';
 import { validateDashboardSessionToken } from '../trusted-session/auth';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
 
@@ -28,11 +29,10 @@ export function isDashboardAuthenticated(request: FastifyRequest): boolean {
 }
 
 export async function isTrustedWriterBearer(request: FastifyRequest): Promise<boolean> {
-  const header = request.headers.authorization;
-  if (!header || typeof header !== 'string' || !header.startsWith('Bearer ')) {
+  const bearer = parseBearerToken(request);
+  if (!bearer) {
     return false;
   }
-  const bearer = header.slice('Bearer '.length).trim();
   const expected = await readAdminSecretFromEnvOrFile();
   return Boolean(expected && verifyAdminSecret(bearer, expected));
 }

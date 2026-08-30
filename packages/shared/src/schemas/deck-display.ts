@@ -58,6 +58,7 @@ export const DeckListEntrySchema = z.object({
   name: z.string().min(1),
   isActive: z.boolean(),
   cardCounts: DeckCardCountsSchema,
+  workspaceCount: z.number().int().nonnegative().optional(),
 });
 
 export type DeckListEntry = z.infer<typeof DeckListEntrySchema>;

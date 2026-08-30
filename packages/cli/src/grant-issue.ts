@@ -9,6 +9,7 @@ export type IssuedGrant = {
   deckId: string;
   deckName: string;
   secret: string;
+  status: 'pending' | 'active';
 };
 
 function resolveBackendUrl(host: string): string {
@@ -16,11 +17,7 @@ function resolveBackendUrl(host: string): string {
   return `http://${host}:${port}`;
 }
 
-export async function issueWorkspaceGrant(input: {
-  workspaceRoot: string;
-  deckId: string;
-  host?: string;
-}): Promise<IssuedGrant | { error: string }> {
+async function trustedWriterHeaders(host?: string): Promise<Record<string, string> | { error: string }> {
   const adminSecret = await readAdminSecret();
   if (!adminSecret) {
     return {
@@ -28,14 +25,26 @@ export async function issueWorkspaceGrant(input: {
         'No admin secret — run `agent-deck setup` or `agent-deck start` once to initialize ~/.agent-deck/admin-secret',
     };
   }
+  return {
+    Authorization: `Bearer ${adminSecret}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+export async function issueWorkspaceGrant(input: {
+  workspaceRoot: string;
+  deckId: string;
+  host?: string;
+}): Promise<IssuedGrant | { error: string }> {
+  const headers = await trustedWriterHeaders(input.host);
+  if ('error' in headers) {
+    return headers;
+  }
 
   const backendUrl = resolveBackendUrl(input.host ?? process.env.AGENT_DECK_HOST ?? '127.0.0.1');
   const response = await fetch(`${backendUrl}/api/trusted-session/workspace-grants/issue`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${adminSecret}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify({
       workspaceRoot: input.workspaceRoot,
       deckId: input.deckId,
@@ -53,6 +62,50 @@ export async function issueWorkspaceGrant(input: {
   }
 
   return payload.data;
+}
+
+export async function activateWorkspaceGrant(input: {
+  grantId: string;
+  host?: string;
+}): Promise<{ grantId: string; deckId: string; deckName?: string } | { error: string }> {
+  const headers = await trustedWriterHeaders(input.host);
+  if ('error' in headers) {
+    return headers;
+  }
+
+  const backendUrl = resolveBackendUrl(input.host ?? process.env.AGENT_DECK_HOST ?? '127.0.0.1');
+  const response = await fetch(
+    `${backendUrl}/api/trusted-session/workspace-grants/${encodeURIComponent(input.grantId)}/activate`,
+    { method: 'POST', headers },
+  );
+
+  const payload = (await response.json()) as {
+    success?: boolean;
+    error?: string;
+    data?: { grantId: string; deckId: string; deckName?: string };
+  };
+
+  if (!response.ok || !payload.success || !payload.data) {
+    return { error: payload.error ?? `Grant activation failed (${response.status})` };
+  }
+
+  return payload.data;
+}
+
+export async function revokePendingWorkspaceGrant(input: {
+  grantId: string;
+  host?: string;
+}): Promise<void | { error: string }> {
+  const headers = await trustedWriterHeaders(input.host);
+  if ('error' in headers) {
+    return headers;
+  }
+
+  const backendUrl = resolveBackendUrl(input.host ?? process.env.AGENT_DECK_HOST ?? '127.0.0.1');
+  await fetch(
+    `${backendUrl}/api/trusted-session/workspace-grants/${encodeURIComponent(input.grantId)}/revoke-pending`,
+    { method: 'POST', headers },
+  );
 }
 
 export function toGrantManifest(

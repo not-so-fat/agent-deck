@@ -47,4 +47,38 @@ describe('TrustedSessionStore', () => {
     const normal = store.downgradeSessionToNormal(session.sessionId);
     expect(normal?.mode).toBe('normal');
   });
+
+  it('pending grants are inactive until activation (C7)', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const workspace = store.getOrCreateWorkspaceKey('c7-test');
+    const secret = generateGrantSecret();
+    const pending = store.createPendingGrant(workspace.id, 'deck-c7', secret);
+
+    expect(store.findActiveGrantBySecret(secret)).toBeNull();
+    store.activateGrant(pending.id);
+    expect(store.findActiveGrantBySecret(secret)?.status).toBe('active');
+  });
+
+  it('reuses runtime session for the same MCP transport id', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const workspace = store.getOrCreateWorkspaceKey('reuse');
+    const secret = generateGrantSecret();
+    const pending = store.createPendingGrant(workspace.id, 'deck-r', secret);
+    store.activateGrant(pending.id);
+    const grant = store.findActiveGrantBySecret(secret)!;
+
+    const first = store.createRuntimeSession({
+      workspaceKeyId: workspace.id,
+      workspaceGrantId: grant.id,
+      deckId: grant.deck_id,
+      mcpSessionId: 'mcp-transport-1',
+    });
+    store.elevateSessionToAdmin(first.sessionId);
+
+    const reused = store.findActiveRuntimeSessionForMcp('mcp-transport-1', grant.id);
+    expect(reused?.sessionId).toBe(first.sessionId);
+    expect(reused?.mode).toBe('agent-admin');
+  });
 });

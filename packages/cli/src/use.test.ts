@@ -30,7 +30,14 @@ vi.mock('./grant-issue', () => ({
     deckId: 'deck-1',
     deckName: 'dev',
     secret: 'secret-test',
+    status: 'pending' as const,
   }),
+  activateWorkspaceGrant: async () => ({
+    grantId: 'grant-test',
+    deckId: 'deck-1',
+    deckName: 'dev',
+  }),
+  revokePendingWorkspaceGrant: async () => {},
   toGrantManifest: (
     issued: {
       workspaceKey: string;

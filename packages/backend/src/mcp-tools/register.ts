@@ -17,6 +17,7 @@ export type McpToolHost = {
   profile: McpToolProfile;
   getSessionId(): string;
   getMode(): 'normal' | 'agent-admin';
+  refreshRuntimeSession(): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }>;
   getAgentHeaders(): Record<string, string>;
   getBoundDeckId(): Promise<string>;
   callBackendAPI(endpoint: string, init?: RequestInit): Promise<any>;
@@ -83,7 +84,7 @@ function registerRuntimeTools(host: McpToolHost): void {
       const current = host.sessionBinding.getBinding(sessionId);
       const deck = await host.fetchDeck(deckId);
       if (current.deckId && current.deckId !== deck.id) {
-        const denied = requireMcpAdmin(host);
+        const denied = await requireMcpAdmin(host);
         if (denied) {
           return denied;
         }
@@ -137,7 +138,7 @@ function registerRuntimeTools(host: McpToolHost): void {
       'Switch the deck for this MCP session only. Use when multiple agent sessions share the same workspace path.',
     inputSchema: { deckId: z.string().min(1) },
   }, async ({ deckId }) => {
-    const denied = requireMcpAdmin(host);
+    const denied = await requireMcpAdmin(host);
     if (denied) {
       return denied;
     }
@@ -224,7 +225,8 @@ function registerRuntimeTools(host: McpToolHost): void {
     inputSchema: {},
   }, async () => {
     try {
-      if (host.getMode() === 'agent-admin') {
+      const { mode } = await host.refreshRuntimeSession();
+      if (mode === 'agent-admin') {
         const decks = await host.callBackendAPI('/api/decks');
         return host.toolResult(decks);
       }
@@ -328,12 +330,7 @@ function registerRuntimeTools(host: McpToolHost): void {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runtimeSessionId }),
       });
-      host.sessionBinding.setTrustedSession(host.getSessionId(), {
-        runtimeSessionId,
-        deckId: binding.deckId ?? '',
-        workspaceRoot: binding.workspaceRoot,
-        mode: 'normal',
-      });
+      await host.refreshRuntimeSession();
       return host.toolResult({ mode: 'normal' });
     } catch (error) {
       return host.toolError(error);
@@ -500,7 +497,7 @@ function registerEditingTools(host: McpToolHost): void {
       ordered_card_ids: z.array(z.string()).optional(),
     },
   }, async (input) => {
-    const denied = requireMcpAdmin(host);
+    const denied = await requireMcpAdmin(host);
     if (denied) return denied;
     try {
       const result = await executeManageDeckCard(host, input);
@@ -518,7 +515,7 @@ function registerEditingTools(host: McpToolHost): void {
       card_type: cardTypeSchema.optional(),
     },
   }, async (input) => {
-    const denied = requireMcpAdmin(host);
+    const denied = await requireMcpAdmin(host);
     if (denied) return denied;
     try {
       const result = await executeListCollection(host, input);
@@ -618,7 +615,7 @@ function registerEditingTools(host: McpToolHost): void {
       name: z.string(),
     },
   }, async ({ name }) => {
-    const denied = requireMcpAdmin(host);
+    const denied = await requireMcpAdmin(host);
     if (denied) return denied;
     try {
       const deck = await host.callBackendAPI('/api/decks', {
@@ -831,6 +828,7 @@ export function listToolNamesForProfile(profile: McpToolProfile): string[] {
     profile,
     getSessionId: () => 'stub',
     getMode: () => 'normal' as const,
+    refreshRuntimeSession: async () => ({ mode: 'normal' as const, deckId: 'deck' }),
     getAgentHeaders: () => ({}),
     getBoundDeckId: async () => 'deck',
     callBackendAPI: async () => ({}),

@@ -78,6 +78,12 @@ export class McpSessionBindingStore {
     return this.runtimeSessionByMcp.get(sessionId);
   }
 
+  setSessionMode(mcpSessionId: string, mode: 'normal' | 'agent-admin'): void {
+    if (this.modeByMcp.has(mcpSessionId)) {
+      this.modeByMcp.set(mcpSessionId, mode);
+    }
+  }
+
   getMode(sessionId: string): 'normal' | 'agent-admin' | undefined {
     return this.modeByMcp.get(sessionId);
   }

@@ -11,6 +11,7 @@ import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
+import { parseBearerToken } from './lib/http-auth';
 import {
   McpSessionBindingStore,
   resolveDeckBindingSource,
@@ -311,6 +312,7 @@ export class AgentDeckMCPServer {
       profile: this.toolProfile,
       getSessionId: () => this.getSessionId(),
       getMode: () => this.sessionBinding.getMode(this.getSessionId()) ?? 'normal',
+      refreshRuntimeSession: () => this.refreshRuntimeSession(),
       getAgentHeaders: () => this.getAgentHeaders(),
       getBoundDeckId: () => this.getBoundDeckId(),
       callBackendAPI: (endpoint, init) => this.callBackendAPI(endpoint, init),
@@ -582,16 +584,33 @@ export class AgentDeckMCPServer {
     return typeof value === 'string' ? value : undefined;
   }
 
-  private parseBearerToken(req: Request): string | null {
-    const header = req.headers.authorization;
-    if (!header || typeof header !== 'string' || !header.startsWith('Bearer ')) {
-      return null;
+  private async refreshRuntimeSession(sessionId?: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
+    const mcpSessionId = sessionId ?? this.getSessionId();
+    const binding = this.sessionBinding.getBinding(mcpSessionId);
+    if (!binding.runtimeSessionId) {
+      throw new Error('GRANT_REQUIRED');
     }
-    return header.slice('Bearer '.length).trim() || null;
+
+    const data = await this.callBackendAPI('/api/trusted-session/runtime-session', {}, mcpSessionId);
+    const mode = (data?.mode ?? 'normal') as 'normal' | 'agent-admin';
+    const deckId = String(data?.deckId ?? binding.deckId ?? '');
+
+    this.sessionBinding.setTrustedSession(mcpSessionId, {
+      runtimeSessionId: binding.runtimeSessionId,
+      deckId,
+      workspaceRoot: binding.workspaceRoot,
+      mode,
+    });
+
+    return { mode, deckId };
+  }
+
+  private parseGrantBearer(req: Request): string | null {
+    return parseBearerToken({ headers: req.headers as Record<string, unknown> });
   }
 
   private async authenticateTrustedSession(sessionId: string, req: Request): Promise<void> {
-    const grantSecret = this.parseBearerToken(req);
+    const grantSecret = this.parseGrantBearer(req);
     if (!grantSecret) {
       throw new Error('GRANT_REQUIRED');
     }
@@ -659,7 +678,7 @@ export class AgentDeckMCPServer {
       return;
     }
 
-    const grantSecret = this.parseBearerToken(req);
+    const grantSecret = this.parseGrantBearer(req);
     const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
     if (!grantSecret && !skipGrantAuth) {
       res.status(401).json({

@@ -20,7 +20,7 @@ import {
   boundDeckScopeResponse,
   requireBoundDeckScope,
 } from '../lib/bound-deck-scope';
-import { AgentDeckContextError, resolveAgentDeckId } from '../lib/agent-deck-context';
+import { AgentDeckContextError, resolveAgentDeckId, resolveAgentMode } from '../lib/agent-deck-context';
 import { requireAgentAdmin, requireDashboard, RoutePolicyError, sendRoutePolicyError } from '../lib/route-policy';
 import { resolveDeckRef } from '../lib/deck-resolve';
 import { triggerWarningsForDeck } from '../playbooks/stub-workspace-sync';
@@ -190,6 +190,19 @@ export async function registerDeckRoutes(
       const scope = getClientScope(request);
 
       if (scope === 'agent') {
+        const mode = await resolveAgentMode(request);
+        if (mode === 'agent-admin') {
+          const decks = await fastify.db.getAllDecks();
+          const list: DeckListEntry[] = decks.map((deck) => ({
+            id: deck.id,
+            name: deck.name,
+            isActive: deck.isActive,
+            cardCounts: countDeckCards(deck),
+            workspaceCount: fastify.trustedSessionStore.countWorkspacesForDeck(deck.id),
+          }));
+          return reply.send({ success: true, data: list } satisfies ApiResponse<DeckListEntry[]>);
+        }
+
         const visibleDeckId = await resolveAgentDeckId(request, fastify.db);
         const deck = await fastify.db.getDeck(visibleDeckId);
         if (!deck) {

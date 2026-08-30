@@ -12,7 +12,7 @@ import {
   type McpClient,
 } from './mcp-config';
 import { syncPlaybookStubs, type StubSyncResult } from './playbook-stubs';
-import { issueWorkspaceGrant, toGrantManifest } from './grant-issue';
+import { issueWorkspaceGrant, activateWorkspaceGrant, revokePendingWorkspaceGrant, toGrantManifest } from './grant-issue';
 import { FileGrantStore, KeychainGrantStore, readWorkspaceGrant } from './grant-store';
 import { readUseManifest } from './playbook-stubs';
 
@@ -162,12 +162,24 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
 
   try {
     await fileStore.stage(manifest);
-    await fileStore.activate();
     if (keychainStore) {
       await keychainStore.stage(manifest);
+    }
+
+    const activated = await activateWorkspaceGrant({
+      grantId: issued.grantId,
+      host: parsed.host,
+    });
+    if ('error' in activated) {
+      throw new Error(activated.error);
+    }
+
+    await fileStore.activate();
+    if (keychainStore) {
       await keychainStore.activate();
     }
   } catch (error) {
+    await revokePendingWorkspaceGrant({ grantId: issued.grantId, host: parsed.host });
     await fileStore.rollback();
     if (keychainStore) {
       await keychainStore.rollback();
