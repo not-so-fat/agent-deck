@@ -235,6 +235,19 @@ NOT-44 verification remains separate and mandatory: direct HTTP and MCP calls fo
 
 Only after NOT-45 implementation and NOT-44 verification pass may the project update the minor version and changelog, run the real install/upgrade smoke test, and publish the single combined minor release.
 
+### As-built (PR #30, draft)
+
+| PRD area | Status |
+| --- | --- |
+| C1–C4 grants, runtime sessions, admin elevation | Shipped — MCP reads live mode from backend; `/admin/approve` dashboard page |
+| C5 admin scope (list decks + workspace counts) | Shipped for HTTP + MCP |
+| C6 playbook proposals | Shipped (agent `propose_playbook_patch`; direct mutation dashboard-only) |
+| C7 pending → install → activate | Shipped for CLI `use` |
+| C8 persistent deck change + peer revocation | Shipped via `bind-workspace` grant rotation |
+| Central policy registry + route enumeration | Partial — `enforcePolicy` exists; routes use ad-hoc guards |
+| §8 full verification matrix | Partial — unit/integration tests; manual smoke + forged-header suite deferred |
+| Menubar deep link to approval | Deferred — approval URL works; menubar wiring not in this PR |
+
 ## 9. Threats and non-goals
 
 Threats covered by acceptance tests include forged authorization headers, copied grants used from another workspace, raw grants committed to source control, reused or self-approved admin challenges, leaked replacement grants, server restart, crashed hosts, concurrent deck changes, and newly added routes that omit policy.
