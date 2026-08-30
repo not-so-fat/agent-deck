@@ -13,21 +13,14 @@ import {
 import { parseBearerToken } from '../lib/http-auth';
 import {
   createDashboardSessionToken,
+  requireTrustedWriterBearer,
   sendTrustedAuthError,
   TrustedAuthError,
 } from '../trusted-session/auth';
-import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
 import { parseDashboardCookie, validateDashboardSessionToken } from '../lib/dashboard-auth';
 import type { TrustedSessionStore } from '../trusted-session/store';
 import { generateGrantSecret } from '../trusted-session/store';
-
-async function requireTrustedWriterBearer(request: FastifyRequest): Promise<void> {
-  const bearer = parseBearerToken(request);
-  const expected = await readAdminSecretFromEnvOrFile();
-  if (!bearer || !expected || !verifyAdminSecret(bearer, expected)) {
-    throw new TrustedAuthError('DASHBOARD_REQUIRED', 'Trusted writer authentication required');
-  }
-}
+import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
 
 /** Caller must own the runtime session (session header matches body id). */
 function requireRuntimeSessionOwnership(request: FastifyRequest, runtimeSessionId: string): void {
@@ -280,6 +273,25 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
       }
     },
   );
+
+  fastify.get('/admin/challenges', async (_request, reply) => {
+    const pending = store.listPendingAdminChallenges();
+    const data = await Promise.all(
+      pending.map(async (row) => {
+        const deck = await fastify.db.getDeck(row.deckId);
+        const approvalPath = `/admin/approve?challenge=${encodeURIComponent(row.challengeId)}&session=${encodeURIComponent(row.runtimeSessionId)}`;
+        return {
+          challengeId: row.challengeId,
+          runtimeSessionId: row.runtimeSessionId,
+          deckId: row.deckId,
+          deckName: deck?.name,
+          expiresAt: row.expiresAt,
+          approvalPath,
+        };
+      }),
+    );
+    return reply.send({ success: true, data });
+  });
 
   fastify.post<{ Body: { runtimeSessionId: string } }>(
     '/admin/request-elevation',

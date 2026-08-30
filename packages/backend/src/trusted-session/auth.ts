@@ -18,7 +18,9 @@ import type { TrustedSessionStore } from './store';
 
 export type AuthPolicy =
   | 'allowPublic'
+  | 'requireTrustedWriter'
   | 'requireAgentResource'
+  | 'requireAgentOrDashboard'
   | 'requireDeckAdmin'
   | 'requireDashboard';
 
@@ -176,6 +178,14 @@ export async function resolveRequestPrincipal(
   throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
 }
 
+export async function requireTrustedWriterBearer(request: FastifyRequest): Promise<void> {
+  const bearer = parseBearerToken(request);
+  const expected = await readAdminSecretFromEnvOrFile();
+  if (!bearer || !expected || !verifyAdminSecret(bearer, expected)) {
+    throw new TrustedAuthError('DASHBOARD_REQUIRED', 'Trusted writer authentication required');
+  }
+}
+
 export function enforcePolicy(policy: AuthPolicy, principal: RequestPrincipal): void {
   if (policy === 'allowPublic') {
     return;
@@ -186,6 +196,13 @@ export function enforcePolicy(policy: AuthPolicy, principal: RequestPrincipal): 
       throw new TrustedAuthError('DASHBOARD_REQUIRED', 'Dashboard authentication required');
     }
     return;
+  }
+
+  if (policy === 'requireAgentOrDashboard') {
+    if (principal.kind === 'dashboard' || principal.kind === 'agent') {
+      return;
+    }
+    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
   }
 
   if (principal.kind !== 'agent') {

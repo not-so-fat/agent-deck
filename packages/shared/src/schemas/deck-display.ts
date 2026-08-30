@@ -63,6 +63,16 @@ export const DeckListEntrySchema = z.object({
 
 export type DeckListEntry = z.infer<typeof DeckListEntrySchema>;
 export type LiveBinding = z.infer<typeof LiveBindingSchema>;
+export const PendingAdminChallengeSchema = z.object({
+  challengeId: z.string().min(1),
+  runtimeSessionId: z.string().min(1),
+  deckId: z.string().uuid(),
+  deckName: z.string().min(1).optional(),
+  expiresAt: z.string().datetime(),
+  approvalPath: z.string().min(1),
+});
+
+export type PendingAdminChallenge = z.infer<typeof PendingAdminChallengeSchema>;
 export type DeckDisplay = z.infer<typeof DeckDisplaySchema>;
 export type StatusLinePayload = z.infer<typeof StatusLinePayloadSchema>;
 

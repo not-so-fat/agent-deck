@@ -494,6 +494,40 @@ export class TrustedSessionStore {
     return true;
   }
 
+  listPendingAdminChallenges(): Array<{
+    challengeId: string;
+    runtimeSessionId: string;
+    deckId: string;
+    expiresAt: string;
+    createdAt: string;
+  }> {
+    const now = nowIso();
+    const rows = this.db
+      .prepare(
+        `SELECT ac.id, ac.runtime_session_id, ac.expires_at, ac.created_at, rs.deck_id
+         FROM admin_challenges ac
+         INNER JOIN runtime_sessions rs ON rs.id = ac.runtime_session_id
+         WHERE ac.consumed_at IS NULL
+           AND ac.expires_at > ?
+           AND rs.revoked_at IS NULL`,
+      )
+      .all(now) as Array<{
+      id: string;
+      runtime_session_id: string;
+      expires_at: string;
+      created_at: string;
+      deck_id: string;
+    }>;
+
+    return rows.map((row) => ({
+      challengeId: row.id,
+      runtimeSessionId: row.runtime_session_id,
+      deckId: row.deck_id,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+    }));
+  }
+
   countWorkspacesForDeck(deckId: string): number {
     const row = this.db
       .prepare(

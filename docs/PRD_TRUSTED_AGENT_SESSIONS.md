@@ -244,9 +244,9 @@ Only after NOT-45 implementation and NOT-44 verification pass may the project up
 | C6 playbook proposals | Shipped (agent `propose_playbook_patch`; direct mutation dashboard-only) |
 | C7 pending → install → activate | Shipped for CLI `use` |
 | C8 persistent deck change + peer revocation | Shipped via `bind-workspace` grant rotation |
-| Central policy registry + route enumeration | Partial — `enforcePolicy` exists; routes use ad-hoc guards |
-| §8 full verification matrix | Partial — unit/integration tests; manual smoke + forged-header suite deferred |
-| Menubar deep link to approval | Deferred — approval URL works; menubar wiring not in this PR |
+| Central policy registry + route enumeration | Shipped — `HTTP_ROUTE_POLICIES` + `onRequest` hook; enumeration test on boot |
+| §8 full verification matrix | Shipped — `auth-matrix.test.ts` (forged headers, elevation e2e, C8 peer revoke); manual smoke still recommended before release |
+| Menubar deep link to approval | Shipped — `GET /api/trusted-session/admin/challenges` + menubar `href=` rows |
 
 ## 9. Threats and non-goals
 

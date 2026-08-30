@@ -48,6 +48,25 @@ describe('TrustedSessionStore', () => {
     expect(normal?.mode).toBe('normal');
   });
 
+  it('lists unconsumed admin challenges for menubar', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const workspace = store.getOrCreateWorkspaceKey('menubar');
+    const secret = generateGrantSecret();
+    const pending = store.createPendingGrant(workspace.id, 'deck-m', secret);
+    store.activateGrant(pending.id);
+    const grant = store.findActiveGrantBySecret(secret)!;
+    const session = store.createRuntimeSession({
+      workspaceKeyId: workspace.id,
+      workspaceGrantId: grant.id,
+      deckId: grant.deck_id,
+    });
+    const challenge = store.createAdminChallenge(session.sessionId);
+    const listed = store.listPendingAdminChallenges();
+    expect(listed).toHaveLength(1);
+    expect(listed[0].challengeId).toBe(challenge.id);
+  });
+
   it('pending grants are inactive until activation (C7)', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);

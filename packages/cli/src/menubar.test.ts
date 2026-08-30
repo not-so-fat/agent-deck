@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { LiveBinding } from '@agent-deck/shared';
-import { formatAge, renderMenubar, truncateName } from './menubar';
+import type { LiveBinding, PendingAdminChallenge } from '@agent-deck/shared';
+import { buildApprovalHref, formatAge, formatTimeUntil, renderMenubar, truncateName } from './menubar';
 
 const NOW = new Date('2026-07-03T12:00:00.000Z');
 
@@ -92,5 +92,43 @@ describe('renderMenubar', () => {
   it('falls back to "agent" when clientName is absent', () => {
     const output = renderMenubar([binding({ clientName: undefined })], NOW);
     expect(output).toContain('agent · 12s');
+  });
+
+  it('shows pending admin approval rows with dashboard href', () => {
+    const pending: PendingAdminChallenge = {
+      challengeId: 'adm_test',
+      runtimeSessionId: 'ses_test',
+      deckId: '11111111-1111-4111-8111-111111111111',
+      deckName: 'Product Design',
+      expiresAt: '2026-07-03T12:04:00.000Z',
+      approvalPath: '/admin/approve?challenge=adm_test&session=ses_test',
+    };
+    const output = renderMenubar([], NOW, [pending], 'http://127.0.0.1:1111');
+    expect(output.split('\n')[0]).toBe('◆ ⚠ 1');
+    expect(output).toContain('Admin approval pending');
+    expect(output).toContain('href=http://127.0.0.1:1111/admin/approve?challenge=adm_test&session=ses_test');
+    expect(output).toContain('Approve Product Design');
+  });
+});
+
+describe('formatTimeUntil', () => {
+  it('formats future expiry', () => {
+    expect(formatTimeUntil('2026-07-03T12:04:00.000Z', NOW)).toBe('4m');
+  });
+});
+
+describe('buildApprovalHref', () => {
+  it('joins dashboard origin and approval path', () => {
+    const href = buildApprovalHref(
+      {
+        challengeId: 'adm_x',
+        runtimeSessionId: 'ses_x',
+        deckId: '11111111-1111-4111-8111-111111111111',
+        expiresAt: '2026-07-03T12:04:00.000Z',
+        approvalPath: '/admin/approve?challenge=adm_x&session=ses_x',
+      },
+      'http://127.0.0.1:1111',
+    );
+    expect(href).toBe('http://127.0.0.1:1111/admin/approve?challenge=adm_x&session=ses_x');
   });
 });

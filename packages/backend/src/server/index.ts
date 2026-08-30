@@ -35,6 +35,7 @@ import { FileStoreWriter } from '../store/writer';
 import { ensureStoreReady } from '../store/startup';
 import { TrustedSessionStore } from '../trusted-session/store';
 import { ensureAdminSecret } from '../trusted-session/admin-secret';
+import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -109,6 +110,7 @@ export async function createServer() {
 
   fastify.decorate('db', db);
   fastify.decorate('trustedSessionStore', trustedSessionStore);
+  registerHttpPolicyHook(fastify);
 
   const sweepStaleSessions = () => {
     try {
