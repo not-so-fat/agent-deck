@@ -2,11 +2,11 @@ import { FastifyRequest } from 'fastify';
 import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
-  AGENT_DECK_DASHBOARD_CLIENT,
   Deck,
   Service,
 } from '@agent-deck/shared';
 import { stripAuthorizationHeader } from '../export-import/sanitize-for-export';
+import { isDashboardAuthenticated } from './dashboard-auth';
 
 export type ClientScope = 'dashboard' | 'agent';
 
@@ -32,15 +32,14 @@ export function sanitizeDeckForAgent(deck: Deck): Deck {
 }
 
 export function getClientScope(request: FastifyRequest): ClientScope {
-  const value = request.headers[AGENT_DECK_CLIENT_HEADER];
-  if (typeof value === 'string' && value.toLowerCase() === AGENT_DECK_DASHBOARD_CLIENT) {
+  if (isDashboardAuthenticated(request)) {
     return 'dashboard';
   }
   return 'agent';
 }
 
 export function isDashboardClient(request: FastifyRequest): boolean {
-  return getClientScope(request) === 'dashboard';
+  return isDashboardAuthenticated(request);
 }
 
 export function requireDashboardClient(request: FastifyRequest): void {

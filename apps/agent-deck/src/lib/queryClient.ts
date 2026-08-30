@@ -1,25 +1,16 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-/** Keep in sync with @agent-deck/shared constants/client-scope (CJS interop for Vite). */
-const AGENT_DECK_CLIENT_HEADER = "x-agent-deck-client";
-const AGENT_DECK_DASHBOARD_CLIENT = "dashboard";
-
-const dashboardHeaders = {
-  [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_DASHBOARD_CLIENT,
-};
-
 async function throwIfResNotOk(res: Response) {
   if (res.ok) return;
 
   let message = res.statusText;
 
   try {
-    const text = await res.text(); // safe to read once
+    const text = await res.text();
     try {
       const data = JSON.parse(text);
       message = data.error || data.message || message;
     } catch {
-      // not JSON, fallback to raw text
       if (text.trim()) message = `${res.status}: ${text}`;
     }
   } catch (err) {
@@ -36,8 +27,8 @@ export async function apiRequest(
 ): Promise<Response> {
   const res = await fetch(url, {
     method,
+    credentials: "include",
     headers: {
-      ...dashboardHeaders,
       ...(data ? { "Content-Type": "application/json" } : {}),
     },
     body: data ? JSON.stringify(data) : undefined,
@@ -53,10 +44,9 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    // Convert query key to proper API URL
     const url = queryKey.join("/") as string;
 
-    const res = await fetch(url, { headers: dashboardHeaders });
+    const res = await fetch(url, { credentials: "include" });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;
@@ -71,9 +61,9 @@ export const queryClient = new QueryClient({
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),
       refetchInterval: false,
-      refetchOnWindowFocus: true, // Refetch when window regains focus
-      staleTime: 0, // No stale time - always refetch when invalidated
-      gcTime: 10 * 60 * 1000, // 10 minutes - cache garbage collection time
+      refetchOnWindowFocus: true,
+      staleTime: 0,
+      gcTime: 10 * 60 * 1000,
       retry: false,
     },
     mutations: {

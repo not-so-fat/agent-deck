@@ -360,7 +360,7 @@ describe('MCP golden paths (CI)', () => {
     expect(stub.serviceCalls.at(-1)?.toolName).toBe('list_issues');
   });
 
-  it('S4–S5: playbook discover, get body, update_playbook', async () => {
+  it('S4–S5: playbook discover and get body (update_playbook is dashboard-only)', async () => {
     const sessionId = await nextSession();
     await tool(sessionId, 'bind_workspace', {
       workspaceRoot: '/tmp/golden-repo',
@@ -379,15 +379,6 @@ describe('MCP golden paths (CI)', () => {
 
     const full = await tool(sessionId, 'get_playbook', { playbook_id: PLAYBOOK_ID });
     expect(full.body).toContain('Steps');
-
-    const updated = await tool(sessionId, 'update_playbook', {
-      playbook_id: PLAYBOOK_ID,
-      body: '# Steps\n1. Check inbox\n2. Verify labels',
-    });
-    expect(updated.body).toContain('Verify labels');
-
-    const again = await tool(sessionId, 'get_playbook', { playbook_id: PLAYBOOK_ID });
-    expect(again.body).toContain('Verify labels');
   });
 
   it('S6–S7: manage_deck_card link/unlink; list_collection still has card', async () => {
@@ -427,18 +418,11 @@ describe('MCP golden paths (CI)', () => {
     expect(created.id).toBeTruthy();
     expect(created.name).toBe('scratch');
 
-    const decks = await tool(sessionId, 'get_decks', {});
-    const list = Array.isArray(decks) ? decks : (decks as { id: string }[]);
-    // get_decks may return array directly from API unwrap
-    const ids = (Array.isArray(list) ? list : []).map((d: { id: string }) => d.id);
-    expect(ids).toContain(created.id);
-
-    // bind still uses known DECK_ID (stub only fully scopes that deck)
     const bound = await tool(sessionId, 'bind_workspace', {
       workspaceRoot: '/tmp/scratch-repo',
-      deckId: DECK_ID,
+      deckId: created.id,
     });
-    expect(bound.deck_id).toBe(DECK_ID);
+    expect(bound.deck_id).toBe(created.id);
   });
 
   it('standard tools/list matches profile registry (no removed names)', async () => {

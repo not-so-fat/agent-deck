@@ -2,7 +2,21 @@
 
 ## Unreleased
 
-### Deck auto-bind
+### Trusted agent sessions (NOT-45) + bound-deck containment (NOT-44)
+
+- **Workspace grants:** `agent-deck use <deck>` issues a private grant (file + macOS keychain), writes a non-secret MCP launcher config, and removes deck UUIDs from tracked MCP JSON.
+- **Runtime sessions:** MCP connects with grant Bearer auth; backend establishes a runtime session (`x-agent-deck-session-id`) — forged deck/client headers no longer expand authority.
+- **Agent-admin:** `request_admin_elevation` / `exit_admin_mode` MCP tools; dashboard cookie bootstrap replaces spoofable `x-agent-deck-client` header. MCP admin gates read live runtime session mode from the backend after dashboard approval (not a stale in-memory cache).
+- **C7 grant protocol:** `agent-deck use` stages the grant locally, then activates server-side; pending grants are unusable until activation succeeds.
+- **C8 deck change:** agent-admin `bind_workspace` / `switch_bound_deck` rotate the workspace grant, revoke peer sessions, and surface `grant_refresh_note` to run `agent-deck use <deck>` before MCP reconnect.
+- **Dashboard admin approval:** `/admin/approve` page for elevation challenges; menubar lists pending approvals with deep links (`GET /api/trusted-session/admin/challenges`).
+- **Central HTTP policy:** `HTTP_ROUTE_POLICIES` registry + Fastify `onRequest` hook enforce auth on every API route; boot-time enumeration test guards omissions.
+- **Auth matrix tests:** forged legacy headers, elevation e2e, workspace scope mismatch, C8 peer session revocation.
+- **C6 HTTP boundary:** direct playbook mutation and tool-settings routes are dashboard-only at the policy hook (agents use `propose_playbook_patch`).
+- **NOT-44 containment:** agents only see/call services on the bound deck (`RESOURCE_OUT_OF_SCOPE` on cross-deck `/:id/call` and `/:id/tools`); collection routes dashboard-only.
+- **Migration:** `agent-deck use --refresh` diagnoses only — run explicit `agent-deck use <deck>` to (re)issue grants.
+
+### Deck auto-bind (superseded — remove on 1.7.0 ship)
 
 - `agent-deck use <deck>` stamps the deck as an `x-agent-deck-deck-id` header into the workspace's project MCP config; the MCP server pre-binds each session to that deck on connect, so deck-scoped tools work without the agent calling `bind_workspace`. Folders that never ran `use` stay unbound.
 - **After upgrading:** run `agent-deck use --refresh` in each folder that already ran `use` (to rewrite the MCP config with the header), then restart the IDE's MCP host.

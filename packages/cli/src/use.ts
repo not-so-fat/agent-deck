@@ -11,12 +11,10 @@ import {
   writeJsonFile,
   type McpClient,
 } from './mcp-config';
-import {
-  readUseManifest,
-  syncPlaybookStubs,
-  writeUseManifest,
-  type StubSyncResult,
-} from './playbook-stubs';
+import { syncPlaybookStubs, type StubSyncResult } from './playbook-stubs';
+import { issueWorkspaceGrant, activateWorkspaceGrant, revokePendingWorkspaceGrant, toGrantManifest } from './grant-issue';
+import { FileGrantStore, KeychainGrantStore, readWorkspaceGrant } from './grant-store';
+import { readUseManifest } from './playbook-stubs';
 
 export type UseClientTarget = 'cursor' | 'claude' | 'both';
 
@@ -115,27 +113,31 @@ function clientsToWrite(target: UseClientTarget): McpClient[] {
 
 export async function runUse(parsed: UseOptions): Promise<UseResult | { error: string }> {
   const admin = createCollectionAdmin();
-  let deckRef = parsed.deckRef;
 
   if (parsed.refresh) {
-    const manifest = readUseManifest(parsed.workspaceRoot);
-    if (!manifest) {
-      return { error: 'No .agent-deck/use.json — run agent-deck use <deck> first' };
+    const grant = await readWorkspaceGrant(parsed.workspaceRoot);
+    const legacy = readUseManifest(parsed.workspaceRoot);
+    if (grant) {
+      console.log(`Bound deck: ${grant.deckName ?? grant.deckId} (${grant.deckId})`);
+      console.log(`Grant: ${grant.grantId} · workspace ${grant.workspaceKey}`);
+      console.log('To rotate or change deck, run: agent-deck use <deck>');
+      return { error: 'refresh-diagnosis-only' };
     }
-    deckRef = manifest.deckId;
+    if (legacy) {
+      console.log(`Legacy manifest deck: ${legacy.deckName} (${legacy.deckId})`);
+      console.log(`Run explicitly: agent-deck use ${legacy.deckName}`);
+      return { error: 'refresh-diagnosis-only' };
+    }
+    console.log('No workspace grant — run: agent-deck use <deck>');
+    return { error: 'refresh-diagnosis-only' };
   }
 
+  let deckRef = parsed.deckRef;
   if (!deckRef) {
     return { error: 'deck name or id is required' };
   }
 
-  let deck = await admin.resolveDeck(deckRef);
-  if (!deck && parsed.refresh) {
-    const manifest = readUseManifest(parsed.workspaceRoot);
-    if (manifest?.deckName) {
-      deck = await admin.resolveDeck(manifest.deckName);
-    }
-  }
+  const deck = await admin.resolveDeck(deckRef);
   if (!deck) {
     return { error: `Deck not found: ${deckRef}` };
   }
@@ -144,24 +146,59 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   const endpoint = { host: parsed.host, mcpPort: parsed.mcpPort };
   const mcpUrl = buildMcpUrl(endpoint);
 
+  const issued = await issueWorkspaceGrant({
+    workspaceRoot: parsed.workspaceRoot,
+    deckId: deck.id,
+    host: parsed.host,
+  });
+  if ('error' in issued) {
+    return { error: issued.error };
+  }
+
+  const manifest = toGrantManifest(issued, mcpUrl, process.platform === 'darwin' ? 'keychain' : 'file');
+  const fileStore = new FileGrantStore(parsed.workspaceRoot);
+  const keychainStore =
+    process.platform === 'darwin' ? new KeychainGrantStore(parsed.workspaceRoot) : null;
+
+  try {
+    await fileStore.stage(manifest);
+    if (keychainStore) {
+      await keychainStore.stage(manifest);
+    }
+
+    const activated = await activateWorkspaceGrant({
+      grantId: issued.grantId,
+      host: parsed.host,
+    });
+    if ('error' in activated) {
+      throw new Error(activated.error);
+    }
+
+    await fileStore.activate();
+    if (keychainStore) {
+      await keychainStore.activate();
+    }
+  } catch (error) {
+    await revokePendingWorkspaceGrant({ grantId: issued.grantId, host: parsed.host });
+    await fileStore.rollback();
+    if (keychainStore) {
+      await keychainStore.rollback();
+    }
+    return { error: error instanceof Error ? error.message : 'Grant installation failed' };
+  }
+
+  const manifestPath = path.join(parsed.workspaceRoot, '.agent-deck', 'use.json');
+
   const mcpWritten: Array<{ client: McpClient; path: string }> = [];
   if (!parsed.skipMcp) {
     for (const client of clientsToWrite(parsed.clients)) {
       const configPath = resolveConfigPath(client, 'project', parsed.workspaceRoot);
-      const entry = buildAgentDeckEntry(client, endpoint, deck.id);
+      const entry = buildAgentDeckEntry(client, endpoint);
       const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
       writeJsonFile(configPath, merged);
       mcpWritten.push({ client, path: configPath });
     }
   }
-
-  const manifestPath = writeUseManifest(parsed.workspaceRoot, {
-    version: 1,
-    deckId: deck.id,
-    deckName: deck.name,
-    mcpUrl,
-    updatedAt: new Date().toISOString(),
-  });
 
   const stubs = syncPlaybookStubs(parsed.workspaceRoot, playbooks, {
     cursor: parsed.clients !== 'claude',
@@ -214,6 +251,9 @@ Bodies stay on the deck — stubs are pointers only.`);
 
   const result = await runUse(parsed);
   if ('error' in result) {
+    if (result.error === 'refresh-diagnosis-only') {
+      return 0;
+    }
     console.error(result.error);
     return 1;
   }

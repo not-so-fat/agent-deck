@@ -14,19 +14,20 @@ export const HARNESS_RULE_DESCRIPTION =
 
 const GLOBAL_BODY = `**Connect first:** Ensure Agent Deck MCP is connected before using deck tools (\`agent-deck setup --client cursor|claude --start\`, then restart the host). Claude Code: \`claude mcp list\` should show agent-deck as Connected when the backend is running.
 
-**Session opener (first turn only):** When Agent Deck MCP is connected and this is a new conversation in a workspace, call \`get_decks\`, then \`bind_workspace\` with the project root and a \`deckId\` (if \`.agent-deck/use.json\` exists, use its \`deckId\`), then \`get_session_binding\`, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). This is the deck-status line for IDE Agent chat — there is no host footer there. Do **not** repeat it every turn unless the user asks or the bind changes (\`switch_bound_deck\`, new repo).
+**Session opener (first turn only):** When Agent Deck MCP is connected and this is a new conversation in a workspace, call \`get_session_binding\` then \`get_bound_deck\`, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Grant auth is automatic from \`agent-deck use\` — do **not** call \`get_decks\` or pick a deck. On \`GRANT_REQUIRED\`, tell the user to run \`agent-deck use <deck>\` and stop. Do **not** repeat the status line every turn unless the user asks or the bind changes.
 
-**Later turns:** Call \`bind_workspace\` before the first deck-scoped tool if not already bound. Terminal hosts may also show the deck in the prompt footer via \`statusLine\`; do not duplicate unless the user asks.
+**Later turns:** Deck scope comes from the workspace grant. Do not re-bind unless the user asks for deck administration.
 
-Before declining for missing tools (Slack, Linear, GitHub, etc.), use agent-deck MCP: \`bind_workspace\`, \`get_bound_deck\`, \`call_service_tool\`. Don't hardcode deck IDs.
+Before declining for missing tools (Slack, Linear, GitHub, etc.), use agent-deck MCP: \`get_bound_deck\`, \`call_service_tool\`. Don't hardcode deck IDs.
+
+**Deck admin (create/switch/edit deck):** Normal agents get \`ADMIN_REQUIRED\`. Call \`request_admin_elevation\`; user approves in the dashboard/menubar. After approval, \`mode\` is \`agent-admin\` until lease expiry or \`exit_admin_mode\`. Surface shared-deck workspace counts before mutating a deck used elsewhere.
 
 Deck playbooks are task recipes — thin trigger stubs from \`agent-deck use\` plus \`get_bound_deck\` / \`get_playbook\`. **Never** mirror playbook bodies into \`.cursor/skills/\`, rules, or Claude skills — one source of truth on the deck; stubs are pointers only.
 
 ### When user asks for a playbook task
 
-1. \`bind_workspace\` if needed.
-2. \`get_playbook(pb_x)\` before improvising (stub or \`get_bound_deck\` triggers point you here).
-3. Follow the playbook body; use \`call_service_tool\` for deck MCPs.
+1. \`get_playbook(pb_x)\` before improvising (\`get_bound_deck\` triggers point you here).
+2. Follow the playbook body; use \`call_service_tool\` for deck MCPs.
 
 ### Playbooks — refine from outcomes (self-improvement)
 
@@ -40,7 +41,7 @@ Deck playbooks are task recipes — thin trigger stubs from \`agent-deck use\` p
 
 **Curate from a pasted dashboard prompt:** when the user pastes a curation prompt from the Feedback table (\`/feedback-signals\` → Copy for agent; Markdown + YAML list, each row leads with \`id\`), group the signals, then \`propose_playbook_patch\` with consolidated ops and \`signal_ids\` of every consumed id. That links rows (still open) until the patch is accepted. Do not invent a list-feedback MCP tool — browse/discard is dashboard-only.
 
-**Explicit user-directed playbook edits** ("fix the playbook to say X"): \`update_playbook\` — they already reviewed.
+**Explicit user-directed playbook edits** ("fix the playbook to say X"): direct \`update_playbook\` is dashboard-only — use \`propose_playbook_patch\` with \`rewrite_body\` unless they will apply the edit in the dashboard themselves.
 
 Tell the user in one line that a proposal was filed (or a signal was logged for later dashboard curation); review happens in the dashboard.
 
@@ -54,7 +55,7 @@ Tell the user in one line that a proposal was filed (or a signal was logged for 
 | Replace one list line | \`amend_item\` | \`anchor\`: exact line including \`-\` prefix — **not prose** |
 | Delete one list line | \`remove_item\` | Same anchor rules as amend |
 | Edit prose or a whole section | \`rewrite_body\` | Not amend_item on paragraphs |
-| Change trigger phrases | \`set_triggers\` | Then user runs \`agent-deck use --refresh\` |
+| Change trigger phrases | \`set_triggers\` | Then user runs \`agent-deck use <deck>\` to refresh stubs |
 
 Wrong: \`amend_item\` with a prose sentence as anchor → **409** at propose. Right: \`rewrite_body\` for prose edits.`;
 

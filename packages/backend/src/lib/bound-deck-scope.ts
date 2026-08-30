@@ -2,9 +2,13 @@ import { FastifyRequest } from 'fastify';
 import { DatabaseManager } from '../models/database';
 import { AgentDeckContextError, resolveAgentDeckId } from './agent-deck-context';
 import { isDashboardClient } from './client-scope';
+import type { TrustedSessionErrorCode } from '@agent-deck/shared';
 
 export class BoundDeckScopeError extends Error {
-  constructor(message = 'This operation is only allowed on the bound deck') {
+  constructor(
+    message = 'Resource is outside the bound deck',
+    public readonly errorCode: TrustedSessionErrorCode = 'RESOURCE_OUT_OF_SCOPE',
+  ) {
     super(message);
     this.name = 'BoundDeckScopeError';
   }
@@ -72,9 +76,13 @@ export async function requirePlaybookOnBoundDeck(
   }
 }
 
-function boundDeckScopeResponse(error: unknown): { status: number; message: string } {
+function boundDeckScopeResponse(error: unknown): {
+  status: number;
+  message: string;
+  error_code?: TrustedSessionErrorCode;
+} {
   if (error instanceof BoundDeckScopeError) {
-    return { status: 403, message: error.message };
+    return { status: 403, message: error.message, error_code: error.errorCode };
   }
   if (error instanceof AgentDeckContextError) {
     return { status: 400, message: error.message };

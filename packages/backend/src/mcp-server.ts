@@ -4,7 +4,6 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
-  AGENT_DECK_DECK_ID_HEADER,
   countDeckCards,
   formatDisplayLine,
 } from '@agent-deck/shared';
@@ -12,6 +11,7 @@ import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
+import { parseBearerToken } from './lib/http-auth';
 import {
   McpSessionBindingStore,
   resolveDeckBindingSource,
@@ -121,15 +121,19 @@ export class AgentDeckMCPServer {
 
   private async buildBindingPayload(sessionId: string) {
     const snapshot = this.sessionBinding.getBinding(sessionId);
-    const deck = await this.callBackendAPI('/api/scope/deck');
+    const deck = snapshot.deckId
+      ? await this.fetchDeck(snapshot.deckId)
+      : await this.callBackendAPI('/api/scope/deck');
     const badge = this.badgeBySession.get(sessionId);
     const cardCounts = deck ? countDeckCards(deck) : { mcp: 0, credentials: 0, playbooks: 0 };
     return {
       workspaceRoot: snapshot.workspaceRoot,
-      deck_id: deck?.id as string,
+      deck_id: (deck?.id ?? snapshot.deckId) as string,
       deck_name: deck?.name as string,
       deck_source: resolveDeckBindingSource(snapshot),
       session_deck_override: this.sessionBinding.hasSessionDeckOverride(sessionId),
+      mode: snapshot.mode ?? 'normal',
+      runtime_session_id: snapshot.runtimeSessionId,
       badge,
       display_summary: formatDisplayLine(deck?.name ?? null, cardCounts, { badge }),
     };
@@ -307,6 +311,8 @@ export class AgentDeckMCPServer {
       registerTool: (name, config, handler) => this.registerTool(name, config, handler),
       profile: this.toolProfile,
       getSessionId: () => this.getSessionId(),
+      getMode: () => this.sessionBinding.getMode(this.getSessionId()) ?? 'normal',
+      refreshRuntimeSession: () => this.refreshRuntimeSession(),
       getAgentHeaders: () => this.getAgentHeaders(),
       getBoundDeckId: () => this.getBoundDeckId(),
       callBackendAPI: (endpoint, init) => this.callBackendAPI(endpoint, init),
@@ -578,18 +584,71 @@ export class AgentDeckMCPServer {
     return typeof value === 'string' ? value : undefined;
   }
 
-  /**
-   * Pre-bind a newly-initialized session to the deck the client advertised via the
-   * `x-agent-deck-deck-id` header (written into the workspace's MCP config by
-   * `agent-deck use`). Removes the "agent forgot to call bind_workspace" gap; an
-   * explicit bind_workspace / switch_bound_deck later still overrides it.
-   */
-  private preBindSessionDeck(sessionId: string, req: Request): void {
-    const value = req.headers[AGENT_DECK_DECK_ID_HEADER];
-    const deckId = typeof value === 'string' ? value.trim() : undefined;
-    if (deckId) {
-      this.sessionBinding.setDeckId(sessionId, deckId);
+  private async refreshRuntimeSession(sessionId?: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
+    const mcpSessionId = sessionId ?? this.getSessionId();
+    const binding = this.sessionBinding.getBinding(mcpSessionId);
+    if (!binding.runtimeSessionId) {
+      throw new Error('GRANT_REQUIRED');
     }
+
+    const data = await this.callBackendAPI('/api/trusted-session/runtime-session', {}, mcpSessionId);
+    const mode = (data?.mode ?? 'normal') as 'normal' | 'agent-admin';
+    const deckId = String(data?.deckId ?? binding.deckId ?? '');
+
+    this.sessionBinding.setTrustedSession(mcpSessionId, {
+      runtimeSessionId: binding.runtimeSessionId,
+      deckId,
+      workspaceRoot: binding.workspaceRoot,
+      mode,
+    });
+
+    return { mode, deckId };
+  }
+
+  private parseGrantBearer(req: Request): string | null {
+    return parseBearerToken({ headers: req.headers as Record<string, unknown> });
+  }
+
+  private async authenticateTrustedSession(sessionId: string, req: Request): Promise<void> {
+    const grantSecret = this.parseGrantBearer(req);
+    if (!grantSecret) {
+      throw new Error('GRANT_REQUIRED');
+    }
+
+    const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ grantSecret, mcpSessionId: sessionId }),
+    });
+
+    const body = (await response.json()) as {
+      success?: boolean;
+      error?: string;
+      data?: {
+        sessionId: string;
+        deckId: string;
+        deckName?: string;
+        mode: 'normal' | 'agent-admin';
+      };
+    };
+
+    if (!response.ok || !body.success || !body.data) {
+      throw new Error(body.error ?? 'GRANT_REQUIRED');
+    }
+
+    this.sessionBinding.setTrustedSession(sessionId, {
+      runtimeSessionId: body.data.sessionId,
+      deckId: body.data.deckId,
+      workspaceRoot: process.env.AGENT_DECK_WORKSPACE,
+      mode: body.data.mode,
+    });
+  }
+
+  /**
+   * @deprecated Legacy pre-bind from deck header — replaced by grant authentication.
+   */
+  private preBindSessionDeck(_sessionId: string, _req: Request): void {
+    // no-op — grant auth handled in authenticateTrustedSession
   }
 
   private async handleMcpPost(req: Request, res: Response): Promise<void> {
@@ -614,6 +673,17 @@ export class AgentDeckMCPServer {
       res.status(400).json({
         jsonrpc: '2.0',
         error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+        id: null,
+      });
+      return;
+    }
+
+    const grantSecret = this.parseGrantBearer(req);
+    const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
+    if (!grantSecret && !skipGrantAuth) {
+      res.status(401).json({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'GRANT_REQUIRED' },
         id: null,
       });
       return;
@@ -654,11 +724,20 @@ export class AgentDeckMCPServer {
     // Done here (after handleRequest) rather than only in onsessioninitialized so
     // it also covers the fallback path where that callback does not fire; setDeckId
     // is idempotent. Then surface header/auto-bound sessions in the dashboard list.
-    if (transport.sessionId) {
-      this.preBindSessionDeck(transport.sessionId, req);
-      if (this.sessionBinding.hasSessionDeckOverride(transport.sessionId)) {
+    if (transport.sessionId && grantSecret) {
+      try {
+        await this.authenticateTrustedSession(transport.sessionId, req);
         void this.registerLiveDisplay(transport.sessionId).catch(() => {});
+      } catch (error) {
+        this.sessions.delete(transport.sessionId);
+        this.sessionBinding.clearSession(transport.sessionId);
+        console.warn(
+          '[agent-deck] Grant auth failed after MCP init:',
+          error instanceof Error ? error.message : error,
+        );
       }
+    } else if (transport.sessionId && skipGrantAuth) {
+      void this.registerLiveDisplay(transport.sessionId).catch(() => {});
     }
   }
 

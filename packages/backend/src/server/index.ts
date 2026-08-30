@@ -23,6 +23,7 @@ import { resolveDatabasePath } from '../lib/paths';
 import { CollectionWarningService } from '../services/collection-warning-service';
 import { registerCollectionRoutes } from '../routes/collection';
 import { registerExportImportRoutes } from '../routes/export-import';
+import { registerTrustedSessionRoutes, registerDashboardAuthRoutes } from '../routes/trusted-session';
 import { PlaybookManager } from '../playbooks/playbook-manager';
 import { PatchManager } from '../playbooks/patch-manager';
 import { registerPlaybookPatchRoutes } from '../routes/playbook-patches';
@@ -32,6 +33,9 @@ import { seedDefaultServicesIfEmpty } from '../data/seed-default-services';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { FileStoreWriter } from '../store/writer';
 import { ensureStoreReady } from '../store/startup';
+import { TrustedSessionStore } from '../trusted-session/store';
+import { ensureAdminSecret } from '../trusted-session/admin-secret';
+import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -79,6 +83,8 @@ export async function createServer() {
   }
   await ensureStoreReady(db);
   const secretStore = createSecretStore();
+  const trustedSessionStore = new TrustedSessionStore(db.getSqliteDatabase());
+  await ensureAdminSecret();
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
   const oauthTokenVault = new OAuthTokenVault(secretStore, db);
   const serviceHeaderVault = new ServiceHeaderVault(secretStore);
@@ -102,6 +108,22 @@ export async function createServer() {
   const collectionWarningService = new CollectionWarningService(oauthManager);
   const liveDisplayRegistry = new LiveDisplayRegistry();
 
+  fastify.decorate('db', db);
+  fastify.decorate('trustedSessionStore', trustedSessionStore);
+  registerHttpPolicyHook(fastify);
+
+  const sweepStaleSessions = () => {
+    try {
+      trustedSessionStore.expireStaleSessions();
+      trustedSessionStore.expireDashboardNonces();
+    } catch (error) {
+      fastify.log.warn({ err: error }, 'trusted-session stale sweep failed');
+    }
+  };
+  sweepStaleSessions();
+  const staleSessionTimer = setInterval(sweepStaleSessions, 60_000);
+  staleSessionTimer.unref?.();
+
   // Register routes
   await fastify.register(registerWebSocketRoutes, { prefix: '/api/ws' });
   await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
@@ -116,6 +138,8 @@ export async function createServer() {
   await fastify.register(registerOAuthRoutes, { prefix: '/api/oauth' });
   await fastify.register(mcpRoutes, { prefix: '/api/mcp' });
   await fastify.register(registerLocalMCPRoutes, { prefix: '/api/local-mcp' });
+  await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+  await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
 
   // Health check endpoint
   fastify.get('/health', async (request, reply) => {
@@ -150,7 +174,6 @@ export async function createServer() {
   }
 
   // Add services to request context
-  fastify.decorate('db', db);
   fastify.decorate('serviceManager', serviceManager);
   fastify.decorate('mcpClient', mcpClient);
   fastify.decorate('oauthManager', oauthManager);
@@ -186,6 +209,7 @@ export async function createServer() {
 declare module 'fastify' {
   interface FastifyInstance {
     db: DatabaseManager;
+    trustedSessionStore: TrustedSessionStore;
     serviceManager: ServiceManager;
     mcpClient: MCPClientManager;
     oauthManager: OAuthManager;

@@ -9,3 +9,4 @@ export * from './oauth-session';
 export * from './local-mcp-manifest';
 export * from './agent-deck-home';
 export * from './trigger-hygiene';
+export * from './workspace-key';

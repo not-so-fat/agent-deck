@@ -274,7 +274,7 @@ export async function runSetup(args: string[]): Promise<number> {
   // use`, keep its auto-bind header instead of writing a bare entry.
   const deckId =
     scope === 'project' ? readUseManifest(process.cwd())?.deckId : undefined;
-  const entry = buildAgentDeckEntry(client, endpoint, deckId);
+  const entry = buildAgentDeckEntry(client, endpoint);
   const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
   writeJsonFile(configPath, merged);
 

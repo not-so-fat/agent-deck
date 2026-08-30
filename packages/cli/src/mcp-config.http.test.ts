@@ -3,16 +3,22 @@ import { describe, it, expect } from 'vitest';
 import { buildAgentDeckEntry, buildMcpUrl } from './mcp-config';
 
 describe('MCP client config', () => {
-  it('uses http URL for Claude Code streamable HTTP', () => {
+  it('uses stdio launcher for Claude Code', () => {
     expect(buildAgentDeckEntry('claude', { host: '127.0.0.1', mcpPort: 3001 })).toEqual({
-      type: 'http',
-      url: 'http://127.0.0.1:3001/mcp',
+      type: 'stdio',
+      command: 'agent-deck',
+      args: ['mcp-launch'],
     });
   });
 
-  it('uses bare url for Cursor', () => {
+  it('uses command launcher for Cursor', () => {
     expect(buildAgentDeckEntry('cursor', { host: '127.0.0.1', mcpPort: 3001 })).toEqual({
-      url: 'http://127.0.0.1:3001/mcp',
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+      env: {
+        AGENT_DECK_MCP_PORT: '3001',
+        AGENT_DECK_HOST: '127.0.0.1',
+      },
     });
   });
 
