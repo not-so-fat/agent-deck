@@ -238,7 +238,11 @@ export class AgentDeckMCPServer {
         const message = 'error' in body ? String(body.error) : 'Unknown backend error';
         const errorCode =
           'error_code' in body && body.error_code ? (body.error_code as BackendApiError['errorCode']) : undefined;
-        throw new BackendApiError(message, response.status, errorCode);
+        throw new BackendApiError(
+          message,
+          response.ok ? 400 : response.status,
+          errorCode,
+        );
       }
 
       // Fallback: return as-is if not wrapped

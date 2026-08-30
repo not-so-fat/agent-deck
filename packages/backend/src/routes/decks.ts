@@ -324,12 +324,14 @@ export async function registerDeckRoutes(
 
       return reply.send(response);
     } catch (error) {
-      const response: ApiResponse = {
+      const scoped = boundDeckScopeResponse(error);
+      if (scoped.error_code) {
+        return reply.status(scoped.status).send(trustedSessionError(scoped.error_code, scoped.message));
+      }
+      return reply.status(scoped.status).send({
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-
-      return reply.status(500).send(response);
+        error: scoped.message,
+      } satisfies ApiResponse);
     }
   });
 

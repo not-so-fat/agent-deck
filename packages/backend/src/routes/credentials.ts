@@ -151,9 +151,9 @@ export async function registerCredentialRoutes(fastify: FastifyInstance) {
       if (scoped.error_code) {
         return reply.status(scoped.status).send(trustedSessionError(scoped.error_code, scoped.message));
       }
-      return reply.status(500).send({
+      return reply.status(scoped.status).send({
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: scoped.message,
       } satisfies ApiResponse);
     }
   });
