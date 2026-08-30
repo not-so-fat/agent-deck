@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AGENT_DECK_AGENT_CLIENT, AGENT_DECK_CLIENT_HEADER } from '@agent-deck/shared';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
+import type { TrustedSessionStore } from '../trusted-session/store';
 import { registerScopeRoutes } from './scope';
 
 const agentHeaders = { [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT };
@@ -21,6 +22,9 @@ async function buildApp() {
   const app = Fastify();
   app.decorate('db', {} as never);
   app.decorate('liveDisplayRegistry', new LiveDisplayRegistry());
+  app.decorate('trustedSessionStore', {
+    getRuntimeSessionModeByMcpSessionId: () => null,
+  } as unknown as TrustedSessionStore);
   await app.register(registerScopeRoutes, { prefix: '/api/scope' });
   return app;
 }
