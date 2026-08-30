@@ -12,6 +12,7 @@
 - **Dashboard admin approval:** `/admin/approve` page for elevation challenges; menubar lists pending approvals with deep links (`GET /api/trusted-session/admin/challenges`).
 - **Central HTTP policy:** `HTTP_ROUTE_POLICIES` registry + Fastify `onRequest` hook enforce auth on every API route; boot-time enumeration test guards omissions.
 - **Auth matrix tests:** forged legacy headers, elevation e2e, workspace scope mismatch, C8 peer session revocation.
+- **C6 HTTP boundary:** direct playbook mutation and tool-settings routes are dashboard-only at the policy hook (agents use `propose_playbook_patch`).
 - **NOT-44 containment:** agents only see/call services on the bound deck (`RESOURCE_OUT_OF_SCOPE` on cross-deck `/:id/call` and `/:id/tools`); collection routes dashboard-only.
 - **Migration:** `agent-deck use --refresh` diagnoses only — run explicit `agent-deck use <deck>` to (re)issue grants.
 

@@ -12,7 +12,9 @@ import {
 } from '@agent-deck/shared';
 import {
   isDashboardClient,
+  requireDashboardClient,
   sanitizeServiceForAgent,
+  DashboardOnlyError,
 } from '../lib/client-scope';
 import {
   boundDeckScopeResponse,
@@ -347,7 +349,7 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
 
   fastify.put<ServiceIdRequest>('/:id/tool-settings', async (request, reply) => {
     try {
-      await requireServiceOnBoundDeck(request, fastify.db, request.params.id);
+      requireDashboardClient(request);
 
       const input = UpdateServiceToolSettingsSchema.parse(request.body);
       const service = await fastify.serviceManager.updateToolSettings(request.params.id, input);
@@ -361,10 +363,15 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
 
       return reply.send({
         success: true,
-        // updateToolSettings merges vault secret headers — strip them for agents.
-        data: isDashboardClient(request) ? service : sanitizeServiceForAgent(service),
+        data: service,
       } satisfies ApiResponse<Service>);
     } catch (error) {
+      if (error instanceof DashboardOnlyError) {
+        return reply.status(403).send({
+          success: false,
+          error: error.message,
+        } satisfies ApiResponse);
+      }
       const scoped = boundDeckScopeResponse(error);
       return reply.status(scoped.status).send({
         success: false,

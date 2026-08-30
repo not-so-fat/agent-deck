@@ -7,10 +7,12 @@ import {
   AGENT_DECK_SESSION_HEADER,
   canonicalizeWorkspacePath,
   digestCanonicalWorkspacePath,
+  generateId,
 } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
 import { registerDeckRoutes } from '../routes/decks';
+import { registerPlaybookRoutes } from '../routes/playbooks';
 import { registerServiceRoutes } from '../routes/services';
 import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
@@ -39,6 +41,13 @@ describe('trusted session auth matrix (§8)', () => {
       url: 'http://127.0.0.1:9/mcp',
     });
     await db.addServiceToDeck({ deckId: boundDeck.id, serviceId: serviceOnBound.id, position: 0 });
+    const playbook = await db.createPlaybook({
+      id: generateId(),
+      title: 'test-pb',
+      body: 'body',
+      triggers: ['test'],
+    });
+    await db.addPlaybookToDeck({ deckId: boundDeck.id, playbookId: playbook.id, position: 0 });
 
     const store = new TrustedSessionStore(db.getSqliteDatabase());
     const digest = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRoot));
@@ -61,18 +70,27 @@ describe('trusted session auth matrix (§8)', () => {
       callServiceTool: async () => ({ success: true, result: {} }),
       getAllServices: async () => [serviceOnBound],
       getService: async (id: string) => (id === serviceOnBound.id ? serviceOnBound : null),
+      updateToolSettings: async (id: string) =>
+        id === serviceOnBound.id ? serviceOnBound : null,
     } as unknown as ServiceManager);
     fastify.decorate('broadcastServiceUpdate', () => {});
     fastify.decorate('storeWriter', { writeDeck: async () => {} });
+    fastify.decorate('playbookManager', {
+      createWithDependencies: async () => playbook,
+      updateWithDependencies: async () => playbook,
+      delete: async () => true,
+    });
+    fastify.decorate('patchManager', { snapshotVersion: async () => {} });
 
     registerHttpPolicyHook(fastify);
     await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
+    await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
     await fastify.register(registerDeckRoutes, { prefix: '/api/decks', storeWriter: { writeDeck: async () => {} } });
     await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
     await fastify.ready();
     servers.push(fastify);
 
-    return { fastify, session, boundDeck, otherDeck, store, secret, workspaceRoot };
+    return { fastify, session, boundDeck, otherDeck, store, secret, workspaceRoot, serviceOnBound, playbook };
   }
 
   it('forged legacy deck header does not expand agent access to dashboard-only routes', async () => {
@@ -202,5 +220,56 @@ describe('trusted session auth matrix (§8)', () => {
     const data = list.json().data as Array<{ challengeId: string; approvalPath: string }>;
     expect(data).toHaveLength(1);
     expect(data[0].approvalPath).toContain('/admin/approve?challenge=');
+  });
+
+  it('C6: normal agent denied POST /api/playbooks', async () => {
+    const { fastify, session } = await buildApp();
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/playbooks',
+      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+      payload: { title: 'x', body: 'y' },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error_code: 'DASHBOARD_REQUIRED' });
+  });
+
+  it('C6: normal agent denied PUT /api/playbooks/:id', async () => {
+    const { fastify, session, playbook } = await buildApp();
+    const response = await fastify.inject({
+      method: 'PUT',
+      url: `/api/playbooks/${playbook.id}`,
+      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+      payload: { body: 'updated' },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error_code: 'DASHBOARD_REQUIRED' });
+  });
+
+  it('C6: normal agent denied PUT /api/services/:id/tool-settings', async () => {
+    const { fastify, session, serviceOnBound } = await buildApp();
+    const response = await fastify.inject({
+      method: 'PUT',
+      url: `/api/services/${serviceOnBound.id}/tool-settings`,
+      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+      payload: { disabled_tools: [] },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error_code: 'DASHBOARD_REQUIRED' });
+  });
+
+  it('C6: elevated agent also denied direct playbook mutation', async () => {
+    const { fastify, session, store, playbook } = await buildApp();
+    store.elevateSessionToAdmin(session.sessionId);
+
+    const response = await fastify.inject({
+      method: 'PUT',
+      url: `/api/playbooks/${playbook.id}`,
+      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+      payload: { body: 'nope' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error_code: 'DASHBOARD_REQUIRED' });
   });
 });
