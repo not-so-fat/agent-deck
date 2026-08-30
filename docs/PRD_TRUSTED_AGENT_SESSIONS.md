@@ -10,7 +10,7 @@ shipped: 1.7.0
 
 Every MCP session receives the deck previously authorized for its workspace. Normal agents can use that deck and preserve the feedback-to-playbook suggestion loop; temporary admin mode adds narrowly scoped deck administration without becoming persistent authority.
 
-Release gate: implement NOT-45, verify the NOT-44 containment, then ship both in one minor release. Never release NOT-45 alone.
+**Shipped in 1.7.0** (NOT-45 + NOT-44 together; see [CHANGELOG](../CHANGELOG.md#170--2026-08-31)).
 
 ## 1. Problem and outcome
 
@@ -221,7 +221,9 @@ The harness starts with binding inspection. On `GRANT_REQUIRED`, it tells the us
 
 ## 8. Verification and release
 
-Automated coverage must include:
+Target verification matrix (design spec; 1.7.0 shipped with partial automated coverage — see as-built table):
+
+Automated and manual coverage should include:
 
 - canonical path aliases, platform behavior, and cross-workspace denial;
 - grant entropy, hashing, redaction, tracked-config scanning, file mode, and OS-secret-store behavior;
@@ -234,9 +236,9 @@ Automated coverage must include:
 
 NOT-44 verification remains separate and mandatory: direct HTTP and MCP calls for a service outside the bound deck return `RESOURCE_OUT_OF_SCOPE`, while authenticated dashboard behavior remains unchanged.
 
-Only after NOT-45 implementation and NOT-44 verification pass may the project update the minor version and changelog, run the real install/upgrade smoke test, and publish the single combined minor release.
+**Release (1.7.0):** NOT-45 and NOT-44 shipped together after partial automated coverage (see as-built row), `npm run release:smoke`, and integration tests on main.
 
-### As-built (PR #30, draft)
+### As-built (1.7.0)
 
 | PRD area | Status |
 | --- | --- |
@@ -246,12 +248,13 @@ Only after NOT-45 implementation and NOT-44 verification pass may the project up
 | C7 pending → install → activate | Shipped for CLI `use` |
 | C8 persistent deck change + peer revocation | Shipped via `bind-workspace` grant rotation |
 | Central policy registry + route enumeration | Shipped — `HTTP_ROUTE_POLICIES` + `onRequest` hook; enumeration test on boot |
-| §8 full verification matrix | Shipped — `auth-matrix.test.ts` (forged headers, elevation e2e, C8 peer revoke); manual smoke still recommended before release |
+| §8 verification matrix (partial automated) | Partial — `auth-matrix.test.ts`, route-policy enumeration, containment tests, and related unit tests cover forged headers, elevation e2e, C8 peer revoke, and NOT-44 scope; C7 fault injection across all stores, full host-transport lifecycle, and canonical-path alias rows remain manual / follow-up |
 | Menubar deep link to approval | Shipped — `GET /api/trusted-session/admin/challenges` + menubar `href=` rows |
 
 ## 9. Threats and non-goals
 
-Threats covered by acceptance tests include forged authorization headers, copied grants used from another workspace, raw grants committed to source control, reused or self-approved admin challenges, leaked replacement grants, server restart, crashed hosts, concurrent deck changes, and newly added routes that omit policy.
+Design threats this feature mitigates (full automated coverage per §8 matrix not yet complete — see as-built gaps):
+- forged authorization headers, copied grants used from another workspace, raw grants committed to source control, reused or self-approved admin challenges, leaked replacement grants, server restart, crashed hosts, concurrent deck changes, and newly added routes that omit policy.
 
 Non-goals for v1:
 
@@ -261,8 +264,16 @@ Non-goals for v1:
 - agent access to OAuth, secrets, tool settings, collection mutation, or direct playbook mutation; and
 - replacing dashboard review of playbook suggestions.
 
-## 10. Technical handoff
+## 10. Implementation map (as-built)
 
-Expected implementation touchpoints include the SQLite schema and migrations, centralized authorization middleware, MCP transport session establishment, the local launcher and private grant stores, CLI `use` and refresh flows, daemon/dashboard approval endpoints, menubar approval links, host templates, the harness, documentation, and integration tests.
+Primary touchpoints in the 1.7.0 codebase:
 
-The implementation PR must include a migration/rollback note, a host-support matrix for transport lifecycle, proof that raw grants cannot enter tracked configuration, and an explicit checklist mapping changed routes to the authorization matrix.
+- SQLite schema + migrations — trusted session / grant tables
+- `packages/backend/src/trusted-session/` — grants, runtime sessions, elevation
+- `packages/backend/src/lib/http-route-policies.ts` — centralized policy registry + Fastify hook
+- MCP transport session establishment — grant Bearer auth, session header
+- CLI `use` / `use --refresh` — grant writer + launcher config (`packages/cli/`)
+- Dashboard `/admin/approve` + menubar challenge links
+- Harness + docs — `CLAUDE.md`, setup/migration copy, `CHANGELOG.md`
+
+For migration/rollback notes and route-to-matrix mapping, see PR #30 and release smoke (`scripts/release-smoke.sh`).
