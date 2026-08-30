@@ -12,6 +12,8 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
 import { parseBearerToken } from './lib/http-auth';
+import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error';
+import { formatMcpToolError } from './mcp-tools/policy';
 import {
   McpSessionBindingStore,
   resolveDeckBindingSource,
@@ -223,14 +225,7 @@ export class AgentDeckMCPServer {
       });
       if (!response.ok) {
         const text = await response.text();
-        let message = `Backend API error: ${response.status} ${response.statusText}`;
-        try {
-          const body = JSON.parse(text);
-          if (body.error) message = String(body.error);
-        } catch {
-          if (text.trim()) message = text;
-        }
-        throw new Error(message);
+        throw parseBackendErrorBody(text, response.status);
       }
       const body = await response.json();
 
@@ -240,8 +235,10 @@ export class AgentDeckMCPServer {
           // Some endpoints return the raw data (legacy); fallback to body if data missing
           return 'data' in body ? body.data : body;
         }
-        const message = 'error' in body ? body.error : 'Unknown backend error';
-        throw new Error(String(message));
+        const message = 'error' in body ? String(body.error) : 'Unknown backend error';
+        const errorCode =
+          'error_code' in body && body.error_code ? (body.error_code as BackendApiError['errorCode']) : undefined;
+        throw new BackendApiError(message, response.status, errorCode);
       }
 
       // Fallback: return as-is if not wrapped
@@ -265,7 +262,7 @@ export class AgentDeckMCPServer {
   }
 
   private toolError(error: unknown) {
-    return { content: [{ type: "text" as const, text: JSON.stringify({ error: String(error) }) }] };
+    return formatMcpToolError(error);
   }
 
   /** Avoid TS2589 when registering many MCP tools (SDK overload recursion). */

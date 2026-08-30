@@ -1,6 +1,6 @@
 import type { WorkspaceGrantManifest } from '@agent-deck/shared';
 
-import { parseCliBackendPort } from './defaults';
+import { parseCliBackendPort, CLI_DEFAULT_BACKEND_PORT } from './defaults';
 import { readAdminSecret } from './admin-secret';
 
 export type IssuedGrant = {
@@ -16,9 +16,14 @@ type TrustedWriterAuth =
   | { ok: true; headers: Record<string, string> }
   | { ok: false; error: string };
 
+function resolveBackendPort(): number {
+  return parseCliBackendPort(
+    process.env.AGENT_DECK_BACKEND_PORT ?? process.env.AGENT_DECK_PORT,
+  );
+}
+
 function resolveBackendUrl(host: string): string {
-  const port = parseCliBackendPort(process.env.AGENT_DECK_BACKEND_PORT);
-  return `http://${host}:${port}`;
+  return `http://${host}:${resolveBackendPort()}`;
 }
 
 async function trustedWriterHeaders(_host?: string): Promise<TrustedWriterAuth> {

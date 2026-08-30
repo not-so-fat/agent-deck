@@ -21,6 +21,7 @@ export const LiveBindingSchema = z.object({
   // Absent for header/auto-bound sessions (deck without a known folder).
   workspaceRoot: z.string().min(1).optional(),
   clientName: z.string().min(1).optional(),
+  mode: z.enum(['normal', 'agent-admin']).optional(),
   cardCounts: DeckCardCountsSchema,
   updatedAt: z.string().datetime(),
   lastActivityAt: z.string().datetime(),

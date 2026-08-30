@@ -13,7 +13,7 @@
 - **Central HTTP policy:** `HTTP_ROUTE_POLICIES` registry + Fastify `onRequest` hook enforce auth on every API route; boot-time enumeration test guards omissions.
 - **Auth matrix tests:** forged legacy headers, elevation e2e, workspace scope mismatch, C8 peer session revocation.
 - **C6 HTTP boundary:** direct playbook mutation and tool-settings routes are dashboard-only at the policy hook (agents use `propose_playbook_patch`).
-- **NOT-44 containment:** agents only see/call services on the bound deck (`RESOURCE_OUT_OF_SCOPE` on cross-deck `/:id/call` and `/:id/tools`); collection routes dashboard-only.
+- **NOT-44 containment:** agents only see/call services on the bound deck (`RESOURCE_OUT_OF_SCOPE` on cross-deck HTTP/MCP); credential/playbook off-deck reads and deck mutations return structured `error_code`; live-session popover shows session mode + rows for the deck being edited.
 - **Migration:** `agent-deck use --refresh` diagnoses only — run explicit `agent-deck use <deck>` to (re)issue grants.
 
 ### Deck auto-bind (superseded — remove on 1.7.0 ship)

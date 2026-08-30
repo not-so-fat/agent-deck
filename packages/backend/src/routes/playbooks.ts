@@ -8,6 +8,7 @@ import {
   PlaybookSummary,
   PlaybookWithDependencies,
   generateId,
+  trustedSessionError,
 } from '@agent-deck/shared';
 import { ZodError } from 'zod';
 import {
@@ -16,6 +17,10 @@ import {
   requireDashboardClient,
 } from '../lib/client-scope';
 import { AgentDeckContextError, resolveAgentDeckId } from '../lib/agent-deck-context';
+import {
+  boundDeckScopeResponse,
+  requirePlaybookOnBoundDeck,
+} from '../lib/bound-deck-scope';
 import { playbookEventSource } from './playbook-patches';
 
 interface PlaybookIdRequest {
@@ -123,24 +128,35 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
 
   fastify.get<PlaybookIdRequest>('/:id', async (request, reply) => {
     try {
-      let playbook: PlaybookWithDependencies | null;
-
       if (isDashboardClient(request)) {
-        playbook = await fastify.playbookManager.getWithDependencies(request.params.id);
-      } else {
-        const deckId = await resolveAgentDeckId(request, fastify.db);
-        const onDeck = await fastify.playbookManager.isPlaybookOnDeck(deckId, request.params.id);
-        playbook = onDeck
-          ? await fastify.playbookManager.getWithDependencies(request.params.id)
-          : null;
+        const playbook = await fastify.playbookManager.getWithDependencies(request.params.id);
+        if (!playbook) {
+          return reply.status(404).send({
+            success: false,
+            error: 'Playbook not found',
+          } satisfies ApiResponse);
+        }
+        await fastify.db.recordPlaybookEvent({
+          id: generateId(),
+          playbookId: playbook.id,
+          event: 'fetched',
+          source: playbookEventSource(request),
+        });
+        const openPatches = await fastify.patchManager.listOpenPatchSummaries(playbook.id);
+        return reply.send({
+          success: true,
+          data: { ...playbook, openPatches },
+        } satisfies ApiResponse<
+          PlaybookWithDependencies & { openPatches: OpenPlaybookPatchSummary[] }
+        >);
       }
 
+      await requirePlaybookOnBoundDeck(request, fastify.db, request.params.id);
+      const playbook = await fastify.playbookManager.getWithDependencies(request.params.id);
       if (!playbook) {
-        return reply.status(isDashboardClient(request) ? 404 : 403).send({
+        return reply.status(404).send({
           success: false,
-          error: isDashboardClient(request)
-            ? 'Playbook not found'
-            : 'Playbook not found on bound deck',
+          error: 'Playbook not found',
         } satisfies ApiResponse);
       }
 
@@ -150,7 +166,6 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
         event: 'fetched',
         source: playbookEventSource(request),
       });
-
       const openPatches = await fastify.patchManager.listOpenPatchSummaries(playbook.id);
 
       return reply.send({
@@ -160,6 +175,10 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
         PlaybookWithDependencies & { openPatches: OpenPlaybookPatchSummary[] }
       >);
     } catch (error) {
+      const scoped = boundDeckScopeResponse(error);
+      if (scoped.error_code) {
+        return reply.status(scoped.status).send(trustedSessionError(scoped.error_code, scoped.message));
+      }
       return reply.status(500).send({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',

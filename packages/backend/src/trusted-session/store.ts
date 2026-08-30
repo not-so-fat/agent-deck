@@ -321,6 +321,17 @@ export class TrustedSessionStore {
     return touched;
   }
 
+  getRuntimeSessionModeByMcpSessionId(mcpSessionId: string): AgentSessionMode | null {
+    const now = nowIso();
+    const row = this.db
+      .prepare(
+        `SELECT mode FROM runtime_sessions
+         WHERE mcp_session_id = ? AND revoked_at IS NULL AND expires_at > ?`,
+      )
+      .get(mcpSessionId, now) as { mode: AgentSessionMode } | undefined;
+    return row?.mode ?? null;
+  }
+
   revokePendingGrant(grantId: string): void {
     const revokedAt = nowIso();
     this.db

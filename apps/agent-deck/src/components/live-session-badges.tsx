@@ -1,56 +1,130 @@
-import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { LiveBinding } from '@agent-deck/shared';
-import { Radio } from 'lucide-react';
+import { Radio, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   formatActivityAge,
+  groupLiveBindings,
+  liveSessionRowSubtitle,
+  sessionModeClass,
+  sessionModeLabel,
   truncateDeckName,
-  workspaceBasename,
 } from '@/lib/live-bindings';
 import { MCP_CARD_COLOR } from '@/lib/card-colors';
 import { cn } from '@/lib/utils';
 
-const POLL_MS = 3_000;
+const POPOVER_WIDTH_CLASS = 'w-[min(22rem,calc(100vw-2rem))]';
+
+type LiveSessionBadgesPanelProps = {
+  bindings: LiveBinding[];
+  now?: Date;
+  highlightDeckId?: string;
+  showContainmentNote?: boolean;
+  scrollClassName?: string;
+};
+
+export function LiveSessionBadgesPanel({
+  bindings,
+  now = new Date(),
+  highlightDeckId,
+  showContainmentNote = false,
+  scrollClassName = 'max-h-64 overflow-y-auto',
+}: LiveSessionBadgesPanelProps) {
+  const onThisDeckCount = highlightDeckId
+    ? bindings.filter((row) => row.deckId === highlightDeckId).length
+    : 0;
+
+  const grouped = groupLiveBindings(bindings);
+
+  return (
+    <>
+      <div className="border-b border-white/10 px-3 py-2.5">
+        <p className="text-sm font-semibold leading-snug" style={{ color: MCP_CARD_COLOR }}>
+          Live sessions
+          <span className="ml-1 font-normal text-gray-400">· match ⌘badge to chat opener</span>
+        </p>
+      </div>
+      {showContainmentNote ? (
+        <div className="border-b border-white/10 px-3 py-2 text-xs text-gray-400">
+          <div className="flex items-start gap-2">
+            <Shield className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" aria-hidden />
+            <p>
+              Agents are bound to one deck per workspace. Cross-deck service calls return{' '}
+              <span className="font-mono text-gray-300">RESOURCE_OUT_OF_SCOPE</span>.
+            </p>
+          </div>
+        </div>
+      ) : null}
+      {highlightDeckId && onThisDeckCount > 1 ? (
+        <div className="border-b border-[#92E4DD]/20 bg-[#92E4DD]/5 px-3 py-1.5 text-xs text-gray-300">
+          {onThisDeckCount} sessions on this deck
+        </div>
+      ) : null}
+      <div className={cn(scrollClassName, 'p-2')}>
+        {grouped.map(({ key, label, isWorkspaceGroup, rows }) => (
+          <div key={key} className="mb-2 last:mb-0">
+            <p className="px-1 pb-1 text-[10px] uppercase tracking-wide text-gray-500">
+              {label}
+            </p>
+            <ul className="space-y-1">
+              {rows.map((row) => {
+                const client = row.clientName ?? 'agent';
+                const age = formatActivityAge(row.lastActivityAt, now);
+                const clientMeta = age ? `${client} · ${age}` : client;
+                const highlighted = highlightDeckId === row.deckId;
+                const subtitle = liveSessionRowSubtitle(row, {
+                  isWorkspaceGroup,
+                  highlighted,
+                  clientMeta,
+                });
+                return (
+                  <li
+                    key={row.badge}
+                    className={cn(
+                      'rounded-md border-l-2 py-1.5 pl-2 pr-2 font-mono text-xs',
+                      highlighted
+                        ? 'border-[#92E4DD] bg-[#92E4DD]/5'
+                        : 'border-transparent bg-white/5',
+                    )}
+                    data-testid={`live-session-row-${row.badge}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span style={{ color: MCP_CARD_COLOR }}>⌘{row.badge}</span>
+                      <span
+                        className={cn(
+                          'rounded px-1.5 py-0.5 font-sans text-[10px] uppercase tracking-wide',
+                          sessionModeClass(row.mode),
+                        )}
+                      >
+                        {sessionModeLabel(row.mode)}
+                      </span>
+                    </div>
+                    <span className="mt-0.5 block font-sans text-[10px] text-gray-400">
+                      {subtitle}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
 
 type LiveSessionBadgesProps = {
-  /** Highlight rows bound to the deck open in the builder. */
   highlightDeckId?: string;
 };
 
 export default function LiveSessionBadges({ highlightDeckId }: LiveSessionBadgesProps) {
   const { data } = useQuery<{ success: boolean; data: LiveBinding[] }>({
     queryKey: ['/api/scope/bindings'],
-    refetchInterval: POLL_MS,
+    refetchInterval: 3_000,
   });
 
   const bindings = data?.data ?? [];
-  const now = useMemo(() => new Date(), [data]);
-
-  const grouped = useMemo(() => {
-    // Group by workspace; header/auto-bound sessions have no folder, so group
-    // those under their deck name instead.
-    const byGroup = new Map<string, { label: string; rows: LiveBinding[] }>();
-    for (const row of bindings) {
-      const key = row.workspaceRoot || `deck:${row.deckId}`;
-      const label = row.workspaceRoot
-        ? `${workspaceBasename(row.workspaceRoot)}/`
-        : `◆ ${row.deckName}`;
-      const group = byGroup.get(key) ?? { label, rows: [] };
-      group.rows.push(row);
-      byGroup.set(key, group);
-    }
-    return [...byGroup.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, { label, rows }]) => ({
-        key,
-        label,
-        rows: [...rows].sort((a, b) =>
-          a.lastActivityAt < b.lastActivityAt ? 1 : -1,
-        ),
-      }));
-  }, [bindings]);
 
   if (bindings.length === 0) {
     return null;
@@ -80,54 +154,13 @@ export default function LiveSessionBadges({ highlightDeckId }: LiveSessionBadges
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-80 border-white/10 bg-gray-950/95 p-0 text-gray-100"
+        className={cn(
+          POPOVER_WIDTH_CLASS,
+          'border-white/10 bg-gray-950/95 p-0 text-gray-100',
+        )}
         data-testid="live-session-badges-panel"
       >
-        <div className="border-b border-white/10 px-3 py-2">
-          <p className="text-sm font-semibold" style={{ color: MCP_CARD_COLOR }}>
-            Live sessions
-          </p>
-          <p className="text-xs text-gray-400">
-            Match <span className="font-mono">⌘badge</span> to the chat opener
-          </p>
-        </div>
-        <div className="max-h-64 overflow-y-auto p-2">
-          {grouped.map(({ key, label, rows }) => (
-            <div key={key} className="mb-2 last:mb-0">
-              <p className="px-1 pb-1 text-[10px] uppercase tracking-wide text-gray-500">
-                {label}
-              </p>
-              <ul className="space-y-1">
-                {rows.map((row) => {
-                  const client = row.clientName ?? 'agent';
-                  const age = formatActivityAge(row.lastActivityAt, now);
-                  const meta = age ? `${client} · ${age}` : client;
-                  const highlighted = highlightDeckId === row.deckId;
-                  return (
-                    <li
-                      key={row.badge}
-                      className={cn(
-                        'rounded-md px-2 py-1.5 font-mono text-xs',
-                        highlighted
-                          ? 'bg-[#92E4DD]/10 ring-1 ring-[#92E4DD]/40'
-                          : 'bg-white/5',
-                      )}
-                      data-testid={`live-session-row-${row.badge}`}
-                    >
-                      <span className="text-gray-100">
-                        {truncateDeckName(row.deckName)}
-                      </span>{' '}
-                      <span style={{ color: MCP_CARD_COLOR }}>⌘{row.badge}</span>
-                      <span className="mt-0.5 block font-sans text-[10px] text-gray-400">
-                        {meta}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ))}
-        </div>
+        <LiveSessionBadgesPanel bindings={bindings} highlightDeckId={highlightDeckId} />
       </PopoverContent>
     </Popover>
   );

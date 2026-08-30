@@ -10,6 +10,7 @@ import {
   DeckListEntry,
   PlaybookSummary,
   countDeckCards,
+  trustedSessionError,
 } from '@agent-deck/shared';
 import {
   applyDeckScope,
@@ -298,12 +299,11 @@ export async function registerDeckRoutes(
       let visibleDeckId: string | undefined;
 
       if (scope === 'agent') {
-        try {
-          visibleDeckId = await resolveAgentDeckId(request, fastify.db);
-        } catch (error) {
-          if (!(error instanceof AgentDeckContextError)) {
-            throw error;
-          }
+        visibleDeckId = await resolveAgentDeckId(request, fastify.db);
+        if (deck.id !== visibleDeckId) {
+          return reply
+            .status(403)
+            .send(trustedSessionError('RESOURCE_OUT_OF_SCOPE', 'Deck is outside the bound deck'));
         }
       }
 
@@ -454,6 +454,7 @@ export async function registerDeckRoutes(
       const response: ApiResponse = {
         success: false,
         error: scoped.message,
+        ...(scoped.error_code ? { error_code: scoped.error_code } : {}),
       };
       
       return reply.status(scoped.status).send(response);
@@ -489,6 +490,7 @@ export async function registerDeckRoutes(
       const response: ApiResponse = {
         success: false,
         error: scoped.message,
+        ...(scoped.error_code ? { error_code: scoped.error_code } : {}),
       };
       
       return reply.status(scoped.status).send(response);
@@ -524,6 +526,7 @@ export async function registerDeckRoutes(
       const response: ApiResponse = {
         success: false,
         error: scoped.message,
+        ...(scoped.error_code ? { error_code: scoped.error_code } : {}),
       };
       
       return reply.status(scoped.status).send(response);
@@ -556,6 +559,7 @@ export async function registerDeckRoutes(
       const response: ApiResponse = {
         success: false,
         error: scoped.message,
+        ...(scoped.error_code ? { error_code: scoped.error_code } : {}),
       };
       
       return reply.status(scoped.status).send(response);
@@ -676,6 +680,7 @@ export async function registerDeckRoutes(
         return reply.status(scoped.status).send({
           success: false,
           error: scoped.message,
+          ...(scoped.error_code ? { error_code: scoped.error_code } : {}),
         } satisfies ApiResponse);
       }
     },
@@ -709,6 +714,7 @@ export async function registerDeckRoutes(
         return reply.status(scoped.status).send({
           success: false,
           error: scoped.message,
+          ...(scoped.error_code ? { error_code: scoped.error_code } : {}),
         } satisfies ApiResponse);
       }
     },

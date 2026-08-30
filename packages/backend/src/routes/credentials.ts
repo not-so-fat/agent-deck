@@ -16,6 +16,11 @@ import {
   requireDashboardClient,
 } from '../lib/client-scope';
 import { AgentDeckContextError, resolveAgentDeckId } from '../lib/agent-deck-context';
+import {
+  boundDeckScopeResponse,
+  requireCredentialOnBoundDeck,
+} from '../lib/bound-deck-scope';
+import { trustedSessionError } from '@agent-deck/shared';
 import { PlaybookDependencyError } from '../playbooks/playbook-manager';
 
 interface CredentialIdRequest {
@@ -120,40 +125,36 @@ export async function registerCredentialRoutes(fastify: FastifyInstance) {
 
   fastify.get<CredentialIdRequest>('/:id', async (request, reply) => {
     try {
-      let credential: Credential | null;
-
       if (isDashboardClient(request)) {
-        credential = await fastify.credentialManager.get(request.params.id);
-      } else {
-        const deckId = await resolveAgentDeckId(request, fastify.db);
-        const onDeck = await fastify.credentialManager.isCredentialOnDeck(
-          deckId,
-          request.params.id,
-        );
-        credential = onDeck ? await fastify.credentialManager.get(request.params.id) : null;
+        const credential = await fastify.credentialManager.get(request.params.id);
+        if (!credential) {
+          return reply.status(404).send({
+            success: false,
+            error: 'Credential not found',
+          } satisfies ApiResponse);
+        }
+        return reply.send({ success: true, data: credential } satisfies ApiResponse<Credential>);
       }
 
+      await requireCredentialOnBoundDeck(request, fastify.db, request.params.id);
+      const credential = await fastify.credentialManager.get(request.params.id);
       if (!credential) {
-        const response: ApiResponse = {
+        return reply.status(404).send({
           success: false,
-          error: isDashboardClient(request)
-            ? 'Credential not found'
-            : 'Credential not found on bound deck',
-        };
-        return reply.status(isDashboardClient(request) ? 404 : 403).send(response);
+          error: 'Credential not found',
+        } satisfies ApiResponse);
       }
 
-      const response: ApiResponse<Credential> = {
-        success: true,
-        data: credential,
-      };
-      return reply.send(response);
+      return reply.send({ success: true, data: credential } satisfies ApiResponse<Credential>);
     } catch (error) {
-      const response: ApiResponse = {
+      const scoped = boundDeckScopeResponse(error);
+      if (scoped.error_code) {
+        return reply.status(scoped.status).send(trustedSessionError(scoped.error_code, scoped.message));
+      }
+      return reply.status(500).send({
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
-      };
-      return reply.status(500).send(response);
+      } satisfies ApiResponse);
     }
   });
 

@@ -200,6 +200,7 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
       source: entry.source,
       workspaceRoot: entry.workspaceRoot,
       clientName: entry.clientName,
+      mode: fastify.trustedSessionStore.getRuntimeSessionModeByMcpSessionId(entry.mcpSessionId) ?? undefined,
       cardCounts: entry.cardCounts,
       updatedAt: entry.updatedAt,
       lastActivityAt: entry.lastActivityAt,

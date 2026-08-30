@@ -5,6 +5,7 @@ import { resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
 import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard } from './policy';
+import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
 
 type RegisterToolFn = (
   name: string,
@@ -525,7 +526,7 @@ function registerRuntimeTools(host: McpToolHost): void {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`Backend API error ${res.status}: ${text}`);
+        throw parseBackendErrorBody(text, res.status);
       }
       const body = (await res.json()) as {
         success?: boolean;

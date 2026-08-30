@@ -111,6 +111,13 @@ function clientsToWrite(target: UseClientTarget): McpClient[] {
   return ['cursor', 'claude'];
 }
 
+function resolveGrantStoreKind(): 'file' | 'keychain' {
+  if (process.env.AGENT_DECK_GRANT_STORE === 'file' || process.env.AGENT_DECK_DEV === '1') {
+    return 'file';
+  }
+  return process.platform === 'darwin' ? 'keychain' : 'file';
+}
+
 export async function runUse(parsed: UseOptions): Promise<UseResult | { error: string }> {
   const admin = createCollectionAdmin();
 
@@ -155,10 +162,11 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
     return { error: issued.error };
   }
 
-  const manifest = toGrantManifest(issued, mcpUrl, process.platform === 'darwin' ? 'keychain' : 'file');
+  const storeKind = resolveGrantStoreKind();
+  const manifest = toGrantManifest(issued, mcpUrl, storeKind);
   const fileStore = new FileGrantStore(parsed.workspaceRoot);
   const keychainStore =
-    process.platform === 'darwin' ? new KeychainGrantStore(parsed.workspaceRoot) : null;
+    storeKind === 'keychain' ? new KeychainGrantStore(parsed.workspaceRoot) : null;
 
   try {
     await fileStore.stage(manifest);

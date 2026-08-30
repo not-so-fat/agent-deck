@@ -1,6 +1,17 @@
 import { trustedSessionError, type TrustedSessionErrorCode } from '@agent-deck/shared';
 
+import { BackendApiError } from '../lib/backend-api-error';
 import type { McpToolHost } from './register';
+
+export function formatMcpToolError(error: unknown) {
+  if (error instanceof BackendApiError && error.errorCode) {
+    return mcpPolicyError(error.errorCode);
+  }
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: String(error) }) }],
+    isError: true,
+  };
+}
 
 export function mcpPolicyError(code: TrustedSessionErrorCode) {
   const body = trustedSessionError(code, bodyMessage(code));
@@ -18,6 +29,8 @@ function bodyMessage(code: TrustedSessionErrorCode): string {
       return 'Operation is never available to an agent';
     case 'GRANT_REQUIRED':
       return 'No valid workspace grant';
+    case 'RESOURCE_OUT_OF_SCOPE':
+      return 'Resource is outside the bound deck';
     default:
       return code;
   }

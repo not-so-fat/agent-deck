@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { requireMcpAdmin } from './policy';
+import { BackendApiError } from '../lib/backend-api-error';
+import { formatMcpToolError, requireMcpAdmin } from './policy';
 import type { McpToolHost } from './register';
 
 function mockHost(mode: 'normal' | 'agent-admin'): McpToolHost {
@@ -34,5 +35,17 @@ describe('requireMcpAdmin', () => {
     const host = mockHost('normal');
     const denied = await requireMcpAdmin(host);
     expect(denied?.isError).toBe(true);
+  });
+});
+
+describe('formatMcpToolError', () => {
+  it('maps BackendApiError to structured policy error', () => {
+    const result = formatMcpToolError(
+      new BackendApiError('Service is not on the bound deck', 403, 'RESOURCE_OUT_OF_SCOPE'),
+    );
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      error_code: 'RESOURCE_OUT_OF_SCOPE',
+    });
   });
 });

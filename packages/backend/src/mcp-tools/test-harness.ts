@@ -31,13 +31,22 @@ export async function waitForMcpHealth(port: number): Promise<void> {
   throw new Error(`MCP server on :${port} did not become healthy`);
 }
 
-export async function postInitialize(port: number, id = 1, clientName = 'vitest') {
+export async function postInitialize(
+  port: number,
+  id = 1,
+  clientName = 'vitest',
+  grantSecret?: string,
+) {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: MCP_ACCEPT,
+  };
+  if (grantSecret) {
+    headers.Authorization = `Bearer ${grantSecret}`;
+  }
   return fetch(`http://127.0.0.1:${port}/mcp`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: MCP_ACCEPT,
-    },
+    headers,
     body: JSON.stringify(initializePayload(id, clientName)),
   });
 }
@@ -63,13 +72,18 @@ export async function listTools(port: number, sessionId: string, id: number) {
   return body.result?.tools ?? [];
 }
 
-export async function callTool(
+export type McpToolCallResult = {
+  isError: boolean;
+  data: Record<string, unknown>;
+};
+
+export async function callToolMcpResult(
   port: number,
   sessionId: string,
   name: string,
   args: unknown,
   id: number,
-) {
+): Promise<McpToolCallResult> {
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: 'POST',
     headers: {
@@ -86,7 +100,7 @@ export async function callTool(
   });
   const body = (await response.json()) as {
     error?: unknown;
-    result?: { content?: Array<{ text?: string }> };
+    result?: { isError?: boolean; content?: Array<{ text?: string }> };
   };
   if (body.error) {
     throw new Error(`MCP tools/call error: ${JSON.stringify(body.error)}`);
@@ -95,7 +109,24 @@ export async function callTool(
   if (typeof text !== 'string') {
     throw new Error(`Unexpected tools/call result: ${JSON.stringify(body)}`);
   }
-  return JSON.parse(text) as Record<string, unknown>;
+  return {
+    isError: Boolean(body.result?.isError),
+    data: JSON.parse(text) as Record<string, unknown>,
+  };
+}
+
+export async function callTool(
+  port: number,
+  sessionId: string,
+  name: string,
+  args: unknown,
+  id: number,
+) {
+  const result = await callToolMcpResult(port, sessionId, name, args, id);
+  if (result.isError) {
+    throw new Error(JSON.stringify(result.data));
+  }
+  return result.data;
 }
 
 export async function startMcpServer(
@@ -109,11 +140,29 @@ export async function startMcpServer(
   return { port, server };
 }
 
-export async function openSession(port: number, id = 1): Promise<string> {
-  const init = await postInitialize(port, id);
+async function waitForTrustedSession(
+  port: number,
+  sessionId: string,
+  id: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const result = await callToolMcpResult(port, sessionId, 'get_bound_deck', {}, id + 100 + attempt);
+    if (!result.isError || result.data.error_code !== 'GRANT_REQUIRED') {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('Trusted MCP session not ready after initialize');
+}
+
+export async function openSession(port: number, id = 1, grantSecret?: string): Promise<string> {
+  const init = await postInitialize(port, id, 'vitest', grantSecret);
   const sessionId = init.headers.get('mcp-session-id');
   if (!sessionId) {
     throw new Error('Missing mcp-session-id');
+  }
+  if (grantSecret) {
+    await waitForTrustedSession(port, sessionId, id);
   }
   return sessionId;
 }
