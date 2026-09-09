@@ -11,7 +11,7 @@ import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
-import { parseBearerToken } from './lib/http-auth';
+import { parseBearerToken, parseWorkspaceGrantBearer } from './lib/http-auth';
 import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error';
 import { formatMcpToolError } from './mcp-tools/policy';
 import {
@@ -606,20 +606,33 @@ export class AgentDeckMCPServer {
     return { mode, deckId };
   }
 
-  private parseGrantBearer(req: Request): string | null {
-    return parseBearerToken({ headers: req.headers as Record<string, unknown> });
+  private parseGrantBearer(req: Request): { secret: string; claimedGrantId: string | null } | null {
+    const raw = parseBearerToken({ headers: req.headers as Record<string, unknown> });
+    return raw ? parseWorkspaceGrantBearer(raw) : null;
+  }
+
+  private sendGrantRequired(res: Response): void {
+    res.status(401).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'GRANT_REQUIRED' },
+      id: null,
+    });
   }
 
   private async authenticateTrustedSession(sessionId: string, req: Request): Promise<void> {
-    const grantSecret = this.parseGrantBearer(req);
-    if (!grantSecret) {
+    const grant = this.parseGrantBearer(req);
+    if (!grant) {
       throw new Error('GRANT_REQUIRED');
     }
 
     const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ grantSecret, mcpSessionId: sessionId }),
+      body: JSON.stringify({
+        grantSecret: grant.secret,
+        mcpSessionId: sessionId,
+        ...(grant.claimedGrantId ? { claimedGrantId: grant.claimedGrantId } : {}),
+      }),
     });
 
     const body = (await response.json()) as {
@@ -645,6 +658,51 @@ export class AgentDeckMCPServer {
     });
   }
 
+  private async disconnectTrustedSession(sessionId: string, req: Request): Promise<void> {
+    const grant = this.parseGrantBearer(req);
+    if (!grant) {
+      return;
+    }
+    try {
+      await fetch(`${this.backendUrl}/api/trusted-session/mcp/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ grantSecret: grant.secret, mcpSessionId: sessionId }),
+      });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+
+  /**
+   * Re-validate workspace grant on every follow-up MCP HTTP request.
+   * Fail closed with 401 — do not destroy the transport session so a correct
+   * Bearer on the next attempt can succeed.
+   * AGENT_DECK_MCP_SKIP_GRANT_AUTH=1 only relaxes *missing* Bearer (unit tests).
+   */
+  private async requireFollowUpGrant(sessionId: string, req: Request, res: Response): Promise<boolean> {
+    const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
+    const grant = this.parseGrantBearer(req);
+    if (!grant) {
+      if (skipGrantAuth) {
+        return true;
+      }
+      this.sendGrantRequired(res);
+      return false;
+    }
+    try {
+      await this.authenticateTrustedSession(sessionId, req);
+      return true;
+    } catch (error) {
+      console.warn(
+        '[agent-deck] Follow-up grant auth failed (transport kept):',
+        error instanceof Error ? error.message : error,
+      );
+      this.sendGrantRequired(res);
+      return false;
+    }
+  }
+
   /**
    * @deprecated Legacy pre-bind from deck header — replaced by grant authentication.
    */
@@ -657,6 +715,9 @@ export class AgentDeckMCPServer {
     const existing = sessionIdHeader ? this.sessions.get(sessionIdHeader) : undefined;
 
     if (existing && sessionIdHeader) {
+      if (!(await this.requireFollowUpGrant(sessionIdHeader, req, res))) {
+        return;
+      }
       this.activeSessionId = sessionIdHeader;
       this.touchLiveDisplay(sessionIdHeader);
       await existing.transport.handleRequest(req, res, req.body);
@@ -679,65 +740,82 @@ export class AgentDeckMCPServer {
       return;
     }
 
-    const grantSecret = this.parseGrantBearer(req);
+    const grant = this.parseGrantBearer(req);
     const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
-    if (!grantSecret && !skipGrantAuth) {
-      res.status(401).json({
-        jsonrpc: '2.0',
-        error: { code: -32001, message: 'GRANT_REQUIRED' },
-        id: null,
-      });
+    if (!grant && !skipGrantAuth) {
+      this.sendGrantRequired(res);
       return;
+    }
+
+    // Authenticate before advertising mcp-session-id. Previously we initialized
+    // first, then deleted the session on grant failure — clients kept a dead id
+    // and saw "No valid session ID provided" on the next request.
+    // SKIP_GRANT_AUTH only allows *missing* Bearer (unit tests); a present Bearer
+    // is always validated.
+    const sessionId = randomUUID();
+    if (grant) {
+      try {
+        await this.authenticateTrustedSession(sessionId, req);
+      } catch (error) {
+        console.warn(
+          '[agent-deck] Grant auth failed before MCP init:',
+          error instanceof Error ? error.message : error,
+        );
+        this.sendGrantRequired(res);
+        return;
+      }
     }
 
     const server = this.createMcpServer();
     let sessionEntry: McpSession | undefined;
 
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
+      sessionIdGenerator: () => sessionId,
       enableJsonResponse: true,
-      onsessioninitialized: (sessionId) => {
+      onsessioninitialized: (initializedSessionId) => {
         sessionEntry = { transport, server };
-        this.sessions.set(sessionId, sessionEntry);
+        this.sessions.set(initializedSessionId, sessionEntry);
       },
     });
 
     transport.onclose = () => {
-      const sessionId = transport.sessionId;
-      if (sessionId) {
-        this.sessions.delete(sessionId);
-        this.sessionBinding.clearSession(sessionId);
-        this.badgeBySession.delete(sessionId);
-        this.lastTouchAtMs.delete(sessionId);
-        void this.unregisterLiveDisplay(sessionId);
+      const closedSessionId = transport.sessionId;
+      if (closedSessionId) {
+        this.sessions.delete(closedSessionId);
+        this.sessionBinding.clearSession(closedSessionId);
+        this.badgeBySession.delete(closedSessionId);
+        this.lastTouchAtMs.delete(closedSessionId);
+        void this.unregisterLiveDisplay(closedSessionId);
       }
     };
 
-    await server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res, body);
+    } catch (error) {
+      console.warn(
+        '[agent-deck] MCP initialize failed after grant auth — revoking runtime session:',
+        error instanceof Error ? error.message : error,
+      );
+      this.sessions.delete(sessionId);
+      this.sessionBinding.clearSession(sessionId);
+      await this.disconnectTrustedSession(sessionId, req);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'MCP initialize failed' },
+          id: null,
+        });
+      }
+      return;
+    }
 
     if (transport.sessionId && !this.sessions.has(transport.sessionId)) {
       this.sessions.set(transport.sessionId, { transport, server });
     }
     this.activeSessionId = transport.sessionId;
 
-    // Pre-bind this session to the deck the client advertised (agent-deck use).
-    // Done here (after handleRequest) rather than only in onsessioninitialized so
-    // it also covers the fallback path where that callback does not fire; setDeckId
-    // is idempotent. Then surface header/auto-bound sessions in the dashboard list.
-    if (transport.sessionId && grantSecret) {
-      try {
-        await this.authenticateTrustedSession(transport.sessionId, req);
-        void this.registerLiveDisplay(transport.sessionId).catch(() => {});
-      } catch (error) {
-        this.sessions.delete(transport.sessionId);
-        this.sessionBinding.clearSession(transport.sessionId);
-        console.warn(
-          '[agent-deck] Grant auth failed after MCP init:',
-          error instanceof Error ? error.message : error,
-        );
-      }
-    } else if (transport.sessionId && skipGrantAuth) {
+    if (transport.sessionId) {
       void this.registerLiveDisplay(transport.sessionId).catch(() => {});
     }
   }
@@ -752,6 +830,10 @@ export class AgentDeckMCPServer {
     const session = this.sessions.get(sessionId);
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+
+    if (!(await this.requireFollowUpGrant(sessionId, req, res))) {
       return;
     }
 

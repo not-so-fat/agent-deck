@@ -51,14 +51,23 @@ export async function postInitialize(
   });
 }
 
-export async function listTools(port: number, sessionId: string, id: number) {
+export async function listTools(
+  port: number,
+  sessionId: string,
+  id: number,
+  grantSecret?: string,
+) {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: MCP_ACCEPT,
+    'mcp-session-id': sessionId,
+  };
+  if (grantSecret) {
+    headers.Authorization = `Bearer ${grantSecret}`;
+  }
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: MCP_ACCEPT,
-      'mcp-session-id': sessionId,
-    },
+    headers,
     body: JSON.stringify({
       jsonrpc: '2.0',
       id,
@@ -83,14 +92,19 @@ export async function callToolMcpResult(
   name: string,
   args: unknown,
   id: number,
+  grantSecret?: string,
 ): Promise<McpToolCallResult> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: MCP_ACCEPT,
+    'mcp-session-id': sessionId,
+  };
+  if (grantSecret) {
+    headers.Authorization = `Bearer ${grantSecret}`;
+  }
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: MCP_ACCEPT,
-      'mcp-session-id': sessionId,
-    },
+    headers,
     body: JSON.stringify({
       jsonrpc: '2.0',
       id,
@@ -144,9 +158,17 @@ async function waitForTrustedSession(
   port: number,
   sessionId: string,
   id: number,
+  grantSecret?: string,
 ): Promise<void> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const result = await callToolMcpResult(port, sessionId, 'get_bound_deck', {}, id + 100 + attempt);
+    const result = await callToolMcpResult(
+      port,
+      sessionId,
+      'get_bound_deck',
+      {},
+      id + 100 + attempt,
+      grantSecret,
+    );
     if (!result.isError || result.data.error_code !== 'GRANT_REQUIRED') {
       return;
     }
@@ -162,7 +184,7 @@ export async function openSession(port: number, id = 1, grantSecret?: string): P
     throw new Error('Missing mcp-session-id');
   }
   if (grantSecret) {
-    await waitForTrustedSession(port, sessionId, id);
+    await waitForTrustedSession(port, sessionId, id, grantSecret);
   }
   return sessionId;
 }

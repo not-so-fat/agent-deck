@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fix: MCP grant auth across the HTTP session lifecycle (NOT-53)
+
+- **Grant auth before advertising `mcp-session-id`:** failed grant auth no longer deletes a session after `initialize` already returned 200 — that left clients with a dead id (`No valid session ID provided` / `Session not found`).
+- **Follow-up Bearer required:** POST/GET/DELETE with an established session re-validate the workspace grant; missing/wrong Bearer returns 401 without destroying the transport session (retry with the correct Bearer succeeds).
+- **`grantId:secret` Bearer:** parse `wgr_…:secret` at the auth boundary; reject when the claimed grant id does not match the secret. `mcp-launch` stays secret-only.
+- **Connect ownership:** `/mcp/connect` binds an `mcp-session-id` to the grant that first connected; a different grant cannot steal it — including after the runtime row expires or is revoked (latest historical row still blocks replacement).
+- **Init failure cleanup:** if MCP initialize throws after grant connect, revoke the durable runtime session via `/api/trusted-session/mcp/disconnect`.
+- **Cursor user MCP (related):** `agent-deck use` / `status` / `use --refresh` upgrade **legacy global bare `url`** entries only to `mcp-launch` (do not create missing or overwrite custom wrappers); note that Cursor's `mcp_auth` is not the grant path.
+
 ## 1.7.1 — 2026-09-09
 
 ### Fix: `agent-deck use` grant activate

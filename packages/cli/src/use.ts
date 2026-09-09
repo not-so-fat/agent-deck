@@ -5,6 +5,8 @@ import { CLI_DEFAULT_MCP_PORT, parseCliMcpPort } from './defaults';
 import {
   buildAgentDeckEntry,
   buildMcpUrl,
+  ensureGlobalCursorMcpLaunch,
+  formatCursorGlobalMcpEnsureMessage,
   mergeMcpServerConfig,
   readJsonFile,
   resolveConfigPath,
@@ -124,6 +126,12 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   if (parsed.refresh) {
     const grant = await readWorkspaceGrant(parsed.workspaceRoot);
     const legacy = readUseManifest(parsed.workspaceRoot);
+    const endpoint = { host: parsed.host, mcpPort: parsed.mcpPort };
+    const cursorMcp = ensureGlobalCursorMcpLaunch(endpoint);
+    const cursorMessage = formatCursorGlobalMcpEnsureMessage(cursorMcp);
+    if (cursorMessage) {
+      console.warn(cursorMessage);
+    }
     if (grant) {
       console.log(`Bound deck: ${grant.deckName ?? grant.deckId} (${grant.deckId})`);
       console.log(`Grant: ${grant.grantId} · workspace ${grant.workspaceKey}`);
@@ -201,10 +209,21 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   if (!parsed.skipMcp) {
     for (const client of clientsToWrite(parsed.clients)) {
       const configPath = resolveConfigPath(client, 'project', parsed.workspaceRoot);
-      const entry = buildAgentDeckEntry(client, endpoint);
+      const entry = buildAgentDeckEntry(client, endpoint, {
+        workspaceRoot: client === 'cursor' ? parsed.workspaceRoot : undefined,
+      });
       const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
       writeJsonFile(configPath, merged);
       mcpWritten.push({ client, path: configPath });
+
+      // Cursor Agent chat loads the user-level MCP server (`user-agent-deck`).
+      // Pre-1.7 global bare HTTP urls have no grant Bearer — upgrade those only.
+      if (client === 'cursor') {
+        const globalResult = ensureGlobalCursorMcpLaunch(endpoint);
+        if (globalResult.action !== 'ok') {
+          mcpWritten.push({ client: 'cursor', path: globalResult.path });
+        }
+      }
     }
   }
 

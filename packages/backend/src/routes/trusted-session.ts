@@ -389,12 +389,74 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.post<{ Body: { grantSecret: string; mcpSessionId?: string } }>(
-    '/mcp/connect',
+  fastify.post<{
+    Body: { grantSecret: string; mcpSessionId?: string; claimedGrantId?: string };
+  }>('/mcp/connect', async (request, reply) => {
+    try {
+      const { grantSecret, mcpSessionId, claimedGrantId } = request.body;
+      if (!grantSecret?.trim()) {
+        throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+      }
+
+      const grant = store.findActiveGrantBySecret(grantSecret);
+      if (!grant) {
+        throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+      }
+
+      const claimed = claimedGrantId?.trim();
+      if (claimed && claimed !== grant.id) {
+        throw new TrustedAuthError('GRANT_REQUIRED', 'Claimed grant id does not match secret');
+      }
+
+      const mcpId = mcpSessionId?.trim();
+      let session;
+      if (mcpId) {
+        // Ownership survives lease expiry / revoke: another grant must not
+        // create a replacement runtime row for the same MCP transport id.
+        const historical = store.findLatestRuntimeSessionByMcpSessionId(mcpId);
+        if (historical && historical.workspaceGrantId !== grant.id) {
+          throw new TrustedAuthError('GRANT_REQUIRED', 'Grant does not own this MCP session');
+        }
+        session = store.findActiveRuntimeSessionForMcp(mcpId, grant.id);
+      }
+      if (!session) {
+        session = store.createRuntimeSession({
+          workspaceKeyId: grant.workspace_key_id,
+          workspaceGrantId: grant.id,
+          deckId: grant.deck_id,
+          mcpSessionId: mcpId,
+        });
+      }
+
+      const deck = await fastify.db.getDeck(session.deckId);
+
+      return reply.send({
+        success: true,
+        data: {
+          sessionId: session.sessionId,
+          workspaceKey: session.workspaceKey,
+          workspaceGrantId: grant.id,
+          deckId: session.deckId,
+          deckName: deck?.name,
+          mode: session.mode,
+          expiresAt: session.expiresAt,
+        },
+      });
+    } catch (error) {
+      if (error instanceof TrustedAuthError) {
+        return sendTrustedAuthError(reply, error);
+      }
+      throw error;
+    }
+  });
+
+  fastify.post<{ Body: { grantSecret: string; mcpSessionId: string } }>(
+    '/mcp/disconnect',
     async (request, reply) => {
       try {
-        const { grantSecret, mcpSessionId } = request.body;
-        if (!grantSecret?.trim()) {
+        const grantSecret = request.body.grantSecret?.trim();
+        const mcpSessionId = request.body.mcpSessionId?.trim();
+        if (!grantSecret || !mcpSessionId) {
           throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
         }
 
@@ -403,32 +465,12 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
         }
 
-        let session;
-        if (mcpSessionId?.trim()) {
-          session = store.findActiveRuntimeSessionForMcp(mcpSessionId.trim(), grant.id);
-        }
-        if (!session) {
-          session = store.createRuntimeSession({
-            workspaceKeyId: grant.workspace_key_id,
-            workspaceGrantId: grant.id,
-            deckId: grant.deck_id,
-            mcpSessionId: mcpSessionId?.trim(),
-          });
+        const session = store.findActiveRuntimeSessionForMcp(mcpSessionId, grant.id);
+        if (session) {
+          store.revokeRuntimeSession(session.sessionId);
         }
 
-        const deck = await fastify.db.getDeck(session.deckId);
-
-        return reply.send({
-          success: true,
-          data: {
-            sessionId: session.sessionId,
-            workspaceKey: session.workspaceKey,
-            deckId: session.deckId,
-            deckName: deck?.name,
-            mode: session.mode,
-            expiresAt: session.expiresAt,
-          },
-        });
+        return reply.send({ success: true, data: { revoked: Boolean(session) } });
       } catch (error) {
         if (error instanceof TrustedAuthError) {
           return sendTrustedAuthError(reply, error);
