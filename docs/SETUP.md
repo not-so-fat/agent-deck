@@ -115,7 +115,8 @@ agent-deck setup --client cursor --start
 
 # One-shot without curl:
 # npx @agent-deck/cli@latest install && npx @agent-deck/cli@latest setup --client cursor --start
-# Dashboard → http://127.0.0.1:1111  (dev repo uses :8000 / :3000)
+# Dashboard → agent-deck start (opens with bootstrap cookie) or agent-deck open
+# Dev repo uses :8000 / :3000
 ```
 
 See [PUBLISHING.md](./PUBLISHING.md) and [README](../README.md). Design: [managed CLI auto-upgrade](./superpowers/specs/2026-07-30-managed-cli-auto-upgrade-design.md).
@@ -131,7 +132,7 @@ Two installs can run on the same machine without clashing:
 | Mode | Backend | MCP | Dashboard |
 |------|---------|-----|-----------|
 | **Dev repo** (`npm run dev:all`) | 8000 | 3001 | http://localhost:3000 |
-| **CLI / npx** (`agent-deck start`) | **1111** | **1110** | http://127.0.0.1:1111 |
+| **CLI / npx** (`agent-deck start`) | **1111** | **1110** | open via `start` / `agent-deck open` (listens on 127.0.0.1:1111) |
 
 Override CLI ports: `AGENT_DECK_PORT`, `AGENT_DECK_MCP_PORT`.
 
@@ -242,7 +243,7 @@ The terminal status line reflects the live MCP bind on the backend API; it stays
 
 ## Dashboard
 
-Open the dashboard after [Quick start](#quick-start-npm--end-users) or `npm run dev:all`.
+Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](#quick-start-npm--end-users). Dev: `npm run dev:all` then use the Vite UI. Do not open bare `http://127.0.0.1:1111` — without a bootstrap cookie the SPA shows **Error Loading Data** (dashboard session missing). That string overlaps MCP’s `GRANT_REQUIRED` / “No valid workspace grant”; MCP fix is `agent-deck use <deck>` in the workspace, not the dashboard cookie.
 
 | Area | What it does |
 |------|----------------|

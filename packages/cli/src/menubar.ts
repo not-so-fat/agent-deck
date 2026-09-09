@@ -55,12 +55,17 @@ export function resolveDashboardBaseUrl(): string {
   return 'http://127.0.0.1:1111';
 }
 
-export function buildApprovalHref(challenge: PendingAdminChallenge, dashboardBaseUrl: string): string {
-  const base = dashboardBaseUrl.replace(/\/$/, '');
+export function buildApprovalHref(challenge: PendingAdminChallenge, _dashboardBaseUrl: string): string {
   const pathPart = challenge.approvalPath.startsWith('/')
     ? challenge.approvalPath
     : `/${challenge.approvalPath}`;
-  return `${base}${pathPart}`;
+  // SwiftBar runs agent-deck open so each click mints a fresh bootstrap cookie.
+  // Encode path so ? and & survive SwiftBar param parsing.
+  return `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent(pathPart)}`;
+}
+
+export function buildOpenDashboardMenubarLine(): string {
+  return 'Open dashboard | bash=agent-deck param1=open terminal=false';
 }
 
 /** SwiftBar/xbar output. `null` bindings = backend offline (accuracy first: dim, never guess). */
@@ -84,7 +89,7 @@ export function renderMenubar(
           ? '◆ —'
           : `◆ ${bindings.length}`;
 
-  const lines = [title, '---'];
+  const lines = [title, '---', buildOpenDashboardMenubarLine(), '---'];
 
   if (pendingCount > 0) {
     lines.push('Admin approval pending | size=11 color=orange');
@@ -93,9 +98,7 @@ export function renderMenubar(
       const age = formatTimeUntil(challenge.expiresAt, now);
       const meta = age ? `expires in ${age}` : 'pending';
       const href = buildApprovalHref(challenge, dashboardBaseUrl);
-      lines.push(
-        `⚠ Approve ${deckLabel} — ${meta} | href=${href}`,
-      );
+      lines.push(`⚠ Approve ${deckLabel} — ${meta} | ${href} terminal=false`);
     }
     lines.push('---');
   }

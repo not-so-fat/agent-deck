@@ -16,6 +16,8 @@ import { runImportFeedbackSignalsCommand } from './import-feedback-signals';
 import { runDebugMcp } from './debug-mcp';
 import { runDoctor, runStart } from './start';
 import { runSetup, shouldStartAfterSetup } from './setup';
+import { runOpenCommand } from './open';
+import { shouldOpenDashboardByDefault } from './dashboard-open';
 import { runStatus } from './status';
 import { runStatusline } from './statusline';
 import { runMenubar } from './menubar';
@@ -43,9 +45,10 @@ function getVaultManager(): VaultManager {
 
 function printUsage() {
   console.log(`Usage:
-  agent-deck start [--daemon] [--open] [--no-ui] [--force] [--port PORT] [--mcp-port PORT]
+  agent-deck start [--daemon] [--open|--no-open] [--no-ui] [--force] [--port PORT] [--mcp-port PORT]
   agent-deck stop
   agent-deck status
+  agent-deck open [--path /...]
   agent-deck statusline [--workspace <path>]
   agent-deck menubar
   agent-deck setup --client cursor|claude|claude-desktop [--scope global|project] [--start]
@@ -267,7 +270,7 @@ export async function runCli(argv: string[]): Promise<number> {
 
   switch (command) {
     case 'start': {
-      let openBrowser = false;
+      let openBrowser = shouldOpenDashboardByDefault();
       let skipUi = false;
       let force = false;
       let daemon = false;
@@ -279,6 +282,8 @@ export async function runCli(argv: string[]): Promise<number> {
         const arg = rest[i];
         if (arg === '--open') {
           openBrowser = true;
+        } else if (arg === '--no-open') {
+          openBrowser = false;
         } else if (arg === '--no-ui') {
           skipUi = true;
         } else if (arg === '--force') {
@@ -303,6 +308,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return runStop();
     case 'status':
       return runStatus();
+    case 'open':
+      return runOpenCommand(rest);
     case 'statusline':
       return runStatusline(rest);
     case 'menubar':
@@ -310,7 +317,10 @@ export async function runCli(argv: string[]): Promise<number> {
     case 'setup': {
       const code = await runSetup(rest);
       if (shouldStartAfterSetup(code)) {
-        return runStart({ daemon: true });
+        return runStart({
+          daemon: true,
+          openBrowser: shouldOpenDashboardByDefault(),
+        });
       }
       return code;
     }

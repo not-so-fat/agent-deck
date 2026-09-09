@@ -1,5 +1,5 @@
 import { Switch, Route } from "wouter";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { queryClient } from "./lib/queryClient";
 import { bootstrapDashboardSession } from "./lib/dashboard-bootstrap";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -28,9 +28,29 @@ function Router() {
 }
 
 function App() {
+  const [ready, setReady] = useState(false);
+
   useEffect(() => {
-    void bootstrapDashboardSession();
+    let cancelled = false;
+    void bootstrapDashboardSession().finally(() => {
+      if (!cancelled) {
+        setReady(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  // Wait for bootstrap cookie before any React Query fetch — otherwise first
+  // paint races into GRANT_REQUIRED and sticks on Error Loading Data.
+  if (!ready) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0B1220] text-sm text-gray-300">
+        Loading AgentDeck...
+      </div>
+    );
+  }
 
   return (
     <QueryClientProvider client={queryClient}>

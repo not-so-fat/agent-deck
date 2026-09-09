@@ -22,6 +22,12 @@ import {
   resolveDaemonLogPath,
   resolveDaemonLogsDir,
 } from './daemon-logs';
+import {
+  formatDashboardStatusLine,
+  mintDashboardBootstrapUrl,
+  openDashboardInBrowser,
+  shouldOpenDashboardByDefault,
+} from './dashboard-open';
 
 export interface StartOptions {
   backendPort?: number;
@@ -131,16 +137,30 @@ async function shutdown(exitCode = 0): Promise<void> {
   process.exit(exitCode);
 }
 
-function printRunningEndpoints(host: string, backendPort: number, mcpPort: number, backendUrl: string): void {
+async function printRunningEndpoints(
+  host: string,
+  backendPort: number,
+  mcpPort: number,
+  backendUrl: string,
+): Promise<void> {
+  const minted = await mintDashboardBootstrapUrl(backendUrl);
   console.log('');
   console.log('Agent Deck is running');
-  console.log(`  Dashboard  ${backendUrl}`);
+  console.log(`  ${formatDashboardStatusLine(minted)}`);
   console.log(`  MCP        http://${host}:${mcpPort}/mcp`);
   console.log(`  API health ${backendUrl}/health`);
   console.log('');
   console.log('Claude Code:');
   console.log(`  claude mcp add --scope user --transport http agent-deck http://${host}:${mcpPort}/mcp`);
   console.log('');
+}
+
+async function maybeOpenDashboard(backendUrl: string, openBrowser: boolean | undefined): Promise<void> {
+  const shouldOpen = openBrowser ?? shouldOpenDashboardByDefault();
+  if (!shouldOpen) {
+    return;
+  }
+  await openDashboardInBrowser(backendUrl);
 }
 
 function buildSupervisorArgs(options: StartOptions): string[] {
@@ -190,13 +210,23 @@ async function runDaemonLauncher(options: StartOptions): Promise<number> {
     console.warn(`[agent-deck] See ${resolveDaemonLogPath('mcp')}`);
   }
 
+  const minted = await mintDashboardBootstrapUrl(backendUrl);
   console.log('');
   console.log('Agent Deck started in background');
-  console.log(`  Dashboard  ${backendUrl}`);
+  console.log(`  ${formatDashboardStatusLine(minted)}`);
   console.log(`  MCP        http://${host}:${mcpPort}/mcp`);
   console.log(`  Logs       ${resolveDaemonLogsDir()}/`);
   console.log('  Stop       agent-deck stop');
   console.log('');
+
+  if (options.openBrowser ?? shouldOpenDashboardByDefault()) {
+    if (minted.ok && minted.bootstrapped) {
+      const { openUrlInSystemBrowser } = await import('./dashboard-open');
+      openUrlInSystemBrowser(minted.url);
+    } else {
+      await openDashboardInBrowser(backendUrl);
+    }
+  }
 
   return 0;
 }
@@ -251,8 +281,9 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
         await runStop();
         await new Promise((resolve) => setTimeout(resolve, 500));
       } else {
-        printRunningEndpoints(host, backendPort, mcpPort, `http://${host}:${backendPort}`);
+        await printRunningEndpoints(host, backendPort, mcpPort, `http://${host}:${backendPort}`);
         console.log('Already running. Use `agent-deck stop` or `agent-deck start --daemon --force` to restart.');
+        await maybeOpenDashboard(`http://${host}:${backendPort}`, options.openBrowser);
         return 0;
       }
     }
@@ -281,8 +312,9 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
       await runStop();
       await new Promise((resolve) => setTimeout(resolve, 500));
     } else {
-      printRunningEndpoints(host, backendPort, mcpPort, backendUrl);
+      await printRunningEndpoints(host, backendPort, mcpPort, backendUrl);
       console.log('Already running. Use `agent-deck stop` or `agent-deck start --force` to restart.');
+      await maybeOpenDashboard(backendUrl, options.openBrowser);
       return 0;
     }
   }
@@ -390,11 +422,14 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     startedAt: new Date().toISOString(),
   });
 
-  const dashboardLine = uiDist ? backendUrl : '(UI bundle missing — use npm run dev:all for dev UI)';
+  const minted = uiDist ? await mintDashboardBootstrapUrl(backendUrl) : null;
+  const dashboardLine = uiDist
+    ? formatDashboardStatusLine(minted!)
+    : 'Dashboard  (UI bundle missing — use npm run dev:all for dev UI)';
   const runningLines = [
     '',
     'Agent Deck is running',
-    `  Dashboard  ${dashboardLine}`,
+    `  ${dashboardLine}`,
     `  MCP        http://${host}:${mcpPort}/mcp`,
     `  API health ${backendUrl}/health`,
     '',
@@ -415,30 +450,14 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     }
   }
 
-  if (options.openBrowser && uiDist) {
-    const open = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    void (async () => {
-      let target = backendUrl;
-      try {
-        const { readAdminSecret } = await import('./admin-secret');
-        const secret = await readAdminSecret();
-        if (secret) {
-          const nonceRes = await fetch(`${backendUrl}/api/dashboard-auth/bootstrap/nonce`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${secret}` },
-          });
-          if (nonceRes.ok) {
-            const body = (await nonceRes.json()) as { data?: { nonce?: string } };
-            if (body.data?.nonce) {
-              target = `${backendUrl}/?bootstrap=${encodeURIComponent(body.data.nonce)}`;
-            }
-          }
-        }
-      } catch {
-        // open without bootstrap nonce
-      }
-      spawn(open, [target], { stdio: 'ignore', shell: process.platform === 'win32' });
-    })();
+  const shouldOpen = (options.openBrowser ?? shouldOpenDashboardByDefault()) && Boolean(uiDist);
+  if (shouldOpen) {
+    if (minted?.ok && minted.bootstrapped) {
+      const { openUrlInSystemBrowser } = await import('./dashboard-open');
+      openUrlInSystemBrowser(minted.url);
+    } else {
+      await openDashboardInBrowser(backendUrl);
+    }
   }
 
   process.on('SIGINT', () => void shutdown(0));

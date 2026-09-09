@@ -2,6 +2,7 @@ import { formatPortConflict, isTcpPortOpen, probeAgentDeck } from './ports';
 import { isProcessAlive, readRunState } from './runtime-state';
 import { getAgentDeckVersion } from './version';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
+import { formatDashboardStatusLine, mintDashboardBootstrapUrl } from './dashboard-open';
 
 export async function runStatus(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -17,7 +18,8 @@ export async function runStatus(): Promise<number> {
 
   if (probe.backendUp && probe.mcpUp) {
     console.log('Status: running');
-    console.log(`  Dashboard  ${probe.backendUrl}`);
+    const minted = await mintDashboardBootstrapUrl(probe.backendUrl);
+    console.log(`  ${formatDashboardStatusLine(minted)}`);
     console.log(`  MCP        ${probe.mcpUrl}/mcp`);
     if (probe.backendVersion) {
       console.log(`  Backend    v${probe.backendVersion}`);

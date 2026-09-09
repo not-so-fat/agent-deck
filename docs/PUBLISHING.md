@@ -70,12 +70,13 @@ gh release create v1.2.1 --title "1.2.1" --notes-file .temporal/logs/release-not
 npm run build:release
 npm run release:smoke   # also runs inside build:release — fresh HOME + npm pack + setup artifacts
 npx @agent-deck/cli doctor
-npx @agent-deck/cli start --open
+npx @agent-deck/cli start
+# opens dashboard with bootstrap cookie; --no-open for headless
 ```
 
 **Release integration smoke** (`scripts/release-smoke.sh`) simulates what a user gets from npm: pack CLI, `setup --client claude` in a clean `HOME`, assert `statusline.sh` + `settings.json` exist, stdout is one clean line. Playbook: [examples/playbooks/npm-release-integration-smoke.md](./examples/playbooks/npm-release-integration-smoke.md).
 
-Dashboard: `http://127.0.0.1:1111`  
+Dashboard: opened by `start` / `agent-deck open` (API listens on `http://127.0.0.1:1111`; do not bookmark the bare origin)  
 MCP: `http://127.0.0.1:1110/mcp`
 
 Dev repo (`npm run dev:all`) uses `:8000` / `:3001` so both can run together — see [SETUP.md](./SETUP.md#ports).
@@ -208,5 +209,5 @@ Optional env:
 
 | Mode | Command | Dashboard |
 |------|---------|-----------|
-| **Dev** (hot reload) | `npm run dev:all` | `http://localhost:3000` (Vite proxy) |
-| **Published / release** | `npx @agent-deck/cli start` | `http://127.0.0.1:1111` (bundled static UI) |
+| **Dev** (hot reload) | `npm run dev:all` | Vite at `http://localhost:3000` (proxy; open via that UI) |
+| **Published / release** | `npx @agent-deck/cli start` | Opens with bootstrap cookie; API on `127.0.0.1:1111` |

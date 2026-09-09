@@ -298,9 +298,9 @@ function printNextSteps(
   console.log('Next steps:');
   let step = 1;
   if (shouldStart) {
-    console.log(`  ${step}. Agent Deck will start in the background (\`agent-deck start --daemon\`)`);
+    console.log(`  ${step}. Agent Deck will start in the background and open the dashboard (\`agent-deck start --daemon\`)`);
   } else {
-    console.log(`  ${step}. agent-deck start --daemon  (or \`agent-deck stop\` first if ports are busy)`);
+    console.log(`  ${step}. agent-deck start  (opens dashboard; use --no-open or --daemon as needed)`);
   }
   step += 1;
   console.log(`  ${step}. MCP endpoint → ${buildMcpUrl(endpoint)}`);

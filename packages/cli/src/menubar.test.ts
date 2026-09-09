@@ -94,7 +94,7 @@ describe('renderMenubar', () => {
     expect(output).toContain('agent · 12s');
   });
 
-  it('shows pending admin approval rows with dashboard href', () => {
+  it('shows pending admin approval rows via agent-deck open', () => {
     const pending: PendingAdminChallenge = {
       challengeId: 'adm_test',
       runtimeSessionId: 'ses_test',
@@ -105,8 +105,11 @@ describe('renderMenubar', () => {
     };
     const output = renderMenubar([], NOW, [pending], 'http://127.0.0.1:1111');
     expect(output.split('\n')[0]).toBe('◆ ⚠ 1');
+    expect(output).toContain('Open dashboard | bash=agent-deck param1=open terminal=false');
     expect(output).toContain('Admin approval pending');
-    expect(output).toContain('href=http://127.0.0.1:1111/admin/approve?challenge=adm_test&session=ses_test');
+    expect(output).toContain(
+      `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent('/admin/approve?challenge=adm_test&session=ses_test')}`,
+    );
     expect(output).toContain('Approve Product Design');
   });
 });
@@ -118,7 +121,7 @@ describe('formatTimeUntil', () => {
 });
 
 describe('buildApprovalHref', () => {
-  it('joins dashboard origin and approval path', () => {
+  it('uses agent-deck open so clicks mint a bootstrap cookie', () => {
     const href = buildApprovalHref(
       {
         challengeId: 'adm_x',
@@ -129,6 +132,8 @@ describe('buildApprovalHref', () => {
       },
       'http://127.0.0.1:1111',
     );
-    expect(href).toBe('http://127.0.0.1:1111/admin/approve?challenge=adm_x&session=ses_x');
+    expect(href).toBe(
+      `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent('/admin/approve?challenge=adm_x&session=ses_x')}`,
+    );
   });
 });

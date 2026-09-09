@@ -185,7 +185,7 @@ Stable machine-readable errors:
 
 | Code | HTTP | Meaning |
 | --- | ---: | --- |
-| `GRANT_REQUIRED` | 401 | No valid workspace grant |
+| `GRANT_REQUIRED` | 401 | No valid workspace grant (MCP / API agent path — fix: `agent-deck use <deck>`). Distinct from the dashboard SPA cookie miss, which can show the same words in **Error Loading Data** (fix: `agent-deck open` / `start`). |
 | `SESSION_INVALID` | 401 | Runtime session absent or expired |
 | `SESSION_REVOKED` | 401 | Grant rotation or explicit revocation ended the session |
 | `WORKSPACE_SCOPE_MISMATCH` | 403 | Request targets a different workspace; elevation cannot override it |
@@ -199,6 +199,8 @@ The MCP adapter preserves these codes instead of collapsing them into generic to
 ## 6. Dashboard bootstrap
 
 The dashboard admin secret remains outside the workspace in a user-only store. A local launcher exchanges it for a short-lived nonce, then the dashboard establishes an `HttpOnly`, `SameSite` authenticated cookie. Dashboard HTTP handlers use the same mandatory policy registry as MCP operations; dashboard routes resolve the cookie to a dashboard principal, while any intentionally public bootstrap or health route explicitly declares `allowPublic` and cannot access principal-scoped resources. Direct loopback access or a caller-supplied header never confers agent-admin or dashboard authority. The menubar may open the approval URL but cannot approve it.
+
+**As-built (1.7.1):** `agent-deck start` / `setup --start` open a bootstrapped URL by default; `agent-deck open` and menubar “Open dashboard” mint on click. Bare `http://127.0.0.1:1111` without `?bootstrap=` is not a supported entry. The SPA awaits bootstrap before the first API fetch.
 
 ## 7. Migration and setup
 
@@ -249,7 +251,7 @@ NOT-44 verification remains separate and mandatory: direct HTTP and MCP calls fo
 | C8 persistent deck change + peer revocation | Shipped via `bind-workspace` grant rotation |
 | Central policy registry + route enumeration | Shipped — `HTTP_ROUTE_POLICIES` + `onRequest` hook; enumeration test on boot |
 | §8 verification matrix (partial automated) | Partial — `auth-matrix.test.ts`, route-policy enumeration, containment tests, and related unit tests cover forged headers, elevation e2e, C8 peer revoke, and NOT-44 scope; C7 fault injection across all stores, full host-transport lifecycle, and canonical-path alias rows remain manual / follow-up |
-| Menubar deep link to approval | Shipped — `GET /api/trusted-session/admin/challenges` + menubar `href=` rows |
+| Menubar deep link to approval | Shipped — `GET /api/trusted-session/admin/challenges`; 1.7.1 menubar rows run `agent-deck open --path …` (not bare `href=`) |
 
 ## 9. Threats and non-goals
 

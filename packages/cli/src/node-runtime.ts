@@ -18,7 +18,7 @@ export function formatNodeVersionError(): string {
     `  nvm install ${PREFERRED_NODE_MAJOR} && nvm use ${PREFERRED_NODE_MAJOR}   # optional`,
     '  rm -rf ~/.npm/_npx   # clear npx cache if you switched Node versions',
     '  npx @agent-deck/cli@latest doctor',
-    '  npx @agent-deck/cli@latest start --open',
+    '  npx @agent-deck/cli@latest start',
     '',
     `Unsupported major: ${major}. Native SQLite bindings (better-sqlite3) must match your Node version.`,
   ].join('\n');

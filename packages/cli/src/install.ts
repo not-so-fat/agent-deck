@@ -81,7 +81,8 @@ export async function runInstall(args: string[], deps: InstallDeps = {}): Promis
   if (migrateCli) {
     console.log('Prefer ~/.local/bin ahead of any npm global agent-deck on PATH.');
   }
-  console.log('Next: agent-deck doctor && agent-deck start --open');
+  console.log('Next: agent-deck doctor && agent-deck start');
+  console.log('  (start opens the dashboard with auth; use --no-open in CI)');
 
   if (purgeGlobal) {
     const code = deps.purgeGlobal

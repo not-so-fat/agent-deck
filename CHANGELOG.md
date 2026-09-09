@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.7.1 — 2026-09-09
+
+### Dashboard entry (bootstrap by default)
+
+- **`agent-deck start` opens the dashboard by default** with a one-shot `?bootstrap=` cookie (foreground + daemon + `setup --start`). Opt out: `--no-open` or `AGENT_DECK_NO_OPEN=1`.
+- **`agent-deck open [--path …]`** mints a fresh bootstrap URL and opens the browser (recovery / menubar).
+- **`status` / start banners** print a bootstrapped Dashboard URL when possible — bare `http://127.0.0.1:1111` is not a usable link after 1.7.0 auth.
+- **Menubar** “Open dashboard” and admin-approval rows run `agent-deck open` so each click gets a cookie (no bare href).
+- **Frontend:** await bootstrap session before React Query mounts — fixes race where first paint stuck on **Error Loading Data / No valid workspace grant** (dashboard cookie miss — not MCP `GRANT_REQUIRED` / `agent-deck use`).
+
+### After upgrade
+
+- Restart Agent Deck (`agent-deck stop && agent-deck start`) so the new CLI defaults apply.
+- Prefer `agent-deck open` (or a fresh `start`) over bookmarked bare `:1111` URLs.
+
 ## 1.7.0 — 2026-08-31
 
 ### Trusted agent sessions (NOT-45) + bound-deck containment (NOT-44)
