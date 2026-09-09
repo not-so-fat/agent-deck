@@ -4,6 +4,11 @@
 
 ## 1.7.1 — 2026-09-09
 
+### Fix: `agent-deck use` grant activate
+
+- **Empty JSON body on activate:** `activate` / `revoke-pending` now send `body: '{}'` with `Content-Type: application/json`. 1.7.0 set the header with no body, so Fastify returned `FST_ERR_CTP_EMPTY_JSON_BODY` and the CLI only printed opaque `Bad Request` — no `.agent-deck/use.json`, MCP stayed `GRANT_REQUIRED`.
+- **Clearer CLI errors:** trusted-writer failures prefer Fastify `message` over bare `error: "Bad Request"`.
+
 ### Dashboard entry (bootstrap by default)
 
 - **`agent-deck start` opens the dashboard by default** with a one-shot `?bootstrap=` cookie (foreground + daemon + `setup --start`). Opt out: `--no-open` or `AGENT_DECK_NO_OPEN=1`.
@@ -16,6 +21,7 @@
 
 - Restart Agent Deck (`agent-deck stop && agent-deck start`) so the new CLI defaults apply.
 - Prefer `agent-deck open` (or a fresh `start`) over bookmarked bare `:1111` URLs.
+- If `agent-deck use` previously printed only `Bad Request`, upgrade the CLI and re-run `agent-deck use <deck>` in each workspace (then restart the IDE MCP host).
 
 ## 1.7.0 — 2026-08-31
 

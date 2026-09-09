@@ -13,14 +13,14 @@ export type IssuedGrant = {
 };
 
 type TrustedWriterAuth =
-  | { ok: true; headers: Record<string, string> }
+  | { ok: true; authorization: string }
   | { ok: false; error: string };
 
 function resolveBackendUrl(host: string): string {
   return `http://${host}:${readCliBackendPort()}`;
 }
 
-async function trustedWriterHeaders(_host?: string): Promise<TrustedWriterAuth> {
+async function trustedWriterAuth(): Promise<TrustedWriterAuth> {
   const adminSecret = await readAdminSecret();
   if (!adminSecret) {
     return {
@@ -31,11 +31,45 @@ async function trustedWriterHeaders(_host?: string): Promise<TrustedWriterAuth> 
   }
   return {
     ok: true,
-    headers: {
-      Authorization: `Bearer ${adminSecret}`,
-      'Content-Type': 'application/json',
-    },
+    authorization: `Bearer ${adminSecret}`,
   };
+}
+
+/** Prefer Fastify `message` / API `error` over a bare status phrase like "Bad Request". */
+export function formatTrustedWriterError(
+  status: number,
+  payload: { error?: string; message?: string } | null,
+  fallback: string,
+): string {
+  const detail = payload?.message?.trim() || payload?.error?.trim();
+  if (detail && detail.toLowerCase() !== 'bad request' && detail.toLowerCase() !== 'error') {
+    return detail;
+  }
+  if (payload?.error?.trim() && payload.error.trim().toLowerCase() !== 'bad request') {
+    return payload.error.trim();
+  }
+  if (detail) {
+    return `${detail} (${status})`;
+  }
+  return `${fallback} (${status})`;
+}
+
+async function readJsonPayload(response: Response): Promise<{
+  success?: boolean;
+  error?: string;
+  message?: string;
+  data?: unknown;
+} | null> {
+  try {
+    return (await response.json()) as {
+      success?: boolean;
+      error?: string;
+      message?: string;
+      data?: unknown;
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function issueWorkspaceGrant(input: {
@@ -43,7 +77,7 @@ export async function issueWorkspaceGrant(input: {
   deckId: string;
   host?: string;
 }): Promise<IssuedGrant | { error: string }> {
-  const auth = await trustedWriterHeaders(input.host);
+  const auth = await trustedWriterAuth();
   if (!auth.ok) {
     return { error: auth.error };
   }
@@ -51,68 +85,106 @@ export async function issueWorkspaceGrant(input: {
   const backendUrl = resolveBackendUrl(input.host ?? process.env.AGENT_DECK_HOST ?? '127.0.0.1');
   const response = await fetch(`${backendUrl}/api/trusted-session/workspace-grants/issue`, {
     method: 'POST',
-    headers: auth.headers,
+    headers: {
+      Authorization: auth.authorization,
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({
       workspaceRoot: input.workspaceRoot,
       deckId: input.deckId,
     }),
   });
 
-  const payload = (await response.json()) as {
-    success?: boolean;
-    error?: string;
-    data?: IssuedGrant;
-  };
+  const payload = await readJsonPayload(response);
+  const data = payload?.data as IssuedGrant | undefined;
 
-  if (!response.ok || !payload.success || !payload.data) {
-    return { error: payload.error ?? `Grant issuance failed (${response.status})` };
+  if (!response.ok || !payload?.success || !data) {
+    return {
+      error: formatTrustedWriterError(
+        response.status,
+        payload,
+        'Grant issuance failed',
+      ),
+    };
   }
 
-  return payload.data;
+  return data;
 }
 
 export async function activateWorkspaceGrant(input: {
   grantId: string;
   host?: string;
 }): Promise<{ grantId: string; deckId: string; deckName?: string } | { error: string }> {
-  const auth = await trustedWriterHeaders(input.host);
+  const auth = await trustedWriterAuth();
   if (!auth.ok) {
     return { error: auth.error };
   }
 
   const backendUrl = resolveBackendUrl(input.host ?? process.env.AGENT_DECK_HOST ?? '127.0.0.1');
+  // Fastify rejects Content-Type: application/json with an empty body
+  // (FST_ERR_CTP_EMPTY_JSON_BODY). Send {}.
   const response = await fetch(
     `${backendUrl}/api/trusted-session/workspace-grants/${encodeURIComponent(input.grantId)}/activate`,
-    { method: 'POST', headers: auth.headers },
+    {
+      method: 'POST',
+      headers: {
+        Authorization: auth.authorization,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    },
   );
 
-  const payload = (await response.json()) as {
-    success?: boolean;
-    error?: string;
-    data?: { grantId: string; deckId: string; deckName?: string };
-  };
+  const payload = await readJsonPayload(response);
+  const data = payload?.data as
+    | { grantId: string; deckId: string; deckName?: string }
+    | undefined;
 
-  if (!response.ok || !payload.success || !payload.data) {
-    return { error: payload.error ?? `Grant activation failed (${response.status})` };
+  if (!response.ok || !payload?.success || !data) {
+    return {
+      error: formatTrustedWriterError(
+        response.status,
+        payload,
+        'Grant activation failed',
+      ),
+    };
   }
 
-  return payload.data;
+  return data;
 }
 
 export async function revokePendingWorkspaceGrant(input: {
   grantId: string;
   host?: string;
 }): Promise<void | { error: string }> {
-  const auth = await trustedWriterHeaders(input.host);
+  const auth = await trustedWriterAuth();
   if (!auth.ok) {
     return { error: auth.error };
   }
 
   const backendUrl = resolveBackendUrl(input.host ?? process.env.AGENT_DECK_HOST ?? '127.0.0.1');
-  await fetch(
+  const response = await fetch(
     `${backendUrl}/api/trusted-session/workspace-grants/${encodeURIComponent(input.grantId)}/revoke-pending`,
-    { method: 'POST', headers: auth.headers },
+    {
+      method: 'POST',
+      headers: {
+        Authorization: auth.authorization,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    },
   );
+
+  if (!response.ok) {
+    const payload = await readJsonPayload(response);
+    return {
+      error: formatTrustedWriterError(
+        response.status,
+        payload,
+        'Grant revoke-pending failed',
+      ),
+    };
+  }
 }
 
 export function toGrantManifest(
