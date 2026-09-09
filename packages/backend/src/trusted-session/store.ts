@@ -303,6 +303,25 @@ export class TrustedSessionStore {
     return this.toRuntimeSession(this.getRuntimeSessionRow(id)!);
   }
 
+  /**
+   * Latest runtime row for an MCP transport id, including expired/revoked.
+   * Used to keep transport→grant ownership immutable after the active lease ends.
+   */
+  findLatestRuntimeSessionByMcpSessionId(mcpSessionId: string): RuntimeSession | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+                last_seen_at, expires_at, admin_expires_at, revoked_at
+         FROM runtime_sessions
+         WHERE mcp_session_id = ?
+         ORDER BY last_seen_at DESC
+         LIMIT 1`,
+      )
+      .get(mcpSessionId) as RuntimeSessionRow | undefined;
+
+    return row ? this.toRuntimeSession(row) : null;
+  }
+
   findActiveRuntimeSessionByMcpSessionId(mcpSessionId: string): RuntimeSession | null {
     const now = nowIso();
     const row = this.db

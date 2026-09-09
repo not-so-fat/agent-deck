@@ -101,6 +101,36 @@ describe('TrustedSessionStore', () => {
     expect(reused?.mode).toBe('agent-admin');
   });
 
+  it('keeps mcp-session ownership after runtime revoke (NOT-53)', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const workspace = store.getOrCreateWorkspaceKey('own');
+    const secretA = generateGrantSecret();
+    const secretB = generateGrantSecret();
+    const pendingA = store.createPendingGrant(workspace.id, 'deck-a', secretA);
+    store.activateGrant(pendingA.id);
+    const grantA = store.findActiveGrantBySecret(secretA)!;
+
+    // Second grant on another workspace key (one active grant per workspace).
+    const workspaceB = store.getOrCreateWorkspaceKey('own-b');
+    const pendingB = store.createPendingGrant(workspaceB.id, 'deck-b', secretB);
+    store.activateGrant(pendingB.id);
+    const grantB = store.findActiveGrantBySecret(secretB)!;
+
+    const session = store.createRuntimeSession({
+      workspaceKeyId: workspace.id,
+      workspaceGrantId: grantA.id,
+      deckId: grantA.deck_id,
+      mcpSessionId: 'mcp-owned',
+    });
+    store.revokeRuntimeSession(session.sessionId);
+
+    expect(store.findActiveRuntimeSessionByMcpSessionId('mcp-owned')).toBeNull();
+    const historical = store.findLatestRuntimeSessionByMcpSessionId('mcp-owned');
+    expect(historical?.workspaceGrantId).toBe(grantA.id);
+    expect(historical?.workspaceGrantId).not.toBe(grantB.id);
+  });
+
   it('rotates grant for elevated session and revokes peers (C8)', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);

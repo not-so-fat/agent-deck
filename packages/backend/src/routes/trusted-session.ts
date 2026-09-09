@@ -411,14 +411,13 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
       const mcpId = mcpSessionId?.trim();
       let session;
       if (mcpId) {
-        const existing = store.findActiveRuntimeSessionByMcpSessionId(mcpId);
-        if (existing) {
-          if (existing.workspaceGrantId !== grant.id) {
-            // Wrong Bearer for an established transport — do not steal or recreate.
-            throw new TrustedAuthError('GRANT_REQUIRED', 'Grant does not own this MCP session');
-          }
-          session = store.findActiveRuntimeSessionForMcp(mcpId, grant.id);
+        // Ownership survives lease expiry / revoke: another grant must not
+        // create a replacement runtime row for the same MCP transport id.
+        const historical = store.findLatestRuntimeSessionByMcpSessionId(mcpId);
+        if (historical && historical.workspaceGrantId !== grant.id) {
+          throw new TrustedAuthError('GRANT_REQUIRED', 'Grant does not own this MCP session');
         }
+        session = store.findActiveRuntimeSessionForMcp(mcpId, grant.id);
       }
       if (!session) {
         session = store.createRuntimeSession({

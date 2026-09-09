@@ -217,8 +217,7 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
       mcpWritten.push({ client, path: configPath });
 
       // Cursor Agent chat loads the user-level MCP server (`user-agent-deck`).
-      // Pre-1.7 global configs used a bare HTTP url with no grant Bearer — upgrade
-      // those (and any non-launcher entry) so IDE Agent can reach mcp-launch.
+      // Pre-1.7 global bare HTTP urls have no grant Bearer — upgrade those only.
       if (client === 'cursor') {
         const globalResult = ensureGlobalCursorMcpLaunch(endpoint);
         if (globalResult.action !== 'ok') {

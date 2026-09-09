@@ -9,7 +9,8 @@
 - **`grantId:secret` Bearer:** parse `wgr_…:secret` at the auth boundary; reject when the claimed grant id does not match the secret. `mcp-launch` stays secret-only.
 - **Connect ownership:** a follow-up with a different valid grant cannot steal an existing `mcp-session-id` (no new runtime session for the wrong grant).
 - **Init failure cleanup:** if MCP initialize throws after grant connect, revoke the durable runtime session via `/api/trusted-session/mcp/disconnect`.
-- **Cursor user MCP (related):** `agent-deck use --client cursor` / `status` / `use --refresh` upgrade legacy global bare `url` entries to `mcp-launch` and note that Cursor's `mcp_auth` is not the grant path.
+- **Cursor user MCP (related):** `agent-deck use` / `status` / `use --refresh` upgrade **legacy global bare `url`** entries only to `mcp-launch` (do not create missing or overwrite custom wrappers); note that Cursor's `mcp_auth` is not the grant path.
+- **Transport ownership:** `/mcp/connect` consults the latest runtime row for an `mcp-session-id` (including expired/revoked) so another grant cannot replace ownership after the active lease ends.
 
 ## 1.7.1 — 2026-09-09
 

@@ -117,6 +117,31 @@ describe('ensureGlobalCursorMcpLaunch', () => {
     expect(written.mcpServers['agent-deck']?.url).toBeUndefined();
     expect(written.mcpServers['agent-deck']?.command).toBe('agent-deck');
   });
+
+  it('does not create missing or overwrite custom global entries', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-mcp-home-'));
+    tmpDirs.push(home);
+    vi.spyOn(os, 'homedir').mockReturnValue(home);
+
+    expect(ensureGlobalCursorMcpLaunch({ host: '127.0.0.1', mcpPort: 1110 })).toMatchObject({
+      action: 'ok',
+    });
+    expect(fs.existsSync(path.join(home, '.cursor', 'mcp.json'))).toBe(false);
+
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    const custom = {
+      mcpServers: {
+        'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] },
+      },
+    };
+    fs.writeFileSync(path.join(home, '.cursor', 'mcp.json'), `${JSON.stringify(custom, null, 2)}\n`);
+
+    expect(ensureGlobalCursorMcpLaunch({ host: '127.0.0.1', mcpPort: 1110 })).toMatchObject({
+      action: 'ok',
+    });
+    const written = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8'));
+    expect(written).toEqual(custom);
+  });
 });
 
 describe('compareSemver', () => {

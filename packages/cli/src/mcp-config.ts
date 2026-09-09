@@ -107,12 +107,16 @@ export function isMcpLaunchEntry(entry: unknown): boolean {
 
 export type CursorGlobalMcpEnsureResult =
   | { action: 'ok'; path: string }
-  | { action: 'upgraded' | 'created'; path: string; reason: 'bare-url' | 'missing' | 'non-launcher' };
+  | { action: 'upgraded'; path: string; reason: 'bare-url' };
 
 /**
  * Cursor Agent chat uses the user-level MCP entry (`user-agent-deck`).
  * Pre-1.7 bare `url` configs fail discovery and only expose Cursor's `mcp_auth`
- * (which is not how Agent Deck grants work). Rewrite to `mcp-launch` when needed.
+ * (which is not how Agent Deck grants work).
+ *
+ * Only auto-rewrites entries positively identified as legacy bare HTTP.
+ * Missing or custom/non-launcher entries are left alone — creation belongs to
+ * an explicit Cursor setup / `agent-deck use` project write, not `status`.
  */
 export function ensureGlobalCursorMcpLaunch(endpoint: McpEndpoint): CursorGlobalMcpEnsureResult {
   const configPath = resolveConfigPath('cursor', 'global');
@@ -123,22 +127,16 @@ export function ensureGlobalCursorMcpLaunch(endpoint: McpEndpoint): CursorGlobal
       : {};
   const existing = servers['agent-deck'];
 
-  if (isMcpLaunchEntry(existing) && !isLegacyBareHttpAgentDeckEntry(existing)) {
+  if (!isLegacyBareHttpAgentDeckEntry(existing)) {
     return { action: 'ok', path: configPath };
   }
-
-  const reason: 'bare-url' | 'missing' | 'non-launcher' = !existing
-    ? 'missing'
-    : isLegacyBareHttpAgentDeckEntry(existing)
-      ? 'bare-url'
-      : 'non-launcher';
 
   const entry = buildAgentDeckEntry('cursor', endpoint);
   writeJsonFile(configPath, mergeMcpServerConfig(existingConfig, entry));
   return {
-    action: existing ? 'upgraded' : 'created',
+    action: 'upgraded',
     path: configPath,
-    reason,
+    reason: 'bare-url',
   };
 }
 
@@ -146,14 +144,8 @@ export function formatCursorGlobalMcpEnsureMessage(result: CursorGlobalMcpEnsure
   if (result.action === 'ok') {
     return null;
   }
-  const why =
-    result.reason === 'bare-url'
-      ? 'bare url (no grant Bearer)'
-      : result.reason === 'missing'
-        ? 'missing agent-deck entry'
-        : 'non-launcher entry';
   return [
-    `Cursor MCP: ${result.action} ${result.path} (${why} → mcp-launch).`,
+    `Cursor MCP: ${result.action} ${result.path} (bare url (no grant Bearer) → mcp-launch).`,
     '  Reload Cursor MCP (or restart Cursor). Cursor\'s mcp_auth is not the Agent Deck fix — use needs a workspace grant + mcp-launch.',
   ].join('\n');
 }
