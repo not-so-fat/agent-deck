@@ -49,9 +49,11 @@ export function resolveConfigPath(
  * MCP client entry for the agent-deck server. Uses the trusted local launcher,
  * which reads the private workspace grant at runtime — no deck id in tracked config.
  */
-export function buildAgentDeckEntry(client: McpClient, endpoint: McpEndpoint): Record<string, unknown> {
-  const url = buildMcpUrl(endpoint);
-
+export function buildAgentDeckEntry(
+  client: McpClient,
+  endpoint: McpEndpoint,
+  options?: { workspaceRoot?: string },
+): Record<string, unknown> {
   if (client === 'claude-desktop') {
     return {
       command: 'agent-deck',
@@ -67,14 +69,93 @@ export function buildAgentDeckEntry(client: McpClient, endpoint: McpEndpoint): R
     };
   }
 
+  const env: Record<string, string> = {
+    AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
+    AGENT_DECK_HOST: endpoint.host,
+  };
+  if (options?.workspaceRoot) {
+    env.AGENT_DECK_WORKSPACE = path.resolve(options.workspaceRoot);
+  }
+
   return {
     command: 'agent-deck',
     args: ['mcp-launch'],
-    env: {
-      AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
-      AGENT_DECK_HOST: endpoint.host,
-    },
+    env,
   };
+}
+
+/** Pre-1.7 Cursor/HTTP entries used bare `url` with no grant Bearer. */
+export function isLegacyBareHttpAgentDeckEntry(entry: unknown): boolean {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return false;
+  }
+  const record = entry as Record<string, unknown>;
+  return typeof record.url === 'string' && typeof record.command !== 'string';
+}
+
+export function isMcpLaunchEntry(entry: unknown): boolean {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return false;
+  }
+  const record = entry as Record<string, unknown>;
+  if (record.command !== 'agent-deck') {
+    return false;
+  }
+  const args = record.args;
+  return Array.isArray(args) && args.includes('mcp-launch');
+}
+
+export type CursorGlobalMcpEnsureResult =
+  | { action: 'ok'; path: string }
+  | { action: 'upgraded' | 'created'; path: string; reason: 'bare-url' | 'missing' | 'non-launcher' };
+
+/**
+ * Cursor Agent chat uses the user-level MCP entry (`user-agent-deck`).
+ * Pre-1.7 bare `url` configs fail discovery and only expose Cursor's `mcp_auth`
+ * (which is not how Agent Deck grants work). Rewrite to `mcp-launch` when needed.
+ */
+export function ensureGlobalCursorMcpLaunch(endpoint: McpEndpoint): CursorGlobalMcpEnsureResult {
+  const configPath = resolveConfigPath('cursor', 'global');
+  const existingConfig = readJsonFile(configPath);
+  const servers =
+    existingConfig.mcpServers && typeof existingConfig.mcpServers === 'object'
+      ? (existingConfig.mcpServers as Record<string, unknown>)
+      : {};
+  const existing = servers['agent-deck'];
+
+  if (isMcpLaunchEntry(existing) && !isLegacyBareHttpAgentDeckEntry(existing)) {
+    return { action: 'ok', path: configPath };
+  }
+
+  const reason: 'bare-url' | 'missing' | 'non-launcher' = !existing
+    ? 'missing'
+    : isLegacyBareHttpAgentDeckEntry(existing)
+      ? 'bare-url'
+      : 'non-launcher';
+
+  const entry = buildAgentDeckEntry('cursor', endpoint);
+  writeJsonFile(configPath, mergeMcpServerConfig(existingConfig, entry));
+  return {
+    action: existing ? 'upgraded' : 'created',
+    path: configPath,
+    reason,
+  };
+}
+
+export function formatCursorGlobalMcpEnsureMessage(result: CursorGlobalMcpEnsureResult): string | null {
+  if (result.action === 'ok') {
+    return null;
+  }
+  const why =
+    result.reason === 'bare-url'
+      ? 'bare url (no grant Bearer)'
+      : result.reason === 'missing'
+        ? 'missing agent-deck entry'
+        : 'non-launcher entry';
+  return [
+    `Cursor MCP: ${result.action} ${result.path} (${why} → mcp-launch).`,
+    '  Reload Cursor MCP (or restart Cursor). Cursor\'s mcp_auth is not the Agent Deck fix — use needs a workspace grant + mcp-launch.',
+  ].join('\n');
 }
 
 export function readJsonFile(filePath: string): Record<string, unknown> {

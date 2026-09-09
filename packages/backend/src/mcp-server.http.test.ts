@@ -299,3 +299,337 @@ describe('session badge flow (stub backend)', () => {
     expect(stub.touches.length).toBeGreaterThan(before);
   });
 });
+
+type GrantStubBackend = {
+  port: number;
+  connectBodies: Array<{ grantSecret?: string; mcpSessionId?: string; claimedGrantId?: string }>;
+  disconnectBodies: Array<{ grantSecret?: string; mcpSessionId?: string }>;
+  revokedSecrets: Set<string>;
+  close: () => Promise<void>;
+};
+
+function startGrantStubBackend(validSecret: string, validGrantId = 'wgr_validgrant00000000000000000001'): Promise<GrantStubBackend> {
+  const connectBodies: GrantStubBackend['connectBodies'] = [];
+  const disconnectBodies: GrantStubBackend['disconnectBodies'] = [];
+  const revokedSecrets = new Set<string>();
+  const sessionsByMcp = new Map<string, { sessionId: string; grantId: string }>();
+  let sessionSeq = 0;
+
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+    });
+    req.on('end', () => {
+      const respond = (status: number, body: unknown) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(body));
+      };
+      const url = req.url ?? '';
+      if (req.method === 'POST' && url === '/api/trusted-session/mcp/connect') {
+        const body = JSON.parse(raw || '{}') as {
+          grantSecret?: string;
+          mcpSessionId?: string;
+          claimedGrantId?: string;
+        };
+        connectBodies.push(body);
+        if (!body.grantSecret || body.grantSecret !== validSecret || revokedSecrets.has(body.grantSecret)) {
+          respond(401, { success: false, error: 'No valid workspace grant', error_code: 'GRANT_REQUIRED' });
+          return;
+        }
+        if (body.claimedGrantId && body.claimedGrantId !== validGrantId) {
+          respond(401, {
+            success: false,
+            error: 'Claimed grant id does not match secret',
+            error_code: 'GRANT_REQUIRED',
+          });
+          return;
+        }
+        const mcpId = body.mcpSessionId?.trim();
+        if (mcpId) {
+          const existing = sessionsByMcp.get(mcpId);
+          if (existing && existing.grantId !== validGrantId) {
+            respond(401, {
+              success: false,
+              error: 'Grant does not own this MCP session',
+              error_code: 'GRANT_REQUIRED',
+            });
+            return;
+          }
+          if (existing) {
+            respond(200, {
+              success: true,
+              data: {
+                sessionId: existing.sessionId,
+                workspaceGrantId: validGrantId,
+                deckId: STUB_DECK_ID,
+                deckName: 'Stub Deck',
+                mode: 'normal',
+              },
+            });
+            return;
+          }
+        }
+        sessionSeq += 1;
+        const sessionId = `ses_test_${sessionSeq}`;
+        if (mcpId) {
+          sessionsByMcp.set(mcpId, { sessionId, grantId: validGrantId });
+        }
+        respond(200, {
+          success: true,
+          data: {
+            sessionId,
+            workspaceGrantId: validGrantId,
+            deckId: STUB_DECK_ID,
+            deckName: 'Stub Deck',
+            mode: 'normal',
+          },
+        });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/trusted-session/mcp/disconnect') {
+        const body = JSON.parse(raw || '{}') as { grantSecret?: string; mcpSessionId?: string };
+        disconnectBodies.push(body);
+        if (body.mcpSessionId) {
+          sessionsByMcp.delete(body.mcpSessionId);
+        }
+        respond(200, { success: true, data: { revoked: true } });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/scope/live-display') {
+        respond(200, { success: true, data: { badge: 'fox' } });
+        return;
+      }
+      respond(404, { success: false, error: `stub: unhandled ${req.method} ${url}` });
+    });
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      resolve({
+        port,
+        connectBodies,
+        disconnectBodies,
+        revokedSecrets,
+        close: () => new Promise((done) => server.close(() => done())),
+      });
+    });
+  });
+}
+
+async function listToolsWithAuth(port: number, sessionId: string, id: number, bearer: string) {
+  const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: MCP_ACCEPT,
+      'mcp-session-id': sessionId,
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/list',
+      params: {},
+    }),
+  });
+  return response;
+}
+
+describe('MCP grant auth across HTTP session lifecycle (NOT-53)', () => {
+  const validSecret = 'valid-grant-secret';
+  const validGrantId = 'wgr_validgrant00000000000000000001';
+  let stub: GrantStubBackend;
+  let grantPort: number;
+  let grantServer: AgentDeckMCPServer;
+  let previousSkip: string | undefined;
+
+  beforeAll(async () => {
+    previousSkip = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
+    process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = '0';
+    stub = await startGrantStubBackend(validSecret, validGrantId);
+    grantPort = 39_000 + Math.floor(Math.random() * 2_000);
+    grantServer = new AgentDeckMCPServer(grantPort, `http://127.0.0.1:${stub.port}`);
+    await grantServer.start();
+    await waitForMcpHealth(grantPort);
+  });
+
+  afterAll(async () => {
+    await grantServer.stop();
+    await stub.close();
+    if (previousSkip === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = previousSkip;
+    }
+  });
+
+  it('rejects invalid initialize without advertising mcp-session-id', async () => {
+    const response = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Authorization: 'Bearer bad-secret',
+      },
+      body: JSON.stringify(initializePayload(301)),
+    });
+    expect(response.status).toBe(401);
+    expect(response.headers.get('mcp-session-id')).toBeNull();
+    const body = await response.json();
+    expect(body.error.message).toBe('GRANT_REQUIRED');
+  });
+
+  it('accepts valid initialize and serves follow-up tools/list', async () => {
+    const init = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Authorization: `Bearer ${validSecret}`,
+      },
+      body: JSON.stringify(initializePayload(302)),
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const tools = await listToolsWithAuth(grantPort, sessionId!, 303, validSecret);
+    expect(tools.status).toBe(200);
+    const body = await tools.json();
+    expect(body.result.tools.map((tool: { name: string }) => tool.name)).toContain('get_decks');
+  });
+
+  it('accepts grantId:secret Bearer when claimed id matches', async () => {
+    const init = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Authorization: `Bearer ${validGrantId}:${validSecret}`,
+      },
+      body: JSON.stringify(initializePayload(304)),
+    });
+    expect(init.status).toBe(200);
+    expect(init.headers.get('mcp-session-id')).toBeTruthy();
+  });
+
+  it('rejects grantId:secret when claimed id mismatches', async () => {
+    const init = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Authorization: 'Bearer wgr_wronggrant00000000000000000001:valid-grant-secret',
+      },
+      body: JSON.stringify(initializePayload(305)),
+    });
+    expect(init.status).toBe(401);
+    expect(init.headers.get('mcp-session-id')).toBeNull();
+  });
+
+  it('returns 401 on missing/wrong follow-up Bearer without destroying the session', async () => {
+    const init = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Authorization: `Bearer ${validSecret}`,
+      },
+      body: JSON.stringify(initializePayload(306)),
+    });
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const missingNoHeader = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId!,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 307, method: 'tools/list', params: {} }),
+    });
+    expect(missingNoHeader.status).toBe(401);
+
+    const wrong = await listToolsWithAuth(grantPort, sessionId!, 308, 'wrong-secret');
+    expect(wrong.status).toBe(401);
+
+    const retry = await listToolsWithAuth(grantPort, sessionId!, 309, validSecret);
+    expect(retry.status).toBe(200);
+
+    // GET follow-up also requires Bearer
+    const getMissing = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'GET',
+      headers: {
+        'mcp-session-id': sessionId!,
+        Accept: 'text/event-stream',
+      },
+    });
+    expect(getMissing.status).toBe(401);
+
+    const getOk = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'GET',
+      headers: {
+        'mcp-session-id': sessionId!,
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${validSecret}`,
+      },
+    });
+    expect(getOk.status).toBe(200);
+    await getOk.body?.cancel();
+  });
+
+  it('fails follow-up after grant revocation', async () => {
+    const init = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Authorization: `Bearer ${validSecret}`,
+      },
+      body: JSON.stringify(initializePayload(310)),
+    });
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    stub.revokedSecrets.add(validSecret);
+    const afterRevoke = await listToolsWithAuth(grantPort, sessionId!, 311, validSecret);
+    expect(afterRevoke.status).toBe(401);
+    stub.revokedSecrets.delete(validSecret);
+  });
+
+  it('keeps concurrent sessions isolated', async () => {
+    const initA = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Authorization: `Bearer ${validSecret}`,
+      },
+      body: JSON.stringify(initializePayload(312)),
+    });
+    const initB = await fetch(`http://127.0.0.1:${grantPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Authorization: `Bearer ${validSecret}`,
+      },
+      body: JSON.stringify(initializePayload(313)),
+    });
+    const sessionA = initA.headers.get('mcp-session-id');
+    const sessionB = initB.headers.get('mcp-session-id');
+    expect(sessionA).toBeTruthy();
+    expect(sessionB).toBeTruthy();
+    expect(sessionA).not.toBe(sessionB);
+
+    const toolsA = await listToolsWithAuth(grantPort, sessionA!, 314, validSecret);
+    const toolsB = await listToolsWithAuth(grantPort, sessionB!, 315, validSecret);
+    expect(toolsA.status).toBe(200);
+    expect(toolsB.status).toBe(200);
+  });
+});

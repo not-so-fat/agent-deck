@@ -63,6 +63,7 @@ vi.mock('./grant-issue', () => ({
 const tmpDirs: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tmpDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -83,6 +84,14 @@ describe('agent-deck use', () => {
 
   it('writes mcp config, grant manifest, and stubs for a deck', async () => {
     const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, '.cursor', 'mcp.json'),
+      `${JSON.stringify({ mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:1110/mcp' } } }, null, 2)}\n`,
+    );
+
     const parsed = parseUseArgs(['dev', '--client', 'cursor']);
     expect('error' in parsed).toBe(false);
     if ('error' in parsed) {
@@ -103,11 +112,22 @@ describe('agent-deck use', () => {
       true,
     );
     const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')) as {
-      mcpServers: Record<string, { command?: string; args?: string[]; headers?: Record<string, string> }>;
+      mcpServers: Record<
+        string,
+        { command?: string; args?: string[]; env?: Record<string, string>; headers?: Record<string, string> }
+      >;
     };
     expect(mcp.mcpServers['agent-deck']?.command).toBe('agent-deck');
     expect(mcp.mcpServers['agent-deck']?.args).toEqual(['mcp-launch']);
+    expect(mcp.mcpServers['agent-deck']?.env?.AGENT_DECK_WORKSPACE).toBe(workspace);
     expect(mcp.mcpServers['agent-deck']?.headers?.['x-agent-deck-deck-id']).toBeUndefined();
+
+    const globalMcp = JSON.parse(fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8')) as {
+      mcpServers: Record<string, { command?: string; args?: string[]; url?: string }>;
+    };
+    expect(globalMcp.mcpServers['agent-deck']?.url).toBeUndefined();
+    expect(globalMcp.mcpServers['agent-deck']?.command).toBe('agent-deck');
+    expect(globalMcp.mcpServers['agent-deck']?.args).toEqual(['mcp-launch']);
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),

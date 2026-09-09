@@ -268,13 +268,13 @@ Non-goals for v1:
 
 ## 10. Implementation map (as-built)
 
-Primary touchpoints in the 1.7.0 codebase:
+Primary touchpoints in the 1.7.0 codebase (**Unreleased / NOT-53** deltas called out on the MCP and CLI bullets):
 
 - SQLite schema + migrations — trusted session / grant tables
 - `packages/backend/src/trusted-session/` — grants, runtime sessions, elevation
 - `packages/backend/src/lib/http-route-policies.ts` — centralized policy registry + Fastify hook
-- MCP transport session establishment — grant Bearer auth, session header
-- CLI `use` / `use --refresh` — grant writer + launcher config (`packages/cli/`)
+- MCP transport session establishment — grant Bearer auth **before** advertising `mcp-session-id`; follow-up POST/GET/DELETE re-validate the same grant (401 without destroying transport); `wgr_…:secret` (`grantId:secret`) parsed at the auth boundary with claimed-id match; failed initialize after connect revokes the durable runtime session via `mcp/disconnect`
+- CLI `use` / `use --refresh` — grant writer + launcher config (`packages/cli/`); Cursor `use` / `status` / `use --refresh` migrate legacy global bare HTTP MCP entries to `mcp-launch` and warn that Cursor `mcp_auth` is not the grant path
 - Dashboard `/admin/approve` + menubar challenge links
 - Harness + docs — `CLAUDE.md`, setup/migration copy, `CHANGELOG.md`
 

@@ -11,6 +11,8 @@ import {
 } from '@agent-deck/shared';
 import type Database from 'better-sqlite3';
 
+import { normalizeWorkspaceGrantSecret } from '../lib/http-auth';
+
 export type WorkspaceKeyRow = {
   id: string;
   path_digest: string;
@@ -189,7 +191,7 @@ export class TrustedSessionStore {
   }
 
   findActiveGrantBySecret(secret: string): WorkspaceGrantRow | null {
-    const hash = hashGrantSecret(secret);
+    const hash = hashGrantSecret(normalizeWorkspaceGrantSecret(secret));
     return (
       (this.db
         .prepare(
@@ -299,6 +301,23 @@ export class TrustedSessionStore {
       );
 
     return this.toRuntimeSession(this.getRuntimeSessionRow(id)!);
+  }
+
+  findActiveRuntimeSessionByMcpSessionId(mcpSessionId: string): RuntimeSession | null {
+    const now = nowIso();
+    const row = this.db
+      .prepare(
+        `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+                last_seen_at, expires_at, admin_expires_at, revoked_at
+         FROM runtime_sessions
+         WHERE mcp_session_id = ?
+           AND revoked_at IS NULL AND expires_at > ?
+         ORDER BY last_seen_at DESC
+         LIMIT 1`,
+      )
+      .get(mcpSessionId, now) as RuntimeSessionRow | undefined;
+
+    return row ? this.toRuntimeSession(row) : null;
   }
 
   findActiveRuntimeSessionForMcp(mcpSessionId: string, grantId: string): RuntimeSession | null {
