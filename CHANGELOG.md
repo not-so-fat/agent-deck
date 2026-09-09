@@ -2,14 +2,22 @@
 
 ## Unreleased
 
-### Fix: MCP grant auth across the HTTP session lifecycle (NOT-53)
+## 1.7.2 — 2026-09-09
 
-- **Grant auth before advertising `mcp-session-id`:** failed grant auth no longer deletes a session after `initialize` already returned 200 — that left clients with a dead id (`No valid session ID provided` / `Session not found`).
-- **Follow-up Bearer required:** POST/GET/DELETE with an established session re-validate the workspace grant; missing/wrong Bearer returns 401 without destroying the transport session (retry with the correct Bearer succeeds).
+### Fix: MCP grant auth across the transport session lifecycle (NOT-53)
+
+- **Grant auth before advertising `mcp-session-id`:** failed grant auth no longer deletes a transport session after `initialize` already returned 200 — that left clients with a dead id (`No valid session ID provided` / `Session not found`).
+- **Follow-up Bearer required:** POST/GET/DELETE with an established transport session re-validate the workspace grant; missing/wrong Bearer returns 401 without destroying the transport session (retry with the correct Bearer succeeds).
 - **`grantId:secret` Bearer:** parse `wgr_…:secret` at the auth boundary; reject when the claimed grant id does not match the secret. `mcp-launch` stays secret-only.
-- **Connect ownership:** `/mcp/connect` binds an `mcp-session-id` to the grant that first connected; a different grant cannot steal it — including after the runtime row expires or is revoked (latest historical row still blocks replacement).
+- **Connect ownership:** `/mcp/connect` binds an `mcp-session-id` to the grant that first connected; a different grant cannot steal it — including after the runtime session expires or is revoked.
 - **Init failure cleanup:** if MCP initialize throws after grant connect, revoke the durable runtime session via `/api/trusted-session/mcp/disconnect`.
 - **Cursor user MCP (related):** `agent-deck use` / `status` / `use --refresh` upgrade **legacy global bare `url`** entries only to `mcp-launch` (do not create missing or overwrite custom wrappers); note that Cursor's `mcp_auth` is not the grant path.
+
+### After upgrade
+
+- Restart Agent Deck (`agent-deck stop && agent-deck start`) so MCP picks up grant-before-advertise and follow-up Bearer checks.
+- In each workspace: `agent-deck use <deck>` if needed, then reload Cursor MCP (or restart Cursor). Do **not** use Cursor's `mcp_auth` for Agent Deck grants.
+- If `~/.cursor/mcp.json` still has a bare `url` for agent-deck, `agent-deck status` or `use` upgrades that legacy entry to `mcp-launch`.
 
 ## 1.7.1 — 2026-09-09
 
