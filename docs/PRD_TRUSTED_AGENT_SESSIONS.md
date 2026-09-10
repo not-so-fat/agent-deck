@@ -268,13 +268,14 @@ Non-goals for v1:
 
 ## 10. Implementation map (as-built)
 
-Primary touchpoints in the 1.7.0 codebase (**Unreleased / NOT-53** deltas called out on the MCP and CLI bullets):
+Primary touchpoints in the 1.7.0 codebase (later tickets called out per bullet):
 
 - SQLite schema + migrations — trusted session / grant tables
 - `packages/backend/src/trusted-session/` — grants, runtime sessions, elevation
 - `packages/backend/src/lib/http-route-policies.ts` — centralized policy registry + Fastify hook
-- MCP transport session establishment — grant Bearer auth **before** advertising `mcp-session-id`; follow-up POST/GET/DELETE re-validate the same grant (401 without destroying transport); `wgr_…:secret` (`grantId:secret`) parsed at the auth boundary with claimed-id match; `/mcp/connect` keeps `mcp-session-id` → grant ownership via the latest runtime row (including expired/revoked) so another grant cannot replace it; failed initialize after connect revokes the durable runtime session via `mcp/disconnect`
-- CLI `use` / `use --refresh` — grant writer + launcher config (`packages/cli/`); explicit Cursor `use` creates or repairs the user-level `mcp-launch` entry with `AGENT_DECK_WORKSPACE` (last explicit workspace wins), while `status` / `use --refresh` only diagnose missing, bare-URL, unpinned, stale-endpoint, or custom entries and never write; custom wrappers are not overwritten and Cursor `mcp_auth` is not the grant path
+- MCP transport session establishment (**NOT-53**) — grant Bearer auth **before** advertising `mcp-session-id`; follow-up POST/GET/DELETE re-validate the same grant (401 without destroying transport); `wgr_…:secret` (`grantId:secret`) parsed at the auth boundary with claimed-id match; `/mcp/connect` keeps `mcp-session-id` → grant ownership via the latest runtime row (including expired/revoked) so another grant cannot replace it; failed initialize after connect revokes the durable runtime session via `mcp/disconnect`
+- CLI `use` / `use --refresh` (**NOT-54** / **NOT-52**) — grant writer + launcher config (`packages/cli/`); explicit Cursor `use` creates or repairs the user-level `mcp-launch` entry with `AGENT_DECK_WORKSPACE` (last explicit workspace wins), while `status` / `use --refresh` run the read-only `inspectCursorMcpConfig` report (global + project, grant presence, bare-URL → `mcp_auth` dead end) and never write; custom wrappers are not overwritten. Contract: [docs/decisions/cursor-mcp-config-resolution.md](./decisions/cursor-mcp-config-resolution.md)
+
 - Dashboard `/admin/approve` + menubar challenge links
 - Harness + docs — `CLAUDE.md`, setup/migration copy, `CHANGELOG.md`
 

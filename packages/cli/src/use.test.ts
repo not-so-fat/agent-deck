@@ -171,7 +171,7 @@ describe('agent-deck use', () => {
       return;
     }
 
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const result = await runUse({ ...parsed, workspaceRoot: workspace, skipMcp: true });
     expect(result).toEqual({ error: 'refresh-diagnosis-only' });
     const manifest = JSON.parse(
@@ -183,7 +183,8 @@ describe('agent-deck use', () => {
       fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8'),
     );
     expect(unchangedGlobalConfig).toEqual(globalConfig);
-    expect(warn.mock.calls.flat().join('\n')).toContain('No changes made');
+    expect(log.mock.calls.flat().join('\n')).toContain('mcp_auth');
+    expect(log.mock.calls.flat().join('\n')).toContain('read-only');
   });
 
   it('prints a repair message for an existing unpinned launcher', async () => {
