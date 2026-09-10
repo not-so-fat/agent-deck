@@ -4,6 +4,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
+  AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
   formatDisplayLine,
 } from '@agent-deck/shared';
@@ -33,6 +34,12 @@ const agentClientHeaders = {
   [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
   Accept: 'application/json',
 };
+
+function readWorkspaceRootHeader(req: Request): string | undefined {
+  const raw = req.headers[AGENT_DECK_WORKSPACE_HEADER];
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  return value || undefined;
+}
 
 type McpSession = {
   transport: StreamableHTTPServerTransport;
@@ -650,10 +657,17 @@ export class AgentDeckMCPServer {
       throw new Error(body.error ?? 'GRANT_REQUIRED');
     }
 
+    const existing = this.sessionBinding.getBinding(sessionId);
+    const workspaceRoot =
+      readWorkspaceRootHeader(req) ??
+      existing.workspaceRoot ??
+      (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
+
     this.sessionBinding.setTrustedSession(sessionId, {
       runtimeSessionId: body.data.sessionId,
       deckId: body.data.deckId,
-      workspaceRoot: process.env.AGENT_DECK_WORKSPACE,
+      // Prefer client header (mcp-launch); keep prior bind; server env is last resort.
+      workspaceRoot,
       mode: body.data.mode,
     });
   }

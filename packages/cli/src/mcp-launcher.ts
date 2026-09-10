@@ -6,11 +6,12 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
+import { AGENT_DECK_WORKSPACE_HEADER } from '@agent-deck/shared';
 import { buildMcpUrl, type McpEndpoint } from './mcp-config';
 import { readWorkspaceGrant } from './grant-store';
 
 export async function runMcpLaunch(): Promise<number> {
-  const workspaceRoot = process.env.AGENT_DECK_WORKSPACE?.trim() || process.cwd();
+  const workspaceRoot = path.resolve(process.env.AGENT_DECK_WORKSPACE?.trim() || process.cwd());
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const mcpPort = Number(process.env.AGENT_DECK_MCP_PORT ?? '1110');
   const endpoint: McpEndpoint = { host, mcpPort };
@@ -24,6 +25,7 @@ export async function runMcpLaunch(): Promise<number> {
   }
 
   const mcpUrl = grant.mcpUrl ?? buildMcpUrl(endpoint);
+  // Forward workspace to the HTTP MCP server — process.env there is the daemon, not this folder.
   const supergatewayArgs = [
     '-y',
     'supergateway',
@@ -31,6 +33,8 @@ export async function runMcpLaunch(): Promise<number> {
     mcpUrl,
     '--header',
     `Authorization: Bearer ${grant.secret}`,
+    '--header',
+    `${AGENT_DECK_WORKSPACE_HEADER}: ${workspaceRoot}`,
   ];
 
   return await new Promise<number>((resolve) => {
@@ -39,7 +43,7 @@ export async function runMcpLaunch(): Promise<number> {
       cwd: workspaceRoot,
       env: {
         ...process.env,
-        AGENT_DECK_WORKSPACE: path.resolve(workspaceRoot),
+        AGENT_DECK_WORKSPACE: workspaceRoot,
       },
     });
 

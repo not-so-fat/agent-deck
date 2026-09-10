@@ -31,8 +31,11 @@ export class LiveDisplayRegistry {
     const badge =
       existing?.badge ??
       assignBadge(new Set([...this.bySessionId.values()].map((entry) => entry.badge)));
+    // Preserve folder when a later upsert omits it (e.g. init race after bind_workspace).
+    const workspaceRoot = input.workspaceRoot?.trim() || existing?.workspaceRoot;
     const entry: LiveDisplayEntry = {
       ...input,
+      workspaceRoot,
       clientName: input.clientName ?? existing?.clientName,
       badge,
       lastActivityAt: input.updatedAt,
