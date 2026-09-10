@@ -146,6 +146,20 @@ describe('deck-display', () => {
       expect(LiveBindingSchema.parse(row).badge).toBe('fox');
       expect(LiveBindingSchema.safeParse({ ...row, badge: undefined }).success).toBe(false);
     });
+
+    it('accepts grant source from trusted workspace sessions', () => {
+      const row = {
+        badge: 'fox',
+        deckId: '11111111-1111-4111-8111-111111111111',
+        deckName: 'Product Design',
+        source: 'grant',
+        workspaceRoot: '/repo',
+        cardCounts: { mcp: 2, credentials: 1, playbooks: 3 },
+        updatedAt: '2026-09-10T00:00:00.000Z',
+        lastActivityAt: '2026-09-10T00:00:10.000Z',
+      };
+      expect(LiveBindingSchema.parse(row).source).toBe('grant');
+    });
   });
 
   describe('schemas', () => {

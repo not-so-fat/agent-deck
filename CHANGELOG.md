@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.7.5 — 2026-09-10
+
+### Fix: statusline stays Unbound when live display uses `source: "grant"` (Claude Code / Cursor CLI)
+
+- **Cause:** Trusted sessions register live display with `source: "grant"`, but `DeckDisplaySourceSchema` only allowed `session_override` | `env` | `unbound`. `POST /api/scope/live-display` rejected those registrations, so the footer never left Unbound.
+- **Fix:** Accept `grant` in the display source enum (aligned with `DeckBindingSource`).
+- **Verify:** Bind a deck in Claude Code, then confirm the status line shows `◆ <deck> · …` (or `echo '{"cwd":"'"$PWD"'"}' | agent-deck statusline`).
+
 ## 1.7.4 — 2026-09-09
 
 ### Docs + CLI: Cursor MCP contract (NOT-54) and read-only diagnostics (NOT-52)

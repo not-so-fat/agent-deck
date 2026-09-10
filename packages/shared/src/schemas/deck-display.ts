@@ -2,6 +2,7 @@ import { z } from 'zod';
 import path from 'node:path';
 
 export const DeckDisplaySourceSchema = z.enum([
+  'grant',
   'session_override',
   'env',
   'unbound',
