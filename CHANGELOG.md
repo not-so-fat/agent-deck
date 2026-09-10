@@ -4,10 +4,13 @@
 
 ## 1.7.3 — 2026-09-09
 
-### Fix: Cursor workspace grant resolution + start version output
+### Fix: Cursor workspace pin + start version output
 
 - **Cursor user MCP repair:** an explicit `agent-deck use <deck> --client cursor` now creates or repairs Cursor's user-level `agent-deck` launcher with `AGENT_DECK_WORKSPACE`. This fixes v1.7.2 launchers that already used `mcp-launch` but still failed with `GRANT_REQUIRED` because Cursor started them outside the bound workspace.
-- **Visible, safe config behavior:** every create/repair reports what changed; moving between workspaces names the previous and new pins and explains that the user-level launcher is last explicit `use` wins. Custom wrappers remain untouched; `status` and `use --refresh` report problems but never rewrite MCP config; re-running global Cursor setup preserves a workspace pin written by `use`.
+- **Repair messaging:** every create/repair reports what changed; a workspace move names the previous and new pins and states that Cursor user-level Agent Deck is last explicit `agent-deck use` wins.
+- **Custom wrappers untouched:** non–`agent-deck` user-level entries are left alone (with a skip warning on `use`).
+- **Diagnostic-only status/refresh:** `status` and `use --refresh` report bare-URL, missing pin, stale endpoint, or custom-entry problems and never rewrite MCP config.
+- **Setup preserves pin:** re-running global Cursor setup keeps a workspace pin written by `use`.
 - **Start visibility:** successful foreground, background, and already-running `agent-deck start` summaries now print the CLI package version.
 
 ### After upgrade
