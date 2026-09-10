@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.7.3 — 2026-09-09
+
 ### Fix: Cursor workspace grant resolution + start version output
 
 - **Cursor user MCP repair:** an explicit `agent-deck use <deck> --client cursor` now creates or repairs Cursor's user-level `agent-deck` launcher with `AGENT_DECK_WORKSPACE`. This fixes v1.7.2 launchers that already used `mcp-launch` but still failed with `GRANT_REQUIRED` because Cursor started them outside the bound workspace.
