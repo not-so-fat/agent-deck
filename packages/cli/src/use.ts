@@ -126,12 +126,6 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   if (parsed.refresh) {
     const grant = await readWorkspaceGrant(parsed.workspaceRoot);
     const legacy = readUseManifest(parsed.workspaceRoot);
-    const endpoint = { host: parsed.host, mcpPort: parsed.mcpPort };
-    const cursorMcp = ensureGlobalCursorMcpLaunch(endpoint);
-    const cursorMessage = formatCursorGlobalMcpEnsureMessage(cursorMcp);
-    if (cursorMessage) {
-      console.warn(cursorMessage);
-    }
     if (grant) {
       console.log(`Bound deck: ${grant.deckName ?? grant.deckId} (${grant.deckId})`);
       console.log(`Grant: ${grant.grantId} · workspace ${grant.workspaceKey}`);
@@ -217,10 +211,17 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
       mcpWritten.push({ client, path: configPath });
 
       // Cursor Agent chat loads the user-level MCP server (`user-agent-deck`).
-      // Pre-1.7 global bare HTTP urls have no grant Bearer — upgrade those only.
+      // Pin it to the workspace whose grant was just issued. Last explicit use wins.
       if (client === 'cursor') {
-        const globalResult = ensureGlobalCursorMcpLaunch(endpoint);
-        if (globalResult.action !== 'ok') {
+        const globalResult = ensureGlobalCursorMcpLaunch(endpoint, {
+          workspaceRoot: parsed.workspaceRoot,
+        });
+        if (globalResult.action === 'skipped') {
+          const message = formatCursorGlobalMcpEnsureMessage(globalResult);
+          if (message) {
+            console.warn(message);
+          }
+        } else if (globalResult.action !== 'ok') {
           mcpWritten.push({ client: 'cursor', path: globalResult.path });
         }
       }

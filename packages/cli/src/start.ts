@@ -41,6 +41,10 @@ export interface StartOptions {
   supervisor?: boolean;
 }
 
+export function formatStartVersionLine(version = getAgentDeckVersion()): string {
+  return `  Version    ${version}`;
+}
+
 type SpawnIoMode = 'inherit' | 'file';
 
 const children: ChildProcess[] = [];
@@ -146,6 +150,7 @@ async function printRunningEndpoints(
   const minted = await mintDashboardBootstrapUrl(backendUrl);
   console.log('');
   console.log('Agent Deck is running');
+  console.log(formatStartVersionLine());
   console.log(`  ${formatDashboardStatusLine(minted)}`);
   console.log(`  MCP        http://${host}:${mcpPort}/mcp`);
   console.log(`  API health ${backendUrl}/health`);
@@ -213,6 +218,7 @@ async function runDaemonLauncher(options: StartOptions): Promise<number> {
   const minted = await mintDashboardBootstrapUrl(backendUrl);
   console.log('');
   console.log('Agent Deck started in background');
+  console.log(formatStartVersionLine());
   console.log(`  ${formatDashboardStatusLine(minted)}`);
   console.log(`  MCP        http://${host}:${mcpPort}/mcp`);
   console.log(`  Logs       ${resolveDaemonLogsDir()}/`);
@@ -429,6 +435,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   const runningLines = [
     '',
     'Agent Deck is running',
+    formatStartVersionLine(),
     `  ${dashboardLine}`,
     `  MCP        http://${host}:${mcpPort}/mcp`,
     `  API health ${backendUrl}/health`,

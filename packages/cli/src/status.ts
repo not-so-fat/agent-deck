@@ -3,10 +3,6 @@ import { isProcessAlive, readRunState } from './runtime-state';
 import { getAgentDeckVersion } from './version';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
 import { formatDashboardStatusLine, mintDashboardBootstrapUrl } from './dashboard-open';
-import {
-  ensureGlobalCursorMcpLaunch,
-  formatCursorGlobalMcpEnsureMessage,
-} from './mcp-config';
 
 export async function runStatus(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -59,15 +55,6 @@ export async function runStatus(): Promise<number> {
   if (mcpBusy && !probe.mcpUp) {
     console.log('');
     console.warn(formatPortConflict(mcpPort, 'MCP', host, false));
-  }
-
-  // Cursor Agent (`user-agent-deck`) ignores project mcp.json when the user-level
-  // entry is a bare HTTP url — discovery fails and only mcp_auth appears.
-  const cursorMcp = ensureGlobalCursorMcpLaunch({ host, mcpPort });
-  const cursorMessage = formatCursorGlobalMcpEnsureMessage(cursorMcp);
-  if (cursorMessage) {
-    console.log('');
-    console.warn(cursorMessage);
   }
 
   return probe.backendUp && probe.mcpUp ? 0 : 1;

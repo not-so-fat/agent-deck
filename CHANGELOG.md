@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fix: Cursor workspace grant resolution + start version output
+
+- **Cursor user MCP repair:** an explicit `agent-deck use <deck> --client cursor` now creates or repairs Cursor's user-level `agent-deck` launcher with `AGENT_DECK_WORKSPACE`. This fixes v1.7.2 launchers that already used `mcp-launch` but still failed with `GRANT_REQUIRED` because Cursor started them outside the bound workspace.
+- **Safe config behavior:** custom Cursor wrappers remain untouched; `status` and `use --refresh` are diagnostic-only; re-running global Cursor setup preserves a workspace pin written by `use`.
+- **Start visibility:** successful foreground, background, and already-running `agent-deck start` summaries now print the CLI package version.
+
+### After upgrade
+
+- In the affected workspace, run `agent-deck use <deck> --client cursor`, then reload the Agent Deck MCP server in Cursor (or restart Cursor). Do not use Cursor's `mcp_auth` for Agent Deck workspace grants.
+
 ## 1.7.2 — 2026-09-09
 
 ### Fix: MCP grant auth across the transport session lifecycle (NOT-53)

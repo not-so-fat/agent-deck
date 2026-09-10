@@ -10,6 +10,7 @@ import {
   isLegacyBareHttpAgentDeckEntry,
   isMcpLaunchEntry,
   mergeMcpServerConfig,
+  readCursorWorkspaceRoot,
 } from './mcp-config';
 import { compareSemver } from './upgrade';
 
@@ -83,6 +84,23 @@ describe('legacy bare HTTP detection', () => {
     expect(isMcpLaunchEntry({ command: 'agent-deck', args: ['mcp-launch'] })).toBe(true);
     expect(isLegacyBareHttpAgentDeckEntry({ command: 'agent-deck', args: ['mcp-launch'] })).toBe(false);
   });
+
+  it('reads a pinned workspace only from agent-deck launchers', () => {
+    expect(
+      readCursorWorkspaceRoot({
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: { AGENT_DECK_WORKSPACE: '/tmp/ws' },
+      }),
+    ).toBe(path.resolve('/tmp/ws'));
+    expect(
+      readCursorWorkspaceRoot({
+        command: 'custom-wrapper',
+        args: ['mcp-launch'],
+        env: { AGENT_DECK_WORKSPACE: '/tmp/ws' },
+      }),
+    ).toBeUndefined();
+  });
 });
 
 describe('ensureGlobalCursorMcpLaunch', () => {
@@ -139,6 +157,87 @@ describe('ensureGlobalCursorMcpLaunch', () => {
     expect(ensureGlobalCursorMcpLaunch({ host: '127.0.0.1', mcpPort: 1110 })).toMatchObject({
       action: 'ok',
     });
+    const written = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8'));
+    expect(written).toEqual(custom);
+  });
+
+  it('creates a workspace-pinned user launcher for explicit use', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-mcp-home-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-mcp-workspace-'));
+    tmpDirs.push(home, workspace);
+    vi.spyOn(os, 'homedir').mockReturnValue(home);
+
+    expect(
+      ensureGlobalCursorMcpLaunch(
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: workspace },
+      ),
+    ).toMatchObject({ action: 'created', reason: 'missing', workspaceRoot: workspace });
+
+    const written = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8')) as {
+      mcpServers: Record<string, { env?: Record<string, string> }>;
+    };
+    expect(written.mcpServers['agent-deck']?.env).toMatchObject({
+      AGENT_DECK_HOST: '127.0.0.1',
+      AGENT_DECK_MCP_PORT: '1110',
+      AGENT_DECK_WORKSPACE: workspace,
+    });
+  });
+
+  it('repairs a v1.7.2 launcher that has no workspace pin', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-mcp-home-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-mcp-workspace-'));
+    tmpDirs.push(home, workspace);
+    vi.spyOn(os, 'homedir').mockReturnValue(home);
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.cursor', 'mcp.json'),
+      `${JSON.stringify({
+        mcpServers: {
+          'agent-deck': {
+            command: 'agent-deck',
+            args: ['mcp-launch'],
+            env: { AGENT_DECK_HOST: '127.0.0.1', AGENT_DECK_MCP_PORT: '1110' },
+          },
+        },
+      }, null, 2)}\n`,
+    );
+
+    const result = ensureGlobalCursorMcpLaunch(
+      { host: '127.0.0.1', mcpPort: 1110 },
+      { workspaceRoot: workspace },
+    );
+    expect(result).toMatchObject({
+      action: 'updated',
+      reason: 'missing-workspace',
+      workspaceRoot: workspace,
+    });
+
+    const written = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8')) as {
+      mcpServers: Record<string, { env?: Record<string, string> }>;
+    };
+    expect(written.mcpServers['agent-deck']?.env?.AGENT_DECK_WORKSPACE).toBe(workspace);
+  });
+
+  it('does not overwrite a custom wrapper during explicit use', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-mcp-home-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-mcp-workspace-'));
+    tmpDirs.push(home, workspace);
+    vi.spyOn(os, 'homedir').mockReturnValue(home);
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    const custom = {
+      mcpServers: {
+        'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] },
+      },
+    };
+    fs.writeFileSync(path.join(home, '.cursor', 'mcp.json'), `${JSON.stringify(custom, null, 2)}\n`);
+
+    const result = ensureGlobalCursorMcpLaunch(
+      { host: '127.0.0.1', mcpPort: 1110 },
+      { workspaceRoot: workspace },
+    );
+    expect(result).toMatchObject({ action: 'skipped', reason: 'custom-entry' });
+    expect(formatCursorGlobalMcpEnsureMessage(result)).toContain('left custom');
     const written = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8'));
     expect(written).toEqual(custom);
   });
