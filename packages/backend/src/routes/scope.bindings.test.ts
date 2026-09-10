@@ -37,6 +37,21 @@ describe('scope bindings routes', () => {
     await app.close();
   });
 
+  it('POST /live-display accepts grant source from trusted sessions', async () => {
+    app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/scope/live-display',
+      headers: agentHeaders,
+      payload: { ...liveDisplayBody, source: 'grant' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.badge).toBeTruthy();
+
+    const rows = (await app.inject({ method: 'GET', url: '/api/scope/bindings' })).json().data;
+    expect(rows[0].source).toBe('grant');
+  });
+
   it('POST /live-display returns the assigned badge and keeps it stable', async () => {
     app = await buildApp();
     const first = await app.inject({

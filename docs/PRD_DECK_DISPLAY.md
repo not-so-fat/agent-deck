@@ -202,7 +202,7 @@ Agent client only. Body fields: `mcpSessionId`, `workspaceRoot`, `deckId`, `deck
     "deckId": { "type": ["string", "null"], "format": "uuid" },
     "deckName": { "type": ["string", "null"] },
     "source": {
-      "enum": ["session_override", "env", "unbound"]
+      "enum": ["grant", "session_override", "env", "unbound"]
     },
     "cardCounts": {
       "type": "object",
