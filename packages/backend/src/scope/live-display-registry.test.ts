@@ -3,6 +3,34 @@ import { describe, expect, it } from 'vitest';
 import { LiveDisplayRegistry } from './live-display-registry';
 
 describe('LiveDisplayRegistry', () => {
+  it('preserves workspaceRoot when a later upsert omits it (init race after bind)', () => {
+    const registry = new LiveDisplayRegistry();
+    const workspace = path.resolve('/repo/agent-dealer');
+
+    registry.upsert({
+      mcpSessionId: 'claude',
+      workspaceRoot: workspace,
+      deckId: '11111111-1111-4111-8111-111111111111',
+      deckName: 'personal-dev',
+      source: 'grant',
+      cardCounts: { mcp: 2, credentials: 1, playbooks: 11 },
+      updatedAt: '2026-09-10T22:19:00.000Z',
+    });
+
+    // Late fire-and-forget register from MCP init — no folder on the body.
+    registry.upsert({
+      mcpSessionId: 'claude',
+      deckId: '11111111-1111-4111-8111-111111111111',
+      deckName: 'personal-dev',
+      source: 'grant',
+      cardCounts: { mcp: 2, credentials: 1, playbooks: 11 },
+      updatedAt: '2026-09-10T22:19:05.000Z',
+    });
+
+    expect(registry.findForWorkspace(workspace)?.deckName).toBe('personal-dev');
+    expect(registry.list()[0].workspaceRoot).toBe(workspace);
+  });
+
   it('finds the newest bind for an exact workspace', () => {
     const registry = new LiveDisplayRegistry();
     const workspace = path.resolve('/repo');

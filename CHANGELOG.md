@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.7.6 — 2026-09-10
+
+### Fix: statusline Unbound when live display has no workspace folder
+
+- **Cause:** Grant MCP connect used the **server** `AGENT_DECK_WORKSPACE` (usually unset). Live display registered without `workspaceRoot`, so `GET /api/scope/display` could not match the Claude Code cwd. A late init upsert could also wipe a folder set by `bind_workspace`.
+- **Fix:** `mcp-launch` forwards `x-agent-deck-workspace`; connect prefers that header (then prior bind); live-display upsert preserves an existing `workspaceRoot` when omitted; Claude `.mcp.json` pins `AGENT_DECK_WORKSPACE` on `agent-deck use`.
+- **Verify:** Upgrade + restart, then in the project folder run `agent-deck use <deck> --client claude`, reload Claude MCP, confirm footer `◆ <deck> · …` (or `echo '{"cwd":"'"$PWD"'"}' | agent-deck statusline`).
+
 ## 1.7.5 — 2026-09-10
 
 ### Fix: statusline stays Unbound when live display uses `source: "grant"` (Claude Code / Cursor CLI)
