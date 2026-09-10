@@ -100,6 +100,7 @@ describe('agent-deck use', () => {
       return;
     }
 
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const result = await runUse({ ...parsed, workspaceRoot: workspace });
     expect('error' in result).toBe(false);
     if ('error' in result) {
@@ -134,6 +135,7 @@ describe('agent-deck use', () => {
     expect(globalMcp.mcpServers['agent-deck']?.command).toBe('agent-deck');
     expect(globalMcp.mcpServers['agent-deck']?.args).toEqual(['mcp-launch']);
     expect(globalMcp.mcpServers['agent-deck']?.env?.AGENT_DECK_WORKSPACE).toBe(workspace);
+    expect(log.mock.calls.flat().join('\n')).toContain('upgraded the legacy bare URL');
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),
@@ -169,6 +171,7 @@ describe('agent-deck use', () => {
       return;
     }
 
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = await runUse({ ...parsed, workspaceRoot: workspace, skipMcp: true });
     expect(result).toEqual({ error: 'refresh-diagnosis-only' });
     const manifest = JSON.parse(
@@ -180,5 +183,62 @@ describe('agent-deck use', () => {
       fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8'),
     );
     expect(unchangedGlobalConfig).toEqual(globalConfig);
+    expect(warn.mock.calls.flat().join('\n')).toContain('No changes made');
+  });
+
+  it('prints a repair message for an existing unpinned launcher', async () => {
+    vi.stubEnv('AGENT_DECK_GRANT_STORE', 'file');
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, '.cursor', 'mcp.json'),
+      `${JSON.stringify({
+        mcpServers: {
+          'agent-deck': {
+            command: 'agent-deck',
+            args: ['mcp-launch'],
+            env: { AGENT_DECK_HOST: '127.0.0.1', AGENT_DECK_MCP_PORT: '1110' },
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const parsed = parseUseArgs(['dev', '--client', 'cursor']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(false);
+    expect(log.mock.calls.flat().join('\n')).toContain('added the missing workspace pin');
+  });
+
+  it('prints a warning when a custom global wrapper is skipped', async () => {
+    vi.stubEnv('AGENT_DECK_GRANT_STORE', 'file');
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, '.cursor', 'mcp.json'),
+      `${JSON.stringify({
+        mcpServers: {
+          'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] },
+        },
+      }, null, 2)}\n`,
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const parsed = parseUseArgs(['dev', '--client', 'cursor']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(false);
+    expect(warn.mock.calls.flat().join('\n')).toContain('left custom agent-deck entry unchanged');
   });
 });

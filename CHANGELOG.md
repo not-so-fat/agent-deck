@@ -5,7 +5,7 @@
 ### Fix: Cursor workspace grant resolution + start version output
 
 - **Cursor user MCP repair:** an explicit `agent-deck use <deck> --client cursor` now creates or repairs Cursor's user-level `agent-deck` launcher with `AGENT_DECK_WORKSPACE`. This fixes v1.7.2 launchers that already used `mcp-launch` but still failed with `GRANT_REQUIRED` because Cursor started them outside the bound workspace.
-- **Safe config behavior:** custom Cursor wrappers remain untouched; `status` and `use --refresh` are diagnostic-only; re-running global Cursor setup preserves a workspace pin written by `use`.
+- **Visible, safe config behavior:** every create/repair reports what changed; moving between workspaces names the previous and new pins and explains that the user-level launcher is last explicit `use` wins. Custom wrappers remain untouched; `status` and `use --refresh` report problems but never rewrite MCP config; re-running global Cursor setup preserves a workspace pin written by `use`.
 - **Start visibility:** successful foreground, background, and already-running `agent-deck start` summaries now print the CLI package version.
 
 ### After upgrade
@@ -27,7 +27,7 @@
 
 - Restart Agent Deck (`agent-deck stop && agent-deck start`) so MCP picks up grant-before-advertise and follow-up Bearer checks.
 - In each workspace: `agent-deck use <deck>` if needed, then reload Cursor MCP (or restart Cursor). Do **not** use Cursor's `mcp_auth` for Agent Deck grants.
-- If `~/.cursor/mcp.json` still has a bare `url` for agent-deck, `agent-deck status` or `use` upgrades that legacy entry to `mcp-launch`.
+- If `~/.cursor/mcp.json` still has a bare `url` for agent-deck, run `agent-deck use <deck> --client cursor` in the intended workspace. Current releases keep `status` diagnostic-only.
 
 ## 1.7.1 — 2026-09-09
 

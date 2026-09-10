@@ -126,6 +126,14 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   if (parsed.refresh) {
     const grant = await readWorkspaceGrant(parsed.workspaceRoot);
     const legacy = readUseManifest(parsed.workspaceRoot);
+    const cursorMcp = ensureGlobalCursorMcpLaunch({
+      host: parsed.host,
+      mcpPort: parsed.mcpPort,
+    });
+    const cursorMessage = formatCursorGlobalMcpEnsureMessage(cursorMcp);
+    if (cursorMessage) {
+      console.warn(cursorMessage);
+    }
     if (grant) {
       console.log(`Bound deck: ${grant.deckName ?? grant.deckId} (${grant.deckId})`);
       console.log(`Grant: ${grant.grantId} · workspace ${grant.workspaceKey}`);
@@ -216,12 +224,15 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
         const globalResult = ensureGlobalCursorMcpLaunch(endpoint, {
           workspaceRoot: parsed.workspaceRoot,
         });
-        if (globalResult.action === 'skipped') {
-          const message = formatCursorGlobalMcpEnsureMessage(globalResult);
-          if (message) {
+        const message = formatCursorGlobalMcpEnsureMessage(globalResult);
+        if (message) {
+          if (globalResult.action === 'skipped') {
             console.warn(message);
+          } else {
+            console.log(message);
           }
-        } else if (globalResult.action !== 'ok') {
+        }
+        if (globalResult.action !== 'ok' && globalResult.action !== 'skipped') {
           mcpWritten.push({ client: 'cursor', path: globalResult.path });
         }
       }
