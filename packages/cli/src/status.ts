@@ -61,8 +61,6 @@ export async function runStatus(): Promise<number> {
     console.warn(formatPortConflict(mcpPort, 'MCP', host, false));
   }
 
-  // Cursor Agent (`user-agent-deck`) ignores project mcp.json when the user-level
-  // entry is a bare HTTP url — discovery fails and only mcp_auth appears.
   const cursorMcp = ensureGlobalCursorMcpLaunch({ host, mcpPort });
   const cursorMessage = formatCursorGlobalMcpEnsureMessage(cursorMcp);
   if (cursorMessage) {

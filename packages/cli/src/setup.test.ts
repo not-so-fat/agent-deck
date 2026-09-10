@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { resolveSetupMenubar, resolveSetupStatusline, runSetup } from './setup';
 
 describe('setup statusline defaults', () => {
@@ -33,6 +33,53 @@ describe('setup statusline defaults', () => {
 
   it('honors --no-menubar', () => {
     expect(resolveSetupMenubar('cursor', false)).toBe(false);
+  });
+
+  it('preserves a global Cursor workspace pin written by use', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cursor-'));
+    const workspace = path.join(tmpHome, 'workspace');
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    fs.mkdirSync(path.join(tmpHome, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpHome, '.cursor', 'mcp.json'),
+      `${JSON.stringify({
+        mcpServers: {
+          'agent-deck': {
+            command: 'agent-deck',
+            args: ['mcp-launch'],
+            env: {
+              AGENT_DECK_HOST: '127.0.0.1',
+              AGENT_DECK_MCP_PORT: '1110',
+              AGENT_DECK_WORKSPACE: workspace,
+            },
+          },
+        },
+      }, null, 2)}\n`,
+    );
+
+    try {
+      const code = await runSetup([
+        '--client',
+        'cursor',
+        '--scope',
+        'global',
+        '--mcp-port',
+        '2220',
+        '--no-statusline',
+        '--no-menubar',
+      ]);
+      expect(code).toBe(0);
+      const written = JSON.parse(
+        fs.readFileSync(path.join(tmpHome, '.cursor', 'mcp.json'), 'utf8'),
+      ) as { mcpServers: Record<string, { env?: Record<string, string> }> };
+      expect(written.mcpServers['agent-deck']?.env).toMatchObject({
+        AGENT_DECK_MCP_PORT: '2220',
+        AGENT_DECK_WORKSPACE: workspace,
+      });
+    } finally {
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(process.platform !== 'darwin')(

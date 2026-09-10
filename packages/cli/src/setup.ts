@@ -5,6 +5,7 @@ import {
   buildAgentDeckEntry,
   buildMcpUrl,
   mergeMcpServerConfig,
+  readCursorWorkspaceRoot,
   readJsonFile,
   resolveConfigPath,
   writeJsonFile,
@@ -12,7 +13,6 @@ import {
   type McpEndpoint,
   type SetupScope,
 } from './mcp-config';
-import { readUseManifest } from './playbook-stubs';
 import { installStatusline, type StatuslineClient } from './statusline-setup';
 import { isDarwinPlatform, setupMenubar } from './menubar-setup';
 import { CLI_DEFAULT_MCP_PORT, parseCliMcpPort } from './defaults';
@@ -270,12 +270,22 @@ export async function runSetup(args: string[]): Promise<number> {
   }
 
   const configPath = resolveConfigPath(client, scope);
-  // Don't clobber an existing project deck bind: if this folder ran `agent-deck
-  // use`, keep its auto-bind header instead of writing a bare entry.
-  const deckId =
-    scope === 'project' ? readUseManifest(process.cwd())?.deckId : undefined;
-  const entry = buildAgentDeckEntry(client, endpoint);
-  const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
+  const existingConfig = readJsonFile(configPath);
+  const existingServers = existingConfig.mcpServers;
+  const existingEntry =
+    existingServers && typeof existingServers === 'object' && !Array.isArray(existingServers)
+      ? (existingServers as Record<string, unknown>)['agent-deck']
+      : undefined;
+  // Project launchers always know their workspace. Global setup preserves a pin
+  // written by `agent-deck use` so re-running setup cannot reintroduce GRANT_REQUIRED.
+  const workspaceRoot =
+    client === 'cursor'
+      ? scope === 'project'
+        ? process.cwd()
+        : readCursorWorkspaceRoot(existingEntry)
+      : undefined;
+  const entry = buildAgentDeckEntry(client, endpoint, { workspaceRoot });
+  const merged = mergeMcpServerConfig(existingConfig, entry);
   writeJsonFile(configPath, merged);
 
   console.log(`Wrote agent-deck MCP config → ${configPath}`);

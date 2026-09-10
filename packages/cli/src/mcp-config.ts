@@ -98,27 +98,69 @@ export function isMcpLaunchEntry(entry: unknown): boolean {
     return false;
   }
   const record = entry as Record<string, unknown>;
-  if (record.command !== 'agent-deck') {
+  if (typeof record.command !== 'string') {
+    return false;
+  }
+  const commandName = record.command.replaceAll('\\', '/').split('/').pop();
+  if (commandName !== 'agent-deck' && commandName !== 'agent-deck.cmd') {
     return false;
   }
   const args = record.args;
-  return Array.isArray(args) && args.includes('mcp-launch');
+  return Array.isArray(args) && args.length === 1 && args[0] === 'mcp-launch';
+}
+
+export function readCursorWorkspaceRoot(entry: unknown): string | undefined {
+  if (!isMcpLaunchEntry(entry)) {
+    return undefined;
+  }
+  const env = (entry as Record<string, unknown>).env;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) {
+    return undefined;
+  }
+  const workspaceRoot = (env as Record<string, unknown>).AGENT_DECK_WORKSPACE;
+  return typeof workspaceRoot === 'string' && workspaceRoot.length > 0
+    ? path.resolve(workspaceRoot)
+    : undefined;
 }
 
 export type CursorGlobalMcpEnsureResult =
-  | { action: 'ok'; path: string }
-  | { action: 'upgraded'; path: string; reason: 'bare-url' };
+  | { action: 'ok'; path: string; workspaceRoot?: string }
+  | {
+      action: 'diagnostic';
+      path: string;
+      reason: 'missing' | 'bare-url' | 'missing-workspace' | 'endpoint-changed' | 'custom-entry';
+      workspaceRoot?: string;
+    }
+  | { action: 'created'; path: string; reason: 'missing'; workspaceRoot: string }
+  | { action: 'upgraded'; path: string; reason: 'bare-url'; workspaceRoot: string }
+  | {
+      action: 'updated';
+      path: string;
+      reason: 'missing-workspace' | 'endpoint-changed';
+      workspaceRoot: string;
+    }
+  | {
+      action: 'updated';
+      path: string;
+      reason: 'workspace-changed';
+      workspaceRoot: string;
+      previousWorkspaceRoot: string;
+    }
+  | { action: 'skipped'; path: string; reason: 'custom-entry' };
 
 /**
  * Cursor Agent chat uses the user-level MCP entry (`user-agent-deck`).
  * Pre-1.7 bare `url` configs fail discovery and only expose Cursor's `mcp_auth`
  * (which is not how Agent Deck grants work).
  *
- * Only auto-rewrites entries positively identified as legacy bare HTTP.
- * Missing or custom/non-launcher entries are left alone — creation belongs to
- * an explicit Cursor setup / `agent-deck use` project write, not `status`.
+ * Without a workspaceRoot this is strictly read-only and returns diagnostics.
+ * An explicit `agent-deck use` passes workspaceRoot and may create or repair
+ * Agent Deck's own launcher. Custom wrappers are never changed.
  */
-export function ensureGlobalCursorMcpLaunch(endpoint: McpEndpoint): CursorGlobalMcpEnsureResult {
+export function ensureGlobalCursorMcpLaunch(
+  endpoint: McpEndpoint,
+  options?: { workspaceRoot?: string },
+): CursorGlobalMcpEnsureResult {
   const configPath = resolveConfigPath('cursor', 'global');
   const existingConfig = readJsonFile(configPath);
   const servers =
@@ -126,27 +168,143 @@ export function ensureGlobalCursorMcpLaunch(endpoint: McpEndpoint): CursorGlobal
       ? (existingConfig.mcpServers as Record<string, unknown>)
       : {};
   const existing = servers['agent-deck'];
+  const workspaceRoot = options?.workspaceRoot ? path.resolve(options.workspaceRoot) : undefined;
+  const desired = buildAgentDeckEntry('cursor', endpoint, { workspaceRoot });
 
-  if (!isLegacyBareHttpAgentDeckEntry(existing)) {
-    return { action: 'ok', path: configPath };
+  if (existing === undefined) {
+    if (!workspaceRoot) {
+      return { action: 'diagnostic', path: configPath, reason: 'missing' };
+    }
+    writeJsonFile(configPath, mergeMcpServerConfig(existingConfig, desired));
+    return { action: 'created', path: configPath, reason: 'missing', workspaceRoot };
   }
 
-  const entry = buildAgentDeckEntry('cursor', endpoint);
-  writeJsonFile(configPath, mergeMcpServerConfig(existingConfig, entry));
-  return {
-    action: 'upgraded',
-    path: configPath,
-    reason: 'bare-url',
+  if (isLegacyBareHttpAgentDeckEntry(existing)) {
+    if (!workspaceRoot) {
+      return { action: 'diagnostic', path: configPath, reason: 'bare-url' };
+    }
+    writeJsonFile(configPath, mergeMcpServerConfig(existingConfig, desired));
+    return {
+      action: 'upgraded',
+      path: configPath,
+      reason: 'bare-url',
+      workspaceRoot,
+    };
+  }
+
+  if (!isMcpLaunchEntry(existing)) {
+    return workspaceRoot
+      ? { action: 'skipped', path: configPath, reason: 'custom-entry' }
+      : { action: 'diagnostic', path: configPath, reason: 'custom-entry' };
+  }
+
+  const currentWorkspace = readCursorWorkspaceRoot(existing);
+  const existingEnv = (existing as Record<string, unknown>).env;
+  const env =
+    existingEnv && typeof existingEnv === 'object' && !Array.isArray(existingEnv)
+      ? (existingEnv as Record<string, unknown>)
+      : {};
+  const endpointChanged =
+    env.AGENT_DECK_HOST !== endpoint.host ||
+    env.AGENT_DECK_MCP_PORT !== String(endpoint.mcpPort);
+
+  if (!workspaceRoot) {
+    if (!currentWorkspace) {
+      return { action: 'diagnostic', path: configPath, reason: 'missing-workspace' };
+    }
+    if (endpointChanged) {
+      return {
+        action: 'diagnostic',
+        path: configPath,
+        reason: 'endpoint-changed',
+        workspaceRoot: currentWorkspace,
+      };
+    }
+    return { action: 'ok', path: configPath, workspaceRoot: currentWorkspace };
+  }
+
+  if (currentWorkspace === workspaceRoot && !endpointChanged) {
+    return { action: 'ok', path: configPath, workspaceRoot };
+  }
+
+  const reason = !currentWorkspace
+    ? 'missing-workspace'
+    : currentWorkspace !== workspaceRoot
+      ? 'workspace-changed'
+      : 'endpoint-changed';
+  const currentRecord = existing as Record<string, unknown>;
+  const desiredEnv = desired.env as Record<string, string>;
+  const repaired = {
+    ...currentRecord,
+    ...desired,
+    env: {
+      ...env,
+      ...desiredEnv,
+    },
   };
+  writeJsonFile(configPath, mergeMcpServerConfig(existingConfig, repaired));
+  return reason === 'workspace-changed'
+    ? {
+        action: 'updated',
+        path: configPath,
+        reason,
+        workspaceRoot,
+        previousWorkspaceRoot: currentWorkspace!,
+      }
+    : { action: 'updated', path: configPath, reason, workspaceRoot };
 }
 
 export function formatCursorGlobalMcpEnsureMessage(result: CursorGlobalMcpEnsureResult): string | null {
   if (result.action === 'ok') {
     return null;
   }
+  if (result.action === 'skipped') {
+    return [
+      `Cursor MCP: left custom agent-deck entry unchanged in ${result.path}.`,
+      '  Configure that wrapper to run `agent-deck mcp-launch` with AGENT_DECK_WORKSPACE set to this workspace.',
+    ].join('\n');
+  }
+  if (result.action === 'diagnostic') {
+    const detail =
+      result.reason === 'missing'
+        ? 'no user-level agent-deck entry exists'
+        : result.reason === 'bare-url'
+          ? 'legacy bare URL has no workspace grant launcher'
+          : result.reason === 'missing-workspace'
+            ? 'mcp-launch has no AGENT_DECK_WORKSPACE pin'
+            : result.reason === 'endpoint-changed'
+              ? 'the configured Agent Deck endpoint is stale'
+              : 'a custom agent-deck wrapper cannot be validated automatically';
+    return [
+      `Cursor MCP diagnostic: ${detail} in ${result.path}. No changes made.`,
+      '  Run `agent-deck use <deck> --client cursor` in the intended workspace; Cursor mcp_auth is not the Agent Deck grant path.',
+    ].join('\n');
+  }
+  if (result.action === 'created') {
+    return [
+      `Cursor MCP: created ${result.path} and pinned it to ${result.workspaceRoot}.`,
+      '  Reload Cursor MCP (or restart Cursor). Cursor mcp_auth is not required.',
+    ].join('\n');
+  }
+  if (result.action === 'upgraded') {
+    return [
+      `Cursor MCP: upgraded the legacy bare URL in ${result.path} to mcp-launch and pinned it to ${result.workspaceRoot}.`,
+      '  Reload Cursor MCP (or restart Cursor). Cursor mcp_auth is not required.',
+    ].join('\n');
+  }
+  if (result.reason === 'workspace-changed') {
+    return [
+      `Cursor MCP: moved the user-level workspace pin from ${result.previousWorkspaceRoot} to ${result.workspaceRoot} in ${result.path}.`,
+      '  Cursor user-level Agent Deck is last explicit `agent-deck use` wins; reload Cursor MCP (or restart Cursor).',
+    ].join('\n');
+  }
+  const detail =
+    result.reason === 'missing-workspace'
+      ? `added the missing workspace pin ${result.workspaceRoot}`
+      : `updated the endpoint while keeping workspace ${result.workspaceRoot}`;
   return [
-    `Cursor MCP: ${result.action} ${result.path} (bare url (no grant Bearer) → mcp-launch).`,
-    '  Reload Cursor MCP (or restart Cursor). Cursor\'s mcp_auth is not the Agent Deck fix — use needs a workspace grant + mcp-launch.',
+    `Cursor MCP: repaired ${result.path}; ${detail}.`,
+    '  Reload Cursor MCP (or restart Cursor). Cursor mcp_auth is not required.',
   ].join('\n');
 }
 
