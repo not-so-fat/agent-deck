@@ -13,6 +13,7 @@ import {
   writeJsonFile,
   type McpClient,
 } from './mcp-config';
+import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
 import { syncPlaybookStubs, type StubSyncResult } from './playbook-stubs';
 import { issueWorkspaceGrant, activateWorkspaceGrant, revokePendingWorkspaceGrant, toGrantManifest } from './grant-issue';
 import { FileGrantStore, KeychainGrantStore, readWorkspaceGrant } from './grant-store';
@@ -126,14 +127,11 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   if (parsed.refresh) {
     const grant = await readWorkspaceGrant(parsed.workspaceRoot);
     const legacy = readUseManifest(parsed.workspaceRoot);
-    const cursorMcp = ensureGlobalCursorMcpLaunch({
-      host: parsed.host,
-      mcpPort: parsed.mcpPort,
+    const inspection = inspectCursorMcpConfig({
+      cwd: parsed.workspaceRoot,
+      endpoint: { host: parsed.host, mcpPort: parsed.mcpPort },
     });
-    const cursorMessage = formatCursorGlobalMcpEnsureMessage(cursorMcp);
-    if (cursorMessage) {
-      console.warn(cursorMessage);
-    }
+    console.log(formatCursorMcpInspection(inspection));
     if (grant) {
       console.log(`Bound deck: ${grant.deckName ?? grant.deckId} (${grant.deckId})`);
       console.log(`Grant: ${grant.grantId} · workspace ${grant.workspaceKey}`);

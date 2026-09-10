@@ -3,10 +3,7 @@ import { isProcessAlive, readRunState } from './runtime-state';
 import { getAgentDeckVersion } from './version';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
 import { formatDashboardStatusLine, mintDashboardBootstrapUrl } from './dashboard-open';
-import {
-  ensureGlobalCursorMcpLaunch,
-  formatCursorGlobalMcpEnsureMessage,
-} from './mcp-config';
+import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
 
 export async function runStatus(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -61,12 +58,12 @@ export async function runStatus(): Promise<number> {
     console.warn(formatPortConflict(mcpPort, 'MCP', host, false));
   }
 
-  const cursorMcp = ensureGlobalCursorMcpLaunch({ host, mcpPort });
-  const cursorMessage = formatCursorGlobalMcpEnsureMessage(cursorMcp);
-  if (cursorMessage) {
-    console.log('');
-    console.warn(cursorMessage);
-  }
+  // Read-only Cursor MCP inspector (NOT-52) — never rewrites mcp.json.
+  const inspection = inspectCursorMcpConfig({
+    endpoint: { host, mcpPort },
+  });
+  console.log('');
+  console.log(formatCursorMcpInspection(inspection));
 
   return probe.backendUp && probe.mcpUp ? 0 : 1;
 }

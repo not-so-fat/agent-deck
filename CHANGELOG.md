@@ -2,7 +2,14 @@
 
 ## Unreleased
 
+### Docs + CLI: Cursor MCP contract (NOT-54) and read-only diagnostics (NOT-52)
+
+- **Decision note:** [docs/decisions/cursor-mcp-config-resolution.md](docs/decisions/cursor-mcp-config-resolution.md) records evidence-backed Cursor MCP precedence, how the global launcher resolves workspace (`AGENT_DECK_WORKSPACE`), fail-closed cases, and known multi-root host bugs.
+- **Read-only inspector:** `inspectCursorMcpConfig` / `status` / `use --refresh` report global + project shapes, transport, workspace pin, grant present/missing with deck name/id (no secrets), and issues including bare-URL → `mcp_auth` and `stale-endpoint` (endpoint mismatch text lives in that issue, not a separate endpoint line).
+- **`status` / `use --refresh`:** print the inspection report and never rewrite MCP config (repair remains explicit `agent-deck use`).
+
 ## 1.7.3 — 2026-09-09
+
 
 ### Fix: Cursor workspace pin + start version output
 
