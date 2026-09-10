@@ -2,12 +2,6 @@
 
 ## Unreleased
 
-### Fix: Cursor MCP inspector review follow-ups
-
-- Resolve project `${workspaceFolder}` pins before grant lookup.
-- Treat only usable v2 grants (`version: 2` + `grantId`) as present — legacy v1 `use.json` stays `grant-missing`.
-- Keep per-source `shape=missing`, but do not list shadow `missing` in overall issues when an effective global or project entry exists.
-
 ## 1.7.4 — 2026-09-09
 
 ### Docs + CLI: Cursor MCP contract (NOT-54) and read-only diagnostics (NOT-52)
@@ -15,6 +9,7 @@
 - **Decision note:** [docs/decisions/cursor-mcp-config-resolution.md](docs/decisions/cursor-mcp-config-resolution.md) records evidence-backed Cursor MCP precedence, how the global launcher resolves workspace (`AGENT_DECK_WORKSPACE`), fail-closed cases, and known multi-root host bugs.
 - **Read-only inspector:** `inspectCursorMcpConfig` / `status` / `use --refresh` report global + project shapes, transport, workspace pin, grant present/missing with deck name/id (no secrets), and issues including bare-URL → `mcp_auth` and `stale-endpoint` (endpoint mismatch text lives in that issue, not a separate endpoint line).
 - **`status` / `use --refresh`:** print the inspection report and never rewrite MCP config (repair remains explicit `agent-deck use`).
+- **Inspector review follow-ups:** resolve project `${workspaceFolder}` pins before grant lookup; treat only usable v2 grants (`version: 2` + `grantId`) as present (legacy v1 → `grant-missing`); keep per-source `shape=missing` but do not list shadow `missing` in overall issues when an effective entry exists.
 
 ### After upgrade
 
