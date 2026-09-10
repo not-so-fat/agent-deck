@@ -4,7 +4,6 @@ import path from 'node:path';
 import {
   isLegacyBareHttpAgentDeckEntry,
   isMcpLaunchEntry,
-  readCursorWorkspaceRoot,
   readJsonFile,
   resolveConfigPath,
   type McpEndpoint,
@@ -21,6 +20,7 @@ export type CursorMcpIssueCode =
   | 'bare-url'
   | 'mcp_auth_dead_end'
   | 'missing-workspace-pin'
+  | 'unresolved-workspace-pin'
   | 'stale-endpoint'
   | 'custom-entry'
   | 'grant-missing';
@@ -103,10 +103,52 @@ function summarizeEndpoint(entry: unknown): CursorMcpEndpointSummary {
   return summary;
 }
 
+function readRawWorkspacePin(entry: unknown): string | undefined {
+  if (!isMcpLaunchEntry(entry)) {
+    return undefined;
+  }
+  const env = (entry as Record<string, unknown>).env;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) {
+    return undefined;
+  }
+  const workspaceRoot = (env as Record<string, unknown>).AGENT_DECK_WORKSPACE;
+  return typeof workspaceRoot === 'string' && workspaceRoot.length > 0 ? workspaceRoot : undefined;
+}
+
+/**
+ * Resolve AGENT_DECK_WORKSPACE for diagnostics.
+ * Cursor's `${workspaceFolder}` is the folder that owns `.cursor/mcp.json` (project root).
+ */
+export function resolveWorkspacePinValue(
+  raw: string | undefined,
+  options?: { projectRoot?: string },
+): { pin: string | null; unresolved: boolean } {
+  if (!raw?.trim()) {
+    return { pin: null, unresolved: false };
+  }
+  const trimmed = raw.trim();
+  if (trimmed.includes('${workspaceFolder}')) {
+    if (!options?.projectRoot) {
+      return { pin: null, unresolved: true };
+    }
+    const projectRoot = path.resolve(options.projectRoot);
+    const replaced = trimmed.replaceAll('${workspaceFolder}', projectRoot);
+    if (replaced.includes('${')) {
+      return { pin: null, unresolved: true };
+    }
+    return { pin: path.resolve(replaced), unresolved: false };
+  }
+  if (trimmed.includes('${')) {
+    return { pin: null, unresolved: true };
+  }
+  return { pin: path.resolve(trimmed), unresolved: false };
+}
+
 function classifyEntry(
   source: CursorMcpConfigSource,
   configPath: string,
   endpoint: McpEndpoint,
+  options?: { projectRoot?: string },
 ): CursorMcpEntryReport {
   const { fileExists, entry } = readAgentDeckEntry(configPath);
   if (entry === undefined) {
@@ -168,13 +210,21 @@ function classifyEntry(
     };
   }
 
-  const workspacePin = readCursorWorkspaceRoot(entry) ?? null;
+  const rawPin = readRawWorkspacePin(entry);
+  const { pin: workspacePin, unresolved } = resolveWorkspacePinValue(rawPin, {
+    projectRoot: source === 'project' ? options?.projectRoot : undefined,
+  });
   const endpointSummary = summarizeEndpoint(entry);
   const issues: CursorMcpIssue[] = [];
-  if (!workspacePin) {
+  if (!rawPin) {
     issues.push({
       code: 'missing-workspace-pin',
       message: `mcp-launch in ${configPath} has no AGENT_DECK_WORKSPACE pin; Cursor may start the launcher outside the bound workspace.`,
+    });
+  } else if (unresolved) {
+    issues.push({
+      code: 'unresolved-workspace-pin',
+      message: `AGENT_DECK_WORKSPACE in ${configPath} contains unresolved interpolation (${rawPin}); cannot locate the grant root.`,
     });
   }
   if (
@@ -200,8 +250,8 @@ function classifyEntry(
 }
 
 /**
- * Read grant metadata from `.agent-deck/use.json` without returning secrets.
- * Keychain-only installs still keep non-secret fields in the file after activate.
+ * Read usable v2 grant metadata from `.agent-deck/use.json` without returning secrets.
+ * Legacy v1 manifests (deckId only) are not grants — `mcp-launch` still returns GRANT_REQUIRED.
  */
 export function readGrantSummarySync(workspaceRoot: string): CursorMcpGrantSummary {
   const checkedRoot = path.resolve(workspaceRoot);
@@ -214,7 +264,8 @@ export function readGrantSummarySync(workspaceRoot: string): CursorMcpGrantSumma
     const deckId = typeof raw.deckId === 'string' ? raw.deckId : undefined;
     const deckName = typeof raw.deckName === 'string' ? raw.deckName : undefined;
     const grantId = typeof raw.grantId === 'string' ? raw.grantId : undefined;
-    const present = Boolean(grantId || deckId);
+    const version = raw.version;
+    const present = version === 2 && typeof grantId === 'string' && grantId.length > 0;
     return {
       checkedRoot,
       present,
@@ -227,6 +278,32 @@ export function readGrantSummarySync(workspaceRoot: string): CursorMcpGrantSumma
   }
 }
 
+function collectOverallIssues(
+  preferredSource: CursorMcpInspection['preferredSource'],
+  global: CursorMcpEntryReport,
+  project: CursorMcpEntryReport,
+  grant: CursorMcpGrantSummary,
+): CursorMcpIssue[] {
+  const issues: CursorMcpIssue[] = [];
+  for (const report of [global, project]) {
+    for (const issue of report.issues) {
+      // Keep shape=missing on the per-source report, but do not alarm on a healthy
+      // single-source setup (ADR: user-level launcher is the primary path).
+      if (issue.code === 'missing' && preferredSource !== 'none') {
+        continue;
+      }
+      issues.push(issue);
+    }
+  }
+  if (!grant.present) {
+    issues.push({
+      code: 'grant-missing',
+      message: `No workspace grant at ${grant.checkedRoot} — run \`agent-deck use <deck>\`.`,
+    });
+  }
+  return issues;
+}
+
 export function inspectCursorMcpConfig(options: {
   cwd?: string;
   endpoint: McpEndpoint;
@@ -236,7 +313,7 @@ export function inspectCursorMcpConfig(options: {
   const globalPath = resolveConfigPath('cursor', 'global');
   const projectPath = resolveConfigPath('cursor', 'project', cwd);
   const global = classifyEntry('global', globalPath, options.endpoint);
-  const project = classifyEntry('project', projectPath, options.endpoint);
+  const project = classifyEntry('project', projectPath, options.endpoint, { projectRoot: cwd });
 
   const preferredSource: CursorMcpInspection['preferredSource'] =
     project.shape !== 'missing' ? 'project' : global.shape !== 'missing' ? 'global' : 'none';
@@ -244,14 +321,7 @@ export function inspectCursorMcpConfig(options: {
   const preferred = preferredSource === 'project' ? project : preferredSource === 'global' ? global : null;
   const grantRoot = preferred?.workspacePin ?? cwd;
   const grant = readGrantSummarySync(grantRoot);
-
-  const issues: CursorMcpIssue[] = [...global.issues, ...project.issues];
-  if (!grant.present) {
-    issues.push({
-      code: 'grant-missing',
-      message: `No workspace grant at ${grant.checkedRoot} — run \`agent-deck use <deck>\`.`,
-    });
-  }
+  const issues = collectOverallIssues(preferredSource, global, project, grant);
 
   return {
     cwd,

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fix: Cursor MCP inspector review follow-ups
+
+- Resolve project `${workspaceFolder}` pins before grant lookup.
+- Treat only usable v2 grants (`version: 2` + `grantId`) as present — legacy v1 `use.json` stays `grant-missing`.
+- Keep per-source `shape=missing`, but do not list shadow `missing` in overall issues when an effective global or project entry exists.
+
 ## 1.7.4 — 2026-09-09
 
 ### Docs + CLI: Cursor MCP contract (NOT-54) and read-only diagnostics (NOT-52)
