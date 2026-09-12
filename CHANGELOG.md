@@ -6,10 +6,10 @@
 
 ### Fix: durable dashboard entry and recovery (NOT-67)
 
-- **Dashboard sessions survive backend and browser restarts:** opaque tokens are stored as SHA-256 hashes in SQLite, use a 24-hour sliding inactivity lease, and the browser retains the cookie for up to 30 days. Bare loopback access still grants no authority.
-- **Disposable launch credentials are no longer printed:** `start` and `status` direct users to `agent-deck open`; only the launcher receives the short-lived, one-shot `?bootstrap=` URL.
-- **Actionable recovery UI:** expired or missing dashboard authentication now says to run `agent-deck open`; daemon restart guidance is reserved for real API failures. Consumed or expired bootstrap values are removed from the address bar.
-- **Verify:** Upgrade CLI, `agent-deck start` (or `agent-deck open`), use the dashboard, wait or restart backend, reopen bare `http://127.0.0.1:1111` with the same browser — session should still work within the lease; after expiry the UI should say run `agent-deck open` (not restart the daemon).
+- **Dashboard session survives backend and browser restarts:** cookie retained up to 30 days; renews for 24 hours after dashboard use. Bare `http://127.0.0.1:1111` still grants no authority without a session.
+- **`start` / `status` no longer print `?bootstrap=` URLs:** they point to `agent-deck open`; only `agent-deck start` / `agent-deck open` open a short-lived one-shot bootstrap URL in the browser.
+- **Expired dashboard auth UI:** shows **Dashboard Access Expired** and `agent-deck open` — not daemon restart. Stale `?bootstrap=` is stripped from the address bar after the bootstrap cookie is set (or the attempt fails).
+- **Verify:** Upgrade CLI → `agent-deck start` (or `agent-deck open`) → use the dashboard → restart backend → reopen `http://127.0.0.1:1111` in the same browser (should still load within 24h of activity). After the session expires, the UI should say run `agent-deck open`, not `agent-deck stop && start`.
 
 ## 1.7.6 — 2026-09-10
 
