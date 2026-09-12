@@ -1,6 +1,6 @@
 /**
- * In-memory execution-authority ledger — inspectable skeleton for NOT-85.
- * Production persistence and HTTP/MCP surfaces land in NOT-86.
+ * In-memory execution-authority ledger (NOT-85 logic engine).
+ * Durable SQLite wrapper: `ExecutionAuthorityStore` (NOT-86).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -16,6 +16,7 @@ import type {
   AuthorizedCallInput,
   ContractResult,
   CoordinatorEnrollment,
+  EnrollCoordinatorResult,
   ExecutionAuthority,
   MintAuthorityInput,
   MintAuthorityResult,
@@ -24,6 +25,16 @@ import type {
 function newId(kind: 'enr' | 'authz' | 'req' | 'evt'): string {
   return prefixTrustedId(kind, randomUUID());
 }
+
+/** Serializable ledger state for durable hydrate/persist. */
+export type LedgerState = {
+  enrollments: CoordinatorEnrollment[];
+  enrollmentSecretHashes: Array<{ enrollmentId: string; secretHash: string }>;
+  authorities: ExecutionAuthority[];
+  secretHashes: Array<{ authorityId: string; secretHash: string }>;
+  mintIndex: Array<{ enrollmentId: string; idempotencyKey: string; authorityId: string }>;
+  audit: AuditEvent[];
+};
 
 function cloneAuthority(authority: ExecutionAuthority): ExecutionAuthority {
   return {
@@ -64,6 +75,7 @@ export interface ExecutionAuthorityLedgerOptions {
  */
 export class ExecutionAuthorityLedger {
   private readonly enrollments = new Map<string, CoordinatorEnrollment>();
+  private readonly enrollmentSecretHashes = new Map<string, string>();
   private readonly authorities = new Map<string, ExecutionAuthority>();
   private readonly secretHashes = new Map<string, string>();
   private readonly mintIndex = new Map<string, string>(); // enrollmentId\0idempotencyKey -> authorityId
@@ -74,10 +86,95 @@ export class ExecutionAuthorityLedger {
     this.now = options.now ?? (() => new Date());
   }
 
+  exportState(): LedgerState {
+    return {
+      enrollments: [...this.enrollments.values()].map((e) => ({
+        ...e,
+        allowedDeckIds: [...e.allowedDeckIds],
+      })),
+      enrollmentSecretHashes: [...this.enrollmentSecretHashes.entries()].map(
+        ([enrollmentId, secretHash]) => ({ enrollmentId, secretHash }),
+      ),
+      authorities: [...this.authorities.values()].map(cloneAuthority),
+      secretHashes: [...this.secretHashes.entries()].map(([authorityId, secretHash]) => ({
+        authorityId,
+        secretHash,
+      })),
+      mintIndex: [...this.mintIndex.entries()].map(([key, authorityId]) => {
+        const [enrollmentId, idempotencyKey] = key.split('\0');
+        return { enrollmentId, idempotencyKey, authorityId };
+      }),
+      audit: this.audit.map((event) => ({
+        ...event,
+        correlation: { ...event.correlation },
+        detail: event.detail ? { ...event.detail } : undefined,
+      })),
+    };
+  }
+
+  replaceState(state: LedgerState): void {
+    this.enrollments.clear();
+    this.enrollmentSecretHashes.clear();
+    this.authorities.clear();
+    this.secretHashes.clear();
+    this.mintIndex.clear();
+    this.audit.length = 0;
+    for (const enrollment of state.enrollments) {
+      this.enrollments.set(enrollment.enrollmentId, {
+        ...enrollment,
+        allowedDeckIds: [...enrollment.allowedDeckIds],
+      });
+    }
+    for (const row of state.enrollmentSecretHashes) {
+      this.enrollmentSecretHashes.set(row.enrollmentId, row.secretHash);
+    }
+    for (const authority of state.authorities) {
+      this.authorities.set(authority.authorityId, cloneAuthority(authority));
+    }
+    for (const row of state.secretHashes) {
+      this.secretHashes.set(row.authorityId, row.secretHash);
+    }
+    for (const row of state.mintIndex) {
+      this.mintIndex.set(`${row.enrollmentId}\0${row.idempotencyKey}`, row.authorityId);
+    }
+    for (const event of state.audit) {
+      this.audit.push({
+        ...event,
+        correlation: { ...event.correlation },
+        detail: event.detail ? { ...event.detail } : undefined,
+      });
+    }
+  }
+
+  getEnrollment(enrollmentId: string): CoordinatorEnrollment | undefined {
+    const enrollment = this.enrollments.get(enrollmentId);
+    if (!enrollment) return undefined;
+    return { ...enrollment, allowedDeckIds: [...enrollment.allowedDeckIds] };
+  }
+
+  listEnrollments(): CoordinatorEnrollment[] {
+    return [...this.enrollments.values()].map((e) => ({
+      ...e,
+      allowedDeckIds: [...e.allowedDeckIds],
+    }));
+  }
+
+  verifyEnrollmentSecret(enrollmentId: string, secret: string): boolean {
+    const hash = this.enrollmentSecretHashes.get(enrollmentId);
+    if (!hash) return false;
+    return verifyGrantSecret(secret, hash);
+  }
+
+  verifyAuthoritySecret(authorityId: string, secret: string): boolean {
+    const hash = this.secretHashes.get(authorityId);
+    if (!hash) return false;
+    return verifyGrantSecret(secret, hash);
+  }
+
   enrollCoordinator(input: {
     coordinatorId: string;
     allowedDeckIds: string[];
-  }): ContractResult<CoordinatorEnrollment> {
+  }): ContractResult<EnrollCoordinatorResult> {
     const enrollment: CoordinatorEnrollment = {
       enrollmentId: newId('enr'),
       coordinatorId: input.coordinatorId,
@@ -86,15 +183,20 @@ export class ExecutionAuthorityLedger {
       createdAt: this.now().toISOString(),
       revokedAt: null,
     };
+    const enrollmentSecret = `enrs_${randomUUID().replace(/-/g, '')}${randomUUID().replace(/-/g, '')}`;
     this.enrollments.set(enrollment.enrollmentId, enrollment);
+    this.enrollmentSecretHashes.set(enrollment.enrollmentId, hashGrantSecret(enrollmentSecret));
     this.pushAudit('enrollment_created', {
       enrollmentId: enrollment.enrollmentId,
     }, { coordinatorId: input.coordinatorId });
     return {
       ok: true,
       data: {
-        ...enrollment,
-        allowedDeckIds: [...enrollment.allowedDeckIds],
+        enrollment: {
+          ...enrollment,
+          allowedDeckIds: [...enrollment.allowedDeckIds],
+        },
+        enrollmentSecret,
       },
     };
   }

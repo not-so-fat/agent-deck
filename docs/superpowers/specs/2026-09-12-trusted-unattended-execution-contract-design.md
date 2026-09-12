@@ -259,17 +259,19 @@ Stable names for NOT-86/87. Exact transport (HTTP vs MCP tools) may vary; shapes
 
 The same enrollment + mint + typed-outcome + park model must support a materially different Dealer workflow (e.g. Message send vs Dev-review) without changing the authorization model. Workflow-specific state stays on the Dealer side; Deck only sees run/attempt ids, deck snapshot, and tool allowlist.
 
-## 13. Inspectable skeleton (this ticket)
+## 13. Inspectable skeleton (NOT-85) → production issuer (NOT-86)
 
-In-repo proof (no production HTTP issuer):
+In-repo proof (NOT-85):
 
 - Types: `packages/backend/src/execution-authority/types.ts`
 - In-memory ledger: `packages/backend/src/execution-authority/ledger.ts`
 - End-to-end test: `packages/backend/src/execution-authority/ledger.test.ts`
 
-Scenario covered: enroll → mint → one allowed call → deny out-of-scope → expire/revoke → audit correlation.
+**As-built (NOT-86, cut B):** Durable `ExecutionAuthorityStore` (SQLite), HTTP `/api/execution-authority/*`, MCP authority principal (`authz_…:secret`), CLI `agent-deck coordinator enroll|status|revoke`. Process-local one-time secret on mint; OS launcher → NOT-89; dashboard enroll UX → NOT-90. Design: `docs/superpowers/specs/2026-09-12-execution-authority-issuer-design.md`.
 
-Production issuer: **NOT-86**. Dealer adoption + park: **NOT-87**.
+Scenario covered: enroll → mint → one allowed call → deny out-of-scope → expire/revoke → audit correlation (+ restart durability).
+
+Dealer adoption + park: **NOT-87**.
 
 ## 14. Non-goals
 

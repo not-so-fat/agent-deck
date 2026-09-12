@@ -103,6 +103,12 @@ export interface ContractSuccess<T> {
 
 export type ContractResult<T> = ContractSuccess<T> | ContractError;
 
+export interface EnrollCoordinatorResult {
+  enrollment: CoordinatorEnrollment;
+  /** One-time secret for coordinator mint/metadata auth (`enrs_…`). */
+  enrollmentSecret: string;
+}
+
 export interface MintAuthorityInput {
   enrollmentId: string;
   runId: string;
@@ -111,14 +117,26 @@ export interface MintAuthorityInput {
   audience: AuthorityAudience;
   idempotencyKey: string;
   /**
-   * Pre-materialized Deck policy snapshot for the in-memory skeleton.
-   * Production (NOT-86) authors these from deck policy at mint; optional
-   * toolScopeHint may only narrow.
+   * Pre-materialized Deck policy snapshot.
+   * HTTP mint authors these from deck policy; optional toolScopeHint may only narrow.
    */
   allowedServices: string[];
   allowedTools: AllowedTool[];
   /** TTL in milliseconds from mint time; must be > 0. */
   ttlMs: number;
+}
+
+/** Coordinator-supplied mint body before Deck authors the tool snapshot. */
+export interface MintAuthorityRequest {
+  enrollmentId: string;
+  runId: string;
+  attemptId: string;
+  deckId: string;
+  audience: AuthorityAudience;
+  idempotencyKey: string;
+  ttlMs: number;
+  /** Optional narrowing hint; Deck intersects with current deck policy. */
+  toolScopeHint?: AllowedTool[];
 }
 
 export interface MintAuthorityResult {

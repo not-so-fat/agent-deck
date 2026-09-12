@@ -74,7 +74,11 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
     }
 
     try {
-      const principal = await resolveRequestPrincipal(request, fastify.trustedSessionStore);
+      const principal = await resolveRequestPrincipal(
+        request,
+        fastify.trustedSessionStore,
+        fastify.executionAuthorityStore,
+      );
       enforcePolicy(policy, principal);
       request.requestPrincipal = principal;
     } catch (error) {

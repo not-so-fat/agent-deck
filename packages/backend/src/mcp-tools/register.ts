@@ -4,7 +4,7 @@ import type { StubBindSyncResult } from '../playbooks/stub-sync';
 import { resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
-import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard } from './policy';
+import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard, denyControlPlaneUnderAuthority, authorizeExecutionAuthorityTool, mcpContractError } from './policy';
 import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
 
 type RegisterToolFn = (
@@ -48,6 +48,9 @@ export type McpToolHost = {
         mode?: 'normal' | 'agent-admin';
       },
     ): void;
+    getExecutionAuthority?(
+      sessionId: string,
+    ): { authorityId: string; authoritySecret: string; audience: string } | undefined;
     hasSessionDeckOverride(sessionId: string): boolean;
   };
   badgeBySession: Map<string, string>;
@@ -116,6 +119,8 @@ function registerRuntimeTools(host: McpToolHost): void {
     },
   }, async ({ workspaceRoot, deckId }) => {
     try {
+      const blocked = denyControlPlaneUnderAuthority(host);
+      if (blocked) return blocked;
       const sessionId = host.getSessionId();
       const current = host.sessionBinding.getBinding(sessionId);
       const resolved = await resolveDeckForBind(host, deckId);
@@ -397,6 +402,8 @@ function registerRuntimeTools(host: McpToolHost): void {
     inputSchema: {},
   }, async () => {
     try {
+      const blocked = denyControlPlaneUnderAuthority(host);
+      if (blocked) return blocked;
       const binding = host.sessionBinding.getBinding(host.getSessionId());
       const runtimeSessionId = binding.runtimeSessionId;
       if (!runtimeSessionId) {
@@ -419,6 +426,8 @@ function registerRuntimeTools(host: McpToolHost): void {
     inputSchema: {},
   }, async () => {
     try {
+      const blocked = denyControlPlaneUnderAuthority(host);
+      if (blocked) return blocked;
       const binding = host.sessionBinding.getBinding(host.getSessionId());
       const runtimeSessionId = binding.runtimeSessionId;
       if (!runtimeSessionId) {
@@ -530,6 +539,39 @@ function registerRuntimeTools(host: McpToolHost): void {
     inputSchema: { serviceId: z.string() },
   }, async ({ serviceId }) => {
     try {
+      const auth = host.sessionBinding.getExecutionAuthority?.(host.getSessionId());
+      if (auth) {
+        const connect = await fetch(`${host.backendUrl}/api/execution-authority/mcp/connect`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${auth.authorityId}:${auth.authoritySecret}`,
+          },
+          body: JSON.stringify({
+            authorityId: auth.authorityId,
+            authoritySecret: auth.authoritySecret,
+            audience: auth.audience,
+          }),
+        });
+        const body = (await connect.json()) as {
+          ok?: boolean;
+          data?: { allowedServices?: string[] };
+          error_code?: string;
+          message?: string;
+        };
+        if (!connect.ok || !body.ok) {
+          return mcpContractError(
+            body.error_code ?? 'AUTHORITY_SECRET_INVALID',
+            body.message ?? 'Authority invalid',
+            { authorityId: auth.authorityId },
+          );
+        }
+        if (!body.data?.allowedServices?.includes(serviceId)) {
+          return host.toolError(
+            new BackendApiError('Service is not on the bound deck', 403, 'RESOURCE_OUT_OF_SCOPE'),
+          );
+        }
+      }
       const tools = await host.callBackendAPI(`/api/services/${serviceId}/tools`);
       return host.toolResult(tools);
     } catch (error) {
@@ -547,6 +589,9 @@ function registerRuntimeTools(host: McpToolHost): void {
     },
   }, async ({ serviceId, toolName, arguments: args = {} }) => {
     try {
+      const denied = await authorizeExecutionAuthorityTool(host, serviceId, toolName);
+      if (denied) return denied;
+
       let normalizedArgs: unknown = args;
       if (typeof normalizedArgs === 'string' && normalizedArgs.length > 0) {
         try {
