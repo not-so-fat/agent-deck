@@ -185,7 +185,7 @@ Stable machine-readable errors:
 
 | Code | HTTP | Meaning |
 | --- | ---: | --- |
-| `GRANT_REQUIRED` | 401 | No valid workspace grant (MCP / API agent path — fix: `agent-deck use <deck>`). Distinct from the dashboard SPA cookie miss, which can show the same words in **Error Loading Data** (fix: `agent-deck open` / `start`). |
+| `GRANT_REQUIRED` | 401 | No valid workspace grant (MCP / API agent path — fix: `agent-deck use <deck>`). Distinct from the dashboard SPA cookie miss, which renders **Dashboard Access Expired** with `agent-deck open` recovery. |
 | `SESSION_INVALID` | 401 | Runtime session absent or expired |
 | `SESSION_REVOKED` | 401 | Grant rotation or explicit revocation ended the session |
 | `WORKSPACE_SCOPE_MISMATCH` | 403 | Request targets a different workspace; elevation cannot override it |

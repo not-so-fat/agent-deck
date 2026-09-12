@@ -242,24 +242,16 @@ export default function Home() {
               <code className="mb-6 block rounded bg-black/30 px-3 py-2 text-gray-200">
                 agent-deck open
               </code>
-              <div className="flex justify-center gap-3">
-                <button
-                  onClick={() => {
-                    void navigator.clipboard.writeText("agent-deck open").then(() => {
-                      toast({ title: "Command copied", description: "Run it in your terminal." });
-                    });
-                  }}
-                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-                >
-                  Copy Command
-                </button>
-                <button
-                  onClick={() => window.location.reload()}
-                  className="px-4 py-2 bg-gray-700 text-white rounded hover:bg-gray-600"
-                >
-                  Reload Page
-                </button>
-              </div>
+              <button
+                onClick={() => {
+                  void navigator.clipboard.writeText("agent-deck open").then(() => {
+                    toast({ title: "Command copied", description: "Run it in your terminal." });
+                  });
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                Copy Command
+              </button>
             </>
           ) : (
             <>
