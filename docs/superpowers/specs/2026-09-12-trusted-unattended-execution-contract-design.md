@@ -32,7 +32,8 @@ Neither product may infer authoritative authorization from UI state, legacy clie
 | Coordinator enrollment | Deck | Local Dealer coordinator is allowed to discover metadata and mint authority |
 | Execution authority | Deck | What a specific run attempt may access (deck + tool snapshot + TTL) |
 | Workspace grant + runtime MCP session | Deck | Interactive path only (unchanged) |
-| Run / attempt / human action | Dealer | Queued, acquiring, active, parked, cancelled, terminal |
+| Run / attempt | Dealer | Contract-facing states: `queued`, `acquiring_authority`, `active`, `parked_interaction`, `completed`, `cancelled`, `failed` |
+| Human action | Dealer | Open / approve / reject / expire (correlated to `parked_interaction`; not itself a run state) |
 | Correlation / audit events | Both (join keys) | Connect Dealer run/attempt to Deck issue/use/expiry/revoke without sharing secrets or private reasoning |
 
 Audit events may connect the records; neither replaces the other.
@@ -58,7 +59,7 @@ Audit events may connect the records; neither replaces the other.
 }
 ```
 
-Enrollment is created by an explicit operator action (CLI/dashboard). Revocation is immediate and fails closed for subsequent mints and live authorities minted under that enrollment (NOT-86 may choose cascade-revoke vs expire-in-place; contract requires no new successful authorized calls after enrollment revoke).
+Enrollment is created by an explicit operator action (CLI/dashboard). Revocation is immediate: subsequent mints under that enrollment fail with `ENROLLMENT_REVOKED`, and every still-`live` authority minted under it is cascade-revoked so further authorized calls fail with `AUTHORITY_REVOKED`.
 
 ### 5.2 Execution authority
 
@@ -70,8 +71,8 @@ Enrollment is created by an explicit operator action (CLI/dashboard). Revocation
   attemptId: string;          // Dealer-owned
   deckId: string;
   audience: "dealer-worker";  // extensible string enum; v1 = worker only
-  allowedServices: string[];  // service ids snapshot at mint
-  allowedTools: Array<{ serviceId: string; toolName: string }>;
+  allowedServices: string[];  // Deck-authored snapshot at mint
+  allowedTools: Array<{ serviceId: string; toolName: string }>; // Deck-authored snapshot at mint
   issuedAt: string;
   expiresAt: string;
   status: "live" | "expired" | "revoked";
@@ -79,9 +80,11 @@ Enrollment is created by an explicit operator action (CLI/dashboard). Revocation
 }
 ```
 
+**Tool snapshot authorship:** At mint, **Deck** materializes the authoritative `allowedServices` / `allowedTools` from the selected deck’s current policy (bound services and enabled tools). The coordinator may pass an optional `toolScopeHint` that **only narrows** (intersection); Deck never expands beyond policy. The in-memory skeleton accepts a pre-materialized list as a stand-in for that Deck-authored snapshot.
+
 **Secret handling:** mint returns a one-time `authoritySecret` (or equivalent launcher handle). Deck stores only a hash/representation. Dealer stores `authorityId`, status, and correlation metadata — never the secret. Delivery to the worker uses an OS secret boundary / launcher (chosen in NOT-86); not repo files, not prompts.
 
-**Profile binding:** allowed deck(s) are constrained at enrollment; mint further pins one `deckId` plus the immutable service/tool snapshot for that attempt.
+**Profile binding:** allowed deck(s) are constrained at enrollment; mint further pins one `deckId` plus that immutable Deck-authored service/tool snapshot for the attempt.
 
 ### 5.3 Correlation / audit (shared fields, no secrets)
 
@@ -104,6 +107,7 @@ Enrollment is created by an explicit operator action (CLI/dashboard). Revocation
     runId?: string;
     attemptId?: string;
     deckId?: string;
+    requestId?: string; // set on INTERACTION_REQUIRED; Dealer human-action dedupe key
   };
   detail?: Record<string, unknown>; // no credentials, no grant secrets, no private reasoning
 }
@@ -131,12 +135,15 @@ Duplicate mint with the same `(enrollmentId, idempotencyKey)` returns the same l
 queued → acquiring_authority → active
 acquiring_authority | active → parked_interaction
 parked_interaction → queued (new attempt after approval/config)
+active → completed
 any non-terminal → cancelled | failed
 ```
 
+Terminal attempt outcomes: `completed` (success), `cancelled`, `failed`.
+
 `INTERACTION_REQUIRED` maps to `parked_interaction`: release worker capacity, create/dedupe one human action, never leave an MCP call open.
 
-Approval/rejection/expiry of the human action never completes an unknown in-flight Deck call. Resume = new `attemptId` + new mint.
+Approval/rejection/expiry of the human action never completes an unknown in-flight Deck call. Resume = new `attemptId` + new mint (back to `queued`). Successful finish of an active attempt → `completed` and authority ends (revoke or let TTL expire; no further calls).
 
 ## 7. Typed outcomes / error schema
 
@@ -144,9 +151,9 @@ Approval/rejection/expiry of the human action never completes an unknown in-flig
 | --- | --- | --- | --- |
 | `GRANT_REQUIRED` | Deck (interactive) | No valid workspace grant | Operator runs `agent-deck use` — not for unattended worktrees |
 | `AUTHORITY_EXPIRED` | Deck | TTL elapsed | Dealer: new attempt + mint, or fail |
-| `AUTHORITY_REVOKED` | Deck | Explicit revoke / enrollment revoke cascade | Dealer: treat attempt failed; do not retry same authority |
+| `AUTHORITY_REVOKED` | Deck | Explicit revoke, or cascade from enrollment revoke | Dealer: treat attempt failed; do not retry same authority |
 | `RESOURCE_OUT_OF_SCOPE` | Deck | Off-deck, disabled tool, or deleted/switched deck | Dealer: fail or park if operator must reconfigure |
-| `INTERACTION_REQUIRED` | Deck | Control-plane decision needed | Dealer: park immediately; correlation id for human action |
+| `INTERACTION_REQUIRED` | Deck | Control-plane decision needed | Dealer: enter `parked_interaction` immediately; use `correlation.requestId` for human-action dedupe |
 | `ENROLLMENT_REVOKED` | Deck | Coordinator enrollment not active | Operator re-enrolls |
 | `COORDINATOR_NOT_ENROLLED` | Deck | Unknown coordinator | Operator enrolls |
 | Success / retryable infra | Downstream or transport | Normal or transient failure | Dealer retry policy; do not auto-replay ambiguous tool effects |
@@ -170,11 +177,11 @@ Machine-readable shape (MCP/HTTP):
 | Revoke authority | `authorityId` | Idempotent: already-revoked → success no-op |
 | Revoke enrollment | `enrollmentId` | Idempotent |
 | `INTERACTION_REQUIRED` → human action | Deck `requestId` / correlation | Dealer creates at most one open human action per id |
-| Downstream tool call | Tool-specific | Replay only if the tool contract proves idempotency; otherwise park/fail |
+| Downstream tool call | Tool-specific | Replay only if the tool contract proves idempotency; otherwise `parked_interaction` or `failed` |
 
 Duplicate tool effects and leaked authority are prevented by: immutable snapshot, TTL, hash-only storage, revoke-before-remint on cancel/retry, and never writing secrets into Dealer DB/worktrees.
 
-Permanently occupied workers are prevented by: typed `INTERACTION_REQUIRED` returns immediately; Dealer must release capacity on park/fail/cancel; Deck never holds a request open awaiting human approval.
+Permanently occupied workers are prevented by: typed `INTERACTION_REQUIRED` returns immediately; Dealer must release capacity on `parked_interaction` / `completed` / `failed` / `cancelled`; Deck never holds a request open awaiting human approval.
 
 ## 9. Failure and recovery matrix
 
@@ -190,9 +197,9 @@ Permanently occupied workers are prevented by: typed `INTERACTION_REQUIRED` retu
 | Authority expires | Deck | `AUTHORITY_EXPIRED` |
 | Authority revoked | Deck | `AUTHORITY_REVOKED` |
 | Ambiguous downstream result | Downstream + Dealer | No automatic replay; record evidence; operator/policy decides |
-| Approval rejected/expires | Dealer | Attempt stays parked or fails; no mint |
+| Approval rejected/expires | Dealer | Attempt stays `parked_interaction` or becomes `failed`; no mint |
 | Approval after cancel | Dealer | Record; do not restart run |
-| Deck temporarily unavailable | Dealer | Bounded retry/backoff then park/fail; never occupy worker forever |
+| Deck temporarily unavailable | Dealer | Bounded retry/backoff then `parked_interaction` or `failed`; never occupy worker forever |
 | Dealer temporarily unavailable | Operator / Deck | Live authorities expire by TTL; enrollment remains until revoked |
 
 ## 10. Threat model (v1)
@@ -224,7 +231,7 @@ Stable names for NOT-86/87. Exact transport (HTTP vs MCP tools) may vary; shapes
 
 ### Authority (coordinator)
 
-- `POST /api/execution-authority/authorities` — mint (`runId`, `attemptId`, `deckId`, `audience`, `idempotencyKey`, optional tool-scope hint)
+- `POST /api/execution-authority/authorities` — mint (`runId`, `attemptId`, `deckId`, `audience`, `idempotencyKey`, optional `toolScopeHint` narrowing only); response includes Deck-authored `allowedServices` / `allowedTools`
 - `GET /api/execution-authority/authorities/:id` — inspect (no secret)
 - `POST /api/execution-authority/authorities/:id/revoke`
 
@@ -235,7 +242,7 @@ Stable names for NOT-86/87. Exact transport (HTTP vs MCP tools) may vary; shapes
 
 ### Audit
 
-- `GET /api/execution-authority/audit?runId=&attemptId=&authorityId=` — correlation query without secrets
+- `GET /api/execution-authority/audit?runId=&attemptId=&authorityId=&enrollmentId=&requestId=` — correlation query without secrets
 
 ## 12. Second-workflow requirement
 
@@ -259,4 +266,4 @@ OAuth redesign, remote multi-tenant coordinators, a general workflow protocol, s
 
 ## 15. One-sentence architecture
 
-Agent Deck owns delegated capability and treats its authorization ledger as authoritative; Agent Dealer owns durable run state and advances attempts through queued, active, parked, resumed, and terminal states; they integrate through replaceable enrollment, execution-authority, typed-outcome, and audit interfaces.
+Agent Deck owns delegated capability and treats its authorization ledger as authoritative; Agent Dealer owns durable run state and advances attempts through `queued`, `acquiring_authority`, `active`, `parked_interaction`, `completed`, `cancelled`, and `failed`; they integrate through replaceable enrollment, execution-authority, typed-outcome, and audit interfaces.

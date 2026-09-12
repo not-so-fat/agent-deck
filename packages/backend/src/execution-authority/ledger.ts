@@ -326,6 +326,7 @@ export class ExecutionAuthorityLedger {
     attemptId?: string;
     authorityId?: string;
     enrollmentId?: string;
+    requestId?: string;
   } = {}): AuditEvent[] {
     return this.audit.filter((event) => {
       const c = event.correlation;
@@ -333,6 +334,7 @@ export class ExecutionAuthorityLedger {
       if (filter.attemptId && c.attemptId !== filter.attemptId) return false;
       if (filter.authorityId && c.authorityId !== filter.authorityId) return false;
       if (filter.enrollmentId && c.enrollmentId !== filter.enrollmentId) return false;
+      if (filter.requestId && c.requestId !== filter.requestId) return false;
       return true;
     });
   }

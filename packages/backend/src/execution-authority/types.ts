@@ -95,6 +95,11 @@ export interface MintAuthorityInput {
   deckId: string;
   audience: AuthorityAudience;
   idempotencyKey: string;
+  /**
+   * Pre-materialized Deck policy snapshot for the in-memory skeleton.
+   * Production (NOT-86) authors these from deck policy at mint; optional
+   * toolScopeHint may only narrow.
+   */
   allowedServices: string[];
   allowedTools: AllowedTool[];
   /** TTL in milliseconds from mint time. */
