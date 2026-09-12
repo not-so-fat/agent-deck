@@ -196,15 +196,24 @@ export class AgentDeckMCPServer {
     ).catch(() => {});
   }
 
+  private static readonly UNREGISTER_TIMEOUT_MS = 3_000;
+
   private async unregisterLiveDisplay(sessionId: string): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      AgentDeckMCPServer.UNREGISTER_TIMEOUT_MS,
+    );
     try {
       await this.callBackendAPI(
         `/api/scope/live-display/${encodeURIComponent(sessionId)}`,
-        { method: 'DELETE' },
+        { method: 'DELETE', signal: controller.signal },
         sessionId,
       );
     } catch {
-      // Best effort when MCP session closes.
+      // Best effort when MCP session closes (includes abort on hung backend).
+    } finally {
+      clearTimeout(timer);
     }
   }
 

@@ -64,8 +64,8 @@ function isOutOfScopeError(error: unknown): boolean {
 
 /**
  * Resolve deck id/name for bind/switch.
- * GET /api/decks/:id is bound-deck scoped for agents, so a different-deck target
- * must go through admin elevation + the admin deck list (metadata only).
+ * Normal agents may only GET the bound deck; out-of-scope requires elevation,
+ * then a retry of GET /api/decks/:id (agent-admin is allowed to read any deck).
  */
 async function resolveDeckForBind(
   host: McpToolHost,
@@ -81,15 +81,15 @@ async function resolveDeckForBind(
     if (denied) {
       return denied;
     }
-    const decks = (await host.callBackendAPI('/api/decks')) as Array<{ id: string; name: string }>;
-    const needle = deckRef.trim();
-    const match = decks.find(
-      (deck) => deck.id === needle || deck.name.toLowerCase() === needle.toLowerCase(),
-    );
-    if (!match) {
-      throw new Error(`Deck not found: ${deckRef}`);
+    try {
+      return await host.fetchDeck(deckRef);
+    } catch (retryError) {
+      // Elevation can expire between the check and the retry — keep ADMIN_REQUIRED.
+      if (isOutOfScopeError(retryError)) {
+        return mcpPolicyError('ADMIN_REQUIRED');
+      }
+      throw retryError;
     }
-    return { id: match.id, name: match.name };
   }
 }
 
@@ -216,11 +216,8 @@ function registerRuntimeTools(host: McpToolHost): void {
     try {
       const sessionId = host.getSessionId();
       const snapshot = host.sessionBinding.getBinding(sessionId);
-      const resolved = await resolveDeckForBind(host, deckId);
-      if ('isError' in resolved) {
-        return resolved;
-      }
-      const deck = resolved;
+      // Already elevated above — GET /api/decks/:id allows agent-admin any deck.
+      const deck = await host.fetchDeck(deckId);
       const workspaceRoot = snapshot.workspaceRoot;
       if (!workspaceRoot) {
         return host.toolError(new Error('workspaceRoot missing — call bind_workspace first'));
