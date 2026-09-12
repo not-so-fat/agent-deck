@@ -299,12 +299,16 @@ export async function registerDeckRoutes(
       let visibleDeckId: string | undefined;
 
       if (scope === 'agent') {
-        visibleDeckId = await resolveAgentDeckId(request, fastify.db);
-        if (deck.id !== visibleDeckId) {
+        const mode = await resolveAgentMode(request);
+        const boundDeckId = await resolveAgentDeckId(request, fastify.db);
+        if (deck.id !== boundDeckId && mode !== 'agent-admin') {
           return reply
             .status(403)
             .send(trustedSessionError('RESOURCE_OUT_OF_SCOPE', 'Deck is outside the bound deck'));
         }
+        // Agent-admin may read any deck (id/name + scoped body) for bind/switch.
+        // Scope the response to the requested deck so applyDeckScope does not strip it.
+        visibleDeckId = mode === 'agent-admin' ? deck.id : boundDeckId;
       }
 
       const [deckWithSecrets] = await enrichDeckServicesWithSecretHeaders(

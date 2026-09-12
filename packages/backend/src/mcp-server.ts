@@ -2,8 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
-  AGENT_DECK_AGENT_CLIENT,
-  AGENT_DECK_CLIENT_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
   formatDisplayLine,
@@ -30,11 +28,6 @@ import {
   type PlaybookStubInput,
 } from './playbooks/stub-sync';
 
-const agentClientHeaders = {
-  [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
-  Accept: 'application/json',
-};
-
 function readWorkspaceRootHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_WORKSPACE_HEADER];
   const value = typeof raw === 'string' ? raw.trim() : '';
@@ -57,7 +50,6 @@ export class AgentDeckMCPServer {
   private mcpServerForRegistration: McpServer | undefined;
   /** Per-session workspace + optional deck override (see mcp-session-binding.ts). */
   private sessionBinding: McpSessionBindingStore;
-  private activeSessionId: string | undefined;
   /** Session badge from the backend registry (POST /api/scope/live-display response). */
   private badgeBySession = new Map<string, string>();
   private lastTouchAtMs = new Map<string, number>();
@@ -90,40 +82,40 @@ export class AgentDeckMCPServer {
     });
   }
 
-  private createMcpServer(): McpServer {
+  /**
+   * One McpServer per transport session. Tools/resources close over `sessionId`
+   * so concurrent requests cannot steal another session's backend authority.
+   */
+  private createMcpServer(sessionId: string): McpServer {
     this.mcpServerForRegistration = new McpServer({
       name: "agent-deck-server",
       version: getAgentDeckVersion(),
     });
-    this.setupTools();
-    this.setupResources();
+    this.setupTools(sessionId);
+    this.setupResources(sessionId);
     const server = this.mcpServerForRegistration;
     this.mcpServerForRegistration = undefined;
     return server;
   }
 
-  private getSessionId(): string {
-    return this.activeSessionId ?? 'default';
-  }
-
-  private getAgentHeaders(): Record<string, string> {
-    return this.sessionBinding.getAgentHeaders(this.getSessionId());
-  }
-
-  private async fetchDeck(deckId: string): Promise<{ id: string; name: string }> {
+  private async fetchDeck(
+    deckId: string,
+    sessionId: string,
+  ): Promise<{ id: string; name: string }> {
     const deck = await fetch(`${this.backendUrl}/api/decks/${deckId}`, {
-      headers: {
-        ...agentClientHeaders,
-        Accept: 'application/json',
-      },
+      headers: this.sessionBinding.getAgentHeaders(sessionId),
     });
     const body = (await deck.json()) as {
       success: boolean;
       error?: string;
+      error_code?: string;
       data?: { id: string; name: string };
     };
     if (!deck.ok || !body.success || !body.data?.id) {
-      throw new Error(body.error ?? `Deck not found: ${deckId}`);
+      throw parseBackendErrorBody(
+        JSON.stringify(body),
+        deck.status,
+      );
     }
     return body.data;
   }
@@ -131,8 +123,8 @@ export class AgentDeckMCPServer {
   private async buildBindingPayload(sessionId: string) {
     const snapshot = this.sessionBinding.getBinding(sessionId);
     const deck = snapshot.deckId
-      ? await this.fetchDeck(snapshot.deckId)
-      : await this.callBackendAPI('/api/scope/deck');
+      ? await this.fetchDeck(snapshot.deckId, sessionId)
+      : await this.callBackendAPI('/api/scope/deck', {}, sessionId);
     const badge = this.badgeBySession.get(sessionId);
     const cardCounts = deck ? countDeckCards(deck) : { mcp: 0, credentials: 0, playbooks: 0 };
     return {
@@ -200,29 +192,50 @@ export class AgentDeckMCPServer {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ at: new Date().toISOString() }),
       },
+      sessionId,
     ).catch(() => {});
   }
 
+  private static readonly UNREGISTER_TIMEOUT_MS = 3_000;
+
+  /** Override via AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS (tests use a short value). */
+  private static unregisterTimeoutMs(): number {
+    const raw = process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS;
+    if (!raw) {
+      return AgentDeckMCPServer.UNREGISTER_TIMEOUT_MS;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0
+      ? parsed
+      : AgentDeckMCPServer.UNREGISTER_TIMEOUT_MS;
+  }
+
   private async unregisterLiveDisplay(sessionId: string): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      AgentDeckMCPServer.unregisterTimeoutMs(),
+    );
     try {
-      await this.callBackendAPI(`/api/scope/live-display/${encodeURIComponent(sessionId)}`, {
-        method: 'DELETE',
-      });
+      await this.callBackendAPI(
+        `/api/scope/live-display/${encodeURIComponent(sessionId)}`,
+        { method: 'DELETE', signal: controller.signal },
+        sessionId,
+      );
     } catch {
-      // Best effort when MCP session closes.
+      // Best effort when MCP session closes (includes abort on hung backend).
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   private async callBackendAPI(
     endpoint: string,
     init: RequestInit = {},
-    sessionId?: string,
+    sessionId: string,
   ): Promise<any> {
     try {
-      // Pin the session explicitly when given, so an async call (e.g. the
-      // fire-and-forget register at init) isn't scoped to whichever request
-      // last set activeSessionId.
-      const headers = this.sessionBinding.getAgentHeaders(sessionId ?? this.getSessionId());
+      const headers = this.sessionBinding.getAgentHeaders(sessionId);
       const response = await fetch(`${this.backendUrl}${endpoint}`, {
         ...init,
         headers: {
@@ -260,8 +273,8 @@ export class AgentDeckMCPServer {
     }
   }
 
-  private async getBoundDeckId(): Promise<string> {
-    const deck = await this.callBackendAPI('/api/scope/deck');
+  private async getBoundDeckId(sessionId: string): Promise<string> {
+    const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
     if (!deck?.id) {
       throw new Error('No bound deck — call bind_workspace (optionally with deckId) or switch_bound_deck first');
     }
@@ -292,20 +305,29 @@ export class AgentDeckMCPServer {
   private async syncWorkspaceOnBind(
     workspaceRoot: string,
     deck: { id: string; name: string },
+    sessionId: string,
   ): Promise<StubBindSyncResult | null> {
     if (!isStubSyncEnabled()) {
       return null;
     }
 
-    const summaries = (await this.callBackendAPI('/api/playbooks/summaries')) as PlaybookStubInput[];
+    const summaries = (await this.callBackendAPI(
+      '/api/playbooks/summaries',
+      {},
+      sessionId,
+    )) as PlaybookStubInput[];
     const stubs = syncPlaybookStubs(workspaceRoot, summaries ?? []);
     const manifestPath = healUseManifest(workspaceRoot, deck);
 
-    await this.callBackendAPI('/api/scope/deck-workspace', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
-    });
+    await this.callBackendAPI(
+      '/api/scope/deck-workspace',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
+      },
+      sessionId,
+    );
 
     return {
       stubs,
@@ -314,20 +336,21 @@ export class AgentDeckMCPServer {
     };
   }
 
-  private setupTools() {
+  private setupTools(sessionId: string) {
     registerMcpTools({
       registerTool: (name, config, handler) => this.registerTool(name, config, handler),
       profile: this.toolProfile,
-      getSessionId: () => this.getSessionId(),
-      getMode: () => this.sessionBinding.getMode(this.getSessionId()) ?? 'normal',
-      refreshRuntimeSession: () => this.refreshRuntimeSession(),
-      getAgentHeaders: () => this.getAgentHeaders(),
-      getBoundDeckId: () => this.getBoundDeckId(),
-      callBackendAPI: (endpoint, init) => this.callBackendAPI(endpoint, init),
-      fetchDeck: (deckId) => this.fetchDeck(deckId),
-      buildBindingPayload: (sessionId) => this.buildBindingPayload(sessionId),
-      registerLiveDisplay: (sessionId) => this.registerLiveDisplay(sessionId),
-      syncWorkspaceOnBind: (workspaceRoot, deck) => this.syncWorkspaceOnBind(workspaceRoot, deck),
+      getSessionId: () => sessionId,
+      getMode: () => this.sessionBinding.getMode(sessionId) ?? 'normal',
+      refreshRuntimeSession: () => this.refreshRuntimeSession(sessionId),
+      getAgentHeaders: () => this.sessionBinding.getAgentHeaders(sessionId),
+      getBoundDeckId: () => this.getBoundDeckId(sessionId),
+      callBackendAPI: (endpoint, init) => this.callBackendAPI(endpoint, init ?? {}, sessionId),
+      fetchDeck: (deckId) => this.fetchDeck(deckId, sessionId),
+      buildBindingPayload: (id) => this.buildBindingPayload(id),
+      registerLiveDisplay: (id) => this.registerLiveDisplay(id),
+      syncWorkspaceOnBind: (workspaceRoot, deck) =>
+        this.syncWorkspaceOnBind(workspaceRoot, deck, sessionId),
       sessionBinding: this.sessionBinding,
       badgeBySession: this.badgeBySession,
       backendUrl: this.backendUrl,
@@ -337,13 +360,13 @@ export class AgentDeckMCPServer {
   }
 
 
-  private setupResources() {
+  private setupResources(sessionId: string) {
     this.server.resource("bound_deck_summary", "agent-deck://bound-deck/summary", {
       description: "One-line summary of the workspace-bound deck for status display",
       mimeType: "text/plain",
     }, async () => {
       try {
-        const deck = await this.callBackendAPI('/api/scope/deck');
+        const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
         const summary = formatDisplayLine(deck?.name ?? null, countDeckCards(deck ?? {}));
 
         return {
@@ -369,7 +392,7 @@ export class AgentDeckMCPServer {
       mimeType: "application/json"
     }, async () => {
       try {
-        const deck = await this.callBackendAPI('/api/scope/deck');
+        const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
         const services = deck?.services ?? [];
         
         return {
@@ -395,7 +418,7 @@ export class AgentDeckMCPServer {
       mimeType: "application/json"
     }, async () => {
       try {
-        const deck = await this.callBackendAPI('/api/scope/deck');
+        const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
         const services = deck?.services ?? [];
         
         return {
@@ -421,7 +444,7 @@ export class AgentDeckMCPServer {
       mimeType: "application/json"
     }, async () => {
       try {
-        const credentials = await this.callBackendAPI('/api/credentials');
+        const credentials = await this.callBackendAPI('/api/credentials', {}, sessionId);
 
         return {
           contents: [{
@@ -446,7 +469,7 @@ export class AgentDeckMCPServer {
       mimeType: "application/json"
     }, async () => {
       try {
-        const credentials = await this.callBackendAPI('/api/credentials');
+        const credentials = await this.callBackendAPI('/api/credentials', {}, sessionId);
 
         return {
           contents: [{
@@ -471,7 +494,7 @@ export class AgentDeckMCPServer {
       mimeType: "application/json"
     }, async () => {
       try {
-        const deck = await this.callBackendAPI('/api/scope/deck');
+        const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
         
         return {
           contents: [{
@@ -496,7 +519,7 @@ export class AgentDeckMCPServer {
       mimeType: "application/json"
     }, async () => {
       try {
-        const deck = await this.callBackendAPI('/api/scope/deck');
+        const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
         
         return {
           contents: [{
@@ -522,7 +545,7 @@ export class AgentDeckMCPServer {
       mimeType: "application/json"
     }, async () => {
       try {
-        const decks = await this.callBackendAPI('/api/decks');
+        const decks = await this.callBackendAPI('/api/decks', {}, sessionId);
         
         return {
           contents: [{
@@ -592,18 +615,17 @@ export class AgentDeckMCPServer {
     return typeof value === 'string' ? value : undefined;
   }
 
-  private async refreshRuntimeSession(sessionId?: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
-    const mcpSessionId = sessionId ?? this.getSessionId();
-    const binding = this.sessionBinding.getBinding(mcpSessionId);
+  private async refreshRuntimeSession(sessionId: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
+    const binding = this.sessionBinding.getBinding(sessionId);
     if (!binding.runtimeSessionId) {
       throw new Error('GRANT_REQUIRED');
     }
 
-    const data = await this.callBackendAPI('/api/trusted-session/runtime-session', {}, mcpSessionId);
+    const data = await this.callBackendAPI('/api/trusted-session/runtime-session', {}, sessionId);
     const mode = (data?.mode ?? 'normal') as 'normal' | 'agent-admin';
     const deckId = String(data?.deckId ?? binding.deckId ?? '');
 
-    this.sessionBinding.setTrustedSession(mcpSessionId, {
+    this.sessionBinding.setTrustedSession(sessionId, {
       runtimeSessionId: binding.runtimeSessionId,
       deckId,
       workspaceRoot: binding.workspaceRoot,
@@ -732,7 +754,6 @@ export class AgentDeckMCPServer {
       if (!(await this.requireFollowUpGrant(sessionIdHeader, req, res))) {
         return;
       }
-      this.activeSessionId = sessionIdHeader;
       this.touchLiveDisplay(sessionIdHeader);
       await existing.transport.handleRequest(req, res, req.body);
       return;
@@ -780,7 +801,7 @@ export class AgentDeckMCPServer {
       }
     }
 
-    const server = this.createMcpServer();
+    const server = this.createMcpServer(sessionId);
     let sessionEntry: McpSession | undefined;
 
     const transport = new StreamableHTTPServerTransport({
@@ -796,10 +817,13 @@ export class AgentDeckMCPServer {
       const closedSessionId = transport.sessionId;
       if (closedSessionId) {
         this.sessions.delete(closedSessionId);
-        this.sessionBinding.clearSession(closedSessionId);
-        this.badgeBySession.delete(closedSessionId);
-        this.lastTouchAtMs.delete(closedSessionId);
-        void this.unregisterLiveDisplay(closedSessionId);
+        // Unregister while session headers still resolve — clearSession would drop
+        // the runtime session id and live-display DELETE would 401.
+        void this.unregisterLiveDisplay(closedSessionId).finally(() => {
+          this.sessionBinding.clearSession(closedSessionId);
+          this.badgeBySession.delete(closedSessionId);
+          this.lastTouchAtMs.delete(closedSessionId);
+        });
       }
     };
 
@@ -827,7 +851,6 @@ export class AgentDeckMCPServer {
     if (transport.sessionId && !this.sessions.has(transport.sessionId)) {
       this.sessions.set(transport.sessionId, { transport, server });
     }
-    this.activeSessionId = transport.sessionId;
 
     if (transport.sessionId) {
       void this.registerLiveDisplay(transport.sessionId).catch(() => {});
@@ -851,7 +874,6 @@ export class AgentDeckMCPServer {
       return;
     }
 
-    this.activeSessionId = sessionId;
     this.touchLiveDisplay(sessionId);
     await session.transport.handleRequest(req, res);
   }

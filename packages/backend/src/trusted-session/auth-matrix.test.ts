@@ -75,10 +75,14 @@ describe('trusted session auth matrix (§8)', () => {
     } as unknown as ServiceManager);
     fastify.decorate('broadcastServiceUpdate', () => {});
     fastify.decorate('storeWriter', { writeDeck: async () => {} });
+    fastify.decorate('credentialManager', {
+      applySecretStatus: async (credentials: unknown[]) => credentials,
+    });
     fastify.decorate('playbookManager', {
       createWithDependencies: async () => playbook,
       updateWithDependencies: async () => playbook,
       delete: async () => true,
+      listSummariesForDeck: async () => [],
     });
     fastify.decorate('patchManager', { snapshotVersion: async () => {} });
 
@@ -137,6 +141,30 @@ describe('trusted session auth matrix (§8)', () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ error_code: 'DASHBOARD_REQUIRED' });
+  });
+
+  it('normal agent cannot GET a non-bound deck by id', async () => {
+    const { fastify, session, otherDeck } = await buildApp();
+    const response = await fastify.inject({
+      method: 'GET',
+      url: `/api/decks/${otherDeck.id}`,
+      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error_code: 'RESOURCE_OUT_OF_SCOPE' });
+  });
+
+  it('agent-admin can GET a non-bound deck by id (NOT-84 bind/switch resolve)', async () => {
+    const { fastify, session, store, otherDeck } = await buildApp();
+    store.elevateSessionToAdmin(session.sessionId);
+
+    const response = await fastify.inject({
+      method: 'GET',
+      url: `/api/decks/${otherDeck.id}`,
+      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toMatchObject({ id: otherDeck.id, name: 'other' });
   });
 
   it('agent without elevation is denied deck creation', async () => {
