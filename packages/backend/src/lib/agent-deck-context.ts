@@ -18,11 +18,24 @@ function headerValue(request: FastifyRequest, name: string): string | undefined 
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-/** Resolve bound deck from authenticated runtime session (PRD C3). */
+/** Resolve bound deck from authenticated runtime session or execution authority (PRD C3 / NOT-86). */
 export async function resolveAgentDeckId(
   request: FastifyRequest,
   db: DatabaseManager,
 ): Promise<string> {
+  const principal = request.requestPrincipal;
+  if (principal?.kind === 'execution-authority') {
+    const deckId = principal.authority.deckId;
+    const deck = await db.getDeck(deckId);
+    if (!deck) {
+      throw new AgentDeckContextError(
+        trustedSessionError('RESOURCE_OUT_OF_SCOPE', 'Authority deck not found').error,
+        'RESOURCE_OUT_OF_SCOPE',
+      );
+    }
+    return deckId;
+  }
+
   const sessionId = headerValue(request, AGENT_DECK_SESSION_HEADER);
   if (!sessionId) {
     throw new AgentDeckContextError(
@@ -71,6 +84,10 @@ export async function resolveAgentDeckId(
 export async function resolveAgentMode(
   request: FastifyRequest,
 ): Promise<'normal' | 'agent-admin'> {
+  const principal = request.requestPrincipal;
+  if (principal?.kind === 'execution-authority') {
+    return 'normal';
+  }
   const sessionId = headerValue(request, AGENT_DECK_SESSION_HEADER);
   if (!sessionId) {
     return 'normal';

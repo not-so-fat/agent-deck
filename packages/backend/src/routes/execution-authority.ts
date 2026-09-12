@@ -28,39 +28,94 @@ function statusForContract(error: ContractError): number {
   }
 }
 
-async function requireEnrollmentAuth(
+function intersectTools(policy: AllowedTool[], hint: AllowedTool[] | undefined): AllowedTool[] {
+  if (hint === undefined) return policy;
+  const key = (t: AllowedTool) => `${t.serviceId}\0${t.toolName}`;
+  const allowed = new Set(policy.map(key));
+  return hint.filter((t) => allowed.has(key(t)));
+}
+
+export class EnrollmentAuthError extends Error {
+  constructor(public readonly contract: ContractError) {
+    super(contract.message);
+    this.name = 'EnrollmentAuthError';
+  }
+}
+
+function requireEnrollmentAuth(
   request: { headers: Record<string, unknown> },
   store: {
     getEnrollment: (id: string) => { enrollmentId: string; status: string; allowedDeckIds: string[] } | undefined;
     verifyEnrollmentSecret: (id: string, secret: string) => boolean;
   },
-): Promise<{ enrollmentId: string }> {
+): { enrollmentId: string } {
   const token = parseBearerToken({ headers: request.headers });
   if (!token) {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'Enrollment bearer required');
+    throw new EnrollmentAuthError({
+      ok: false,
+      error_code: 'COORDINATOR_NOT_ENROLLED',
+      message: 'Enrollment bearer required (enr_…:secret)',
+    });
   }
   const parsed = parseEnrollmentBearer(token);
   if (!parsed) {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'Enrollment bearer required (enr_…:secret)');
+    throw new EnrollmentAuthError({
+      ok: false,
+      error_code: 'COORDINATOR_NOT_ENROLLED',
+      message: 'Enrollment bearer required (enr_…:secret)',
+    });
   }
   const enrollment = store.getEnrollment(parsed.enrollmentId);
   if (!enrollment) {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'Unknown enrollment');
+    throw new EnrollmentAuthError({
+      ok: false,
+      error_code: 'COORDINATOR_NOT_ENROLLED',
+      message: 'Unknown enrollment',
+      correlation: { enrollmentId: parsed.enrollmentId },
+    });
   }
   if (enrollment.status !== 'active') {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'Enrollment is revoked');
+    throw new EnrollmentAuthError({
+      ok: false,
+      error_code: 'ENROLLMENT_REVOKED',
+      message: 'Enrollment is revoked',
+      reason: 'enrollment_revoked',
+      correlation: { enrollmentId: parsed.enrollmentId },
+    });
   }
   if (!store.verifyEnrollmentSecret(parsed.enrollmentId, parsed.secret)) {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'Invalid enrollment secret');
+    throw new EnrollmentAuthError({
+      ok: false,
+      error_code: 'COORDINATOR_NOT_ENROLLED',
+      message: 'Invalid enrollment secret',
+      correlation: { enrollmentId: parsed.enrollmentId },
+    });
   }
   return { enrollmentId: parsed.enrollmentId };
 }
 
-function intersectTools(policy: AllowedTool[], hint: AllowedTool[] | undefined): AllowedTool[] {
-  if (!hint || hint.length === 0) return policy;
-  const key = (t: AllowedTool) => `${t.serviceId}\0${t.toolName}`;
-  const allowed = new Set(policy.map(key));
-  return hint.filter((t) => allowed.has(key(t)));
+type AuthzPrincipal =
+  | { kind: 'enrollment'; enrollmentId: string }
+  | { kind: 'trusted-writer' };
+
+async function requireEnrollmentOrTrustedWriter(
+  request: Parameters<typeof requireTrustedWriterBearer>[0] & { headers: Record<string, unknown> },
+  store: {
+    getEnrollment: (id: string) => { enrollmentId: string; status: string; allowedDeckIds: string[] } | undefined;
+    verifyEnrollmentSecret: (id: string, secret: string) => boolean;
+  },
+): Promise<AuthzPrincipal> {
+  try {
+    return { kind: 'enrollment', ...requireEnrollmentAuth(request, store) };
+  } catch (error) {
+    if (!(error instanceof EnrollmentAuthError)) throw error;
+    try {
+      await requireTrustedWriterBearer(request);
+      return { kind: 'trusted-writer' };
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fastify) => {
@@ -137,10 +192,10 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
   fastify.get('/decks', async (request, reply) => {
     let enrollmentId: string;
     try {
-      ({ enrollmentId } = await requireEnrollmentAuth(request, store()));
+      ({ enrollmentId } = requireEnrollmentAuth(request, store()));
     } catch (error) {
-      if (error instanceof TrustedAuthError) {
-        return sendTrustedAuthError(reply, error);
+      if (error instanceof EnrollmentAuthError) {
+        return sendContractError(reply, error.contract, statusForContract(error.contract));
       }
       throw error;
     }
@@ -158,10 +213,10 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
   fastify.post('/authorities', async (request, reply) => {
     let enrollmentId: string;
     try {
-      ({ enrollmentId } = await requireEnrollmentAuth(request, store()));
+      ({ enrollmentId } = requireEnrollmentAuth(request, store()));
     } catch (error) {
-      if (error instanceof TrustedAuthError) {
-        return sendTrustedAuthError(reply, error);
+      if (error instanceof EnrollmentAuthError) {
+        return sendContractError(reply, error.contract, statusForContract(error.contract));
       }
       throw error;
     }
@@ -235,45 +290,65 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
   });
 
   fastify.get<{ Params: { id: string } }>('/authorities/:id', async (request, reply) => {
+    let principal: AuthzPrincipal;
     try {
-      await requireEnrollmentAuth(request, store());
+      principal = await requireEnrollmentOrTrustedWriter(request, store());
     } catch (error) {
-      if (error instanceof TrustedAuthError) {
-        try {
-          await requireTrustedWriterBearer(request);
-        } catch (inner) {
-          if (inner instanceof TrustedAuthError) {
-            return sendTrustedAuthError(reply, error);
-          }
-          throw inner;
-        }
-      } else {
-        throw error;
+      if (error instanceof EnrollmentAuthError) {
+        return sendContractError(reply, error.contract, statusForContract(error.contract));
       }
+      throw error;
     }
     const result = store().inspectAuthority(request.params.id);
     if (!result.ok) {
       return sendContractError(reply, result, statusForContract(result));
     }
+    if (
+      principal.kind === 'enrollment' &&
+      result.data.enrollmentId !== principal.enrollmentId
+    ) {
+      return sendContractError(
+        reply,
+        {
+          ok: false,
+          error_code: 'AUTHORITY_UNKNOWN',
+          message: 'Unknown authority',
+          correlation: { authorityId: request.params.id },
+        },
+        404,
+      );
+    }
     return { ok: true, data: result.data };
   });
 
   fastify.post<{ Params: { id: string } }>('/authorities/:id/revoke', async (request, reply) => {
+    let principal: AuthzPrincipal;
     try {
-      await requireEnrollmentAuth(request, store());
+      principal = await requireEnrollmentOrTrustedWriter(request, store());
     } catch (error) {
-      if (error instanceof TrustedAuthError) {
-        try {
-          await requireTrustedWriterBearer(request);
-        } catch (inner) {
-          if (inner instanceof TrustedAuthError) {
-            return sendTrustedAuthError(reply, error);
-          }
-          throw inner;
-        }
-      } else {
-        throw error;
+      if (error instanceof EnrollmentAuthError) {
+        return sendContractError(reply, error.contract, statusForContract(error.contract));
       }
+      throw error;
+    }
+    const inspected = store().inspectAuthority(request.params.id);
+    if (!inspected.ok) {
+      return sendContractError(reply, inspected, statusForContract(inspected));
+    }
+    if (
+      principal.kind === 'enrollment' &&
+      inspected.data.enrollmentId !== principal.enrollmentId
+    ) {
+      return sendContractError(
+        reply,
+        {
+          ok: false,
+          error_code: 'AUTHORITY_UNKNOWN',
+          message: 'Unknown authority',
+          correlation: { authorityId: request.params.id },
+        },
+        404,
+      );
     }
     const result = store().revokeAuthority(request.params.id);
     if (!result.ok) {
@@ -283,28 +358,51 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
   });
 
   fastify.get('/audit', async (request, reply) => {
+    let principal: AuthzPrincipal;
     try {
-      await requireEnrollmentAuth(request, store());
+      principal = await requireEnrollmentOrTrustedWriter(request, store());
     } catch (error) {
-      if (error instanceof TrustedAuthError) {
-        try {
-          await requireTrustedWriterBearer(request);
-        } catch (inner) {
-          if (inner instanceof TrustedAuthError) {
-            return sendTrustedAuthError(reply, error);
-          }
-          throw inner;
-        }
-      } else {
-        throw error;
+      if (error instanceof EnrollmentAuthError) {
+        return sendContractError(reply, error.contract, statusForContract(error.contract));
       }
+      throw error;
     }
     const q = request.query as Record<string, string | undefined>;
+    if (principal.kind === 'enrollment') {
+      if (q.enrollmentId && q.enrollmentId !== principal.enrollmentId) {
+        return sendContractError(
+          reply,
+          {
+            ok: false,
+            error_code: 'RESOURCE_OUT_OF_SCOPE',
+            message: 'Cannot query audit for another enrollment',
+            correlation: { enrollmentId: principal.enrollmentId },
+          },
+          403,
+        );
+      }
+      if (q.authorityId) {
+        const owned = store().inspectAuthority(q.authorityId);
+        if (!owned.ok || owned.data.enrollmentId !== principal.enrollmentId) {
+          return sendContractError(
+            reply,
+            {
+              ok: false,
+              error_code: 'AUTHORITY_UNKNOWN',
+              message: 'Unknown authority',
+              correlation: { authorityId: q.authorityId },
+            },
+            404,
+          );
+        }
+      }
+    }
     const events = store().listAuditEvents({
       runId: q.runId,
       attemptId: q.attemptId,
       authorityId: q.authorityId,
-      enrollmentId: q.enrollmentId,
+      enrollmentId:
+        principal.kind === 'enrollment' ? principal.enrollmentId : q.enrollmentId,
       requestId: q.requestId,
     });
     return { ok: true, data: { events } };

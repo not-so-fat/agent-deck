@@ -53,11 +53,13 @@ function toolsEqual(a: AllowedTool[], b: AllowedTool[]): boolean {
 }
 
 function mintParamsMatch(existing: ExecutionAuthority, input: MintAuthorityInput): boolean {
+  const storedTtlMs = Date.parse(existing.expiresAt) - Date.parse(existing.issuedAt);
   return (
     existing.runId === input.runId &&
     existing.attemptId === input.attemptId &&
     existing.deckId === input.deckId &&
     existing.audience === input.audience &&
+    storedTtlMs === input.ttlMs &&
     existing.allowedServices.length === input.allowedServices.length &&
     existing.allowedServices.every((s) => input.allowedServices.includes(s)) &&
     toolsEqual(existing.allowedTools, input.allowedTools)

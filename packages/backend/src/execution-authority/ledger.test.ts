@@ -251,6 +251,21 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     if (conflict.ok) return;
     expect(conflict.error_code).toBe('IDEMPOTENCY_KEY_CONFLICT');
 
+    const ttlConflict = ledger.mintAuthority({
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
+      runId: 'run_a',
+      attemptId: 'attempt_a',
+      deckId: 'deck_dev',
+      audience: 'dealer-worker',
+      idempotencyKey: 'run_a:key',
+      allowedServices: ['svc_linear'],
+      allowedTools: [{ serviceId: 'svc_linear', toolName: 'get_issue' }],
+      ttlMs: 120_000,
+    });
+    expect(ttlConflict.ok).toBe(false);
+    if (ttlConflict.ok) return;
+    expect(ttlConflict.error_code).toBe('IDEMPOTENCY_KEY_CONFLICT');
+
     const unknown = ledger.invokeAuthorizedCall({
       authorityId: 'authz_missing',
       authoritySecret: 'seas_x',

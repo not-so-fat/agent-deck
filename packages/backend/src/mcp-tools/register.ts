@@ -96,7 +96,27 @@ async function resolveDeckForBind(
   }
 }
 
+/** Tools allowed under short-lived execution authority (everything else → INTERACTION_REQUIRED). */
+const EXECUTION_AUTHORITY_ALLOWED_TOOLS = new Set([
+  'get_session_binding',
+  'get_bound_deck',
+  'list_service_tools',
+  'call_service_tool',
+  'get_playbook',
+]);
+
 export function registerMcpTools(host: McpToolHost): void {
+  const rawRegister = host.registerTool.bind(host);
+  host.registerTool = (name, config, handler) => {
+    rawRegister(name, config, async (...args: unknown[]) => {
+      if (!EXECUTION_AUTHORITY_ALLOWED_TOOLS.has(name)) {
+        const blocked = denyControlPlaneUnderAuthority(host);
+        if (blocked) return blocked;
+      }
+      return handler(...(args as Parameters<typeof handler>));
+    });
+  };
+
   registerRuntimeTools(host);
   if (profileIncludes(host.profile, 'editing')) {
     registerEditingTools(host);

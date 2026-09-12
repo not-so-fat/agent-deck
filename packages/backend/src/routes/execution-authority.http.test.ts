@@ -187,4 +187,80 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     expect(audit.ok).toBe(true);
     expect((auditBody.data?.events.length ?? 0) > 0).toBe(true);
   });
+
+  it('isolates enrollments, empty toolScopeHint, and enrollment error codes', async () => {
+    const enrollA = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinatorId: 'coord-a', allowedDeckIds: [deckId] }),
+    });
+    const enrollB = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinatorId: 'coord-b', allowedDeckIds: [deckId] }),
+    });
+    const a = (await enrollA.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const b = (await enrollB.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const bearerA = `Bearer ${a.data.enrollment.enrollmentId}:${a.data.enrollmentSecret}`;
+    const bearerB = `Bearer ${b.data.enrollment.enrollmentId}:${b.data.enrollmentSecret}`;
+
+    const mint = await fetch(`${baseUrl}/api/execution-authority/authorities`, {
+      method: 'POST',
+      headers: { Authorization: bearerA, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enrollmentId: a.data.enrollment.enrollmentId,
+        runId: 'run_iso',
+        attemptId: 'attempt_1',
+        deckId,
+        audience: 'dealer-worker',
+        idempotencyKey: 'run_iso:1',
+        ttlMs: 60_000,
+        toolScopeHint: [],
+      }),
+    });
+    const mintBody = (await mint.json()) as {
+      ok?: boolean;
+      data?: { authority: { authorityId: string; allowedTools: unknown[] } };
+    };
+    expect(mint.ok).toBe(true);
+    expect(mintBody.data?.authority.allowedTools).toEqual([]);
+
+    const crossRevoke = await fetch(
+      `${baseUrl}/api/execution-authority/authorities/${mintBody.data!.authority.authorityId}/revoke`,
+      { method: 'POST', headers: { Authorization: bearerB } },
+    );
+    expect(crossRevoke.status).toBe(404);
+    const crossBody = (await crossRevoke.json()) as { error_code?: string };
+    expect(crossBody.error_code).toBe('AUTHORITY_UNKNOWN');
+
+    const stillLive = await fetch(
+      `${baseUrl}/api/execution-authority/authorities/${mintBody.data!.authority.authorityId}`,
+      { headers: { Authorization: bearerA } },
+    );
+    const liveBody = (await stillLive.json()) as { data?: { status: string } };
+    expect(liveBody.data?.status).toBe('live');
+
+    await fetch(
+      `${baseUrl}/api/execution-authority/enrollments/${a.data.enrollment.enrollmentId}/revoke`,
+      { method: 'POST', headers: { Authorization: adminBearer } },
+    );
+    const afterRevoke = await fetch(`${baseUrl}/api/execution-authority/decks`, {
+      headers: { Authorization: bearerA },
+    });
+    expect(afterRevoke.status).toBe(403);
+    expect((await afterRevoke.json() as { error_code?: string }).error_code).toBe(
+      'ENROLLMENT_REVOKED',
+    );
+
+    const unknownEnroll = await fetch(`${baseUrl}/api/execution-authority/decks`, {
+      headers: { Authorization: 'Bearer enr_deadbeefdeadbeefdeadbeefdeadbeef:enrs_nope' },
+    });
+    expect((await unknownEnroll.json() as { error_code?: string }).error_code).toBe(
+      'COORDINATOR_NOT_ENROLLED',
+    );
+  });
 });
