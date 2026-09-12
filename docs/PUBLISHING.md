@@ -71,12 +71,12 @@ npm run build:release
 npm run release:smoke   # also runs inside build:release — fresh HOME + npm pack + setup artifacts
 npx @agent-deck/cli doctor
 npx @agent-deck/cli start
-# opens dashboard with bootstrap cookie; --no-open for headless
+# opens dashboard with a secure session; --no-open for headless
 ```
 
 **Release integration smoke** (`scripts/release-smoke.sh`) simulates what a user gets from npm: pack CLI, `setup --client claude` in a clean `HOME`, assert `statusline.sh` + `settings.json` exist, stdout is one clean line. Playbook: [examples/playbooks/npm-release-integration-smoke.md](./examples/playbooks/npm-release-integration-smoke.md).
 
-Dashboard: opened by `start` / `agent-deck open` (API listens on `http://127.0.0.1:1111`; do not bookmark the bare origin)  
+Dashboard: opened by `start` / `agent-deck open`; `status` never prints the disposable bootstrap URL (API listens on `http://127.0.0.1:1111`)
 MCP: `http://127.0.0.1:1110/mcp`
 
 Dev repo (`npm run dev:all`) uses `:8000` / `:3001` so both can run together — see [SETUP.md](./SETUP.md#ports).

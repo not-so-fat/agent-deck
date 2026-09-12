@@ -200,7 +200,7 @@ The MCP adapter preserves these codes instead of collapsing them into generic to
 
 The dashboard admin secret remains outside the workspace in a user-only store. A local launcher exchanges it for a short-lived nonce, then the dashboard establishes an `HttpOnly`, `SameSite` authenticated cookie. Dashboard HTTP handlers use the same mandatory policy registry as MCP operations; dashboard routes resolve the cookie to a dashboard principal, while any intentionally public bootstrap or health route explicitly declares `allowPublic` and cannot access principal-scoped resources. Direct loopback access or a caller-supplied header never confers agent-admin or dashboard authority. The menubar may open the approval URL but cannot approve it.
 
-**As-built (1.7.1):** `agent-deck start` / `setup --start` open a bootstrapped URL by default; `agent-deck open` and menubar “Open dashboard” mint on click. Bare `http://127.0.0.1:1111` without `?bootstrap=` is not a supported entry. The SPA awaits bootstrap before the first API fetch.
+**As-built (NOT-67):** `agent-deck start` / `setup --start` open a bootstrapped URL by default; `agent-deck open` and menubar “Open dashboard” mint on click. Disposable bootstrap URLs are never printed as reusable links. Dashboard sessions are stored as hashes in SQLite with a 24-hour sliding inactivity lease; the persistent browser cookie is retained for up to 30 days, but server-side expiry remains authoritative. Bare `http://127.0.0.1:1111` without an existing cookie or `?bootstrap=` remains unauthorized. The SPA awaits bootstrap before the first API fetch and directs authentication failures to `agent-deck open`.
 
 ## 7. Migration and setup
 

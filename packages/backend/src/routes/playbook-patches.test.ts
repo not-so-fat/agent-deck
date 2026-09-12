@@ -13,8 +13,8 @@ import { PlaybookManager } from '../playbooks/playbook-manager';
 import { PatchManager } from '../playbooks/patch-manager';
 import { registerPlaybookPatchRoutes } from './playbook-patches';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
+import { TrustedSessionStore } from '../trusted-session/store';
 
-const dashboardHeaders = dashboardAuthHeaders();
 const agentHeaders = {
   [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
 };
@@ -26,6 +26,7 @@ describe('playbook-patches routes', () => {
   let patchManager: PatchManager;
   let app: ReturnType<typeof Fastify>;
   let playbookId: string;
+  let dashboardHeaders: Record<string, string>;
 
   beforeEach(async () => {
     dbPath = path.join(os.tmpdir(), `agent-deck-patch-routes-${Date.now()}.db`);
@@ -41,6 +42,9 @@ describe('playbook-patches routes', () => {
 
     app = Fastify();
     app.decorate('db', db);
+    const trustedSessionStore = new TrustedSessionStore(db.getSqliteDatabase());
+    app.decorate('trustedSessionStore', trustedSessionStore);
+    dashboardHeaders = dashboardAuthHeaders(trustedSessionStore);
     app.decorate('playbookManager', playbookManager);
     app.decorate('patchManager', patchManager);
     await app.register(registerPlaybookPatchRoutes, { prefix: '/api/playbook-patches' });

@@ -3,10 +3,7 @@ import type { FastifyRequest } from 'fastify';
 import { AGENT_DECK_DASHBOARD_COOKIE } from '@agent-deck/shared';
 
 import { parseBearerToken } from '../lib/http-auth';
-import { validateDashboardSessionToken } from '../trusted-session/auth';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
-
-export { validateDashboardSessionToken };
 
 export function parseDashboardCookie(request: FastifyRequest): string | null {
   const cookieHeader = request.headers.cookie;
@@ -25,7 +22,7 @@ export function parseDashboardCookie(request: FastifyRequest): string | null {
 
 export function isDashboardAuthenticated(request: FastifyRequest): boolean {
   const token = parseDashboardCookie(request);
-  return token !== null && validateDashboardSessionToken(token);
+  return token !== null && request.server.trustedSessionStore.validateAndTouchDashboardSession(token);
 }
 
 export async function isTrustedWriterBearer(request: FastifyRequest): Promise<boolean> {

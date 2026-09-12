@@ -81,19 +81,15 @@ export async function openDashboardInBrowser(
     return { code: 1, message: minted.error };
   }
   if (!minted.bootstrapped) {
-    console.warn(`[agent-deck] Opening without bootstrap cookie (${minted.reason})`);
-    console.warn('[agent-deck] Bare dashboard URLs show "No valid workspace grant" until bootstrapped.');
+    return {
+      code: 1,
+      message: `Could not create a secure dashboard session (${minted.reason})`,
+    };
   }
   openUrlInSystemBrowser(minted.url);
   return { code: 0, url: minted.url };
 }
 
-export function formatDashboardStatusLine(minted: MintDashboardUrlResult): string {
-  if (!minted.ok) {
-    return `Dashboard  (mint failed: ${minted.error} — try: agent-deck open)`;
-  }
-  if (minted.bootstrapped) {
-    return `Dashboard  ${minted.url}`;
-  }
-  return `Dashboard  ${minted.url}  (no bootstrap — run: agent-deck open)`;
+export function formatDashboardStatusLine(): string {
+  return 'Dashboard  open or reopen with: agent-deck open';
 }

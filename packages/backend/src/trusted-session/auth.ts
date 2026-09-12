@@ -1,9 +1,6 @@
-import { randomBytes } from 'node:crypto';
-
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
 import {
-  AGENT_DECK_DASHBOARD_COOKIE,
   AGENT_DECK_SESSION_HEADER,
   type AgentSessionMode,
   type RuntimeSession,
@@ -13,6 +10,7 @@ import {
 } from '@agent-deck/shared';
 
 import { parseBearerToken } from '../lib/http-auth';
+import { parseDashboardCookie } from '../lib/dashboard-auth';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from './admin-secret';
 import type { TrustedSessionStore } from './store';
 
@@ -45,46 +43,12 @@ export class TrustedAuthError extends Error {
   }
 }
 
-const dashboardSessions = new Map<string, { expiresAt: number }>();
-const DASHBOARD_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-
-
-function parseDashboardCookie(request: FastifyRequest): string | null {
-  const cookieHeader = request.headers.cookie;
-  if (!cookieHeader || typeof cookieHeader !== 'string') {
-    return null;
-  }
-  const prefix = `${AGENT_DECK_DASHBOARD_COOKIE}=`;
-  for (const part of cookieHeader.split(';')) {
-    const trimmed = part.trim();
-    if (trimmed.startsWith(prefix)) {
-      return decodeURIComponent(trimmed.slice(prefix.length));
-    }
-  }
-  return null;
-}
-
-export function createDashboardSessionToken(): string {
-  const token = randomBytes(32).toString('base64url');
-  dashboardSessions.set(token, { expiresAt: Date.now() + DASHBOARD_SESSION_TTL_MS });
-  return token;
-}
-
-export function validateDashboardSessionToken(token: string): boolean {
-  const entry = dashboardSessions.get(token);
-  if (!entry) {
-    return false;
-  }
-  if (entry.expiresAt <= Date.now()) {
-    dashboardSessions.delete(token);
-    return false;
-  }
-  return true;
-}
-
-async function resolveDashboardPrincipal(request: FastifyRequest): Promise<RequestPrincipal | null> {
+async function resolveDashboardPrincipal(
+  request: FastifyRequest,
+  store: TrustedSessionStore,
+): Promise<RequestPrincipal | null> {
   const dashboardToken = parseDashboardCookie(request);
-  if (dashboardToken && validateDashboardSessionToken(dashboardToken)) {
+  if (dashboardToken && store.validateAndTouchDashboardSession(dashboardToken)) {
     return { kind: 'dashboard' };
   }
 
@@ -147,7 +111,7 @@ export async function resolveRequestPrincipal(
   request: FastifyRequest,
   store: TrustedSessionStore,
 ): Promise<RequestPrincipal> {
-  const dashboard = await resolveDashboardPrincipal(request);
+  const dashboard = await resolveDashboardPrincipal(request, store);
   if (dashboard) {
     return dashboard;
   }

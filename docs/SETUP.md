@@ -115,7 +115,7 @@ agent-deck setup --client cursor --start
 
 # One-shot without curl:
 # npx @agent-deck/cli@latest install && npx @agent-deck/cli@latest setup --client cursor --start
-# Dashboard → agent-deck start (opens with bootstrap cookie) or agent-deck open
+# Dashboard → agent-deck start (opens securely) or agent-deck open
 # Dev repo uses :8000 / :3000
 ```
 
@@ -243,7 +243,7 @@ The terminal status line reflects the live MCP bind on the backend API; it stays
 
 ## Dashboard
 
-Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](#quick-start-npm--end-users). Dev: `npm run dev:all` then use the Vite UI. Do not open bare `http://127.0.0.1:1111` — without a bootstrap cookie the SPA shows **Error Loading Data** (dashboard session missing). That string overlaps MCP’s `GRANT_REQUIRED` / “No valid workspace grant”; MCP fix is `agent-deck use <deck>` in the workspace, not the dashboard cookie.
+Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](#quick-start-npm--end-users). Dev: `npm run dev:all` then use the Vite UI. `status` and start banners intentionally do not print the one-shot bootstrap URL. A valid dashboard session survives backend/browser restarts and renews for 24 hours after activity. If dashboard authority is missing or expired, the UI tells you to run `agent-deck open`; restarting the daemon is only for an actual API outage. Bare `http://127.0.0.1:1111` grants no authority by itself. MCP `GRANT_REQUIRED` is separate and is fixed with `agent-deck use <deck>` in the workspace.
 
 | Area | What it does |
 |------|----------------|

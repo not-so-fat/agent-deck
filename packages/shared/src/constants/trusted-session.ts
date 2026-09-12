@@ -18,3 +18,9 @@ export const ADMIN_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
 /** Dashboard bootstrap nonce validity. */
 export const DASHBOARD_NONCE_TTL_MS = 2 * 60 * 1000;
+
+/** Dashboard session inactivity lease. Renewed by authenticated dashboard activity. */
+export const DASHBOARD_SESSION_LEASE_MS = 24 * 60 * 60 * 1000;
+
+/** Browser retention for the opaque dashboard cookie; server-side inactivity still controls authority. */
+export const DASHBOARD_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;

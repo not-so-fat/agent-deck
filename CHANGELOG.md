@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fix: durable dashboard entry and recovery (NOT-67)
+
+- **Dashboard sessions survive backend and browser restarts:** opaque tokens are stored as SHA-256 hashes in SQLite, use a 24-hour sliding inactivity lease, and the browser retains the cookie for up to 30 days. Bare loopback access still grants no authority.
+- **Disposable launch credentials are no longer printed:** `start` and `status` direct users to `agent-deck open`; only the launcher receives the short-lived, one-shot `?bootstrap=` URL.
+- **Actionable recovery UI:** expired or missing dashboard authentication now says to run `agent-deck open`; daemon restart guidance is reserved for real API failures. Consumed or expired bootstrap values are removed from the address bar.
+
 ## 1.7.6 — 2026-09-10
 
 ### Fix: statusline Unbound when live display has no workspace folder

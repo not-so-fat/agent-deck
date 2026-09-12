@@ -61,6 +61,6 @@ export async function runOpenCommand(args: string[]): Promise<number> {
     console.error(`[agent-deck] ${result.message ?? 'Failed to open dashboard'}`);
     return result.code;
   }
-  console.log(`Opened ${result.url}`);
+  console.log('Opened dashboard in your browser.');
   return 0;
 }
