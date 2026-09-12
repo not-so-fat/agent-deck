@@ -30,8 +30,7 @@ export type ContractErrorReason =
   | 'enrollment_revoked'
   | 'explicit_revoke'
   | 'params_mismatch'
-  | 'ttl_non_positive'
-  | 'secret_not_reissued';
+  | 'ttl_non_positive';
 
 export type AuditEventKind =
   | 'enrollment_created'
