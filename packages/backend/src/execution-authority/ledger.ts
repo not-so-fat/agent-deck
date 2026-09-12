@@ -355,6 +355,15 @@ export class ExecutionAuthorityLedger {
     };
   }
 
+  /**
+   * Non-auditing lookup for ownership / existence checks.
+   * Does not refresh expiry (avoids authority_expired side effects during probes).
+   */
+  peekAuthority(authorityId: string): ExecutionAuthority | undefined {
+    const authority = this.authorities.get(authorityId);
+    return authority ? cloneAuthority(authority) : undefined;
+  }
+
   inspectAuthority(authorityId: string): ContractResult<ExecutionAuthority> {
     const authority = this.refreshAuthorityStatus(authorityId);
     if (!authority) {

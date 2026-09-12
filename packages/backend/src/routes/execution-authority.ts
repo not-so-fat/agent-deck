@@ -299,13 +299,10 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
       }
       throw error;
     }
-    const result = store().inspectAuthority(request.params.id);
-    if (!result.ok) {
-      return sendContractError(reply, result, statusForContract(result));
-    }
+    const peeked = store().peekAuthority(request.params.id);
     if (
-      principal.kind === 'enrollment' &&
-      result.data.enrollmentId !== principal.enrollmentId
+      !peeked ||
+      (principal.kind === 'enrollment' && peeked.enrollmentId !== principal.enrollmentId)
     ) {
       return sendContractError(
         reply,
@@ -317,6 +314,10 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
         },
         404,
       );
+    }
+    const result = store().inspectAuthority(request.params.id);
+    if (!result.ok) {
+      return sendContractError(reply, result, statusForContract(result));
     }
     return { ok: true, data: result.data };
   });
@@ -331,13 +332,10 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
       }
       throw error;
     }
-    const inspected = store().inspectAuthority(request.params.id);
-    if (!inspected.ok) {
-      return sendContractError(reply, inspected, statusForContract(inspected));
-    }
+    const peeked = store().peekAuthority(request.params.id);
     if (
-      principal.kind === 'enrollment' &&
-      inspected.data.enrollmentId !== principal.enrollmentId
+      !peeked ||
+      (principal.kind === 'enrollment' && peeked.enrollmentId !== principal.enrollmentId)
     ) {
       return sendContractError(
         reply,
@@ -382,8 +380,8 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
         );
       }
       if (q.authorityId) {
-        const owned = store().inspectAuthority(q.authorityId);
-        if (!owned.ok || owned.data.enrollmentId !== principal.enrollmentId) {
+        const owned = store().peekAuthority(q.authorityId);
+        if (!owned || owned.enrollmentId !== principal.enrollmentId) {
           return sendContractError(
             reply,
             {

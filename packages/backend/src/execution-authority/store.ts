@@ -280,6 +280,11 @@ export class ExecutionAuthorityStore {
     return this.runMutating(() => this.ledger.mintAuthority(input)) as ContractResult<MintAuthorityResult>;
   }
 
+  /** Non-auditing existence/ownership lookup (see ledger.peekAuthority). */
+  peekAuthority(authorityId: string): ExecutionAuthority | undefined {
+    return this.ledger.peekAuthority(authorityId);
+  }
+
   inspectAuthority(authorityId: string): ContractResult<ExecutionAuthority> {
     return this.runMutating(() => this.ledger.inspectAuthority(authorityId)) as ContractResult<ExecutionAuthority>;
   }

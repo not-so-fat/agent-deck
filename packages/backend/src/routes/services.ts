@@ -20,6 +20,7 @@ import {
   boundDeckScopeResponse,
   requireServiceOnBoundDeck,
 } from '../lib/bound-deck-scope';
+import { requireAuthorityToolAllowed } from '../lib/execution-authority-http';
 import {
   requireDashboard,
   RoutePolicyError,
@@ -384,6 +385,7 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   fastify.post<ServiceCallRequest>('/:id/call', async (request, reply) => {
     try {
       await requireServiceOnBoundDeck(request, fastify.db, request.params.id);
+      requireAuthorityToolAllowed(request, request.params.id, request.body.toolName);
 
       const result = await fastify.serviceManager.callServiceTool({
         serviceId: request.params.id,

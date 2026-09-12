@@ -24,6 +24,14 @@ export async function requireBoundDeckScope(
     return deckId;
   }
 
+  // Defense in depth: execution authority never mutates deck composition (NOT-86).
+  if (request.requestPrincipal?.kind === 'execution-authority') {
+    throw new BoundDeckScopeError(
+      'Control-plane decision required; do not hold the worker',
+      'INTERACTION_REQUIRED',
+    );
+  }
+
   const boundDeckId = await resolveAgentDeckId(request, db);
   if (deckId !== boundDeckId) {
     throw new BoundDeckScopeError(

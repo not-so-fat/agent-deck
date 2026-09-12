@@ -263,4 +263,149 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
       'COORDINATOR_NOT_ENROLLED',
     );
   });
+
+  it('denies out-of-snapshot HTTP tool calls and control-plane deck mutations', async () => {
+    const service = await server!.db.createService({
+      name: 'ea-http-svc',
+      type: 'mcp',
+      url: 'http://127.0.0.1:9/mcp',
+    });
+    const other = await server!.db.createService({
+      name: 'ea-http-other',
+      type: 'mcp',
+      url: 'http://127.0.0.1:9/other',
+    });
+    await server!.db.addServiceToDeck({ deckId, serviceId: service.id, position: 0 });
+
+    const enroll = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinatorId: 'coord-contain', allowedDeckIds: [deckId] }),
+    });
+    const enrollBody = (await enroll.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const enrollmentBearer = `Bearer ${enrollBody.data.enrollment.enrollmentId}:${enrollBody.data.enrollmentSecret}`;
+
+    const mint = await fetch(`${baseUrl}/api/execution-authority/authorities`, {
+      method: 'POST',
+      headers: { Authorization: enrollmentBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enrollmentId: enrollBody.data.enrollment.enrollmentId,
+        runId: 'run_contain',
+        attemptId: 'attempt_1',
+        deckId,
+        audience: 'dealer-worker',
+        idempotencyKey: 'run_contain:1',
+        ttlMs: 60_000,
+        toolScopeHint: [{ serviceId: service.id, toolName: 'ping' }],
+      }),
+    });
+    const mintBody = (await mint.json()) as {
+      data?: { authority: { authorityId: string }; authoritySecret: string };
+    };
+    expect(mint.ok).toBe(true);
+    const authorityBearer = `Bearer ${mintBody.data!.authority.authorityId}:${mintBody.data!.authoritySecret}`;
+
+    const oosCall = await fetch(`${baseUrl}/api/services/${service.id}/call`, {
+      method: 'POST',
+      headers: { Authorization: authorityBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolName: 'not-in-snapshot', arguments: {} }),
+    });
+    expect(oosCall.status).toBe(403);
+    expect((await oosCall.json() as { error_code?: string }).error_code).toBe(
+      'RESOURCE_OUT_OF_SCOPE',
+    );
+
+    const mutation = await fetch(`${baseUrl}/api/decks/${deckId}/services`, {
+      method: 'POST',
+      headers: { Authorization: authorityBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serviceId: other.id }),
+    });
+    expect(mutation.status).toBe(403);
+    expect((await mutation.json() as { error_code?: string }).error_code).toBe(
+      'INTERACTION_REQUIRED',
+    );
+  });
+
+  it('cross-enrollment inspect/revoke/audit probes do not pollute victim audit', async () => {
+    const enrollA = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinatorId: 'coord-audit-a', allowedDeckIds: [deckId] }),
+    });
+    const enrollB = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinatorId: 'coord-audit-b', allowedDeckIds: [deckId] }),
+    });
+    const a = (await enrollA.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const b = (await enrollB.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const bearerA = `Bearer ${a.data.enrollment.enrollmentId}:${a.data.enrollmentSecret}`;
+    const bearerB = `Bearer ${b.data.enrollment.enrollmentId}:${b.data.enrollmentSecret}`;
+
+    const mint = await fetch(`${baseUrl}/api/execution-authority/authorities`, {
+      method: 'POST',
+      headers: { Authorization: bearerA, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enrollmentId: a.data.enrollment.enrollmentId,
+        runId: 'run_audit_probe',
+        attemptId: 'attempt_1',
+        deckId,
+        audience: 'dealer-worker',
+        idempotencyKey: 'run_audit_probe:1',
+        ttlMs: 60_000,
+        toolScopeHint: [],
+      }),
+    });
+    const mintBody = (await mint.json()) as {
+      data: { authority: { authorityId: string } };
+    };
+    const authorityId = mintBody.data.authority.authorityId;
+
+    const before = await fetch(
+      `${baseUrl}/api/execution-authority/audit?enrollmentId=${encodeURIComponent(a.data.enrollment.enrollmentId)}`,
+      { headers: { Authorization: bearerA } },
+    );
+    const beforeBody = (await before.json()) as {
+      data: { events: Array<{ kind: string; correlation: { authorityId?: string } }> };
+    };
+    const beforeInspected = beforeBody.data.events.filter(
+      (e) => e.kind === 'authority_inspected' && e.correlation.authorityId === authorityId,
+    ).length;
+
+    const probeInspect = await fetch(
+      `${baseUrl}/api/execution-authority/authorities/${authorityId}`,
+      { headers: { Authorization: bearerB } },
+    );
+    expect(probeInspect.status).toBe(404);
+
+    const probeRevoke = await fetch(
+      `${baseUrl}/api/execution-authority/authorities/${authorityId}/revoke`,
+      { method: 'POST', headers: { Authorization: bearerB } },
+    );
+    expect(probeRevoke.status).toBe(404);
+
+    const probeAudit = await fetch(
+      `${baseUrl}/api/execution-authority/audit?authorityId=${encodeURIComponent(authorityId)}`,
+      { headers: { Authorization: bearerB } },
+    );
+    expect(probeAudit.status).toBe(404);
+
+    const after = await fetch(
+      `${baseUrl}/api/execution-authority/audit?enrollmentId=${encodeURIComponent(a.data.enrollment.enrollmentId)}`,
+      { headers: { Authorization: bearerA } },
+    );
+    const afterBody = (await after.json()) as {
+      data: { events: Array<{ kind: string; correlation: { authorityId?: string } }> };
+    };
+    const afterInspected = afterBody.data.events.filter(
+      (e) => e.kind === 'authority_inspected' && e.correlation.authorityId === authorityId,
+    ).length;
+    expect(afterInspected).toBe(beforeInspected);
+  });
 });

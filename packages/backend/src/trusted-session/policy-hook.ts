@@ -1,5 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
+import { trustedSessionError } from '@agent-deck/shared';
+
+import { isExecutionAuthorityHttpAllowed } from '../lib/execution-authority-http';
 import {
   enforcePolicy,
   requireTrustedWriterBearer,
@@ -81,6 +84,18 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
       );
       enforcePolicy(policy, principal);
       request.requestPrincipal = principal;
+
+      // NOT-86: authority bearers must not inherit full agent HTTP surface.
+      if (
+        principal.kind === 'execution-authority' &&
+        !isExecutionAuthorityHttpAllowed(request.method, pathname)
+      ) {
+        const body = trustedSessionError(
+          'INTERACTION_REQUIRED',
+          'Control-plane decision required; do not hold the worker',
+        );
+        return reply.status(403).send({ ...body, ok: false });
+      }
     } catch (error) {
       if (error instanceof TrustedAuthError) {
         return sendTrustedAuthError(reply, error);
