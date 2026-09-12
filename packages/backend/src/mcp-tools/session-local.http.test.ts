@@ -38,11 +38,13 @@ describe('MCP session-local context (NOT-84)', () => {
   let previousSkipGrant: string | undefined;
   let previousSkipAdmin: string | undefined;
   let previousStubSync: string | undefined;
+  let previousUnregisterTimeout: string | undefined;
 
   beforeEach(() => {
     previousSkipGrant = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    previousUnregisterTimeout = process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS;
     process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = '0';
     process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     process.env.AGENT_DECK_STUB_SYNC = 'off';
@@ -71,11 +73,18 @@ describe('MCP session-local context (NOT-84)', () => {
     } else {
       process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
     }
+    if (previousUnregisterTimeout === undefined) {
+      delete process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS;
+    } else {
+      process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS = previousUnregisterTimeout;
+    }
   });
 
   async function buildListeningBackend(opts?: {
     delayScopeDeckMs?: number;
     onScopeHit?: (hit: ScopeHit) => void;
+    /** Never respond to DELETE /api/scope/live-display/:id (hang until client abort). */
+    hangLiveDisplayDelete?: boolean;
   }) {
     const db = new DatabaseManager(`:memory:${Math.random()}`);
     const deckAlpha = await db.createDeck({ name: 'alpha' });
@@ -97,7 +106,7 @@ describe('MCP session-local context (NOT-84)', () => {
     store.activateGrant(store.createPendingGrant(workspaceB.id, deckBeta.id, secretB).id);
 
     const fastify = Fastify();
-    if (opts?.delayScopeDeckMs || opts?.onScopeHit) {
+    if (opts?.delayScopeDeckMs || opts?.onScopeHit || opts?.hangLiveDisplayDelete) {
       fastify.addHook('onRequest', async (request) => {
         const pathname = request.url.split('?')[0];
         if (pathname === '/api/scope/deck' || pathname.startsWith('/api/decks/')) {
@@ -109,6 +118,15 @@ describe('MCP session-local context (NOT-84)', () => {
         }
         if (opts.delayScopeDeckMs && pathname === '/api/scope/deck') {
           await new Promise((resolve) => setTimeout(resolve, opts.delayScopeDeckMs));
+        }
+        if (
+          opts.hangLiveDisplayDelete &&
+          request.method === 'DELETE' &&
+          /^\/api\/scope\/live-display\/[^/]+$/.test(pathname)
+        ) {
+          await new Promise(() => {
+            /* never resolves — client AbortController must cut this short */
+          });
         }
       });
     }
@@ -327,5 +345,53 @@ describe('MCP session-local context (NOT-84)', () => {
     expect(stillBound.data.effective_deck_id).toBe(deckBeta.id);
     expect(stillBound.data.effective_deck_name).toBe('beta');
     expect(liveDisplayRegistry.list().some((e) => e.mcpSessionId === sessionB)).toBe(true);
+  });
+
+  it('hung live-display DELETE still clears session maps after abort timeout', async () => {
+    process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS = '40';
+    const { backendUrl, secretA, workspaceRootA, deckAlpha, liveDisplayRegistry } =
+      await buildListeningBackend({ hangLiveDisplayDelete: true });
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const sessionId = await openSession(started.port, 1, secretA);
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot: workspaceRootA, deckId: deckAlpha.id },
+      2,
+      secretA,
+    );
+    expect(bound.isError).toBe(false);
+    expect(liveDisplayRegistry.list().some((e) => e.mcpSessionId === sessionId)).toBe(true);
+
+    const internals = mcpServer as unknown as {
+      sessionBinding: { getBinding: (id: string) => { runtimeSessionId?: string } };
+      badgeBySession: Map<string, string>;
+      lastTouchAtMs: Map<string, number>;
+    };
+    expect(internals.sessionBinding.getBinding(sessionId).runtimeSessionId).toBeTruthy();
+    expect(internals.badgeBySession.has(sessionId)).toBe(true);
+
+    const close = await fetch(`http://127.0.0.1:${started.port}/mcp`, {
+      method: 'DELETE',
+      headers: {
+        Accept: 'application/json, text/event-stream',
+        'mcp-session-id': sessionId,
+        Authorization: `Bearer ${secretA}`,
+      },
+    });
+    expect(close.ok).toBe(true);
+
+    // Abort fires at ~40ms; wait past that so .finally() can clear maps.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    // DELETE never completed — registry still holds the row.
+    expect(liveDisplayRegistry.list().some((e) => e.mcpSessionId === sessionId)).toBe(true);
+    // Local maps must still clear (the review regression).
+    expect(internals.sessionBinding.getBinding(sessionId).runtimeSessionId).toBeUndefined();
+    expect(internals.badgeBySession.has(sessionId)).toBe(false);
+    expect(internals.lastTouchAtMs.has(sessionId)).toBe(false);
   });
 });

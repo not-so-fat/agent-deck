@@ -198,11 +198,23 @@ export class AgentDeckMCPServer {
 
   private static readonly UNREGISTER_TIMEOUT_MS = 3_000;
 
+  /** Override via AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS (tests use a short value). */
+  private static unregisterTimeoutMs(): number {
+    const raw = process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS;
+    if (!raw) {
+      return AgentDeckMCPServer.UNREGISTER_TIMEOUT_MS;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0
+      ? parsed
+      : AgentDeckMCPServer.UNREGISTER_TIMEOUT_MS;
+  }
+
   private async unregisterLiveDisplay(sessionId: string): Promise<void> {
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(),
-      AgentDeckMCPServer.UNREGISTER_TIMEOUT_MS,
+      AgentDeckMCPServer.unregisterTimeoutMs(),
     );
     try {
       await this.callBackendAPI(
