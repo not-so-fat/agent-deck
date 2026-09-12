@@ -21,6 +21,65 @@ export function mcpPolicyError(code: TrustedSessionErrorCode) {
   };
 }
 
+export function mcpContractError(error_code: string, message: string, correlation?: Record<string, unknown>) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({ ok: false, error_code, message, correlation }),
+      },
+    ],
+    isError: true,
+  };
+}
+
+/** Control-plane ops are never available under short-lived execution authority. */
+export function denyControlPlaneUnderAuthority(
+  host: McpToolHost,
+): ReturnType<typeof mcpContractError> | null {
+  const auth = host.sessionBinding.getExecutionAuthority?.(host.getSessionId());
+  if (!auth) return null;
+  return mcpContractError(
+    'INTERACTION_REQUIRED',
+    'Control-plane decision required; do not hold the worker',
+    { authorityId: auth.authorityId, requestId: `req_authority_control_${Date.now()}` },
+  );
+}
+
+export async function authorizeExecutionAuthorityTool(
+  host: McpToolHost,
+  serviceId: string,
+  toolName: string,
+): Promise<ReturnType<typeof mcpContractError> | null> {
+  const auth = host.sessionBinding.getExecutionAuthority?.(host.getSessionId());
+  if (!auth) return null;
+  const res = await fetch(`${host.backendUrl}/api/execution-authority/authorize-call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({
+      authorityId: auth.authorityId,
+      authoritySecret: auth.authoritySecret,
+      audience: auth.audience,
+      serviceId,
+      toolName,
+    }),
+  });
+  const body = (await res.json()) as {
+    ok?: boolean;
+    error_code?: string;
+    message?: string;
+    correlation?: Record<string, unknown>;
+  };
+  if (!res.ok || !body.ok) {
+    return mcpContractError(
+      body.error_code ?? 'RESOURCE_OUT_OF_SCOPE',
+      body.message ?? 'Authority denied tool call',
+      body.correlation,
+    );
+  }
+  return null;
+}
+
 function bodyMessage(code: TrustedSessionErrorCode): string {
   switch (code) {
     case 'ADMIN_REQUIRED':

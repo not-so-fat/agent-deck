@@ -26,6 +26,7 @@ import { runReindexCommand, runStoreCommand } from './store';
 import { runUpgrade } from './upgrade';
 import { runInstall } from './install';
 import { runUseCommand } from './use';
+import { runCoordinatorCommand } from './coordinator';
 import { runMcpLaunch } from './mcp-launcher';
 import { getAgentDeckVersion } from './version';
 
@@ -53,6 +54,7 @@ function printUsage() {
   agent-deck menubar
   agent-deck setup --client cursor|claude|claude-desktop [--scope global|project] [--start]
   agent-deck use <deck> [--client cursor|claude|both] [--refresh] [--mcp-port PORT]
+  agent-deck coordinator enroll|status|revoke ...
   agent-deck install [--to VERSION] [--migrate-cli] [--purge-global]
   agent-deck upgrade [--check] [--to VERSION]
   agent-deck doctor
@@ -326,6 +328,8 @@ export async function runCli(argv: string[]): Promise<number> {
     }
     case 'use':
       return runUseCommand(rest);
+    case 'coordinator':
+      return runCoordinatorCommand(rest);
     case 'mcp-launch':
       return runMcpLaunch();
     case 'install':

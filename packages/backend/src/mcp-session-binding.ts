@@ -6,7 +6,7 @@ import {
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
 
-export type DeckBindingSource = 'grant' | 'session_override' | 'env';
+export type DeckBindingSource = 'grant' | 'session_override' | 'env' | 'execution_authority';
 
 export type SessionBindingSnapshot = {
   workspaceRoot?: string;
@@ -14,6 +14,10 @@ export type SessionBindingSnapshot = {
   runtimeSessionId?: string;
   mode?: 'normal' | 'agent-admin';
   deckSource?: DeckBindingSource;
+  /** Present when MCP session is authenticated with short-lived execution authority. */
+  authorityId?: string;
+  authoritySecret?: string;
+  audience?: string;
 };
 
 /** Per-MCP-session workspace + trusted runtime session. */
@@ -22,6 +26,10 @@ export class McpSessionBindingStore {
   private deckIdBySession = new Map<string, string>();
   private runtimeSessionByMcp = new Map<string, string>();
   private modeByMcp = new Map<string, 'normal' | 'agent-admin'>();
+  private authorityByMcp = new Map<
+    string,
+    { authorityId: string; authoritySecret: string; audience: string }
+  >();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -39,12 +47,42 @@ export class McpSessionBindingStore {
       mode?: 'normal' | 'agent-admin';
     },
   ): void {
+    this.authorityByMcp.delete(mcpSessionId);
     this.runtimeSessionByMcp.set(mcpSessionId, input.runtimeSessionId);
     this.deckIdBySession.set(mcpSessionId, input.deckId);
     this.modeByMcp.set(mcpSessionId, input.mode ?? 'normal');
     if (input.workspaceRoot) {
       this.workspaceBySession.set(mcpSessionId, path.resolve(input.workspaceRoot.trim()));
     }
+  }
+
+  setExecutionAuthority(
+    mcpSessionId: string,
+    input: {
+      authorityId: string;
+      authoritySecret: string;
+      deckId: string;
+      audience: string;
+      workspaceRoot?: string;
+    },
+  ): void {
+    this.runtimeSessionByMcp.delete(mcpSessionId);
+    this.modeByMcp.set(mcpSessionId, 'normal');
+    this.authorityByMcp.set(mcpSessionId, {
+      authorityId: input.authorityId,
+      authoritySecret: input.authoritySecret,
+      audience: input.audience,
+    });
+    this.deckIdBySession.set(mcpSessionId, input.deckId);
+    if (input.workspaceRoot) {
+      this.workspaceBySession.set(mcpSessionId, path.resolve(input.workspaceRoot.trim()));
+    }
+  }
+
+  getExecutionAuthority(
+    sessionId: string,
+  ): { authorityId: string; authoritySecret: string; audience: string } | undefined {
+    return this.authorityByMcp.get(sessionId);
   }
 
   setWorkspace(sessionId: string, workspaceRoot: string): void {
@@ -64,6 +102,7 @@ export class McpSessionBindingStore {
     this.deckIdBySession.delete(sessionId);
     this.runtimeSessionByMcp.delete(sessionId);
     this.modeByMcp.delete(sessionId);
+    this.authorityByMcp.delete(sessionId);
   }
 
   getWorkspace(sessionId: string): string | undefined {
@@ -96,18 +135,24 @@ export class McpSessionBindingStore {
     const sessionDeck = this.deckIdBySession.get(sessionId);
     const deckId = sessionDeck ?? this.defaultDeckId;
     const runtimeSessionId = this.runtimeSessionByMcp.get(sessionId);
+    const authority = this.authorityByMcp.get(sessionId);
     return {
       workspaceRoot: this.getWorkspace(sessionId),
       deckId,
       runtimeSessionId,
       mode: this.modeByMcp.get(sessionId),
-      deckSource: runtimeSessionId
-        ? 'grant'
-        : sessionDeck
-          ? 'session_override'
-          : this.defaultDeckId
-            ? 'env'
-            : undefined,
+      authorityId: authority?.authorityId,
+      authoritySecret: authority?.authoritySecret,
+      audience: authority?.audience,
+      deckSource: authority
+        ? 'execution_authority'
+        : runtimeSessionId
+          ? 'grant'
+          : sessionDeck
+            ? 'session_override'
+            : this.defaultDeckId
+              ? 'env'
+              : undefined,
     };
   }
 
@@ -122,6 +167,12 @@ export class McpSessionBindingStore {
       headers[AGENT_DECK_WORKSPACE_HEADER] = workspace;
     }
 
+    const authority = this.authorityByMcp.get(sessionId);
+    if (authority) {
+      headers.Authorization = `Bearer ${authority.authorityId}:${authority.authoritySecret}`;
+      return headers;
+    }
+
     const runtimeSessionId = this.getRuntimeSessionId(sessionId);
     if (runtimeSessionId) {
       headers[AGENT_DECK_SESSION_HEADER] = runtimeSessionId;
@@ -134,6 +185,10 @@ export class McpSessionBindingStore {
 export function resolveDeckBindingSource(binding: SessionBindingSnapshot): DeckBindingSource {
   if (binding.deckSource === 'grant') {
     return 'grant';
+  }
+  // Display schema does not yet include execution_authority — surface as session_override.
+  if (binding.deckSource === 'execution_authority') {
+    return 'session_override';
   }
   return binding.deckSource === 'env' ? 'env' : 'session_override';
 }

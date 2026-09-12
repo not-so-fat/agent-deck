@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
 import { parseBearerToken, parseWorkspaceGrantBearer } from './lib/http-auth';
+import { parseAuthorityBearer } from './execution-authority/bearer';
 import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error';
 import { formatMcpToolError } from './mcp-tools/policy';
 import {
@@ -617,6 +618,9 @@ export class AgentDeckMCPServer {
 
   private async refreshRuntimeSession(sessionId: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
     const binding = this.sessionBinding.getBinding(sessionId);
+    if (binding.authorityId && binding.deckId) {
+      return { mode: 'normal', deckId: binding.deckId };
+    }
     if (!binding.runtimeSessionId) {
       throw new Error('GRANT_REQUIRED');
     }
@@ -637,7 +641,16 @@ export class AgentDeckMCPServer {
 
   private parseGrantBearer(req: Request): { secret: string; claimedGrantId: string | null } | null {
     const raw = parseBearerToken({ headers: req.headers as Record<string, unknown> });
-    return raw ? parseWorkspaceGrantBearer(raw) : null;
+    if (!raw) return null;
+    if (parseAuthorityBearer(raw)) return null;
+    return parseWorkspaceGrantBearer(raw);
+  }
+
+  private parseAuthorityBearerCreds(
+    req: Request,
+  ): { authorityId: string; secret: string } | null {
+    const raw = parseBearerToken({ headers: req.headers as Record<string, unknown> });
+    return raw ? parseAuthorityBearer(raw) : null;
   }
 
   private sendGrantRequired(res: Response): void {
@@ -645,6 +658,63 @@ export class AgentDeckMCPServer {
       jsonrpc: '2.0',
       error: { code: -32001, message: 'GRANT_REQUIRED' },
       id: null,
+    });
+  }
+
+  private sendAuthorityError(res: Response, code: string): void {
+    res.status(401).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: code },
+      id: null,
+    });
+  }
+
+  private async authenticateExecutionAuthority(sessionId: string, req: Request): Promise<void> {
+    const creds = this.parseAuthorityBearerCreds(req);
+    if (!creds) {
+      throw new Error('AUTHORITY_SECRET_INVALID');
+    }
+
+    const response = await fetch(`${this.backendUrl}/api/execution-authority/mcp/connect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${creds.authorityId}:${creds.secret}`,
+      },
+      body: JSON.stringify({
+        authorityId: creds.authorityId,
+        authoritySecret: creds.secret,
+        audience: 'dealer-worker',
+      }),
+    });
+
+    const body = (await response.json()) as {
+      ok?: boolean;
+      error_code?: string;
+      data?: {
+        authorityId: string;
+        deckId: string;
+        audience: string;
+      };
+    };
+
+    if (!response.ok || !body.ok || !body.data) {
+      throw new Error(body.error_code ?? 'AUTHORITY_SECRET_INVALID');
+    }
+
+    const existing = this.sessionBinding.getBinding(sessionId);
+    const workspaceRoot =
+      readWorkspaceRootHeader(req) ??
+      existing.workspaceRoot ??
+      (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
+
+    this.sessionBinding.setExecutionAuthority(sessionId, {
+      authorityId: body.data.authorityId,
+      authoritySecret: creds.secret,
+      deckId: body.data.deckId,
+      audience: body.data.audience,
+      workspaceRoot,
     });
   }
 
@@ -711,13 +781,31 @@ export class AgentDeckMCPServer {
   }
 
   /**
-   * Re-validate workspace grant on every follow-up MCP HTTP request.
+   * Re-validate workspace grant or execution authority on every follow-up MCP HTTP request.
    * Fail closed with 401 — do not destroy the transport session so a correct
    * Bearer on the next attempt can succeed.
    * AGENT_DECK_MCP_SKIP_GRANT_AUTH=1 only relaxes *missing* Bearer (unit tests).
    */
   private async requireFollowUpGrant(sessionId: string, req: Request, res: Response): Promise<boolean> {
     const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
+    const authority = this.parseAuthorityBearerCreds(req);
+    if (authority) {
+      try {
+        await this.authenticateExecutionAuthority(sessionId, req);
+        return true;
+      } catch (error) {
+        console.warn(
+          '[agent-deck] Follow-up authority auth failed (transport kept):',
+          error instanceof Error ? error.message : error,
+        );
+        this.sendAuthorityError(
+          res,
+          error instanceof Error ? error.message : 'AUTHORITY_SECRET_INVALID',
+        );
+        return false;
+      }
+    }
+
     const grant = this.parseGrantBearer(req);
     if (!grant) {
       if (skipGrantAuth) {
@@ -775,9 +863,10 @@ export class AgentDeckMCPServer {
       return;
     }
 
+    const authorityCreds = this.parseAuthorityBearerCreds(req);
     const grant = this.parseGrantBearer(req);
     const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
-    if (!grant && !skipGrantAuth) {
+    if (!grant && !authorityCreds && !skipGrantAuth) {
       this.sendGrantRequired(res);
       return;
     }
@@ -788,7 +877,21 @@ export class AgentDeckMCPServer {
     // SKIP_GRANT_AUTH only allows *missing* Bearer (unit tests); a present Bearer
     // is always validated.
     const sessionId = randomUUID();
-    if (grant) {
+    if (authorityCreds) {
+      try {
+        await this.authenticateExecutionAuthority(sessionId, req);
+      } catch (error) {
+        console.warn(
+          '[agent-deck] Authority auth failed before MCP init:',
+          error instanceof Error ? error.message : error,
+        );
+        this.sendAuthorityError(
+          res,
+          error instanceof Error ? error.message : 'AUTHORITY_SECRET_INVALID',
+        );
+        return;
+      }
+    } else if (grant) {
       try {
         await this.authenticateTrustedSession(sessionId, req);
       } catch (error) {
