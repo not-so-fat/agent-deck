@@ -58,6 +58,41 @@ export type McpToolHost = {
 
 const cardTypeSchema = z.enum(['service', 'credential', 'playbook']);
 
+function isOutOfScopeError(error: unknown): boolean {
+  return error instanceof BackendApiError && error.errorCode === 'RESOURCE_OUT_OF_SCOPE';
+}
+
+/**
+ * Resolve deck id/name for bind/switch.
+ * GET /api/decks/:id is bound-deck scoped for agents, so a different-deck target
+ * must go through admin elevation + the admin deck list (metadata only).
+ */
+async function resolveDeckForBind(
+  host: McpToolHost,
+  deckRef: string,
+): Promise<{ id: string; name: string } | ReturnType<typeof mcpPolicyError>> {
+  try {
+    return await host.fetchDeck(deckRef);
+  } catch (error) {
+    if (!isOutOfScopeError(error)) {
+      throw error;
+    }
+    const denied = await requireMcpAdmin(host);
+    if (denied) {
+      return denied;
+    }
+    const decks = (await host.callBackendAPI('/api/decks')) as Array<{ id: string; name: string }>;
+    const needle = deckRef.trim();
+    const match = decks.find(
+      (deck) => deck.id === needle || deck.name.toLowerCase() === needle.toLowerCase(),
+    );
+    if (!match) {
+      throw new Error(`Deck not found: ${deckRef}`);
+    }
+    return { id: match.id, name: match.name };
+  }
+}
+
 export function registerMcpTools(host: McpToolHost): void {
   registerRuntimeTools(host);
   if (profileIncludes(host.profile, 'editing')) {
@@ -83,7 +118,11 @@ function registerRuntimeTools(host: McpToolHost): void {
     try {
       const sessionId = host.getSessionId();
       const current = host.sessionBinding.getBinding(sessionId);
-      const deck = await host.fetchDeck(deckId);
+      const resolved = await resolveDeckForBind(host, deckId);
+      if ('isError' in resolved) {
+        return resolved;
+      }
+      const deck = resolved;
       let bindResult: Record<string, unknown> | undefined;
 
       if (current.runtimeSessionId) {
@@ -177,7 +216,11 @@ function registerRuntimeTools(host: McpToolHost): void {
     try {
       const sessionId = host.getSessionId();
       const snapshot = host.sessionBinding.getBinding(sessionId);
-      const deck = await host.fetchDeck(deckId);
+      const resolved = await resolveDeckForBind(host, deckId);
+      if ('isError' in resolved) {
+        return resolved;
+      }
+      const deck = resolved;
       const workspaceRoot = snapshot.workspaceRoot;
       if (!workspaceRoot) {
         return host.toolError(new Error('workspaceRoot missing — call bind_workspace first'));
