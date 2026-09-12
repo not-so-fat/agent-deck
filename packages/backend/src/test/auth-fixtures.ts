@@ -4,11 +4,10 @@ import {
 } from '@agent-deck/shared';
 
 import type { DatabaseManager } from '../models/database';
-import { createDashboardSessionToken } from '../trusted-session/auth';
 import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
 
-export function dashboardAuthHeaders(): Record<string, string> {
-  const token = createDashboardSessionToken();
+export function dashboardAuthHeaders(store: TrustedSessionStore): Record<string, string> {
+  const token = store.createDashboardSession();
   return {
     cookie: `${AGENT_DECK_DASHBOARD_COOKIE}=${encodeURIComponent(token)}`,
   };

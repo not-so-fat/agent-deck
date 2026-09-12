@@ -14,8 +14,8 @@ import { PlaybookManager } from '../playbooks/playbook-manager';
 import { PatchManager } from '../playbooks/patch-manager';
 import { registerFeedbackSignalRoutes } from './feedback-signals';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
+import { TrustedSessionStore } from '../trusted-session/store';
 
-const dashboardHeaders = dashboardAuthHeaders();
 const agentHeaders = {
   [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
 };
@@ -28,6 +28,7 @@ describe('feedback-signals routes (dashboard)', () => {
   let app: ReturnType<typeof Fastify>;
   let playbookId: string;
   let deckId: string;
+  let dashboardHeaders: Record<string, string>;
 
   beforeEach(async () => {
     dbPath = path.join(os.tmpdir(), `agent-deck-feedback-${Date.now()}.db`);
@@ -47,6 +48,9 @@ describe('feedback-signals routes (dashboard)', () => {
 
     app = Fastify();
     app.decorate('db', db);
+    const trustedSessionStore = new TrustedSessionStore(db.getSqliteDatabase());
+    app.decorate('trustedSessionStore', trustedSessionStore);
+    dashboardHeaders = dashboardAuthHeaders(trustedSessionStore);
     app.decorate('playbookManager', playbookManager);
     app.decorate('patchManager', patchManager);
     await app.register(registerFeedbackSignalRoutes, { prefix: '/api/feedback-signals' });

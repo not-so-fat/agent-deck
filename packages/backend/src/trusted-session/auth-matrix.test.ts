@@ -14,7 +14,7 @@ import { DatabaseManager } from '../models/database';
 import { registerDeckRoutes } from '../routes/decks';
 import { registerPlaybookRoutes } from '../routes/playbooks';
 import { registerServiceRoutes } from '../routes/services';
-import { registerTrustedSessionRoutes } from '../routes/trusted-session';
+import { registerDashboardAuthRoutes, registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
@@ -87,11 +87,40 @@ describe('trusted session auth matrix (§8)', () => {
     await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
     await fastify.register(registerDeckRoutes, { prefix: '/api/decks', storeWriter: { writeDeck: async () => {} } });
     await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+    await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
     await fastify.ready();
     servers.push(fastify);
 
-    return { fastify, session, boundDeck, otherDeck, store, secret, workspaceRoot, serviceOnBound, playbook };
+    return { fastify, db, session, boundDeck, otherDeck, store, secret, workspaceRoot, serviceOnBound, playbook };
   }
+
+  it('exchanges a one-shot nonce for a persistent dashboard cookie', async () => {
+    const { fastify, db, store } = await buildApp();
+    store.createDashboardNonce('dashboard-test-nonce', new Date(Date.now() + 60_000).toISOString());
+
+    const exchange = await fastify.inject({
+      method: 'POST',
+      url: '/api/dashboard-auth/bootstrap/session',
+      payload: { nonce: 'dashboard-test-nonce' },
+    });
+    expect(exchange.statusCode).toBe(200);
+    const cookie = exchange.headers['set-cookie'];
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('SameSite=Strict');
+    expect(cookie).toContain('Max-Age=2592000');
+
+    const encodedToken = String(cookie).match(/agent_deck_dashboard=([^;]+)/)?.[1];
+    expect(encodedToken).toBeTruthy();
+    const restartedStore = new TrustedSessionStore(db.getSqliteDatabase());
+    expect(restartedStore.validateAndTouchDashboardSession(decodeURIComponent(encodedToken!))).toBe(true);
+
+    const replay = await fastify.inject({
+      method: 'POST',
+      url: '/api/dashboard-auth/bootstrap/session',
+      payload: { nonce: 'dashboard-test-nonce' },
+    });
+    expect(replay.statusCode).toBe(410);
+  });
 
   it('forged legacy deck header does not expand agent access to dashboard-only routes', async () => {
     const { fastify, session, otherDeck } = await buildApp();
@@ -138,7 +167,7 @@ describe('trusted session auth matrix (§8)', () => {
     const approve = await fastify.inject({
       method: 'POST',
       url: '/api/trusted-session/admin/approve',
-      headers: dashboardAuthHeaders(),
+      headers: dashboardAuthHeaders(store),
       payload: { challengeId, runtimeSessionId: session.sessionId },
     });
     expect(approve.statusCode).toBe(200);

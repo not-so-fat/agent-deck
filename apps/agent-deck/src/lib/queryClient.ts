@@ -1,15 +1,33 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-async function throwIfResNotOk(res: Response) {
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly errorCode?: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+export function isDashboardAuthError(error: unknown): boolean {
+  return error instanceof ApiError &&
+    (error.errorCode === "GRANT_REQUIRED" || error.errorCode === "DASHBOARD_REQUIRED");
+}
+
+export async function throwIfResNotOk(res: Response) {
   if (res.ok) return;
 
   let message = res.statusText;
+  let errorCode: string | undefined;
 
   try {
     const text = await res.text();
     try {
       const data = JSON.parse(text);
       message = data.error || data.message || message;
+      errorCode = typeof data.error_code === "string" ? data.error_code : undefined;
     } catch {
       if (text.trim()) message = `${res.status}: ${text}`;
     }
@@ -17,7 +35,7 @@ async function throwIfResNotOk(res: Response) {
     console.warn("Response body parsing failed:", err);
   }
 
-  throw new Error(message);
+  throw new ApiError(message, res.status, errorCode);
 }
 
 export async function apiRequest(

@@ -11,8 +11,8 @@ import {
 import { DatabaseManager } from '../models/database';
 import { registerExportImportRoutes } from './export-import';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
+import { TrustedSessionStore } from '../trusted-session/store';
 
-const dashboardHeaders = dashboardAuthHeaders();
 const agentHeaders = {
   [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
 };
@@ -21,12 +21,16 @@ describe('export-import routes', () => {
   let dbPath: string;
   let db: DatabaseManager;
   let app: ReturnType<typeof Fastify>;
+  let dashboardHeaders: Record<string, string>;
 
   beforeEach(async () => {
     dbPath = path.join(os.tmpdir(), `agent-deck-export-routes-${Date.now()}.db`);
     db = new DatabaseManager(dbPath);
     app = Fastify();
     app.decorate('db', db);
+    const trustedSessionStore = new TrustedSessionStore(db.getSqliteDatabase());
+    app.decorate('trustedSessionStore', trustedSessionStore);
+    dashboardHeaders = dashboardAuthHeaders(trustedSessionStore);
     await app.register(registerExportImportRoutes, { prefix: '/api' });
   });
 

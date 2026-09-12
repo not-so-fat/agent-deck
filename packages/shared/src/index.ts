@@ -49,5 +49,7 @@ export {
   ADMIN_MODE_LEASE_MS,
   ADMIN_CHALLENGE_TTL_MS,
   DASHBOARD_NONCE_TTL_MS,
+  DASHBOARD_SESSION_LEASE_MS,
+  DASHBOARD_COOKIE_MAX_AGE_MS,
 } from './constants/trusted-session';
 export { MCP_CARD_COLOR, API_KEY_CARD_COLOR, PLAYBOOK_CARD_COLOR, getServiceCardColor } from './constants/card-colors';

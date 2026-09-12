@@ -2,6 +2,8 @@
 
 **Status:** Approved · **Ship:** v1.7.1
 
+> Superseded in part by NOT-67: printed status/start output no longer exposes one-shot bootstrap URLs, and dashboard sessions now persist across backend restarts. The nonce security boundary remains unchanged.
+
 ## Problem
 
 After trusted sessions (1.7.0), the dashboard requires an HttpOnly cookie from `/?bootstrap=<nonce>`. Bare `http://127.0.0.1:1111` always shows **Error Loading Data / No valid workspace grant** — that is a **dashboard session cookie** miss (fix: `start` / `open`), not MCP `GRANT_REQUIRED` (fix: `agent-deck use <deck>`). Most entry points still printed or linked that bare URL (`start` without `--open`, `setup --start`, `status`, menubar).

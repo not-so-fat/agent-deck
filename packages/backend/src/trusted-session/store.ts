@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import {
   ADMIN_CHALLENGE_TTL_MS,
   ADMIN_MODE_LEASE_MS,
+  DASHBOARD_SESSION_LEASE_MS,
   RUNTIME_SESSION_LEASE_MS,
   prefixTrustedId,
   type AgentSessionMode,
@@ -51,8 +52,25 @@ export type AdminChallengeRow = {
   created_at: string;
 };
 
-export function hashGrantSecret(secret: string): string {
+export type DashboardSessionRow = {
+  token_hash: string;
+  created_at: string;
+  last_seen_at: string;
+  expires_at: string;
+};
+
+const DASHBOARD_SESSION_TOUCH_INTERVAL_MS = 60 * 1000;
+
+function hashSecret(secret: string): string {
   return createHash('sha256').update(secret, 'utf8').digest('hex');
+}
+
+export function hashGrantSecret(secret: string): string {
+  return hashSecret(secret);
+}
+
+export function hashDashboardSessionToken(token: string): string {
+  return hashSecret(token);
 }
 
 export function generateGrantSecret(): string {
@@ -138,6 +156,16 @@ export class TrustedSessionStore {
         consumed_at TEXT,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS dashboard_sessions (
+        token_hash TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS dashboard_sessions_expiry_idx
+        ON dashboard_sessions (expires_at);
     `);
   }
 
@@ -421,6 +449,53 @@ export class TrustedSessionStore {
     const result = this.db
       .prepare(`DELETE FROM dashboard_nonces WHERE expires_at <= ? OR consumed_at IS NOT NULL`)
       .run(now);
+    return result.changes;
+  }
+
+  createDashboardSession(): string {
+    const token = randomBytes(32).toString('base64url');
+    const now = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO dashboard_sessions (token_hash, created_at, last_seen_at, expires_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(hashDashboardSessionToken(token), now, now, addMs(now, DASHBOARD_SESSION_LEASE_MS));
+    return token;
+  }
+
+  validateAndTouchDashboardSession(token: string): boolean {
+    const tokenHash = hashDashboardSessionToken(token);
+    const row = this.db
+      .prepare(
+        `SELECT token_hash, created_at, last_seen_at, expires_at
+         FROM dashboard_sessions WHERE token_hash = ?`,
+      )
+      .get(tokenHash) as DashboardSessionRow | undefined;
+
+    const nowMs = Date.now();
+    if (!row || Date.parse(row.expires_at) <= nowMs) {
+      if (row) {
+        this.db.prepare(`DELETE FROM dashboard_sessions WHERE token_hash = ?`).run(tokenHash);
+      }
+      return false;
+    }
+
+    if (Date.parse(row.last_seen_at) <= nowMs - DASHBOARD_SESSION_TOUCH_INTERVAL_MS) {
+      const now = new Date(nowMs).toISOString();
+      this.db
+        .prepare(
+          `UPDATE dashboard_sessions SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?`,
+        )
+        .run(now, addMs(now, DASHBOARD_SESSION_LEASE_MS), tokenHash);
+    }
+    return true;
+  }
+
+  expireDashboardSessions(): number {
+    const result = this.db
+      .prepare(`DELETE FROM dashboard_sessions WHERE expires_at <= ?`)
+      .run(nowIso());
     return result.changes;
   }
 

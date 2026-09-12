@@ -1,9 +1,59 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { TrustedSessionStore, generateGrantSecret } from './store';
+import {
+  TrustedSessionStore,
+  generateGrantSecret,
+  hashDashboardSessionToken,
+} from './store';
 
 describe('TrustedSessionStore', () => {
+  it('persists hashed dashboard sessions across store instances', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const token = store.createDashboardSession();
+
+    const row = db
+      .prepare('SELECT token_hash, last_seen_at, expires_at FROM dashboard_sessions')
+      .get() as { token_hash: string; last_seen_at: string; expires_at: string };
+    expect(row.token_hash).toBe(hashDashboardSessionToken(token));
+    expect(row.token_hash).not.toBe(token);
+
+    const restartedStore = new TrustedSessionStore(db);
+    expect(restartedStore.validateAndTouchDashboardSession(token)).toBe(true);
+  });
+
+  it('rejects and removes expired dashboard sessions', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const token = store.createDashboardSession();
+    const tokenHash = hashDashboardSessionToken(token);
+    db.prepare('UPDATE dashboard_sessions SET expires_at = ? WHERE token_hash = ?')
+      .run('2000-01-01T00:00:00.000Z', tokenHash);
+
+    expect(store.validateAndTouchDashboardSession(token)).toBe(false);
+    expect(
+      db.prepare('SELECT token_hash FROM dashboard_sessions WHERE token_hash = ?').get(tokenHash),
+    ).toBeUndefined();
+  });
+
+  it('renews an active dashboard session after the touch interval', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const token = store.createDashboardSession();
+    const tokenHash = hashDashboardSessionToken(token);
+    db.prepare(
+      'UPDATE dashboard_sessions SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?',
+    ).run('2000-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', tokenHash);
+
+    expect(store.validateAndTouchDashboardSession(token)).toBe(true);
+    const touched = db
+      .prepare('SELECT last_seen_at, expires_at FROM dashboard_sessions WHERE token_hash = ?')
+      .get(tokenHash) as { last_seen_at: string; expires_at: string };
+    expect(Date.parse(touched.last_seen_at)).toBeGreaterThan(Date.parse('2000-01-01T00:00:00.000Z'));
+    expect(Date.parse(touched.expires_at)).toBeLessThan(Date.parse('2099-01-01T00:00:00.000Z'));
+  });
+
   it('issues and validates grants through runtime sessions', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);

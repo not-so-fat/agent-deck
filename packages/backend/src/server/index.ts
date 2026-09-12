@@ -116,6 +116,7 @@ export async function createServer() {
     try {
       trustedSessionStore.expireStaleSessions();
       trustedSessionStore.expireDashboardNonces();
+      trustedSessionStore.expireDashboardSessions();
     } catch (error) {
       fastify.log.warn({ err: error }, 'trusted-session stale sweep failed');
     }

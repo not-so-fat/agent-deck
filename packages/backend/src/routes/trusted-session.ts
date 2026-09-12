@@ -6,18 +6,18 @@ import {
   AGENT_DECK_DASHBOARD_COOKIE,
   AGENT_DECK_SESSION_HEADER,
   DASHBOARD_NONCE_TTL_MS,
+  DASHBOARD_COOKIE_MAX_AGE_MS,
   canonicalizeWorkspacePath,
   digestCanonicalWorkspacePath,
 } from '@agent-deck/shared';
 
 import { parseBearerToken } from '../lib/http-auth';
 import {
-  createDashboardSessionToken,
   requireTrustedWriterBearer,
   sendTrustedAuthError,
   TrustedAuthError,
 } from '../trusted-session/auth';
-import { parseDashboardCookie, validateDashboardSessionToken } from '../lib/dashboard-auth';
+import { isDashboardAuthenticated } from '../lib/dashboard-auth';
 import type { TrustedSessionStore } from '../trusted-session/store';
 import { generateGrantSecret } from '../trusted-session/store';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
@@ -336,8 +336,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         const bearer = parseBearerToken(request);
         const expected = await readAdminSecretFromEnvOrFile();
         if (!bearer || !expected || !verifyAdminSecret(bearer, expected)) {
-          const token = parseDashboardCookie(request);
-          if (!token || !validateDashboardSessionToken(token)) {
+          if (!isDashboardAuthenticated(request)) {
             throw new TrustedAuthError('DASHBOARD_REQUIRED', 'Dashboard authentication required');
           }
         }
@@ -507,11 +506,11 @@ export async function registerDashboardAuthRoutes(fastify: FastifyInstance) {
       return reply.status(410).send({ success: false, error: 'Bootstrap nonce expired or invalid' });
     }
 
-    const token = createDashboardSessionToken();
+    const token = store.createDashboardSession();
     // Secure omitted intentionally — dashboard is localhost-http in v1.
     reply.header(
       'Set-Cookie',
-      `${AGENT_DECK_DASHBOARD_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/`,
+      `${AGENT_DECK_DASHBOARD_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(DASHBOARD_COOKIE_MAX_AGE_MS / 1000)}`,
     );
 
     return reply.send({ success: true, data: { authenticated: true } });

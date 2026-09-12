@@ -32,7 +32,8 @@ function printOpenUsage(): void {
   agent-deck open [--path /admin/approve?...]
 
 Mints a short-lived dashboard bootstrap URL and opens the system browser.
-Bare http://127.0.0.1:1111 without bootstrap shows "No valid workspace grant".`);
+The bare dashboard origin remains unauthorized without an existing session;
+run agent-deck open whenever access needs to be restored.`);
 }
 
 export async function runOpenCommand(args: string[]): Promise<number> {
@@ -61,6 +62,6 @@ export async function runOpenCommand(args: string[]): Promise<number> {
     console.error(`[agent-deck] ${result.message ?? 'Failed to open dashboard'}`);
     return result.code;
   }
-  console.log(`Opened ${result.url}`);
+  console.log('Opened dashboard in your browser.');
   return 0;
 }

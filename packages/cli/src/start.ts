@@ -24,7 +24,6 @@ import {
 } from './daemon-logs';
 import {
   formatDashboardStatusLine,
-  mintDashboardBootstrapUrl,
   openDashboardInBrowser,
   shouldOpenDashboardByDefault,
 } from './dashboard-open';
@@ -147,11 +146,10 @@ async function printRunningEndpoints(
   mcpPort: number,
   backendUrl: string,
 ): Promise<void> {
-  const minted = await mintDashboardBootstrapUrl(backendUrl);
   console.log('');
   console.log('Agent Deck is running');
   console.log(formatStartVersionLine());
-  console.log(`  ${formatDashboardStatusLine(minted)}`);
+  console.log(`  ${formatDashboardStatusLine()}`);
   console.log(`  MCP        http://${host}:${mcpPort}/mcp`);
   console.log(`  API health ${backendUrl}/health`);
   console.log('');
@@ -165,7 +163,10 @@ async function maybeOpenDashboard(backendUrl: string, openBrowser: boolean | und
   if (!shouldOpen) {
     return;
   }
-  await openDashboardInBrowser(backendUrl);
+  const result = await openDashboardInBrowser(backendUrl);
+  if (result.code !== 0) {
+    console.warn(`[agent-deck] ${result.message ?? 'Failed to open dashboard'}`);
+  }
 }
 
 function buildSupervisorArgs(options: StartOptions): string[] {
@@ -215,22 +216,19 @@ async function runDaemonLauncher(options: StartOptions): Promise<number> {
     console.warn(`[agent-deck] See ${resolveDaemonLogPath('mcp')}`);
   }
 
-  const minted = await mintDashboardBootstrapUrl(backendUrl);
   console.log('');
   console.log('Agent Deck started in background');
   console.log(formatStartVersionLine());
-  console.log(`  ${formatDashboardStatusLine(minted)}`);
+  console.log(`  ${formatDashboardStatusLine()}`);
   console.log(`  MCP        http://${host}:${mcpPort}/mcp`);
   console.log(`  Logs       ${resolveDaemonLogsDir()}/`);
   console.log('  Stop       agent-deck stop');
   console.log('');
 
   if (options.openBrowser ?? shouldOpenDashboardByDefault()) {
-    if (minted.ok && minted.bootstrapped) {
-      const { openUrlInSystemBrowser } = await import('./dashboard-open');
-      openUrlInSystemBrowser(minted.url);
-    } else {
-      await openDashboardInBrowser(backendUrl);
+    const result = await openDashboardInBrowser(backendUrl);
+    if (result.code !== 0) {
+      console.warn(`[agent-deck] ${result.message ?? 'Failed to open dashboard'}`);
     }
   }
 
@@ -428,9 +426,8 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     startedAt: new Date().toISOString(),
   });
 
-  const minted = uiDist ? await mintDashboardBootstrapUrl(backendUrl) : null;
   const dashboardLine = uiDist
-    ? formatDashboardStatusLine(minted!)
+    ? formatDashboardStatusLine()
     : 'Dashboard  (UI bundle missing — use npm run dev:all for dev UI)';
   const runningLines = [
     '',
@@ -459,11 +456,9 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
 
   const shouldOpen = (options.openBrowser ?? shouldOpenDashboardByDefault()) && Boolean(uiDist);
   if (shouldOpen) {
-    if (minted?.ok && minted.bootstrapped) {
-      const { openUrlInSystemBrowser } = await import('./dashboard-open');
-      openUrlInSystemBrowser(minted.url);
-    } else {
-      await openDashboardInBrowser(backendUrl);
+    const result = await openDashboardInBrowser(backendUrl);
+    if (result.code !== 0) {
+      console.warn(`[agent-deck] ${result.message ?? 'Failed to open dashboard'}`);
     }
   }
 
