@@ -3,8 +3,11 @@
  * Production persistence and HTTP/MCP surfaces land in NOT-86.
  */
 
-import { createHash, randomBytes } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
+import { prefixTrustedId } from '@agent-deck/shared';
+
+import { hashGrantSecret, verifyGrantSecret } from '../trusted-session/store';
 import type {
   AllowedTool,
   AuditCorrelation,
@@ -18,12 +21,36 @@ import type {
   MintAuthorityResult,
 } from './types';
 
-function id(prefix: string): string {
-  return `${prefix}_${randomBytes(8).toString('hex')}`;
+function newId(kind: 'enr' | 'authz' | 'req' | 'evt'): string {
+  return prefixTrustedId(kind, randomUUID());
 }
 
-function hashSecret(secret: string): string {
-  return createHash('sha256').update(secret).digest('hex');
+function cloneAuthority(authority: ExecutionAuthority): ExecutionAuthority {
+  return {
+    ...authority,
+    allowedServices: [...authority.allowedServices],
+    allowedTools: authority.allowedTools.map((t) => ({ ...t })),
+  };
+}
+
+function toolsEqual(a: AllowedTool[], b: AllowedTool[]): boolean {
+  if (a.length !== b.length) return false;
+  const key = (t: AllowedTool) => `${t.serviceId}\0${t.toolName}`;
+  const sortedA = [...a].map(key).sort();
+  const sortedB = [...b].map(key).sort();
+  return sortedA.every((v, i) => v === sortedB[i]);
+}
+
+function mintParamsMatch(existing: ExecutionAuthority, input: MintAuthorityInput): boolean {
+  return (
+    existing.runId === input.runId &&
+    existing.attemptId === input.attemptId &&
+    existing.deckId === input.deckId &&
+    existing.audience === input.audience &&
+    existing.allowedServices.length === input.allowedServices.length &&
+    existing.allowedServices.every((s) => input.allowedServices.includes(s)) &&
+    toolsEqual(existing.allowedTools, input.allowedTools)
+  );
 }
 
 export interface ExecutionAuthorityLedgerOptions {
@@ -52,7 +79,7 @@ export class ExecutionAuthorityLedger {
     allowedDeckIds: string[];
   }): ContractResult<CoordinatorEnrollment> {
     const enrollment: CoordinatorEnrollment = {
-      enrollmentId: id('enr'),
+      enrollmentId: newId('enr'),
       coordinatorId: input.coordinatorId,
       status: 'active',
       allowedDeckIds: [...input.allowedDeckIds],
@@ -63,7 +90,13 @@ export class ExecutionAuthorityLedger {
     this.pushAudit('enrollment_created', {
       enrollmentId: enrollment.enrollmentId,
     }, { coordinatorId: input.coordinatorId });
-    return { ok: true, data: enrollment };
+    return {
+      ok: true,
+      data: {
+        ...enrollment,
+        allowedDeckIds: [...enrollment.allowedDeckIds],
+      },
+    };
   }
 
   revokeEnrollment(enrollmentId: string): ContractResult<{ enrollmentId: string }> {
@@ -83,22 +116,33 @@ export class ExecutionAuthorityLedger {
     enrollment.revokedAt = this.now().toISOString();
     this.pushAudit('enrollment_revoked', { enrollmentId });
 
-    for (const authority of this.authorities.values()) {
-      if (authority.enrollmentId === enrollmentId && authority.status === 'live') {
-        authority.status = 'revoked';
-        this.pushAudit('authority_revoked', {
-          enrollmentId,
-          authorityId: authority.authorityId,
-          runId: authority.runId,
-          attemptId: authority.attemptId,
-          deckId: authority.deckId,
-        }, { reason: 'enrollment_revoked' });
-      }
+    for (const stored of this.authorities.values()) {
+      if (stored.enrollmentId !== enrollmentId) continue;
+      const authority = this.refreshAuthorityStatus(stored.authorityId);
+      if (!authority || authority.status !== 'live') continue;
+      authority.status = 'revoked';
+      this.pushAudit('authority_revoked', {
+        enrollmentId,
+        authorityId: authority.authorityId,
+        runId: authority.runId,
+        attemptId: authority.attemptId,
+        deckId: authority.deckId,
+      }, { reason: 'enrollment_revoked' });
     }
     return { ok: true, data: { enrollmentId } };
   }
 
   mintAuthority(input: MintAuthorityInput): ContractResult<MintAuthorityResult> {
+    if (!(input.ttlMs > 0)) {
+      return {
+        ok: false,
+        error_code: 'INVALID_MINT_REQUEST',
+        message: 'ttlMs must be positive',
+        reason: 'ttl_non_positive',
+        correlation: { enrollmentId: input.enrollmentId },
+      };
+    }
+
     const enrollment = this.enrollments.get(input.enrollmentId);
     if (!enrollment) {
       return {
@@ -121,6 +165,7 @@ export class ExecutionAuthorityLedger {
         ok: false,
         error_code: 'RESOURCE_OUT_OF_SCOPE',
         message: 'Deck not permitted for this enrollment',
+        reason: 'deck_not_permitted',
         correlation: { enrollmentId: input.enrollmentId, deckId: input.deckId },
       };
     }
@@ -129,13 +174,29 @@ export class ExecutionAuthorityLedger {
     const existingId = this.mintIndex.get(mintKey);
     if (existingId) {
       const existing = this.refreshAuthorityStatus(existingId)!;
+      if (!mintParamsMatch(existing, input)) {
+        return {
+          ok: false,
+          error_code: 'IDEMPOTENCY_KEY_CONFLICT',
+          message: 'Idempotency key reused with different mint parameters',
+          reason: 'params_mismatch',
+          correlation: {
+            enrollmentId: existing.enrollmentId,
+            authorityId: existing.authorityId,
+            runId: existing.runId,
+            attemptId: existing.attemptId,
+            deckId: existing.deckId,
+          },
+        };
+      }
       if (existing.status === 'live') {
         // Idempotent remint does not re-issue the secret (Dealer must retain launcher handle).
         return {
           ok: true,
           data: {
-            authority: existing,
-            authoritySecret: '',
+            authority: cloneAuthority(existing),
+            authoritySecret: null,
+            secretIssued: false,
           },
         };
       }
@@ -143,6 +204,7 @@ export class ExecutionAuthorityLedger {
         ok: false,
         error_code: existing.status === 'expired' ? 'AUTHORITY_EXPIRED' : 'AUTHORITY_REVOKED',
         message: `Authority already ${existing.status}`,
+        reason: existing.status === 'revoked' ? 'explicit_revoke' : undefined,
         correlation: {
           enrollmentId: existing.enrollmentId,
           authorityId: existing.authorityId,
@@ -155,7 +217,7 @@ export class ExecutionAuthorityLedger {
 
     const issuedAt = this.now();
     const authority: ExecutionAuthority = {
-      authorityId: id('authz'),
+      authorityId: newId('authz'),
       enrollmentId: input.enrollmentId,
       runId: input.runId,
       attemptId: input.attemptId,
@@ -168,9 +230,9 @@ export class ExecutionAuthorityLedger {
       status: 'live',
       idempotencyKey: input.idempotencyKey,
     };
-    const authoritySecret = `seas_${randomBytes(24).toString('hex')}`;
+    const authoritySecret = `seas_${randomUUID().replace(/-/g, '')}${randomUUID().replace(/-/g, '')}`;
     this.authorities.set(authority.authorityId, authority);
-    this.secretHashes.set(authority.authorityId, hashSecret(authoritySecret));
+    this.secretHashes.set(authority.authorityId, hashGrantSecret(authoritySecret));
     this.mintIndex.set(mintKey, authority.authorityId);
     this.pushAudit('authority_minted', {
       enrollmentId: authority.enrollmentId,
@@ -179,7 +241,14 @@ export class ExecutionAuthorityLedger {
       attemptId: authority.attemptId,
       deckId: authority.deckId,
     });
-    return { ok: true, data: { authority, authoritySecret } };
+    return {
+      ok: true,
+      data: {
+        authority: cloneAuthority(authority),
+        authoritySecret,
+        secretIssued: true,
+      },
+    };
   }
 
   inspectAuthority(authorityId: string): ContractResult<ExecutionAuthority> {
@@ -187,7 +256,7 @@ export class ExecutionAuthorityLedger {
     if (!authority) {
       return {
         ok: false,
-        error_code: 'AUTHORITY_REVOKED',
+        error_code: 'AUTHORITY_UNKNOWN',
         message: 'Unknown authority',
         correlation: { authorityId },
       };
@@ -199,7 +268,7 @@ export class ExecutionAuthorityLedger {
       attemptId: authority.attemptId,
       deckId: authority.deckId,
     });
-    return { ok: true, data: { ...authority, allowedTools: authority.allowedTools.map((t) => ({ ...t })) } };
+    return { ok: true, data: cloneAuthority(authority) };
   }
 
   revokeAuthority(authorityId: string): ContractResult<{ authorityId: string }> {
@@ -207,7 +276,7 @@ export class ExecutionAuthorityLedger {
     if (!authority) {
       return {
         ok: false,
-        error_code: 'AUTHORITY_REVOKED',
+        error_code: 'AUTHORITY_UNKNOWN',
         message: 'Unknown authority',
         correlation: { authorityId },
       };
@@ -220,7 +289,7 @@ export class ExecutionAuthorityLedger {
         runId: authority.runId,
         attemptId: authority.attemptId,
         deckId: authority.deckId,
-      });
+      }, { reason: 'explicit_revoke' });
     }
     return { ok: true, data: { authorityId } };
   }
@@ -240,7 +309,7 @@ export class ExecutionAuthorityLedger {
     if (!authority) {
       return {
         ok: false,
-        error_code: 'AUTHORITY_REVOKED',
+        error_code: 'AUTHORITY_UNKNOWN',
         message: 'Unknown authority',
         correlation,
       };
@@ -252,12 +321,26 @@ export class ExecutionAuthorityLedger {
     correlation.deckId = authority.deckId;
 
     const expectedHash = this.secretHashes.get(authority.authorityId);
-    if (!expectedHash || hashSecret(input.authoritySecret) !== expectedHash) {
+    if (!expectedHash || !verifyGrantSecret(input.authoritySecret, expectedHash)) {
       this.pushAudit('call_denied', correlation, { reason: 'bad_secret' });
       return {
         ok: false,
-        error_code: 'AUTHORITY_REVOKED',
+        error_code: 'AUTHORITY_SECRET_INVALID',
         message: 'Invalid authority secret',
+        correlation,
+      };
+    }
+
+    if (input.audience !== authority.audience) {
+      this.pushAudit('call_denied', correlation, {
+        reason: 'audience_mismatch',
+        expected: authority.audience,
+        actual: input.audience,
+      });
+      return {
+        ok: false,
+        error_code: 'AUDIENCE_MISMATCH',
+        message: 'Caller audience does not match authority audience',
         correlation,
       };
     }
@@ -277,12 +360,13 @@ export class ExecutionAuthorityLedger {
         ok: false,
         error_code: 'AUTHORITY_REVOKED',
         message: 'Authority revoked',
+        reason: 'explicit_revoke',
         correlation,
       };
     }
 
     if (input.requiresInteraction) {
-      const requestId = id('req');
+      const requestId = newId('req');
       correlation.requestId = requestId;
       this.pushAudit('call_denied', correlation, { reason: 'interaction_required' });
       return {
@@ -295,7 +379,7 @@ export class ExecutionAuthorityLedger {
 
     if (!this.toolAllowed(authority, input.serviceId, input.toolName)) {
       this.pushAudit('call_denied', correlation, {
-        reason: 'out_of_scope',
+        reason: 'tool_not_in_snapshot',
         serviceId: input.serviceId,
         toolName: input.toolName,
       });
@@ -303,6 +387,7 @@ export class ExecutionAuthorityLedger {
         ok: false,
         error_code: 'RESOURCE_OUT_OF_SCOPE',
         message: 'Tool not in authority snapshot',
+        reason: 'tool_not_in_snapshot',
         correlation,
       };
     }
@@ -368,7 +453,7 @@ export class ExecutionAuthorityLedger {
     detail?: Record<string, unknown>,
   ): void {
     this.audit.push({
-      eventId: id('evt'),
+      eventId: newId('evt'),
       at: this.now().toISOString(),
       kind,
       correlation: { ...correlation },

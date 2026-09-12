@@ -42,6 +42,8 @@ export function digestCanonicalWorkspacePath(canonicalPath: string): string {
   return createHash('sha256').update(canonicalPath, 'utf8').digest('hex');
 }
 
-export function prefixTrustedId(kind: 'wsp' | 'wgr' | 'ses' | 'adm', rawId: string): string {
+export type TrustedIdKind = 'wsp' | 'wgr' | 'ses' | 'adm' | 'enr' | 'authz' | 'req' | 'evt';
+
+export function prefixTrustedId(kind: TrustedIdKind, rawId: string): string {
   return `${kind}_${rawId.replace(/-/g, '')}`;
 }

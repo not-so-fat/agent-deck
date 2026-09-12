@@ -152,11 +152,18 @@ Approval/rejection/expiry of the human action never completes an unknown in-flig
 | `GRANT_REQUIRED` | Deck (interactive) | No valid workspace grant | Operator runs `agent-deck use` — not for unattended worktrees |
 | `AUTHORITY_EXPIRED` | Deck | TTL elapsed | Dealer: new attempt + mint, or fail |
 | `AUTHORITY_REVOKED` | Deck | Explicit revoke, or cascade from enrollment revoke | Dealer: treat attempt failed; do not retry same authority |
-| `RESOURCE_OUT_OF_SCOPE` | Deck | Off-deck, disabled tool, or deleted/switched deck | Dealer: fail or park if operator must reconfigure |
+| `AUTHORITY_UNKNOWN` | Deck | Authority id does not exist | Client bug / stale id — do not treat as credential theft |
+| `AUTHORITY_SECRET_INVALID` | Deck | Secret hash mismatch | Alert as possible theft; do not retry same secret |
+| `AUDIENCE_MISMATCH` | Deck | Caller audience ≠ authority audience | Fail closed; stolen or mis-delivered authority |
+| `RESOURCE_OUT_OF_SCOPE` | Deck | Off-deck / disabled tool / deleted deck | Use `reason` to choose fail vs park for reconfiguration |
 | `INTERACTION_REQUIRED` | Deck | Control-plane decision needed | Dealer: enter `parked_interaction` immediately; use `correlation.requestId` for human-action dedupe |
 | `ENROLLMENT_REVOKED` | Deck | Coordinator enrollment not active | Operator re-enrolls |
 | `COORDINATOR_NOT_ENROLLED` | Deck | Unknown coordinator | Operator enrolls |
+| `IDEMPOTENCY_KEY_CONFLICT` | Deck | Same mint key with different params | Fix coordinator; do not reuse key across attempts |
+| `INVALID_MINT_REQUEST` | Deck | e.g. non-positive `ttlMs` | Fix mint inputs |
 | Success / retryable infra | Downstream or transport | Normal or transient failure | Dealer retry policy; do not auto-replay ambiguous tool effects |
+
+`RESOURCE_OUT_OF_SCOPE` carries optional `reason`: `deck_not_permitted` (mint) or `tool_not_in_snapshot` (call).
 
 Machine-readable shape (MCP/HTTP):
 
@@ -165,15 +172,19 @@ Machine-readable shape (MCP/HTTP):
   ok: false;
   error_code: string;
   message: string;
+  reason?: string;
   correlation?: { runId?: string; attemptId?: string; authorityId?: string; requestId?: string };
 }
 ```
 
+Idempotent remint of a live authority returns the same authority with `secretIssued: false` and `authoritySecret: null` — it never re-issues the secret. Callers that lost the first secret must wait for TTL/revoke and mint a new attempt.
+
+Authorized calls must assert `audience`; mismatch → `AUDIENCE_MISMATCH`.
 ## 8. Idempotency rules
 
 | Operation | Key | Behavior |
 | --- | --- | --- |
-| Mint | `(enrollmentId, idempotencyKey)` | Same live authority or deterministic terminal |
+| Mint | `(enrollmentId, idempotencyKey)` | Same live authority (`secretIssued: false`) or deterministic terminal; different params → `IDEMPOTENCY_KEY_CONFLICT` |
 | Revoke authority | `authorityId` | Idempotent: already-revoked → success no-op |
 | Revoke enrollment | `enrollmentId` | Idempotent |
 | `INTERACTION_REQUIRED` → human action | Deck `requestId` / correlation | Dealer creates at most one open human action per id |
@@ -209,7 +220,7 @@ Permanently occupied workers are prevented by: typed `INTERACTION_REQUIRED` retu
 | Spoofed `x-agent-deck-client: dealer` | Unattended path ignores legacy client headers; requires enrollment + execution authority |
 | Worktree copies `.agent-deck/use.json` | Contract forbids inheritance; launcher injects short-lived secret only |
 | Authority secret in Dealer DB / logs / prompts | Store id/status only; hash at rest on Deck; redact audits |
-| Stolen live authority | Short TTL; audience binding; revoke; least-privilege tool snapshot |
+| Stolen live authority | Short TTL; audience binding enforced on every call; revoke; least-privilege tool snapshot |
 | Cross-deck tool use | Snapshot enforced every call → `RESOURCE_OUT_OF_SCOPE` |
 | Agent-admin via unattended path | Authority never includes admin/dashboard/trusted-writer/direct playbook mutation |
 | Sync approval inside MCP | Forbidden; `INTERACTION_REQUIRED` only |
@@ -238,7 +249,7 @@ Stable names for NOT-86/87. Exact transport (HTTP vs MCP tools) may vary; shapes
 ### Authorized use (worker)
 
 - MCP initialize + tools authenticated with execution authority (NOT-86)
-- Every call checks live status, TTL, deck, and tool snapshot
+- Every call checks live status, TTL, audience, deck, and tool snapshot
 
 ### Audit
 

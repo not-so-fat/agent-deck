@@ -13,10 +13,25 @@ export type ContractErrorCode =
   | 'GRANT_REQUIRED'
   | 'AUTHORITY_EXPIRED'
   | 'AUTHORITY_REVOKED'
+  | 'AUTHORITY_UNKNOWN'
+  | 'AUTHORITY_SECRET_INVALID'
   | 'RESOURCE_OUT_OF_SCOPE'
   | 'INTERACTION_REQUIRED'
   | 'ENROLLMENT_REVOKED'
-  | 'COORDINATOR_NOT_ENROLLED';
+  | 'COORDINATOR_NOT_ENROLLED'
+  | 'IDEMPOTENCY_KEY_CONFLICT'
+  | 'INVALID_MINT_REQUEST'
+  | 'AUDIENCE_MISMATCH';
+
+/** Fine-grained cause when one error_code covers multiple recovery paths. */
+export type ContractErrorReason =
+  | 'deck_not_permitted'
+  | 'tool_not_in_snapshot'
+  | 'enrollment_revoked'
+  | 'explicit_revoke'
+  | 'params_mismatch'
+  | 'ttl_non_positive'
+  | 'secret_not_reissued';
 
 export type AuditEventKind =
   | 'enrollment_created'
@@ -78,6 +93,7 @@ export interface ContractError {
   ok: false;
   error_code: ContractErrorCode;
   message: string;
+  reason?: ContractErrorReason;
   correlation?: AuditCorrelation;
 }
 
@@ -102,19 +118,25 @@ export interface MintAuthorityInput {
    */
   allowedServices: string[];
   allowedTools: AllowedTool[];
-  /** TTL in milliseconds from mint time. */
+  /** TTL in milliseconds from mint time; must be > 0. */
   ttlMs: number;
 }
 
 export interface MintAuthorityResult {
   authority: ExecutionAuthority;
-  /** One-time secret — Dealer must not persist this; deliver via OS/launcher only. */
-  authoritySecret: string;
+  /**
+   * One-time secret when `secretIssued` is true.
+   * Null on idempotent remint — Dealer must retain the launcher handle from first mint.
+   */
+  authoritySecret: string | null;
+  secretIssued: boolean;
 }
 
 export interface AuthorizedCallInput {
   authorityId: string;
   authoritySecret: string;
+  /** Must match the authority's audience (stolen-authority binding). */
+  audience: string;
   serviceId: string;
   toolName: string;
   /** When true, Deck returns INTERACTION_REQUIRED instead of executing. */

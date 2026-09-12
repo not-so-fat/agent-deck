@@ -29,8 +29,12 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     });
     expect(minted.ok).toBe(true);
     if (!minted.ok) return;
+    expect(minted.data.secretIssued).toBe(true);
     expect(minted.data.authoritySecret).toMatch(/^seas_/);
     expect(minted.data.authority.status).toBe('live');
+
+    // Caller mutation must not corrupt ledger state.
+    minted.data.authority.status = 'revoked';
 
     const remint = ledger.mintAuthority({
       enrollmentId: enrolled.data.enrollmentId,
@@ -46,10 +50,14 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(remint.ok).toBe(true);
     if (!remint.ok) return;
     expect(remint.data.authority.authorityId).toBe(minted.data.authority.authorityId);
+    expect(remint.data.authority.status).toBe('live');
+    expect(remint.data.secretIssued).toBe(false);
+    expect(remint.data.authoritySecret).toBeNull();
 
     const allowed = ledger.invokeAuthorizedCall({
       authorityId: minted.data.authority.authorityId,
-      authoritySecret: minted.data.authoritySecret,
+      authoritySecret: minted.data.authoritySecret!,
+      audience: 'dealer-worker',
       serviceId: 'svc_linear',
       toolName: 'get_issue',
     });
@@ -60,17 +68,20 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
 
     const denied = ledger.invokeAuthorizedCall({
       authorityId: minted.data.authority.authorityId,
-      authoritySecret: minted.data.authoritySecret,
+      authoritySecret: minted.data.authoritySecret!,
+      audience: 'dealer-worker',
       serviceId: 'svc_linear',
       toolName: 'save_issue',
     });
     expect(denied.ok).toBe(false);
     if (denied.ok) return;
     expect(denied.error_code).toBe('RESOURCE_OUT_OF_SCOPE');
+    expect(denied.reason).toBe('tool_not_in_snapshot');
 
     const interaction = ledger.invokeAuthorizedCall({
       authorityId: minted.data.authority.authorityId,
-      authoritySecret: minted.data.authoritySecret,
+      authoritySecret: minted.data.authoritySecret!,
+      audience: 'dealer-worker',
       serviceId: 'svc_linear',
       toolName: 'get_issue',
       requiresInteraction: true,
@@ -83,7 +94,8 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     nowMs += 61_000;
     const expired = ledger.invokeAuthorizedCall({
       authorityId: minted.data.authority.authorityId,
-      authoritySecret: minted.data.authoritySecret,
+      authoritySecret: minted.data.authoritySecret!,
+      audience: 'dealer-worker',
       serviceId: 'svc_linear',
       toolName: 'get_issue',
     });
@@ -110,7 +122,8 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
 
     const afterRevoke = ledger.invokeAuthorizedCall({
       authorityId: mint2.data.authority.authorityId,
-      authoritySecret: mint2.data.authoritySecret,
+      authoritySecret: mint2.data.authoritySecret!,
+      audience: 'dealer-worker',
       serviceId: 'svc_linear',
       toolName: 'get_issue',
     });
@@ -155,7 +168,8 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
 
     const call = ledger.invokeAuthorizedCall({
       authorityId: minted.data.authority.authorityId,
-      authoritySecret: minted.data.authoritySecret,
+      authoritySecret: minted.data.authoritySecret!,
+      audience: 'dealer-worker',
       serviceId: 'svc_linear',
       toolName: 'get_issue',
     });
@@ -177,5 +191,125 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(remint.ok).toBe(false);
     if (remint.ok) return;
     expect(remint.error_code).toBe('ENROLLMENT_REVOKED');
+  });
+
+  it('covers review fixes: ttl, idempotency conflict, audience, unknown/secret codes, expiry-before-revoke', () => {
+    let nowMs = Date.parse('2026-09-12T12:00:00.000Z');
+    const ledger = new ExecutionAuthorityLedger({
+      now: () => new Date(nowMs),
+    });
+
+    const enrolled = ledger.enrollCoordinator({
+      coordinatorId: 'dealer-local-3',
+      allowedDeckIds: ['deck_dev'],
+    });
+    expect(enrolled.ok).toBe(true);
+    if (!enrolled.ok) return;
+
+    const badTtl = ledger.mintAuthority({
+      enrollmentId: enrolled.data.enrollmentId,
+      runId: 'run_t',
+      attemptId: 'attempt_t',
+      deckId: 'deck_dev',
+      audience: 'dealer-worker',
+      idempotencyKey: 'run_t:attempt_t',
+      allowedServices: ['svc_linear'],
+      allowedTools: [{ serviceId: 'svc_linear', toolName: 'get_issue' }],
+      ttlMs: 0,
+    });
+    expect(badTtl.ok).toBe(false);
+    if (badTtl.ok) return;
+    expect(badTtl.error_code).toBe('INVALID_MINT_REQUEST');
+    expect(badTtl.reason).toBe('ttl_non_positive');
+
+    const minted = ledger.mintAuthority({
+      enrollmentId: enrolled.data.enrollmentId,
+      runId: 'run_a',
+      attemptId: 'attempt_a',
+      deckId: 'deck_dev',
+      audience: 'dealer-worker',
+      idempotencyKey: 'run_a:key',
+      allowedServices: ['svc_linear'],
+      allowedTools: [{ serviceId: 'svc_linear', toolName: 'get_issue' }],
+      ttlMs: 60_000,
+    });
+    expect(minted.ok).toBe(true);
+    if (!minted.ok) return;
+
+    const conflict = ledger.mintAuthority({
+      enrollmentId: enrolled.data.enrollmentId,
+      runId: 'run_a',
+      attemptId: 'attempt_DIFFERENT',
+      deckId: 'deck_dev',
+      audience: 'dealer-worker',
+      idempotencyKey: 'run_a:key',
+      allowedServices: ['svc_linear'],
+      allowedTools: [{ serviceId: 'svc_linear', toolName: 'get_issue' }],
+      ttlMs: 60_000,
+    });
+    expect(conflict.ok).toBe(false);
+    if (conflict.ok) return;
+    expect(conflict.error_code).toBe('IDEMPOTENCY_KEY_CONFLICT');
+
+    const unknown = ledger.invokeAuthorizedCall({
+      authorityId: 'authz_missing',
+      authoritySecret: 'seas_x',
+      audience: 'dealer-worker',
+      serviceId: 'svc_linear',
+      toolName: 'get_issue',
+    });
+    expect(unknown.ok).toBe(false);
+    if (unknown.ok) return;
+    expect(unknown.error_code).toBe('AUTHORITY_UNKNOWN');
+
+    const badSecret = ledger.invokeAuthorizedCall({
+      authorityId: minted.data.authority.authorityId,
+      authoritySecret: 'seas_wrong',
+      audience: 'dealer-worker',
+      serviceId: 'svc_linear',
+      toolName: 'get_issue',
+    });
+    expect(badSecret.ok).toBe(false);
+    if (badSecret.ok) return;
+    expect(badSecret.error_code).toBe('AUTHORITY_SECRET_INVALID');
+
+    const badAudience = ledger.invokeAuthorizedCall({
+      authorityId: minted.data.authority.authorityId,
+      authoritySecret: minted.data.authoritySecret!,
+      audience: 'not-a-worker',
+      serviceId: 'svc_linear',
+      toolName: 'get_issue',
+    });
+    expect(badAudience.ok).toBe(false);
+    if (badAudience.ok) return;
+    expect(badAudience.error_code).toBe('AUDIENCE_MISMATCH');
+
+    const deckDenied = ledger.mintAuthority({
+      enrollmentId: enrolled.data.enrollmentId,
+      runId: 'run_b',
+      attemptId: 'attempt_b',
+      deckId: 'deck_forbidden',
+      audience: 'dealer-worker',
+      idempotencyKey: 'run_b:key',
+      allowedServices: ['svc_linear'],
+      allowedTools: [{ serviceId: 'svc_linear', toolName: 'get_issue' }],
+      ttlMs: 60_000,
+    });
+    expect(deckDenied.ok).toBe(false);
+    if (deckDenied.ok) return;
+    expect(deckDenied.error_code).toBe('RESOURCE_OUT_OF_SCOPE');
+    expect(deckDenied.reason).toBe('deck_not_permitted');
+
+    nowMs += 61_000;
+    ledger.revokeEnrollment(enrolled.data.enrollmentId);
+    const expiryEvents = ledger.listAuditEvents({
+      authorityId: minted.data.authority.authorityId,
+    });
+    expect(expiryEvents.some((e) => e.kind === 'authority_expired')).toBe(true);
+    expect(
+      expiryEvents.some(
+        (e) => e.kind === 'authority_revoked' && e.correlation.authorityId === minted.data.authority.authorityId,
+      ),
+    ).toBe(false);
   });
 });
