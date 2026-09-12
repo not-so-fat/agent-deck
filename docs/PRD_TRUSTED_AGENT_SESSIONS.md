@@ -12,6 +12,8 @@ Every MCP session receives the deck previously authorized for its workspace. Nor
 
 **Shipped in 1.7.0** (NOT-45 + NOT-44 together; see [CHANGELOG](../CHANGELOG.md#170--2026-08-31)).
 
+**Related (NOT-85):** Unattended Agent Dealer runs use a separate coordinator-enrollment + short-lived execution-authority contract — not workspace grants copied into generated worktrees. See [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md). Interactive path-bound grants in this PRD remain unchanged.
+
 ## 1. Problem and outcome
 
 The current agent path relies too much on caller-supplied role and deck context, and route-by-route opt-in makes omissions dangerous. It also lacks a durable workspace-to-deck grant and a safe way for a user to administer decks conversationally.
