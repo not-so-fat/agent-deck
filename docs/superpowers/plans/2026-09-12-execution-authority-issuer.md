@@ -12,8 +12,8 @@
 
 | File | Role |
 | --- | --- |
-| `execution-authority/types.ts` | Enroll secret on result; mint HTTP input with toolScopeHint |
-| `execution-authority/ledger.ts` | + enrollment secret hash; export/import state |
+| `execution-authority/types.ts` | `EnrollCoordinatorResult` (enrollment + one-time `enrollmentSecret`); mint HTTP input with toolScopeHint |
+| `execution-authority/ledger.ts` | enrollment + authority secret hashes; export/import state |
 | `execution-authority/store.ts` | SQLite durable wrapper |
 | `routes/execution-authority.ts` | HTTP API |
 | `trusted-session/route-policy-registry.ts` | Route policies |

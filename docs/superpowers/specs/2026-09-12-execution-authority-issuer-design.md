@@ -22,14 +22,15 @@ deferred: NOT-89, NOT-90, NOT-87
 ## Architecture
 
 ```
-CLI (operator) ──trusted writer──► POST /enrollments
-Coordinator    ──enrollment id───► POST /authorities (mint)
-Worker MCP     ──authority id+secret──► MCP tools (snapshot enforced)
+CLI (operator) ──trusted writer──► POST /enrollments  (returns enrollmentSecret once)
+Coordinator    ──enr_…:enrollmentSecret──► POST /authorities (mint)
+Worker MCP     ──authz_…:authoritySecret──► MCP tools (snapshot enforced)
 ```
 
 - **Store:** `packages/backend/src/execution-authority/` — ledger logic + SQLite persistence; same DB lifecycle as trusted sessions when possible, separate module/tables.
+- **Enrollment secret:** one-time `enrollmentSecret` (`enrs_…`) on enroll; hash at rest; Bearer `enr_…:secret` for coordinator mint/metadata/audit. Never re-issued; lose it → revoke + re-enroll.
 - **Mint:** Deck authors `allowedServices` / `allowedTools` from current deck policy; optional `toolScopeHint` only narrows.
-- **Secret:** returned once on first mint; stored as hash; remint returns `secretIssued: false`. Delivery = process-local (env / test harness); not worktree files.
+- **Authority secret:** returned once on first mint; stored as hash; remint returns `secretIssued: false`. Delivery = process-local (env / test harness); not worktree files. OS launcher → [NOT-89](https://linear.app/not-so-fat/issue/NOT-89).
 - **MCP:** authority principal never gets agent-admin, dashboard, trusted-writer, or direct playbook mutation. Control-plane ops return `INTERACTION_REQUIRED` immediately.
 - **Interactive grants:** unchanged.
 

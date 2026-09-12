@@ -59,7 +59,7 @@ Audit events may connect the records; neither replaces the other.
 }
 ```
 
-Enrollment is created by an explicit operator action (CLI/dashboard). Revocation is immediate: subsequent mints under that enrollment fail with `ENROLLMENT_REVOKED`, and every still-`live` authority minted under it is cascade-revoked so further authorized calls fail with `AUTHORITY_REVOKED`.
+Enrollment is created by an explicit operator action (CLI/dashboard). Create returns a one-time `enrollmentSecret` (`enrs_…`); Deck stores only its hash. The coordinator authenticates mint/metadata/audit with `enr_…:secret` (Bearer). The secret is never re-issued; lost secret → revoke and re-enroll. Revocation is immediate: subsequent mints under that enrollment fail with `ENROLLMENT_REVOKED`, and every still-`live` authority minted under it is cascade-revoked so further authorized calls fail with `AUTHORITY_REVOKED`.
 
 ### 5.2 Execution authority
 
@@ -82,7 +82,7 @@ Enrollment is created by an explicit operator action (CLI/dashboard). Revocation
 
 **Tool snapshot authorship:** At mint, **Deck** materializes the authoritative `allowedServices` / `allowedTools` from the selected deck’s current policy (bound services and enabled tools). The coordinator may pass an optional `toolScopeHint` that **only narrows** (intersection); Deck never expands beyond policy. The in-memory skeleton accepts a pre-materialized list as a stand-in for that Deck-authored snapshot.
 
-**Secret handling:** mint returns a one-time `authoritySecret` (or equivalent launcher handle). Deck stores only a hash/representation. Dealer stores `authorityId`, status, and correlation metadata — never the secret. Delivery to the worker uses an OS secret boundary / launcher (chosen in NOT-86); not repo files, not prompts.
+**Secret handling:** mint returns a one-time `authoritySecret`. Deck stores only a hash/representation. Dealer stores `authorityId`, status, and correlation metadata — never the secret. **As-built (NOT-86 cut B):** delivery is process-local (mint response / worker process env or test harness) — not repo files, not prompts, not Dealer DB. **OS secret-boundary / launcher hardening is NOT-89** (not chosen as the live path in NOT-86).
 
 **Profile binding:** allowed deck(s) are constrained at enrollment; mint further pins one `deckId` plus that immutable Deck-authored service/tool snapshot for the attempt.
 
@@ -199,7 +199,7 @@ Permanently occupied workers are prevented by: typed `INTERACTION_REQUIRED` retu
 | Failure | Owner | Next legal action |
 | --- | --- | --- |
 | Coordinator restarts before mint | Dealer | Re-read durable queue; mint when ready |
-| Coordinator restarts after mint | Dealer + Deck | Dealer reconciles from durable attempt state; Deck `inspect` by `authorityId` (secret remains in OS/launcher, not Dealer DB) |
+| Coordinator restarts after mint | Dealer + Deck | Dealer reconciles from durable attempt state; Deck `inspect` by `authorityId` (secret stays only in the worker/process handle from first mint — not Dealer DB; OS launcher handoff is NOT-89) |
 | Worker dies mid-call | Dealer | Mark attempt failed/retryable; authority ends via TTL or explicit revoke before remint |
 | Mint retried (same key) | Deck | Return same authority / terminal |
 | Tool call retried | Dealer | Only if tool idempotent; else new attempt policy |
@@ -218,7 +218,7 @@ Permanently occupied workers are prevented by: typed `INTERACTION_REQUIRED` retu
 | Threat | Mitigation |
 | --- | --- |
 | Spoofed `x-agent-deck-client: dealer` | Unattended path ignores legacy client headers; requires enrollment + execution authority |
-| Worktree copies `.agent-deck/use.json` | Contract forbids inheritance; launcher injects short-lived secret only |
+| Worktree copies `.agent-deck/use.json` | Contract forbids inheritance; cut B injects short-lived authority secret process-locally (OS launcher → NOT-89) |
 | Authority secret in Dealer DB / logs / prompts | Store id/status only; hash at rest on Deck; redact audits |
 | Stolen live authority | Short TTL; audience binding enforced on every call; revoke; least-privilege tool snapshot |
 | Cross-deck tool use | Snapshot enforced every call → `RESOURCE_OUT_OF_SCOPE` |
@@ -267,7 +267,7 @@ In-repo proof (NOT-85):
 - In-memory ledger: `packages/backend/src/execution-authority/ledger.ts`
 - End-to-end test: `packages/backend/src/execution-authority/ledger.test.ts`
 
-**As-built (NOT-86, cut B):** Durable `ExecutionAuthorityStore` (SQLite), HTTP `/api/execution-authority/*`, MCP authority principal (`authz_…:secret`), CLI `agent-deck coordinator enroll|status|revoke`. Process-local one-time secret on mint; OS launcher → NOT-89; dashboard enroll UX → NOT-90. Design: `docs/superpowers/specs/2026-09-12-execution-authority-issuer-design.md`.
+**As-built (NOT-86, cut B):** Durable `ExecutionAuthorityStore` (SQLite), HTTP `/api/execution-authority/*`, MCP authority principal (`authz_…:secret`), CLI `agent-deck coordinator enroll|status|revoke`. One-time enrollment secret for coordinator mint (`enr_…:secret`); process-local one-time authority secret on mint; OS launcher → NOT-89; dashboard enroll UX → NOT-90. Design: `docs/superpowers/specs/2026-09-12-execution-authority-issuer-design.md`.
 
 Scenario covered: enroll → mint → one allowed call → deny out-of-scope → expire/revoke → audit correlation (+ restart durability).
 

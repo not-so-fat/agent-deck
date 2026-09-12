@@ -5,7 +5,7 @@
 ### Add: coordinator enrollment + short-lived execution authority (NOT-86)
 
 - Durable enrollment / authority ledger (SQLite), HTTP issuer under `/api/execution-authority/*`, MCP auth with `authz_…:secret`, CLI `agent-deck coordinator enroll|status|revoke`.
-- Process-local one-time mint secret (OS launcher → NOT-89; dashboard enroll UX → NOT-90).
+- One-time enrollment secret (`enr_…:secret`) for coordinator mint; process-local one-time authority mint secret (OS launcher → NOT-89; dashboard enroll UX → NOT-90).
 - Interactive workspace grants unchanged.
 
 ## 1.7.7 — 2026-09-12
