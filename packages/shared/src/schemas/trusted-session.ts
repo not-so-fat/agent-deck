@@ -11,6 +11,8 @@ export const TrustedSessionErrorCodeSchema = z.enum([
   'ADMIN_REQUIRED',
   'DASHBOARD_REQUIRED',
   'ADMIN_CHALLENGE_EXPIRED',
+  /** Execution-authority principal hit control-plane / non-worker HTTP (NOT-86). */
+  'INTERACTION_REQUIRED',
 ]);
 
 export const WorkspaceGrantStatusSchema = z.enum(['pending', 'active', 'revoked']);
@@ -86,6 +88,7 @@ export function httpStatusForTrustedError(code: TrustedSessionErrorCode): number
     case 'RESOURCE_OUT_OF_SCOPE':
     case 'ADMIN_REQUIRED':
     case 'DASHBOARD_REQUIRED':
+    case 'INTERACTION_REQUIRED':
       return 403;
     case 'ADMIN_CHALLENGE_EXPIRED':
       return 410;

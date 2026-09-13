@@ -8,6 +8,10 @@ import {
 } from '@agent-deck/shared';
 import { AgentDeckContextError, resolveAgentDeckId } from '../lib/agent-deck-context';
 import { applyDeckScope, isDashboardClient, requireAgentClient } from '../lib/client-scope';
+import {
+  AuthorityContractAuthError,
+  sendContractError,
+} from '../lib/execution-authority-http';
 import { resolveDeckDisplay } from '../scope/display';
 
 const LiveDisplayBodySchema = z.object({
@@ -30,6 +34,39 @@ const DeckWorkspaceBodySchema = z.object({
   workspaceRoot: z.string().min(1),
   deckId: z.string().uuid(),
 });
+
+function assertAuthorityDeniedLiveDisplay(request: {
+  requestPrincipal?: { kind: string; authority?: { authorityId: string } };
+}): void {
+  const principal = request.requestPrincipal;
+  if (principal?.kind === 'execution-authority') {
+    throw new AuthorityContractAuthError({
+      ok: false,
+      error_code: 'INTERACTION_REQUIRED',
+      message: 'Control-plane decision required; do not hold the worker',
+      correlation: principal.authority
+        ? { authorityId: principal.authority.authorityId }
+        : undefined,
+    });
+  }
+}
+
+function assertAuthorityLiveDisplayWrite(
+  request: { requestPrincipal?: { kind: string; authority?: { authorityId: string; deckId: string } } },
+  deckId: string,
+): string | undefined {
+  assertAuthorityDeniedLiveDisplay(request);
+  void deckId;
+  return undefined;
+}
+
+function assertAuthorityLiveDisplaySession(
+  request: { requestPrincipal?: { kind: string; authority?: { authorityId: string; deckId: string } } },
+  entry: { authorityId?: string; deckId: string } | undefined,
+): void {
+  assertAuthorityDeniedLiveDisplay(request);
+  void entry;
+}
 
 export async function registerScopeRoutes(fastify: FastifyInstance) {
   fastify.get('/deck', async (request, reply) => {
@@ -111,9 +148,16 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
         } satisfies ApiResponse);
       }
 
-      const entry = fastify.liveDisplayRegistry.upsert(parsed.data);
+      const authorityId = assertAuthorityLiveDisplayWrite(request, parsed.data.deckId);
+      const entry = fastify.liveDisplayRegistry.upsert({
+        ...parsed.data,
+        authorityId,
+      });
       return reply.send({ success: true, data: { badge: entry.badge } } satisfies ApiResponse);
     } catch (error) {
+      if (error instanceof AuthorityContractAuthError) {
+        return sendContractError(reply, error.contract);
+      }
       return reply.status(403).send({
         success: false,
         error: error instanceof Error ? error.message : 'Forbidden',
@@ -134,9 +178,16 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
           } satisfies ApiResponse);
         }
 
+        assertAuthorityLiveDisplaySession(
+          request,
+          fastify.liveDisplayRegistry.get(mcpSessionId),
+        );
         fastify.liveDisplayRegistry.remove(mcpSessionId);
         return reply.send({ success: true } satisfies ApiResponse);
       } catch (error) {
+        if (error instanceof AuthorityContractAuthError) {
+          return sendContractError(reply, error.contract);
+        }
         return reply.status(403).send({
           success: false,
           error: error instanceof Error ? error.message : 'Forbidden',
@@ -158,11 +209,18 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
           } satisfies ApiResponse);
         }
 
+        assertAuthorityLiveDisplaySession(
+          request,
+          fastify.liveDisplayRegistry.get(mcpSessionId),
+        );
         const parsed = LiveDisplayTouchSchema.safeParse(request.body ?? {});
         const at = parsed.success && parsed.data.at ? parsed.data.at : new Date().toISOString();
         fastify.liveDisplayRegistry.touch(mcpSessionId, at);
         return reply.send({ success: true } satisfies ApiResponse);
       } catch (error) {
+        if (error instanceof AuthorityContractAuthError) {
+          return sendContractError(reply, error.contract);
+        }
         return reply.status(403).send({
           success: false,
           error: error instanceof Error ? error.message : 'Forbidden',

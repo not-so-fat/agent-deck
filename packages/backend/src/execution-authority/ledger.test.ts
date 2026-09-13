@@ -17,7 +17,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     if (!enrolled.ok) return;
 
     const minted = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_1',
       attemptId: 'attempt_1',
       deckId: 'deck_dev',
@@ -37,7 +37,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     minted.data.authority.status = 'revoked';
 
     const remint = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_1',
       attemptId: 'attempt_1',
       deckId: 'deck_dev',
@@ -104,7 +104,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(expired.error_code).toBe('AUTHORITY_EXPIRED');
 
     const mint2 = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_1',
       attemptId: 'attempt_2',
       deckId: 'deck_dev',
@@ -151,7 +151,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     if (!enrolled.ok) return;
 
     const minted = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_x',
       attemptId: 'attempt_x',
       deckId: 'deck_dev',
@@ -164,7 +164,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(minted.ok).toBe(true);
     if (!minted.ok) return;
 
-    ledger.revokeEnrollment(enrolled.data.enrollmentId);
+    ledger.revokeEnrollment(enrolled.data.enrollment.enrollmentId);
 
     const call = ledger.invokeAuthorizedCall({
       authorityId: minted.data.authority.authorityId,
@@ -178,7 +178,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(call.error_code).toBe('AUTHORITY_REVOKED');
 
     const remint = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_x',
       attemptId: 'attempt_y',
       deckId: 'deck_dev',
@@ -207,7 +207,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     if (!enrolled.ok) return;
 
     const badTtl = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_t',
       attemptId: 'attempt_t',
       deckId: 'deck_dev',
@@ -223,7 +223,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(badTtl.reason).toBe('ttl_non_positive');
 
     const minted = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_a',
       attemptId: 'attempt_a',
       deckId: 'deck_dev',
@@ -237,7 +237,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     if (!minted.ok) return;
 
     const conflict = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_a',
       attemptId: 'attempt_DIFFERENT',
       deckId: 'deck_dev',
@@ -250,6 +250,21 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(conflict.ok).toBe(false);
     if (conflict.ok) return;
     expect(conflict.error_code).toBe('IDEMPOTENCY_KEY_CONFLICT');
+
+    const ttlConflict = ledger.mintAuthority({
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
+      runId: 'run_a',
+      attemptId: 'attempt_a',
+      deckId: 'deck_dev',
+      audience: 'dealer-worker',
+      idempotencyKey: 'run_a:key',
+      allowedServices: ['svc_linear'],
+      allowedTools: [{ serviceId: 'svc_linear', toolName: 'get_issue' }],
+      ttlMs: 120_000,
+    });
+    expect(ttlConflict.ok).toBe(false);
+    if (ttlConflict.ok) return;
+    expect(ttlConflict.error_code).toBe('IDEMPOTENCY_KEY_CONFLICT');
 
     const unknown = ledger.invokeAuthorizedCall({
       authorityId: 'authz_missing',
@@ -285,7 +300,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(badAudience.error_code).toBe('AUDIENCE_MISMATCH');
 
     const deckDenied = ledger.mintAuthority({
-      enrollmentId: enrolled.data.enrollmentId,
+      enrollmentId: enrolled.data.enrollment.enrollmentId,
       runId: 'run_b',
       attemptId: 'attempt_b',
       deckId: 'deck_forbidden',
@@ -301,7 +316,7 @@ describe('ExecutionAuthorityLedger (NOT-85 contract skeleton)', () => {
     expect(deckDenied.reason).toBe('deck_not_permitted');
 
     nowMs += 61_000;
-    ledger.revokeEnrollment(enrolled.data.enrollmentId);
+    ledger.revokeEnrollment(enrolled.data.enrollment.enrollmentId);
     const expiryEvents = ledger.listAuditEvents({
       authorityId: minted.data.authority.authorityId,
     });

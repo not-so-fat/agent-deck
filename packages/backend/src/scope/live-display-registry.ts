@@ -18,6 +18,8 @@ export type LiveDisplayEntry = {
   badge: string;
   clientName?: string;
   lastActivityAt: string;
+  /** Set when upserted under an execution-authority principal (NOT-86 containment). */
+  authorityId?: string;
 };
 
 export type LiveDisplayUpsert = Omit<LiveDisplayEntry, 'badge' | 'lastActivityAt'>;
@@ -37,11 +39,16 @@ export class LiveDisplayRegistry {
       ...input,
       workspaceRoot,
       clientName: input.clientName ?? existing?.clientName,
+      authorityId: input.authorityId ?? existing?.authorityId,
       badge,
       lastActivityAt: input.updatedAt,
     };
     this.bySessionId.set(input.mcpSessionId, entry);
     return entry;
+  }
+
+  get(mcpSessionId: string): LiveDisplayEntry | undefined {
+    return this.bySessionId.get(mcpSessionId);
   }
 
   remove(mcpSessionId: string): void {

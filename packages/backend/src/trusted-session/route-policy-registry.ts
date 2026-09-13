@@ -41,6 +41,42 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   },
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/bootstrap\/nonce$/, policy: 'requireTrustedWriter' },
 
+  // Execution authority (NOT-86) — enroll via trusted writer; coordinator/worker auth in handlers
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/execution-authority\/enrollments$/,
+    policy: 'requireTrustedWriter',
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/execution-authority\/enrollments\/[^/]+$/,
+    policy: 'requireTrustedWriter',
+  },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/execution-authority\/enrollments\/[^/]+\/revoke$/,
+    policy: 'requireTrustedWriter',
+  },
+  { methods: ['GET'], pattern: /^\/api\/execution-authority\/decks$/, policy: 'allowPublic' },
+  { methods: ['POST'], pattern: /^\/api\/execution-authority\/authorities$/, policy: 'allowPublic' },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/execution-authority\/authorities\/[^/]+$/,
+    policy: 'allowPublic',
+  },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/execution-authority\/authorities\/[^/]+\/revoke$/,
+    policy: 'allowPublic',
+  },
+  { methods: ['GET'], pattern: /^\/api\/execution-authority\/audit$/, policy: 'allowPublic' },
+  { methods: ['POST'], pattern: /^\/api\/execution-authority\/mcp\/connect$/, policy: 'allowPublic' },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/execution-authority\/authorize-call$/,
+    policy: 'allowPublic',
+  },
+
   // Agent resource (runtime session or grant bearer)
   { methods: ['GET'], pattern: /^\/api\/trusted-session\/runtime-session$/, policy: 'requireAgentResource' },
   {
