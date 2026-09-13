@@ -142,6 +142,10 @@ export class AgentDeckMCPServer {
   }
 
   private async registerLiveDisplay(sessionId: string): Promise<void> {
+    // Unattended execution authority must not mutate global live-display state.
+    if (this.sessionBinding.getExecutionAuthority?.(sessionId)) {
+      return;
+    }
     const snapshot = this.sessionBinding.getBinding(sessionId);
     // A deck bind is what makes a session live; the workspace may be absent
     // (header/auto-bound sessions surface in the dashboard without a folder).
@@ -178,6 +182,9 @@ export class AgentDeckMCPServer {
 
   /** Fire-and-forget lastActivityAt bump; only for sessions the registry knows. */
   private touchLiveDisplay(sessionId: string): void {
+    if (this.sessionBinding.getExecutionAuthority?.(sessionId)) {
+      return;
+    }
     if (!this.badgeBySession.has(sessionId)) {
       return;
     }
@@ -212,6 +219,9 @@ export class AgentDeckMCPServer {
   }
 
   private async unregisterLiveDisplay(sessionId: string): Promise<void> {
+    if (this.sessionBinding.getExecutionAuthority(sessionId)) {
+      return;
+    }
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(),

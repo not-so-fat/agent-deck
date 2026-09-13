@@ -483,10 +483,10 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     });
     expect(forged.status).toBe(403);
     expect((await forged.json() as { error_code?: string }).error_code).toBe(
-      'RESOURCE_OUT_OF_SCOPE',
+      'INTERACTION_REQUIRED',
     );
 
-    const own = await fetch(`${baseUrl}/api/scope/live-display`, {
+    const ownDeck = await fetch(`${baseUrl}/api/scope/live-display`, {
       method: 'POST',
       headers: agentHeaders,
       body: JSON.stringify({
@@ -498,7 +498,10 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
         updatedAt: new Date().toISOString(),
       }),
     });
-    expect(own.ok).toBe(true);
+    expect(ownDeck.status).toBe(403);
+    expect((await ownDeck.json() as { error_code?: string }).error_code).toBe(
+      'INTERACTION_REQUIRED',
+    );
 
     const foreignTouch = await fetch(`${baseUrl}/api/scope/live-display/someone-else/touch`, {
       method: 'POST',
@@ -507,7 +510,7 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     });
     expect(foreignTouch.status).toBe(403);
     expect((await foreignTouch.json() as { error_code?: string }).error_code).toBe(
-      'RESOURCE_OUT_OF_SCOPE',
+      'INTERACTION_REQUIRED',
     );
 
     await fetch(

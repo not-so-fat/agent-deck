@@ -7,13 +7,12 @@ import type { ExecutionAuthorityStore } from '../execution-authority/store';
 
 /**
  * HTTP routes an execution-authority principal may use (worker-facing reads + tool call).
+ * Live-display is intentionally excluded — unattended workers must not mutate global
+ * session display state (NOT-86 containment).
  * Everything else is control-plane / out of containment → INTERACTION_REQUIRED.
  */
 const ALLOWED: Array<{ methods: string[]; pattern: RegExp }> = [
   { methods: ['GET'], pattern: /^\/api\/scope\/deck$/ },
-  { methods: ['POST'], pattern: /^\/api\/scope\/live-display$/ },
-  { methods: ['DELETE'], pattern: /^\/api\/scope\/live-display\/[^/]+$/ },
-  { methods: ['POST'], pattern: /^\/api\/scope\/live-display\/[^/]+\/touch$/ },
   { methods: ['GET'], pattern: /^\/api\/decks\/[^/]+$/ },
   { methods: ['GET'], pattern: /^\/api\/decks\/[^/]+\/services$/ },
   { methods: ['GET'], pattern: /^\/api\/services\/[^/]+$/ },

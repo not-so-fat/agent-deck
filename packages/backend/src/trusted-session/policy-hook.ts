@@ -1,7 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import { trustedSessionError } from '@agent-deck/shared';
-
 import { parseAuthorityBearer } from '../execution-authority/bearer';
 import { parseBearerToken } from '../lib/http-auth';
 import {
@@ -32,6 +30,11 @@ declare module 'fastify' {
 
 export const registeredHttpRoutes: RegisteredRoute[] = [];
 
+function tryParseAuthorityBearer(request: FastifyRequest) {
+  const bearer = parseBearerToken(request);
+  return bearer ? parseAuthorityBearer(bearer) : null;
+}
+
 export function registerHttpPolicyHook(fastify: FastifyInstance): void {
   registeredHttpRoutes.length = 0;
 
@@ -56,18 +59,9 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
       return;
     }
 
-    const policy = resolveRoutePolicy(request.method, pathname);
-    if (!policy) {
-      return sendTrustedAuthError(
-        reply,
-        new TrustedAuthError('DASHBOARD_REQUIRED', `No authorization policy for ${request.method} ${pathname}`),
-      );
-    }
-
-    // NOT-86: authority bearers get INTERACTION_REQUIRED before dashboard/admin/trusted-writer
-    // policy branches (those would otherwise return DASHBOARD_REQUIRED / GRANT_REQUIRED).
-    const bearer = parseBearerToken(request);
-    const authorityCreds = bearer ? parseAuthorityBearer(bearer) : null;
+    // NOT-86: detect authority bearer before any generic policy rejection
+    // (DASHBOARD_REQUIRED / GRANT_REQUIRED / unmatched route / trusted-writer).
+    const authorityCreds = tryParseAuthorityBearer(request);
     if (authorityCreds && fastify.executionAuthorityStore) {
       const auth = fastify.executionAuthorityStore.authenticateAuthority(
         authorityCreds.authorityId,
@@ -78,12 +72,13 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
       }
       request.requestPrincipal = { kind: 'execution-authority', authority: auth.data };
 
+      const policy = resolveRoutePolicy(request.method, pathname);
       if (policy === 'allowPublic') {
         // Issuer routes (connect / authorize-call) authenticate again in-handler.
         return;
       }
 
-      if (!isExecutionAuthorityHttpAllowed(request.method, pathname)) {
+      if (!policy || !isExecutionAuthorityHttpAllowed(request.method, pathname)) {
         return sendContractError(reply, {
           ok: false,
           error_code: 'INTERACTION_REQUIRED',
@@ -92,6 +87,14 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
         });
       }
       return;
+    }
+
+    const policy = resolveRoutePolicy(request.method, pathname);
+    if (!policy) {
+      return sendTrustedAuthError(
+        reply,
+        new TrustedAuthError('DASHBOARD_REQUIRED', `No authorization policy for ${request.method} ${pathname}`),
+      );
     }
 
     if (policy === 'allowPublic') {

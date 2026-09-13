@@ -137,6 +137,28 @@ describe('MCP execution-authority principal (NOT-86)', () => {
     expect(control.isError).toBe(true);
     expect(control.data.error_code).toBe('INTERACTION_REQUIRED');
 
+    const switchDeck = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'switch_bound_deck',
+      { deckId: deck.id },
+      3,
+      authorityBearer,
+    );
+    expect(switchDeck.isError).toBe(true);
+    expect(switchDeck.data.error_code).toBe('INTERACTION_REQUIRED');
+
+    const getDecks = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_decks',
+      {},
+      4,
+      authorityBearer,
+    );
+    expect(getDecks.isError).toBe(true);
+    expect(getDecks.data.error_code).toBe('INTERACTION_REQUIRED');
+
     const scope = await fetch(`${backendUrl}/api/scope/deck`, {
       headers: { Authorization: `Bearer ${authorityBearer}` },
     });

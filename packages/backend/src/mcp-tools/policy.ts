@@ -3,8 +3,23 @@ import { trustedSessionError, type TrustedSessionErrorCode } from '@agent-deck/s
 import { BackendApiError } from '../lib/backend-api-error';
 import type { McpToolHost } from './register';
 
+const AUTHORITY_CONTRACT_CODES = new Set([
+  'AUTHORITY_EXPIRED',
+  'AUTHORITY_REVOKED',
+  'AUTHORITY_UNKNOWN',
+  'AUTHORITY_SECRET_INVALID',
+  'AUDIENCE_MISMATCH',
+  'ENROLLMENT_REVOKED',
+  'COORDINATOR_NOT_ENROLLED',
+  'INTERACTION_REQUIRED',
+  'RESOURCE_OUT_OF_SCOPE',
+]);
+
 export function formatMcpToolError(error: unknown) {
   if (error instanceof BackendApiError && error.errorCode) {
+    if (AUTHORITY_CONTRACT_CODES.has(error.errorCode)) {
+      return mcpContractError(error.errorCode, error.message);
+    }
     return mcpPolicyError(error.errorCode);
   }
   return {

@@ -35,51 +35,37 @@ const DeckWorkspaceBodySchema = z.object({
   deckId: z.string().uuid(),
 });
 
+function assertAuthorityDeniedLiveDisplay(request: {
+  requestPrincipal?: { kind: string; authority?: { authorityId: string } };
+}): void {
+  const principal = request.requestPrincipal;
+  if (principal?.kind === 'execution-authority') {
+    throw new AuthorityContractAuthError({
+      ok: false,
+      error_code: 'INTERACTION_REQUIRED',
+      message: 'Control-plane decision required; do not hold the worker',
+      correlation: principal.authority
+        ? { authorityId: principal.authority.authorityId }
+        : undefined,
+    });
+  }
+}
+
 function assertAuthorityLiveDisplayWrite(
   request: { requestPrincipal?: { kind: string; authority?: { authorityId: string; deckId: string } } },
   deckId: string,
 ): string | undefined {
-  const principal = request.requestPrincipal;
-  if (principal?.kind !== 'execution-authority' || !principal.authority) {
-    return undefined;
-  }
-  if (deckId !== principal.authority.deckId) {
-    throw new AuthorityContractAuthError({
-      ok: false,
-      error_code: 'RESOURCE_OUT_OF_SCOPE',
-      message: 'Live display deckId must match authority deck',
-      correlation: {
-        authorityId: principal.authority.authorityId,
-        deckId: principal.authority.deckId,
-      },
-    });
-  }
-  return principal.authority.authorityId;
+  assertAuthorityDeniedLiveDisplay(request);
+  void deckId;
+  return undefined;
 }
 
 function assertAuthorityLiveDisplaySession(
   request: { requestPrincipal?: { kind: string; authority?: { authorityId: string; deckId: string } } },
   entry: { authorityId?: string; deckId: string } | undefined,
 ): void {
-  const principal = request.requestPrincipal;
-  if (principal?.kind !== 'execution-authority' || !principal.authority) {
-    return;
-  }
-  if (
-    !entry ||
-    entry.authorityId !== principal.authority.authorityId ||
-    entry.deckId !== principal.authority.deckId
-  ) {
-    throw new AuthorityContractAuthError({
-      ok: false,
-      error_code: 'RESOURCE_OUT_OF_SCOPE',
-      message: 'Live display session is not owned by this authority',
-      correlation: {
-        authorityId: principal.authority.authorityId,
-        deckId: principal.authority.deckId,
-      },
-    });
-  }
+  assertAuthorityDeniedLiveDisplay(request);
+  void entry;
 }
 
 export async function registerScopeRoutes(fastify: FastifyInstance) {
