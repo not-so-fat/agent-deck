@@ -526,4 +526,94 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
       'AUTHORITY_REVOKED',
     );
   });
+
+  it('rejects authority on coordinator issuer routes and records one call_allowed per call', async () => {
+    const service = await server!.db.createService({
+      name: 'ea-audit-svc',
+      type: 'mcp',
+      url: 'http://127.0.0.1:9/mcp',
+    });
+    await server!.db.addServiceToDeck({ deckId, serviceId: service.id, position: 0 });
+
+    const enroll = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinatorId: 'coord-issuer', allowedDeckIds: [deckId] }),
+    });
+    const enrollBody = (await enroll.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const enrollmentId = enrollBody.data.enrollment.enrollmentId;
+    const enrollmentBearer = `Bearer ${enrollmentId}:${enrollBody.data.enrollmentSecret}`;
+
+    // Mint via store so the snapshot includes a tool without live MCP discovery.
+    const minted = server!.executionAuthorityStore.mintAuthority({
+      enrollmentId,
+      runId: 'run_issuer',
+      attemptId: 'attempt_1',
+      deckId,
+      audience: 'dealer-worker',
+      idempotencyKey: 'run_issuer:1',
+      allowedServices: [service.id],
+      allowedTools: [{ serviceId: service.id, toolName: 'ping' }],
+      ttlMs: 60_000,
+    });
+    if (!minted.ok || !minted.data.authoritySecret) {
+      throw new Error('mint failed');
+    }
+    const { authorityId } = minted.data.authority;
+    const authoritySecret = minted.data.authoritySecret;
+    const authorityBearer = `Bearer ${authorityId}:${authoritySecret}`;
+
+    const mintAsWorker = await fetch(`${baseUrl}/api/execution-authority/authorities`, {
+      method: 'POST',
+      headers: { Authorization: authorityBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enrollmentId,
+        runId: 'run_forged',
+        attemptId: 'attempt_x',
+        deckId,
+        audience: 'dealer-worker',
+        idempotencyKey: 'run_forged:1',
+        ttlMs: 60_000,
+      }),
+    });
+    expect(mintAsWorker.status).toBe(403);
+    expect((await mintAsWorker.json() as { error_code?: string }).error_code).toBe(
+      'INTERACTION_REQUIRED',
+    );
+
+    const decksAsWorker = await fetch(`${baseUrl}/api/execution-authority/decks`, {
+      headers: { Authorization: authorityBearer },
+    });
+    expect(decksAsWorker.status).toBe(403);
+    expect((await decksAsWorker.json() as { error_code?: string }).error_code).toBe(
+      'INTERACTION_REQUIRED',
+    );
+
+    const beforeAudit = await fetch(
+      `${baseUrl}/api/execution-authority/audit?authorityId=${encodeURIComponent(authorityId)}`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    const beforeBody = (await beforeAudit.json()) as {
+      data: { events: Array<{ kind: string }> };
+    };
+    const beforeAllowed = beforeBody.data.events.filter((e) => e.kind === 'call_allowed').length;
+
+    await fetch(`${baseUrl}/api/services/${service.id}/call`, {
+      method: 'POST',
+      headers: { Authorization: authorityBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolName: 'ping', arguments: {} }),
+    });
+
+    const afterAudit = await fetch(
+      `${baseUrl}/api/execution-authority/audit?authorityId=${encodeURIComponent(authorityId)}`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    const afterBody = (await afterAudit.json()) as {
+      data: { events: Array<{ kind: string }> };
+    };
+    const afterAllowed = afterBody.data.events.filter((e) => e.kind === 'call_allowed').length;
+    expect(afterAllowed - beforeAllowed).toBe(1);
+  });
 });

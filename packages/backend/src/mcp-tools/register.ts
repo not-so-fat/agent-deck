@@ -4,7 +4,7 @@ import type { StubBindSyncResult } from '../playbooks/stub-sync';
 import { resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
-import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard, denyControlPlaneUnderAuthority, authorizeExecutionAuthorityTool, mcpContractError } from './policy';
+import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard, denyControlPlaneUnderAuthority, mcpContractError } from './policy';
 import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
 
 type RegisterToolFn = (
@@ -622,8 +622,8 @@ function registerRuntimeTools(host: McpToolHost): void {
     },
   }, async ({ serviceId, toolName, arguments: args = {} }) => {
     try {
-      const denied = await authorizeExecutionAuthorityTool(host, serviceId, toolName);
-      if (denied) return denied;
+      // Authorization + audit happen once in POST /api/services/:id/call
+      // (authorizeAuthorityServiceCall → ledger). Do not preflight authorize-call here.
 
       let normalizedArgs: unknown = args;
       if (typeof normalizedArgs === 'string' && normalizedArgs.length > 0) {

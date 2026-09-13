@@ -35,6 +35,14 @@ function tryParseAuthorityBearer(request: FastifyRequest) {
   return bearer ? parseAuthorityBearer(bearer) : null;
 }
 
+/** Worker bootstrap only — coordinator issuer routes stay off-limits to authority bearers. */
+function isExecutionAuthorityWorkerBootstrap(pathname: string): boolean {
+  return (
+    pathname === '/api/execution-authority/mcp/connect' ||
+    pathname === '/api/execution-authority/authorize-call'
+  );
+}
+
 export function registerHttpPolicyHook(fastify: FastifyInstance): void {
   registeredHttpRoutes.length = 0;
 
@@ -74,7 +82,18 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
 
       const policy = resolveRoutePolicy(request.method, pathname);
       if (policy === 'allowPublic') {
-        // Issuer routes (connect / authorize-call) authenticate again in-handler.
+        if (isExecutionAuthorityWorkerBootstrap(pathname)) {
+          // connect / authorize-call authenticate again in-handler.
+          return;
+        }
+        if (pathname.startsWith('/api/execution-authority/')) {
+          return sendContractError(reply, {
+            ok: false,
+            error_code: 'INTERACTION_REQUIRED',
+            message: 'Control-plane decision required; do not hold the worker',
+            correlation: { authorityId: auth.data.authorityId },
+          });
+        }
         return;
       }
 
