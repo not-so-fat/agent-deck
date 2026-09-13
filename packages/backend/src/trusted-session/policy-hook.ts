@@ -2,7 +2,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { trustedSessionError } from '@agent-deck/shared';
 
-import { isExecutionAuthorityHttpAllowed } from '../lib/execution-authority-http';
+import { parseAuthorityBearer } from '../execution-authority/bearer';
+import { parseBearerToken } from '../lib/http-auth';
+import {
+  AuthorityContractAuthError,
+  isExecutionAuthorityHttpAllowed,
+  sendContractError,
+} from '../lib/execution-authority-http';
 import {
   enforcePolicy,
   requireTrustedWriterBearer,
@@ -58,6 +64,36 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
       );
     }
 
+    // NOT-86: authority bearers get INTERACTION_REQUIRED before dashboard/admin/trusted-writer
+    // policy branches (those would otherwise return DASHBOARD_REQUIRED / GRANT_REQUIRED).
+    const bearer = parseBearerToken(request);
+    const authorityCreds = bearer ? parseAuthorityBearer(bearer) : null;
+    if (authorityCreds && fastify.executionAuthorityStore) {
+      const auth = fastify.executionAuthorityStore.authenticateAuthority(
+        authorityCreds.authorityId,
+        authorityCreds.secret,
+      );
+      if (!auth.ok) {
+        return sendContractError(reply, auth);
+      }
+      request.requestPrincipal = { kind: 'execution-authority', authority: auth.data };
+
+      if (policy === 'allowPublic') {
+        // Issuer routes (connect / authorize-call) authenticate again in-handler.
+        return;
+      }
+
+      if (!isExecutionAuthorityHttpAllowed(request.method, pathname)) {
+        return sendContractError(reply, {
+          ok: false,
+          error_code: 'INTERACTION_REQUIRED',
+          message: 'Control-plane decision required; do not hold the worker',
+          correlation: { authorityId: auth.data.authorityId },
+        });
+      }
+      return;
+    }
+
     if (policy === 'allowPublic') {
       request.requestPrincipal = { kind: 'public' };
       return;
@@ -84,19 +120,10 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
       );
       enforcePolicy(policy, principal);
       request.requestPrincipal = principal;
-
-      // NOT-86: authority bearers must not inherit full agent HTTP surface.
-      if (
-        principal.kind === 'execution-authority' &&
-        !isExecutionAuthorityHttpAllowed(request.method, pathname)
-      ) {
-        const body = trustedSessionError(
-          'INTERACTION_REQUIRED',
-          'Control-plane decision required; do not hold the worker',
-        );
-        return reply.status(403).send({ ...body, ok: false });
-      }
     } catch (error) {
+      if (error instanceof AuthorityContractAuthError) {
+        return sendContractError(reply, error.contract);
+      }
       if (error instanceof TrustedAuthError) {
         return sendTrustedAuthError(reply, error);
       }

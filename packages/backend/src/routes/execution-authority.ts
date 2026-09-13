@@ -4,27 +4,12 @@ import { parseBearerToken } from '../lib/http-auth';
 import { requireTrustedWriterBearer, TrustedAuthError, sendTrustedAuthError } from '../trusted-session/auth';
 import { parseAuthorityBearer, parseEnrollmentBearer } from '../execution-authority/bearer';
 import type { AllowedTool, ContractError, MintAuthorityRequest } from '../execution-authority/types';
+import { sendContractError, statusForContract } from '../lib/execution-authority-http';
 
-function sendContractError(
-  reply: { status: (code: number) => { send: (body: unknown) => unknown } },
-  error: ContractError,
-  status = 403,
-) {
-  return reply.status(status).send(error);
-}
-
-function statusForContract(error: ContractError): number {
-  switch (error.error_code) {
-    case 'COORDINATOR_NOT_ENROLLED':
-    case 'AUTHORITY_UNKNOWN':
-      return 404;
-    case 'INVALID_MINT_REQUEST':
-    case 'IDEMPOTENCY_KEY_CONFLICT':
-      return 400;
-    case 'AUTHORITY_SECRET_INVALID':
-      return 401;
-    default:
-      return 403;
+export class EnrollmentAuthError extends Error {
+  constructor(public readonly contract: ContractError) {
+    super(contract.message);
+    this.name = 'EnrollmentAuthError';
   }
 }
 
@@ -33,13 +18,6 @@ function intersectTools(policy: AllowedTool[], hint: AllowedTool[] | undefined):
   const key = (t: AllowedTool) => `${t.serviceId}\0${t.toolName}`;
   const allowed = new Set(policy.map(key));
   return hint.filter((t) => allowed.has(key(t)));
-}
-
-export class EnrollmentAuthError extends Error {
-  constructor(public readonly contract: ContractError) {
-    super(contract.message);
-    this.name = 'EnrollmentAuthError';
-  }
 }
 
 function requireEnrollmentAuth(
@@ -271,6 +249,9 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
 
     const narrowedTools = intersectTools(allowedTools, body.toolScopeHint);
     const narrowedServiceIds = [...new Set(narrowedTools.map((t) => t.serviceId))];
+    // undefined hint → full deck services; explicit hint (incl. []) → services from snapshot only
+    const mintServices =
+      body.toolScopeHint === undefined ? allowedServices : narrowedServiceIds;
 
     const result = store().mintAuthority({
       enrollmentId,
@@ -279,7 +260,7 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
       deckId: body.deckId.trim(),
       audience: 'dealer-worker',
       idempotencyKey: body.idempotencyKey.trim(),
-      allowedServices: narrowedServiceIds.length > 0 ? narrowedServiceIds : allowedServices,
+      allowedServices: mintServices,
       allowedTools: narrowedTools,
       ttlMs: body.ttlMs,
     });

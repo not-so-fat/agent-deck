@@ -575,7 +575,10 @@ function registerRuntimeTools(host: McpToolHost): void {
         });
         const body = (await connect.json()) as {
           ok?: boolean;
-          data?: { allowedServices?: string[] };
+          data?: {
+            allowedServices?: string[];
+            allowedTools?: Array<{ serviceId: string; toolName: string }>;
+          };
           error_code?: string;
           message?: string;
         };
@@ -591,6 +594,16 @@ function registerRuntimeTools(host: McpToolHost): void {
             new BackendApiError('Service is not on the bound deck', 403, 'RESOURCE_OUT_OF_SCOPE'),
           );
         }
+        const tools = await host.callBackendAPI(`/api/services/${serviceId}/tools`);
+        const allowedNames = new Set(
+          (body.data.allowedTools ?? [])
+            .filter((t) => t.serviceId === serviceId)
+            .map((t) => t.toolName),
+        );
+        const filtered = Array.isArray(tools)
+          ? tools.filter((t: { name?: string }) => typeof t.name === 'string' && allowedNames.has(t.name))
+          : tools;
+        return host.toolResult(filtered);
       }
       const tools = await host.callBackendAPI(`/api/services/${serviceId}/tools`);
       return host.toolResult(tools);

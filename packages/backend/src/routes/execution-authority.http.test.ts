@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AGENT_DECK_AGENT_CLIENT, AGENT_DECK_CLIENT_HEADER } from '@agent-deck/shared';
 
 import { createServer } from '../server/index';
 import { ensureAdminSecret, readAdminSecretFromEnvOrFile } from '../trusted-session/admin-secret';
@@ -224,10 +225,13 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     });
     const mintBody = (await mint.json()) as {
       ok?: boolean;
-      data?: { authority: { authorityId: string; allowedTools: unknown[] } };
+      data?: {
+        authority: { authorityId: string; allowedTools: unknown[]; allowedServices: string[] };
+      };
     };
     expect(mint.ok).toBe(true);
     expect(mintBody.data?.authority.allowedTools).toEqual([]);
+    expect(mintBody.data?.authority.allowedServices).toEqual([]);
 
     const crossRevoke = await fetch(
       `${baseUrl}/api/execution-authority/authorities/${mintBody.data!.authority.authorityId}/revoke`,
@@ -317,6 +321,15 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
       'RESOURCE_OUT_OF_SCOPE',
     );
 
+    const auditAfterDeny = await fetch(
+      `${baseUrl}/api/execution-authority/audit?authorityId=${encodeURIComponent(mintBody.data!.authority.authorityId)}`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    const auditDenyBody = (await auditAfterDeny.json()) as {
+      data: { events: Array<{ kind: string }> };
+    };
+    expect(auditDenyBody.data.events.some((e) => e.kind === 'call_denied')).toBe(true);
+
     const mutation = await fetch(`${baseUrl}/api/decks/${deckId}/services`, {
       method: 'POST',
       headers: { Authorization: authorityBearer, 'Content-Type': 'application/json' },
@@ -324,6 +337,16 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     });
     expect(mutation.status).toBe(403);
     expect((await mutation.json() as { error_code?: string }).error_code).toBe(
+      'INTERACTION_REQUIRED',
+    );
+
+    const createService = await fetch(`${baseUrl}/api/services`, {
+      method: 'POST',
+      headers: { Authorization: authorityBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'forged', type: 'mcp', url: 'http://127.0.0.1:9/x' }),
+    });
+    expect(createService.status).toBe(403);
+    expect((await createService.json() as { error_code?: string }).error_code).toBe(
       'INTERACTION_REQUIRED',
     );
   });
@@ -407,5 +430,97 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
       (e) => e.kind === 'authority_inspected' && e.correlation.authorityId === authorityId,
     ).length;
     expect(afterInspected).toBe(beforeInspected);
+  });
+
+  it('denies forged live-display and preserves revoked authority contract codes', async () => {
+    const otherDeck = await server!.db.createDeck({ name: 'ea-other-deck' });
+
+    const enroll = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coordinatorId: 'coord-live', allowedDeckIds: [deckId] }),
+    });
+    const enrollBody = (await enroll.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const enrollmentBearer = `Bearer ${enrollBody.data.enrollment.enrollmentId}:${enrollBody.data.enrollmentSecret}`;
+
+    const mint = await fetch(`${baseUrl}/api/execution-authority/authorities`, {
+      method: 'POST',
+      headers: { Authorization: enrollmentBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        enrollmentId: enrollBody.data.enrollment.enrollmentId,
+        runId: 'run_live',
+        attemptId: 'attempt_1',
+        deckId,
+        audience: 'dealer-worker',
+        idempotencyKey: 'run_live:1',
+        ttlMs: 60_000,
+        toolScopeHint: [],
+      }),
+    });
+    const mintBody = (await mint.json()) as {
+      data: { authority: { authorityId: string }; authoritySecret: string };
+    };
+    const authorityBearer = `Bearer ${mintBody.data.authority.authorityId}:${mintBody.data.authoritySecret}`;
+    const agentHeaders = {
+      Authorization: authorityBearer,
+      'Content-Type': 'application/json',
+      [AGENT_DECK_CLIENT_HEADER]: AGENT_DECK_AGENT_CLIENT,
+    };
+
+    const forged = await fetch(`${baseUrl}/api/scope/live-display`, {
+      method: 'POST',
+      headers: agentHeaders,
+      body: JSON.stringify({
+        mcpSessionId: 'forged-session',
+        deckId: otherDeck.id,
+        deckName: 'ea-other-deck',
+        source: 'session_override',
+        cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+        updatedAt: new Date().toISOString(),
+      }),
+    });
+    expect(forged.status).toBe(403);
+    expect((await forged.json() as { error_code?: string }).error_code).toBe(
+      'RESOURCE_OUT_OF_SCOPE',
+    );
+
+    const own = await fetch(`${baseUrl}/api/scope/live-display`, {
+      method: 'POST',
+      headers: agentHeaders,
+      body: JSON.stringify({
+        mcpSessionId: 'own-session',
+        deckId,
+        deckName: 'ea-http-deck',
+        source: 'session_override',
+        cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+        updatedAt: new Date().toISOString(),
+      }),
+    });
+    expect(own.ok).toBe(true);
+
+    const foreignTouch = await fetch(`${baseUrl}/api/scope/live-display/someone-else/touch`, {
+      method: 'POST',
+      headers: agentHeaders,
+      body: JSON.stringify({}),
+    });
+    expect(foreignTouch.status).toBe(403);
+    expect((await foreignTouch.json() as { error_code?: string }).error_code).toBe(
+      'RESOURCE_OUT_OF_SCOPE',
+    );
+
+    await fetch(
+      `${baseUrl}/api/execution-authority/authorities/${mintBody.data.authority.authorityId}/revoke`,
+      { method: 'POST', headers: { Authorization: enrollmentBearer } },
+    );
+
+    const revokedRead = await fetch(`${baseUrl}/api/scope/deck`, {
+      headers: { Authorization: authorityBearer },
+    });
+    expect(revokedRead.status).toBe(403);
+    expect((await revokedRead.json() as { error_code?: string }).error_code).toBe(
+      'AUTHORITY_REVOKED',
+    );
   });
 });

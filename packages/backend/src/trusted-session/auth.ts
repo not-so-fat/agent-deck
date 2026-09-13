@@ -14,6 +14,7 @@ import { parseDashboardCookie } from '../lib/dashboard-auth';
 import { parseAuthorityBearer } from '../execution-authority/bearer';
 import type { ExecutionAuthority } from '../execution-authority/types';
 import type { ExecutionAuthorityStore } from '../execution-authority/store';
+import { AuthorityContractAuthError } from '../lib/execution-authority-http';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from './admin-secret';
 import type { TrustedSessionStore } from './store';
 
@@ -144,13 +145,7 @@ export async function resolveRequestPrincipal(
         authorityCreds.secret,
       );
       if (!auth.ok) {
-        throw new TrustedAuthError(
-          auth.error_code === 'AUTHORITY_SECRET_INVALID' ? 'GRANT_REQUIRED' : 'GRANT_REQUIRED',
-          auth.message,
-        );
-      }
-      if (auth.data.status !== 'live') {
-        throw new TrustedAuthError('GRANT_REQUIRED', `Authority is ${auth.data.status}`);
+        throw new AuthorityContractAuthError(auth);
       }
       return { kind: 'execution-authority', authority: auth.data };
     }
