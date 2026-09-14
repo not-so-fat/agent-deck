@@ -7,9 +7,8 @@
 ### Add: coordinator enrollment + short-lived execution authority (NOT-86)
 
 - Durable enrollment / authority ledger (SQLite), HTTP issuer under `/api/execution-authority/*`, MCP auth with `authz_…:secret`, CLI `agent-deck coordinator enroll|status|revoke`.
-- One-time enrollment secret (`enr_…:secret`) for coordinator mint; process-local one-time authority mint secret (OS launcher → NOT-89; dashboard enroll UX → NOT-90).
+- One-time `enrollmentSecret` (`enrs_…`) for coordinator mint; Bearer is `enr_…:enrs_…`. Authority secret is process-local for now (OS launcher → NOT-89; dashboard enroll UX → NOT-90).
 - Interactive workspace grants unchanged.
-- Contract vocabulary and ledger skeleton from NOT-85.
 
 ### Fix: MCP session-local context and idempotent bind (NOT-84)
 
@@ -20,7 +19,7 @@
 ### After upgrade
 
 - Upgrade the CLI, then `agent-deck stop && agent-deck start` (or restart the daemon) so MCP and the issuer pick up the new code.
-- Coordinator cut B: `agent-deck coordinator enroll --coordinator-id <id> --deck <deckId>…` (print/store the one-time `enr_…:secret`; OS launcher and dashboard enroll UX are later).
+- Enroll a coordinator: `agent-deck coordinator enroll --coordinator-id <id> --deck <deckId>…` — store the one-time `enrollmentSecret` (`enrs_…`) and use Bearer `enr_…:enrs_…` for mint; OS launcher and dashboard enroll UX come later.
 - Reload IDE MCP hosts after upgrade so session-local bind behavior applies.
 
 ## 1.7.7 — 2026-09-12
