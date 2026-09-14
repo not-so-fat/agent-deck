@@ -7,9 +7,9 @@ related: NOT-84, NOT-77, NOT-79, docs/PRD_TRUSTED_AGENT_SESSIONS.md
 
 # Trusted unattended execution contract (Agent Dealer ↔ Agent Deck)
 
-**Status note:** Worker access superseded by NOT-105 (launch-selected deck); execution authority removal in NOT-107.
+**Status note (NOT-105 / NOT-107):** Worker MCP access is **superseded by launch-selected deck** (NOT-105: `x-agent-deck-deck-id`, no worktree grant). Sections below that describe **worker** authorization via short-lived execution authority are historical for the worker path until NOT-107 deletes that code; prefer NOT-105 for new worker wiring (Dealer → NOT-106). **Coordinator** enrollment + mint remain as written here until NOT-107. Interactive path-bound workspace grants ([PRD_TRUSTED_AGENT_SESSIONS](../../PRD_TRUSTED_AGENT_SESSIONS.md)) remain unchanged for grant-based sessions.
 
-**Accepted architecture (NOT-85).** This section is authoritative over older drafts and over leftover comments in foundation PRs. Interactive path-bound workspace grants ([PRD_TRUSTED_AGENT_SESSIONS](../../PRD_TRUSTED_AGENT_SESSIONS.md)) remain unchanged; this contract adds a **separate** unattended principal.
+**Accepted architecture (NOT-85).** For coordinator enrollment / mint and for material not superseded above, this section is authoritative over older drafts and over leftover comments in foundation PRs. This contract originally added a **separate** unattended principal alongside interactive grants.
 
 ## 1. Concrete use case
 

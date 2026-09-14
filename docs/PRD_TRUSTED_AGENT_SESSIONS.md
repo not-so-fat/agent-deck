@@ -8,11 +8,11 @@ shipped: 1.7.0
 
 # Trusted agent sessions & ephemeral admin mode — AI Codegen PRD
 
-Every MCP session receives the deck previously authorized for its workspace. Normal agents can use that deck and preserve the feedback-to-playbook suggestion loop; temporary admin mode adds narrowly scoped deck administration without becoming persistent authority.
+Every MCP session receives a bound deck: grant-based sessions use the deck previously authorized for the workspace; launch sessions (C9 / NOT-105) use the deck selected at connect via `x-agent-deck-deck-id`. Normal agents can use that deck and preserve the feedback-to-playbook suggestion loop; temporary admin mode adds narrowly scoped deck administration without becoming persistent authority.
 
 **Shipped in 1.7.0** (NOT-45 + NOT-44 together; see [CHANGELOG](../CHANGELOG.md#170--2026-08-31)).
 
-**Related (NOT-85):** Unattended Agent Dealer runs use a separate coordinator-enrollment + short-lived execution-authority contract — not workspace grants copied into generated worktrees. See [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md). Interactive path-bound grants in this PRD remain unchanged.
+**Related (NOT-85 / NOT-105):** Unattended Agent Dealer workers use a **launch-selected deck** (`x-agent-deck-deck-id`, NOT-105) — not workspace grants copied into generated worktrees. Coordinator enrollment + short-lived execution authority (NOT-85/NOT-86) remain for coordinator mint until NOT-107 removes them. See [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md). Interactive path-bound grants in this PRD remain unchanged for grant-based sessions.
 
 ## 1. Problem and outcome
 
@@ -54,8 +54,8 @@ An authenticated connection creates this runtime principal:
 {
   "sessionId": "ses_...",
   "mcpSessionId": "transport_...",
-  "workspaceKey": "wsp_...",
-  "workspaceGrantId": "wgr_...",
+  "workspaceKey": "wsp_... | null",
+  "workspaceGrantId": "wgr_... | null",
   "deckId": "deck_...",
   "mode": "normal",
   "lastSeenAt": "...",
@@ -64,13 +64,15 @@ An authenticated connection creates this runtime principal:
 }
 ```
 
-Every session starts in `normal`. Authenticated MCP activity renews a 24-hour inactivity lease. MCP transport close, explicit runtime-session close, grant revocation, server restart, or 24 hours without activity removes the session. A later session on the same workspace starts in `normal` and inherits the grant's deck.
+Grant-based sessions set both `workspaceKey` and `workspaceGrantId`. Launch sessions (C9) set both to `null` and fix `deckId` at connect.
 
-The backend establishes this principal before tool routing. Caller-supplied role, deck, workspace, or admin headers are ignored for authorization.
+Every session starts in `normal`. Authenticated MCP activity renews a 24-hour inactivity lease. MCP transport close, explicit runtime-session close, grant revocation, server restart, or 24 hours without activity removes the session. A later **grant-based** session on the same workspace starts in `normal` and inherits the grant's deck.
+
+The backend establishes this principal before tool routing. After the principal exists, caller-supplied role, workspace, admin, or dashboard headers are never principals and cannot expand authority. Establishing a **launch** principal (C9) uses `x-agent-deck-deck-id` only when no bearer is present; once any bearer authenticates the session, that deck header is ignored.
 
 Here, “session” means the MCP transport session, not a chat window. If a host reuses one MCP transport across chat restarts, the runtime session continues until transport close, explicit runtime-session close, revocation, restart, or lease expiry. This behavior must be documented and tested per supported host.
 
-**As-built (NOT-84):** One Agent Deck MCP process may host many transport sessions. Request scope is immutable per transport: each `McpServer` closes over its MCP transport session id (`mcpSessionId`); backend calls look up that transport’s binding and send the **runtime** session id in `x-agent-deck-session-id` (C3 `sessionId`, including on `fetchDeck` and live-display touch/unregister). There is no process-global `activeSessionId`. Same-workspace + same-deck `bind_workspace` is idempotent in normal mode; a different-deck bind probes `fetchDeck`; on `RESOURCE_OUT_OF_SCOPE` it requires elevation (`ADMIN_REQUIRED` if not elevated), then retries `GET /api/decks/:id` (agent-admin may read any deck). Live-display unregister on transport close uses a short abort timeout so local session maps always clear even if the backend hangs.
+**As-built (NOT-84 / NOT-105):** One Agent Deck MCP process may host many transport sessions. Request scope is immutable per transport: each `McpServer` closes over its MCP transport session id (`mcpSessionId`); backend calls look up that transport’s binding and send the **runtime** session id in `x-agent-deck-session-id` (C3 `sessionId`, including on `fetchDeck` and live-display touch/unregister). There is no process-global `activeSessionId`. Same-workspace + same-deck `bind_workspace` is idempotent in normal mode for **grant** sessions; a different-deck bind probes `fetchDeck`; on `RESOURCE_OUT_OF_SCOPE` it requires elevation (`ADMIN_REQUIRED` if not elevated), then retries `GET /api/decks/:id` (agent-admin may read any deck). **Launch** sessions (C9) skip path checks and stub sync; same-deck bind returns `deckFixed:true`; a different deck returns `DECK_FIXED` without elevation. Live-display unregister on transport close uses a short abort timeout so local session maps always clear even if the backend hangs.
 
 ### C4. Ephemeral `agent-admin`
 
@@ -176,7 +178,7 @@ A host is killed without a disconnect. MCP activity stops, admin mode downgrades
 | Change tool settings/OAuth or read secrets | No | No | Yes |
 | Approve elevation | No | No | Yes |
 
-Every HTTP and MCP operation declares exactly one centralized policy: `requireAgentResource`, `requireDeckAdmin`, `requireDashboard`, or an explicit `allowPublic`. The guard derives authority from the authenticated runtime or dashboard principal before the handler runs; caller-supplied role, deck, workspace, admin, or dashboard headers are never principals. An undeclared operation is denied before its handler runs. Public operations cannot access principal-scoped resources.
+Every HTTP and MCP operation declares exactly one centralized policy: `requireAgentResource`, `requireDeckAdmin`, `requireDashboard`, or an explicit `allowPublic`. The guard derives authority from the authenticated runtime or dashboard principal before the handler runs; caller-supplied role, workspace, admin, or dashboard headers are never principals. Establishing a launch principal may use `x-agent-deck-deck-id` per C9 (only when no bearer is present); that header never elevates admin and never overrides an already-authenticated bearer principal. An undeclared operation is denied before its handler runs. Public operations cannot access principal-scoped resources.
 
 ## 5. MCP and error contracts
 
@@ -185,7 +187,7 @@ Required behavior:
 - binding and grant inspection returns redacted identity and expiry information;
 - deck listing returns only the bound deck to normal sessions and safe metadata to admin sessions;
 - binding the current deck is idempotent;
-- binding a different deck requires admin, is limited to the session's own workspace, and uses C7;
+- for **grant** sessions, binding a different deck requires admin, is limited to the session's own workspace, and uses C7; for **launch** sessions, a different deck returns `DECK_FIXED` (even when elevated) and writes no stubs;
 - create/switch/manage-deck actions require admin;
 - manage-deck actions target only the currently bound deck and surface shared-workspace impact without a second approval;
 - collection listing and mutation are denied to normal agents; admin receives only safe metadata;
@@ -266,6 +268,12 @@ NOT-44 verification remains separate and mandatory: direct HTTP and MCP calls fo
 | §8 verification matrix (partial automated) | Partial — `auth-matrix.test.ts`, route-policy enumeration, containment tests, and related unit tests cover forged headers, elevation e2e, C8 peer revoke, and NOT-44 scope; C7 fault injection across all stores, full host-transport lifecycle, and canonical-path alias rows remain manual / follow-up |
 | Menubar deep link to approval | Shipped — `GET /api/trusted-session/admin/challenges`; 1.7.1 menubar rows run `agent-deck open --path …` (not bare `href=`) |
 
+### As-built (NOT-105)
+
+| PRD area | Status |
+| --- | --- |
+| C9 launch-selected deck | Shipped — `x-agent-deck-deck-id` launch sessions; nullable runtime key/grant; `DECK_FIXED`; public `/api/launch/*`; grant sessions unchanged |
+
 ## 9. Threats and non-goals
 
 Design threats this feature mitigates (full automated coverage per §8 matrix not yet complete — see as-built gaps):
@@ -286,7 +294,7 @@ Primary touchpoints in the 1.7.0 codebase (later tickets called out per bullet):
 - SQLite schema + migrations — trusted session / grant tables
 - `packages/backend/src/trusted-session/` — grants, runtime sessions, elevation
 - `packages/backend/src/lib/http-route-policies.ts` — centralized policy registry + Fastify hook
-- MCP transport session establishment (**NOT-53**) — grant Bearer auth **before** advertising `mcp-session-id`; follow-up POST/GET/DELETE re-validate the same grant (401 without destroying transport); `wgr_…:secret` (`grantId:secret`) parsed at the auth boundary with claimed-id match; `/mcp/connect` keeps `mcp-session-id` → grant ownership via the latest runtime row (including expired/revoked) so another grant cannot replace it; failed initialize after connect revokes the durable runtime session via `mcp/disconnect`
+- MCP transport session establishment (**NOT-53**, **NOT-105**) — grant Bearer auth **or** launch `x-agent-deck-deck-id` (no bearer) **before** advertising `mcp-session-id`; precedence: execution-authority bearer → grant bearer → deck header → `GRANT_REQUIRED`; follow-up POST/GET/DELETE re-validate the same credential (401 without destroying transport); `wgr_…:secret` (`grantId:secret`) parsed at the auth boundary with claimed-id match; `/mcp/connect` keeps `mcp-session-id` → grant ownership via the latest runtime row (including expired/revoked) so another grant cannot replace it; `/mcp/connect-deck` creates nullable-key launch sessions and rejects grant-owned or other-deck MCP ids; failed initialize after connect revokes via `mcp/disconnect` or `mcp/disconnect-deck`; launch `bind_workspace` skips stub sync and returns `DECK_FIXED` on deck change
 - CLI `use` / `use --refresh` (**NOT-54** / **NOT-52**) — grant writer + launcher config (`packages/cli/`); explicit Cursor `use` creates or repairs the user-level `mcp-launch` entry with `AGENT_DECK_WORKSPACE` (last explicit workspace wins), while `status` / `use --refresh` run the read-only `inspectCursorMcpConfig` report (global + project, grant presence, bare-URL → `mcp_auth` dead end) and never write; custom wrappers are not overwritten. Contract: [docs/decisions/cursor-mcp-config-resolution.md](./decisions/cursor-mcp-config-resolution.md)
 
 - Dashboard `/admin/approve` + menubar challenge links
