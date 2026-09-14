@@ -198,13 +198,14 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     });
     await server!.playbookManager.addToDeck({ deckId, playbookId: playbook.id });
     const otherDeck = await server!.db.createDeck({ name: 'ea-http-oos-playbooks' });
+    const disposableDeck = await server!.db.createDeck({ name: 'ea-http-deleted-playbooks' });
 
     const enroll = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
       method: 'POST',
       headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         coordinatorId: 'coord-playbook-metadata',
-        allowedDeckIds: [deckId],
+        allowedDeckIds: [deckId, disposableDeck.id],
       }),
     });
     const enrollBody = (await enroll.json()) as {
@@ -219,7 +220,12 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     expect(decksBefore.status).toBe(200);
     expect(await decksBefore.json()).toEqual({
       ok: true,
-      data: { decks: [{ id: deckId, name: 'ea-http-deck' }] },
+      data: {
+        decks: [
+          { id: deckId, name: 'ea-http-deck' },
+          { id: disposableDeck.id, name: 'ea-http-deleted-playbooks' },
+        ],
+      },
     });
 
     const allowed = await fetch(
@@ -244,13 +250,27 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
       correlation: { enrollmentId, deckId: otherDeck.id },
     });
 
-    const decksAfter = await fetch(`${baseUrl}/api/execution-authority/decks`, {
+    // Allowed id whose deck was deleted: still fail closed, but not as scope escape.
+    // Sibling GET /decks omits the id; path-param discovery returns deck_not_found.
+    await server!.db.deleteDeck(disposableDeck.id);
+    const decksAfterDelete = await fetch(`${baseUrl}/api/execution-authority/decks`, {
       headers: { Authorization: enrollmentBearer },
     });
-    expect(decksAfter.status).toBe(200);
-    expect(await decksAfter.json()).toEqual({
+    expect(decksAfterDelete.status).toBe(200);
+    expect(await decksAfterDelete.json()).toEqual({
       ok: true,
       data: { decks: [{ id: deckId, name: 'ea-http-deck' }] },
+    });
+    const missingAllowed = await fetch(
+      `${baseUrl}/api/execution-authority/decks/${disposableDeck.id}/playbooks`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    expect(missingAllowed.status).toBe(403);
+    expect(await missingAllowed.json()).toMatchObject({
+      ok: false,
+      error_code: 'RESOURCE_OUT_OF_SCOPE',
+      reason: 'deck_not_found',
+      correlation: { enrollmentId, deckId: disposableDeck.id },
     });
 
     await fetch(

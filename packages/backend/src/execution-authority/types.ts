@@ -26,6 +26,7 @@ export type ContractErrorCode =
 /** Fine-grained cause when one error_code covers multiple recovery paths. */
 export type ContractErrorReason =
   | 'deck_not_permitted'
+  | 'deck_not_found'
   | 'tool_not_in_snapshot'
   | 'enrollment_revoked'
   | 'explicit_revoke'

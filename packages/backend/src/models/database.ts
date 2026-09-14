@@ -1102,6 +1102,14 @@ export class DatabaseManager {
     return this.hydrateDecks([row])[0];
   }
 
+  /** Existence check without hydrating services/credentials/playbooks. */
+  async hasDeck(id: string): Promise<boolean> {
+    const row = this.db.prepare('SELECT 1 AS ok FROM decks WHERE id = ?').get(id) as
+      | { ok: number }
+      | undefined;
+    return row !== undefined;
+  }
+
   async getAllDecks(): Promise<Deck[]> {
     const rows = this.db.prepare('SELECT * FROM decks ORDER BY created_at DESC').all() as any[];
     return this.hydrateDecks(rows);
