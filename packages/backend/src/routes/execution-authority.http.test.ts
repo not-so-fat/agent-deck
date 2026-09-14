@@ -250,7 +250,7 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
       correlation: { enrollmentId, deckId: otherDeck.id },
     });
 
-    // Allowed id whose deck was deleted: still fail closed, but not as scope escape.
+    // Allowed id whose deck was deleted: still fail closed, but not as not-in-allowedDeckIds.
     // Sibling GET /decks omits the id; path-param discovery returns deck_not_found.
     await server!.db.deleteDeck(disposableDeck.id);
     const decksAfterDelete = await fetch(`${baseUrl}/api/execution-authority/decks`, {

@@ -120,7 +120,7 @@ function deckNotPermittedError(enrollmentId: string, deckId: string): ContractEr
   return {
     ok: false,
     error_code: 'RESOURCE_OUT_OF_SCOPE',
-    message: 'Deck is outside the enrollment scope',
+    message: 'Deck is not in allowedDeckIds',
     reason: 'deck_not_permitted',
     correlation: { enrollmentId, deckId },
   };
@@ -282,7 +282,7 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
         return sendContractError(reply, deckNotPermittedError(auth.enrollmentId, deckId));
       }
 
-      // Fail closed for deleted-but-still-allowed decks (distinct from scope escape).
+      // Fail closed for deleted-but-still-allowed decks (distinct from not-in-allowedDeckIds).
       // Sibling GET /decks omits missing ids from the list; path-param discovery must not.
       if (!(await fastify.db.hasDeck(deckId))) {
         return sendContractError(reply, deckNotFoundError(auth.enrollmentId, deckId));

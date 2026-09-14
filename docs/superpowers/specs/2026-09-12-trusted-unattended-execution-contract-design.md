@@ -163,7 +163,7 @@ Approval/rejection/expiry of the human action never completes an unknown in-flig
 | `INVALID_MINT_REQUEST` | Deck | e.g. non-positive `ttlMs` | Fix mint inputs |
 | Success / retryable infra | Downstream or transport | Normal or transient failure | Dealer retry policy; do not auto-replay ambiguous tool effects |
 
-`RESOURCE_OUT_OF_SCOPE` carries optional `reason`: `deck_not_permitted` (mint/metadata scope escape), `deck_not_found` (id still in enrollment scope but deck deleted), or `tool_not_in_snapshot` (call).
+`RESOURCE_OUT_OF_SCOPE` carries optional `reason`: `deck_not_permitted` (mint/metadata: not in `allowedDeckIds`), `deck_not_found` (in `allowedDeckIds` but deck deleted), or `tool_not_in_snapshot` (call).
 
 Machine-readable shape (MCP/HTTP):
 
