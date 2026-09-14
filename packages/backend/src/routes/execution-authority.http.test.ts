@@ -288,6 +288,33 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     });
   });
 
+  it('rejects encoded-slash deckId path segments with 400 (not scope denial)', async () => {
+    const enroll = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        coordinatorId: 'coord-playbook-encoded-slash',
+        allowedDeckIds: [deckId],
+      }),
+    });
+    const enrollBody = (await enroll.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const enrollmentBearer = `Bearer ${enrollBody.data.enrollment.enrollmentId}:${enrollBody.data.enrollmentSecret}`;
+
+    const encodedSlash = await fetch(
+      `${baseUrl}/api/execution-authority/decks/x%2Fy/playbooks`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    expect(encodedSlash.status).toBe(400);
+    expect(await encodedSlash.json()).toMatchObject({
+      ok: false,
+      error_code: 'INVALID_MINT_REQUEST',
+      message: 'deckId must be a single path segment',
+      correlation: { deckId: 'x/y' },
+    });
+  });
+
   it('isolates enrollments, empty toolScopeHint, and enrollment error codes', async () => {
     const enrollA = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
       method: 'POST',
