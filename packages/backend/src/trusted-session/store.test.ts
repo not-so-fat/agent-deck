@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
+import { DatabaseManager } from '../models/database';
 import {
   TrustedSessionStore,
   generateGrantSecret,
@@ -215,5 +216,122 @@ describe('TrustedSessionStore', () => {
     const adminRow = store.getRuntimeSessionRow(admin.sessionId);
     expect(adminRow?.revoked_at).toBeFalsy();
     expect(adminRow?.mode).toBe('agent-admin');
+  });
+
+  it('creates a launch session with null workspace key and grant (NOT-105)', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({
+      workspaceKeyId: null,
+      workspaceGrantId: null,
+      deckId: 'deck-launch',
+      mcpSessionId: 'mcp-launch-1',
+    });
+    expect(session.workspaceKey).toBeNull();
+    expect(session.workspaceGrantId).toBeNull();
+    expect(session.deckId).toBe('deck-launch');
+
+    const found = store.findActiveLaunchSessionForMcp('mcp-launch-1', 'deck-launch');
+    expect(found?.sessionId).toBe(session.sessionId);
+  });
+
+  it('migrates runtime_sessions NOT NULL columns to nullable (NOT-105)', () => {
+    const manager = new DatabaseManager(`:memory:${Math.random()}`);
+    const db = manager.getSqliteDatabase();
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_keys (
+        id TEXT PRIMARY KEY,
+        path_digest TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS workspace_grants (
+        id TEXT PRIMARY KEY,
+        workspace_key_id TEXT NOT NULL,
+        deck_id TEXT NOT NULL,
+        secret_hash TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'revoked')),
+        created_at TEXT NOT NULL,
+        activated_at TEXT,
+        revoked_at TEXT,
+        FOREIGN KEY (workspace_key_id) REFERENCES workspace_keys (id)
+      );
+      DROP TABLE IF EXISTS admin_challenges;
+      DROP TABLE IF EXISTS runtime_sessions;
+      CREATE TABLE runtime_sessions (
+        id TEXT PRIMARY KEY,
+        mcp_session_id TEXT,
+        workspace_key_id TEXT NOT NULL,
+        workspace_grant_id TEXT NOT NULL,
+        deck_id TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('normal', 'agent-admin')),
+        last_seen_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        admin_expires_at TEXT,
+        revoked_at TEXT,
+        FOREIGN KEY (workspace_key_id) REFERENCES workspace_keys (id),
+        FOREIGN KEY (workspace_grant_id) REFERENCES workspace_grants (id)
+      );
+      CREATE TABLE admin_challenges (
+        id TEXT PRIMARY KEY,
+        runtime_session_id TEXT NOT NULL,
+        consumed_at TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (runtime_session_id) REFERENCES runtime_sessions (id)
+      );
+    `);
+
+    db.prepare(
+      `INSERT INTO workspace_keys (id, path_digest, created_at) VALUES (?, ?, ?)`,
+    ).run('wsp_old', 'digest-old', '2020-01-01T00:00:00.000Z');
+    db.prepare(
+      `INSERT INTO workspace_grants
+       (id, workspace_key_id, deck_id, secret_hash, status, created_at, activated_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+    ).run(
+      'wgr_old',
+      'wsp_old',
+      'deck-old',
+      'a'.repeat(64),
+      '2020-01-01T00:00:00.000Z',
+      '2020-01-01T00:00:00.000Z',
+    );
+    db.prepare(
+      `INSERT INTO runtime_sessions
+       (id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+        last_seen_at, expires_at, admin_expires_at)
+       VALUES (?, ?, ?, ?, ?, 'normal', ?, ?, NULL)`,
+    ).run(
+      'ses_old',
+      'mcp-old',
+      'wsp_old',
+      'wgr_old',
+      'deck-old',
+      '2020-01-01T00:00:00.000Z',
+      '2099-01-01T00:00:00.000Z',
+    );
+
+    const before = db.pragma('table_info(runtime_sessions)') as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    expect(before.find((c) => c.name === 'workspace_key_id')?.notnull).toBe(1);
+
+    const store = new TrustedSessionStore(db);
+    const after = db.pragma('table_info(runtime_sessions)') as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    expect(after.find((c) => c.name === 'workspace_key_id')?.notnull).toBe(0);
+    expect(after.find((c) => c.name === 'workspace_grant_id')?.notnull).toBe(0);
+
+    const launch = store.createRuntimeSession({
+      workspaceKeyId: null,
+      workspaceGrantId: null,
+      deckId: 'deck-new',
+    });
+    expect(launch.workspaceKey).toBeNull();
+    expect(launch.workspaceGrantId).toBeNull();
   });
 });

@@ -48,6 +48,7 @@ export type McpToolHost = {
         mode?: 'normal' | 'agent-admin';
       },
     ): void;
+    isLaunchSession(sessionId: string): boolean;
     getExecutionAuthority?(
       sessionId: string,
     ): { authorityId: string; authoritySecret: string; audience: string } | undefined;
@@ -79,6 +80,10 @@ async function resolveDeckForBind(
   } catch (error) {
     if (!isOutOfScopeError(error)) {
       throw error;
+    }
+    // Launch sessions cannot switch decks — do not ask for elevation (NOT-105).
+    if (host.sessionBinding.isLaunchSession(host.getSessionId())) {
+      return mcpPolicyError('DECK_FIXED');
     }
     const denied = await requireMcpAdmin(host);
     if (denied) {
@@ -151,6 +156,13 @@ function registerRuntimeTools(host: McpToolHost): void {
       let bindResult: Record<string, unknown> | undefined;
 
       if (current.runtimeSessionId) {
+        if (
+          host.sessionBinding.isLaunchSession(sessionId) &&
+          current.deckId &&
+          current.deckId !== deck.id
+        ) {
+          return mcpPolicyError('DECK_FIXED');
+        }
         if (current.deckId && current.deckId !== deck.id) {
           const denied = await requireMcpAdmin(host);
           if (denied) {
@@ -180,10 +192,12 @@ function registerRuntimeTools(host: McpToolHost): void {
       }
 
       let stubSync: StubBindSyncResult | null = null;
-      try {
-        stubSync = await host.syncWorkspaceOnBind(workspaceRoot, deck);
-      } catch {
-        stubSync = null;
+      if (!host.sessionBinding.isLaunchSession(sessionId)) {
+        try {
+          stubSync = await host.syncWorkspaceOnBind(workspaceRoot, deck);
+        } catch {
+          stubSync = null;
+        }
       }
       await host.registerLiveDisplay(sessionId);
       const payload = await host.buildBindingPayload(sessionId);
@@ -1018,6 +1032,7 @@ export function listToolNamesForProfile(profile: McpToolProfile): string[] {
       setWorkspace: () => {},
       setDeckId: () => {},
       setTrustedSession: () => {},
+      isLaunchSession: () => false,
       hasSessionDeckOverride: () => false,
     },
     badgeBySession: new Map(),

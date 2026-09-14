@@ -34,8 +34,8 @@ export type WorkspaceGrantRow = {
 export type RuntimeSessionRow = {
   id: string;
   mcp_session_id: string | null;
-  workspace_key_id: string;
-  workspace_grant_id: string;
+  workspace_key_id: string | null;
+  workspace_grant_id: string | null;
   deck_id: string;
   mode: AgentSessionMode;
   last_seen_at: string;
@@ -100,6 +100,7 @@ export class TrustedSessionStore {
   }
 
   private ensureTables(): void {
+    this.maybeMigrateRuntimeSessionsNullability();
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS workspace_keys (
         id TEXT PRIMARY KEY,
@@ -126,8 +127,8 @@ export class TrustedSessionStore {
       CREATE TABLE IF NOT EXISTS runtime_sessions (
         id TEXT PRIMARY KEY,
         mcp_session_id TEXT,
-        workspace_key_id TEXT NOT NULL,
-        workspace_grant_id TEXT NOT NULL,
+        workspace_key_id TEXT,
+        workspace_grant_id TEXT,
         deck_id TEXT NOT NULL,
         mode TEXT NOT NULL CHECK (mode IN ('normal', 'agent-admin')),
         last_seen_at TEXT NOT NULL,
@@ -167,6 +168,41 @@ export class TrustedSessionStore {
       CREATE INDEX IF NOT EXISTS dashboard_sessions_expiry_idx
         ON dashboard_sessions (expires_at);
     `);
+  }
+
+  /**
+   * SQLite cannot drop NOT NULL in place. When an older schema still has
+   * workspace_key_id NOT NULL, drop runtime_sessions (+ admin_challenges FK child)
+   * and let CREATE TABLE IF NOT EXISTS recreate them nullable (NOT-105).
+   */
+  private maybeMigrateRuntimeSessionsNullability(): void {
+    const cols = this.db.pragma('table_info(runtime_sessions)') as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    if (cols.length === 0) {
+      return;
+    }
+    const keyCol = cols.find((col) => col.name === 'workspace_key_id');
+    if (!keyCol || keyCol.notnull !== 1) {
+      return;
+    }
+
+    const foreignKeysEnabled =
+      Number(this.db.pragma('foreign_keys', { simple: true })) === 1;
+    if (foreignKeysEnabled) {
+      this.db.pragma('foreign_keys = OFF');
+    }
+    try {
+      this.db.exec(`
+        DROP TABLE IF EXISTS admin_challenges;
+        DROP TABLE IF EXISTS runtime_sessions;
+      `);
+    } finally {
+      if (foreignKeysEnabled) {
+        this.db.pragma('foreign_keys = ON');
+      }
+    }
   }
 
   getOrCreateWorkspaceKey(pathDigest: string): WorkspaceKeyRow {
@@ -302,8 +338,8 @@ export class TrustedSessionStore {
   }
 
   createRuntimeSession(input: {
-    workspaceKeyId: string;
-    workspaceGrantId: string;
+    workspaceKeyId: string | null;
+    workspaceGrantId: string | null;
     deckId: string;
     mcpSessionId?: string;
   }): RuntimeSession {
@@ -378,6 +414,26 @@ export class TrustedSessionStore {
            AND revoked_at IS NULL AND expires_at > ?`,
       )
       .get(mcpSessionId, grantId, now) as RuntimeSessionRow | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    const touched = this.touchRuntimeSession(row.id);
+    return touched;
+  }
+
+  findActiveLaunchSessionForMcp(mcpSessionId: string, deckId: string): RuntimeSession | null {
+    const now = nowIso();
+    const row = this.db
+      .prepare(
+        `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+                last_seen_at, expires_at, admin_expires_at, revoked_at
+         FROM runtime_sessions
+         WHERE mcp_session_id = ? AND workspace_grant_id IS NULL AND deck_id = ?
+           AND revoked_at IS NULL AND expires_at > ?`,
+      )
+      .get(mcpSessionId, deckId, now) as RuntimeSessionRow | undefined;
 
     if (!row) {
       return null;
@@ -687,6 +743,9 @@ export class TrustedSessionStore {
       return null;
     }
     if (row.mode !== 'agent-admin') {
+      return null;
+    }
+    if (!row.workspace_key_id || !row.workspace_grant_id) {
       return null;
     }
     if (row.deck_id === newDeckId) {

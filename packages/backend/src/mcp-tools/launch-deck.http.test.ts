@@ -1,0 +1,300 @@
+/**
+ * NOT-105: launch-selected deck MCP auth (deck header, no grant).
+ */
+import Fastify from 'fastify';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import {
+  AGENT_DECK_DECK_ID_HEADER,
+  canonicalizeWorkspacePath,
+  digestCanonicalWorkspacePath,
+} from '@agent-deck/shared';
+
+import { DatabaseManager } from '../models/database';
+import type { AgentDeckMCPServer } from '../mcp-server';
+import { PatchManager } from '../playbooks/patch-manager';
+import { PlaybookManager } from '../playbooks/playbook-manager';
+import { registerCredentialRoutes } from '../routes/credentials';
+import { registerDeckRoutes } from '../routes/decks';
+import { registerPlaybookPatchRoutes } from '../routes/playbook-patches';
+import { registerPlaybookRoutes } from '../routes/playbooks';
+import { registerScopeRoutes } from '../routes/scope';
+import { registerServiceRoutes } from '../routes/services';
+import { registerTrustedSessionRoutes } from '../routes/trusted-session';
+import { LiveDisplayRegistry } from '../scope/live-display-registry';
+import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
+import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
+import type { ServiceManager } from '../services/service-manager';
+import {
+  MCP_ACCEPT,
+  callToolMcpResult,
+  openSession,
+  startMcpServer,
+} from './test-harness';
+
+describe('MCP launch-selected deck (NOT-105)', () => {
+  const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
+  let mcpServer: AgentDeckMCPServer | undefined;
+  let previousSkipGrant: string | undefined;
+  let previousSkipAdmin: string | undefined;
+  let previousStubSync: string | undefined;
+
+  beforeEach(() => {
+    previousSkipGrant = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
+    previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = '0';
+    process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
+    // Stub sync enabled — launch bind must still leave worktree empty.
+    delete process.env.AGENT_DECK_STUB_SYNC;
+  });
+
+  afterEach(async () => {
+    if (mcpServer) {
+      await mcpServer.stop();
+      mcpServer = undefined;
+    }
+    while (servers.length) {
+      await servers.pop()?.close();
+    }
+    if (previousSkipGrant === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = previousSkipGrant;
+    }
+    if (previousSkipAdmin === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = previousSkipAdmin;
+    }
+    if (previousStubSync === undefined) {
+      delete process.env.AGENT_DECK_STUB_SYNC;
+    } else {
+      process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
+    }
+  });
+
+  async function buildListeningBackend() {
+    const db = new DatabaseManager(`:memory:${Math.random()}`);
+    const deckAlpha = await db.createDeck({ name: 'alpha' });
+    const deckBeta = await db.createDeck({ name: 'beta' });
+    const playbook = await db.createPlaybook({
+      id: 'pb_launch_http_test',
+      title: 'launch-pb',
+      body: '## Gotchas\n- Keep it short.\n',
+      triggers: ['launch'],
+    });
+    await db.addPlaybookToDeck({ deckId: deckAlpha.id, playbookId: playbook.id, position: 0 });
+
+    const workspaceRoot = '/tmp/agent-deck-not105-grant';
+    const store = new TrustedSessionStore(db.getSqliteDatabase());
+    const liveDisplayRegistry = new LiveDisplayRegistry();
+    const digest = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRoot));
+    const workspace = store.getOrCreateWorkspaceKey(digest);
+    const secret = generateGrantSecret();
+    store.activateGrant(store.createPendingGrant(workspace.id, deckAlpha.id, secret).id);
+
+    const playbookManager = new PlaybookManager(db);
+    const patchManager = new PatchManager(db, playbookManager);
+
+    const fastify = Fastify();
+    fastify.decorate('db', db);
+    fastify.decorate('trustedSessionStore', store);
+    fastify.decorate('liveDisplayRegistry', liveDisplayRegistry);
+    fastify.decorate('serviceManager', {
+      discoverServiceTools: async () => [],
+      callServiceTool: async () => ({ success: true, result: {} }),
+      getAllServices: async () => [],
+      getService: async () => null,
+      updateToolSettings: async () => null,
+    } as unknown as ServiceManager);
+    fastify.decorate('credentialManager', {
+      get: async () => null,
+      listForDeck: async () => [],
+      isCredentialOnDeck: async () => false,
+      applySecretStatus: async (credentials: unknown[]) => credentials,
+    });
+    fastify.decorate('playbookManager', playbookManager);
+    fastify.decorate('patchManager', patchManager);
+    fastify.decorate('broadcastServiceUpdate', () => {});
+    fastify.decorate('storeWriter', { writeDeck: async () => {} });
+
+    registerHttpPolicyHook(fastify);
+    await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
+    await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
+    await fastify.register(registerPlaybookPatchRoutes, { prefix: '/api/playbook-patches' });
+    await fastify.register(registerCredentialRoutes, { prefix: '/api/credentials' });
+    await fastify.register(registerDeckRoutes, {
+      prefix: '/api/decks',
+      storeWriter: { writeDeck: async () => {} },
+    });
+    await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+    await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
+    await fastify.listen({ port: 0, host: '127.0.0.1' });
+    servers.push(fastify);
+
+    const address = fastify.server.address();
+    const backendPort =
+      typeof address === 'object' && address && 'port' in address ? address.port : 0;
+
+    return {
+      backendUrl: `http://127.0.0.1:${backendPort}`,
+      deckAlpha,
+      deckBeta,
+      playbook,
+      secret,
+      workspaceRoot,
+    };
+  }
+
+  it('init with only deck header binds get_bound_deck to that deck', async () => {
+    const { backendUrl, deckAlpha } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_bound_deck',
+      {},
+      2,
+      undefined,
+      deckHeaders,
+    );
+
+    expect(bound.isError).toBe(false);
+    expect(bound.data.id).toBe(deckAlpha.id);
+    expect(bound.data.name).toBe('alpha');
+  });
+
+  it('same-deck bind_workspace leaves fresh tmp dir empty with stub sync on', async () => {
+    const { backendUrl, deckAlpha } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-launch-'));
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot: tmpRoot, deckId: deckAlpha.id },
+      2,
+      undefined,
+      deckHeaders,
+    );
+
+    expect(bound.isError).toBe(false);
+    expect(bound.data.stubs).toBeUndefined();
+    expect(fs.readdirSync(tmpRoot)).toEqual([]);
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('bind_workspace other deck → DECK_FIXED', async () => {
+    const { backendUrl, deckAlpha, deckBeta } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const denied = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot: '/tmp/agent-deck-launch-other', deckId: deckBeta.id },
+      2,
+      undefined,
+      deckHeaders,
+    );
+
+    expect(denied.isError).toBe(true);
+    expect(denied.data.error_code).toBe('DECK_FIXED');
+  });
+
+  it('propose_playbook_patch signal_only succeeds', async () => {
+    const { backendUrl, deckAlpha, playbook } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const result = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'propose_playbook_patch',
+      {
+        kind: 'signal_only',
+        playbook_id: playbook.id,
+        rationale: 'Note for later',
+        evidence: {
+          failure_summary: 'One-off',
+          user_feedback_excerpt: 'just note this',
+        },
+      },
+      2,
+      undefined,
+      deckHeaders,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.data.kind).toBe('signal_only');
+  });
+
+  it('grant bearer + deck header for a different deck binds to the grant deck', async () => {
+    const { backendUrl, deckAlpha, deckBeta, secret } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const sessionId = await openSession(started.port, 1, secret, {
+      [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id,
+    });
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_bound_deck',
+      {},
+      2,
+      secret,
+      { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id },
+    );
+
+    expect(bound.isError).toBe(false);
+    expect(bound.data.id).toBe(deckAlpha.id);
+    expect(bound.data.name).toBe('alpha');
+  });
+
+  it('follow-up request without the deck header → 401', async () => {
+    const { backendUrl, deckAlpha } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+
+    const response = await fetch(`http://127.0.0.1:${started.port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 99,
+        method: 'tools/call',
+        params: { name: 'get_bound_deck', arguments: {} },
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as { error?: { message?: string } };
+    expect(body.error?.message).toBe('GRANT_REQUIRED');
+  });
+});

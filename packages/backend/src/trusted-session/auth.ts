@@ -34,7 +34,7 @@ export type RequestPrincipal =
       session: RuntimeSession;
       mode: AgentSessionMode;
       deckId: string;
-      workspaceKey: string;
+      workspaceKey: string | null;
     }
   | {
       kind: 'execution-authority';

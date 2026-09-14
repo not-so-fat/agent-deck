@@ -105,6 +105,8 @@ function bodyMessage(code: TrustedSessionErrorCode): string {
       return 'No valid workspace grant';
     case 'RESOURCE_OUT_OF_SCOPE':
       return 'Resource is outside the bound deck';
+    case 'DECK_FIXED':
+      return "This connection's deck was set when it was launched and cannot be changed by the agent. Change it where the connection is configured (for example the Agent Dealer profile).";
     default:
       return code;
   }
