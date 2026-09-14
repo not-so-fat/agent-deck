@@ -188,6 +188,46 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
     return { ok: true, data: { decks } };
   });
 
+  fastify.get<{ Params: { deckId: string } }>(
+    '/decks/:deckId/playbooks',
+    async (request, reply) => {
+      let enrollmentId: string;
+      try {
+        ({ enrollmentId } = requireEnrollmentAuth(request, store()));
+      } catch (error) {
+        if (error instanceof EnrollmentAuthError) {
+          return sendContractError(reply, error.contract, statusForContract(error.contract));
+        }
+        throw error;
+      }
+
+      const enrollment = store().getEnrollment(enrollmentId)!;
+      if (!enrollment.allowedDeckIds.includes(request.params.deckId)) {
+        return sendContractError(reply, {
+          ok: false,
+          error_code: 'RESOURCE_OUT_OF_SCOPE',
+          message: 'Deck is outside the enrollment scope',
+          reason: 'deck_not_permitted',
+          correlation: { enrollmentId, deckId: request.params.deckId },
+        });
+      }
+
+      const deck = await fastify.db.getDeck(request.params.deckId);
+      if (!deck) {
+        return sendContractError(reply, {
+          ok: false,
+          error_code: 'RESOURCE_OUT_OF_SCOPE',
+          message: 'Deck not found',
+          reason: 'deck_not_permitted',
+          correlation: { enrollmentId, deckId: request.params.deckId },
+        });
+      }
+
+      const playbooks = await fastify.playbookManager.listSummariesForDeck(deck.id);
+      return { ok: true, data: playbooks };
+    },
+  );
+
   fastify.post('/authorities', async (request, reply) => {
     let enrollmentId: string;
     try {

@@ -58,6 +58,11 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
     policy: 'requireTrustedWriter',
   },
   { methods: ['GET'], pattern: /^\/api\/execution-authority\/decks$/, policy: 'allowPublic' },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/execution-authority\/decks\/[^/]+\/playbooks$/,
+    policy: 'allowPublic',
+  },
   { methods: ['POST'], pattern: /^\/api\/execution-authority\/authorities$/, policy: 'allowPublic' },
   {
     methods: ['GET'],

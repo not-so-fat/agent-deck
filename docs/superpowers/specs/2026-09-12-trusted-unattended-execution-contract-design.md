@@ -239,6 +239,7 @@ Stable names for NOT-86/87. Exact transport (HTTP vs MCP tools) may vary; shapes
 ### Metadata discovery (enrolled coordinator)
 
 - `GET /api/execution-authority/decks` — safe deck metadata for `allowedDeckIds` only (no credentials, no unrestricted mutation)
+- `GET /api/execution-authority/decks/:deckId/playbooks` — playbook summaries for an allowed deck only
 
 ### Authority (coordinator)
 
