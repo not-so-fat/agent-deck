@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.8.1 — 2026-09-14
+
+### Fix: coordinator playbook metadata discovery (NOT-100)
+
+- `GET /api/execution-authority/decks/:deckId/playbooks` returns playbook summaries for decks in the enrollment's `allowedDeckIds` (titles/triggers only).
+- Deleted-but-still-allowed decks fail closed with `RESOURCE_OUT_OF_SCOPE` / `reason: deck_not_found` (distinct from `deck_not_permitted`).
+- Enrollment is re-checked after awaits so revoke cannot race a successful metadata response; encoded-slash `deckId` path segments return `400`.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start` so the issuer picks up the new route.
+- Enrolled coordinators can list playbook summaries with Bearer `enr_…:enrs_…` before minting authority.
+
 ## 1.8.0 — 2026-09-13
 
 ### Add: coordinator enrollment + short-lived execution authority (NOT-86)
