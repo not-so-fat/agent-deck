@@ -7,6 +7,8 @@ related: NOT-84, NOT-77, NOT-79, docs/PRD_TRUSTED_AGENT_SESSIONS.md
 
 # Trusted unattended execution contract (Agent Dealer ↔ Agent Deck)
 
+**Status note:** Worker access superseded by NOT-105 (launch-selected deck); execution authority removal in NOT-107.
+
 **Accepted architecture (NOT-85).** This section is authoritative over older drafts and over leftover comments in foundation PRs. Interactive path-bound workspace grants ([PRD_TRUSTED_AGENT_SESSIONS](../../PRD_TRUSTED_AGENT_SESSIONS.md)) remain unchanged; this contract adds a **separate** unattended principal.
 
 ## 1. Concrete use case

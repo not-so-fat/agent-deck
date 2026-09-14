@@ -72,6 +72,46 @@ describe('McpSessionBindingStore', () => {
     expect(store.getWorkspace('s1')).toBeUndefined();
     expect(store.getDeckOverride('s1')).toBeUndefined();
   });
+
+  it('setTrustedSession keeps the launch flag (NOT-105)', () => {
+    const store = new McpSessionBindingStore();
+    store.setLaunchSession('s1', {
+      runtimeSessionId: 'ses_launch',
+      deckId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(store.isLaunchSession('s1')).toBe(true);
+    expect(store.getBinding('s1').deckSource).toBe('launch');
+
+    store.setTrustedSession('s1', {
+      runtimeSessionId: 'ses_launch',
+      deckId: '11111111-1111-4111-8111-111111111111',
+      workspaceRoot: '/tmp/work',
+    });
+    expect(store.isLaunchSession('s1')).toBe(true);
+    expect(store.getBinding('s1').deckSource).toBe('launch');
+  });
+
+  it('setExecutionAuthority and clearSession remove the launch flag', () => {
+    const store = new McpSessionBindingStore();
+    store.setLaunchSession('s1', {
+      runtimeSessionId: 'ses_launch',
+      deckId: '11111111-1111-4111-8111-111111111111',
+    });
+    store.setExecutionAuthority('s1', {
+      authorityId: 'authz_1',
+      authoritySecret: 'secret',
+      deckId: '11111111-1111-4111-8111-111111111111',
+      audience: 'dealer-worker',
+    });
+    expect(store.isLaunchSession('s1')).toBe(false);
+
+    store.setLaunchSession('s2', {
+      runtimeSessionId: 'ses_2',
+      deckId: '11111111-1111-4111-8111-111111111111',
+    });
+    store.clearSession('s2');
+    expect(store.isLaunchSession('s2')).toBe(false);
+  });
 });
 
 describe('resolveDeckBindingSource', () => {
@@ -91,5 +131,14 @@ describe('resolveDeckBindingSource', () => {
         deckSource: 'env',
       }),
     ).toBe('env');
+  });
+
+  it('maps launch to session_override for display schema', () => {
+    expect(
+      resolveDeckBindingSource({
+        deckId: '11111111-1111-4111-8111-111111111111',
+        deckSource: 'launch',
+      }),
+    ).toBe('session_override');
   });
 });

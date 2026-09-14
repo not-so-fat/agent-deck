@@ -10,5 +10,5 @@ export const AGENT_DECK_AGENT_CLIENT = 'agent';
 /** Workspace root for session grouping and display (agent clients). */
 export const AGENT_DECK_WORKSPACE_HEADER = 'x-agent-deck-workspace';
 
-/** Session-bound deck id (agent clients). */
+/** Launch-selected deck (NOT-105). */
 export const AGENT_DECK_DECK_ID_HEADER = 'x-agent-deck-deck-id';

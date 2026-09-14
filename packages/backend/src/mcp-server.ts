@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
+  AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
   formatDisplayLine,
@@ -31,6 +32,12 @@ import {
 
 function readWorkspaceRootHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_WORKSPACE_HEADER];
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  return value || undefined;
+}
+
+function readLaunchDeckHeader(req: Request): string | undefined {
+  const raw = req.headers[AGENT_DECK_DECK_ID_HEADER];
   const value = typeof raw === 'string' ? raw.trim() : '';
   return value || undefined;
 }
@@ -774,26 +781,82 @@ export class AgentDeckMCPServer {
     });
   }
 
+  private async authenticateLaunchDeck(sessionId: string, req: Request): Promise<void> {
+    const deckId = readLaunchDeckHeader(req);
+    if (!deckId) {
+      throw new Error('GRANT_REQUIRED');
+    }
+
+    const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        deckId,
+        mcpSessionId: sessionId,
+      }),
+    });
+
+    const body = (await response.json()) as {
+      success?: boolean;
+      error?: string;
+      data?: {
+        sessionId: string;
+        deckId: string;
+        deckName?: string;
+        mode: 'normal' | 'agent-admin';
+      };
+    };
+
+    if (!response.ok || !body.success || !body.data) {
+      throw new Error(body.error ?? 'LAUNCH_DECK_INVALID');
+    }
+
+    const existing = this.sessionBinding.getBinding(sessionId);
+    const workspaceRoot =
+      readWorkspaceRootHeader(req) ??
+      existing.workspaceRoot ??
+      (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
+
+    this.sessionBinding.setLaunchSession(sessionId, {
+      runtimeSessionId: body.data.sessionId,
+      deckId: body.data.deckId,
+      workspaceRoot,
+      mode: body.data.mode,
+    });
+  }
+
   private async disconnectTrustedSession(sessionId: string, req: Request): Promise<void> {
     const grant = this.parseGrantBearer(req);
-    if (!grant) {
+    if (grant) {
+      try {
+        await fetch(`${this.backendUrl}/api/trusted-session/mcp/disconnect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ grantSecret: grant.secret, mcpSessionId: sessionId }),
+        });
+      } catch {
+        // best-effort cleanup
+      }
       return;
     }
-    try {
-      await fetch(`${this.backendUrl}/api/trusted-session/mcp/disconnect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ grantSecret: grant.secret, mcpSessionId: sessionId }),
-      });
-    } catch {
-      // best-effort cleanup
+
+    if (this.sessionBinding.isLaunchSession(sessionId)) {
+      try {
+        await fetch(`${this.backendUrl}/api/trusted-session/mcp/disconnect-deck`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ mcpSessionId: sessionId }),
+        });
+      } catch {
+        // best-effort cleanup
+      }
     }
   }
 
   /**
-   * Re-validate workspace grant or execution authority on every follow-up MCP HTTP request.
-   * Fail closed with 401 — do not destroy the transport session so a correct
-   * Bearer on the next attempt can succeed.
+   * Re-validate workspace grant, execution authority, or launch deck on every
+   * follow-up MCP HTTP request. Fail closed with 401 — do not destroy the
+   * transport session so a correct credential on the next attempt can succeed.
    * AGENT_DECK_MCP_SKIP_GRANT_AUTH=1 only relaxes *missing* Bearer (unit tests).
    */
   private async requireFollowUpGrant(sessionId: string, req: Request, res: Response): Promise<boolean> {
@@ -817,24 +880,56 @@ export class AgentDeckMCPServer {
     }
 
     const grant = this.parseGrantBearer(req);
-    if (!grant) {
-      if (skipGrantAuth) {
+    if (grant) {
+      try {
+        await this.authenticateTrustedSession(sessionId, req);
         return true;
+      } catch (error) {
+        console.warn(
+          '[agent-deck] Follow-up grant auth failed (transport kept):',
+          error instanceof Error ? error.message : error,
+        );
+        this.sendGrantRequired(res);
+        return false;
       }
+    }
+
+    const launchDeck = readLaunchDeckHeader(req);
+    if (launchDeck) {
+      try {
+        await this.authenticateLaunchDeck(sessionId, req);
+        return true;
+      } catch (error) {
+        console.warn(
+          '[agent-deck] Follow-up launch-deck auth failed (transport kept):',
+          error instanceof Error ? error.message : error,
+        );
+        this.sendLaunchDeckInvalid(
+          res,
+          error instanceof Error ? error.message : 'LAUNCH_DECK_INVALID',
+        );
+        return false;
+      }
+    }
+
+    if (this.sessionBinding.isLaunchSession(sessionId)) {
       this.sendGrantRequired(res);
       return false;
     }
-    try {
-      await this.authenticateTrustedSession(sessionId, req);
+
+    if (skipGrantAuth) {
       return true;
-    } catch (error) {
-      console.warn(
-        '[agent-deck] Follow-up grant auth failed (transport kept):',
-        error instanceof Error ? error.message : error,
-      );
-      this.sendGrantRequired(res);
-      return false;
     }
+    this.sendGrantRequired(res);
+    return false;
+  }
+
+  private sendLaunchDeckInvalid(res: Response, message: string): void {
+    res.status(401).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: `LAUNCH_DECK_INVALID: ${message}` },
+      id: null,
+    });
   }
 
   /**
@@ -875,8 +970,11 @@ export class AgentDeckMCPServer {
 
     const authorityCreds = this.parseAuthorityBearerCreds(req);
     const grant = this.parseGrantBearer(req);
+    // Deck header only counts when no bearer is present (bearer always wins).
+    const launchDeck =
+      !grant && !authorityCreds ? readLaunchDeckHeader(req) : undefined;
     const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
-    if (!grant && !authorityCreds && !skipGrantAuth) {
+    if (!grant && !authorityCreds && !launchDeck && !skipGrantAuth) {
       this.sendGrantRequired(res);
       return;
     }
@@ -910,6 +1008,20 @@ export class AgentDeckMCPServer {
           error instanceof Error ? error.message : error,
         );
         this.sendGrantRequired(res);
+        return;
+      }
+    } else if (launchDeck) {
+      try {
+        await this.authenticateLaunchDeck(sessionId, req);
+      } catch (error) {
+        console.warn(
+          '[agent-deck] Launch-deck auth failed before MCP init:',
+          error instanceof Error ? error.message : error,
+        );
+        this.sendLaunchDeckInvalid(
+          res,
+          error instanceof Error ? error.message : 'LAUNCH_DECK_INVALID',
+        );
         return;
       }
     }
@@ -949,8 +1061,8 @@ export class AgentDeckMCPServer {
         error instanceof Error ? error.message : error,
       );
       this.sessions.delete(sessionId);
-      this.sessionBinding.clearSession(sessionId);
       await this.disconnectTrustedSession(sessionId, req);
+      this.sessionBinding.clearSession(sessionId);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: '2.0',

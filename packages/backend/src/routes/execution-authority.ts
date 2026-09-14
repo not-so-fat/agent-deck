@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { parseBearerToken } from '../lib/http-auth';
+import { invalidDeckIdPathSegment } from '../lib/invalid-deck-id-path-segment';
 import { requireTrustedWriterBearer, TrustedAuthError, sendTrustedAuthError } from '../trusted-session/auth';
 import { parseAuthorityBearer, parseEnrollmentBearer } from '../execution-authority/bearer';
 import type { AllowedTool, ContractError, MintAuthorityRequest } from '../execution-authority/types';
@@ -136,19 +137,6 @@ function deckNotFoundError(enrollmentId: string, deckId: string): ContractError 
   };
 }
 
-/**
- * Fastify decodes path params, so `/decks/x%2Fy/playbooks` yields `deckId === "x/y"`
- * while the route-policy `[^/]+` still matched one encoded segment. Reject before scope checks.
- */
-function invalidDeckIdPathSegment(deckId: string): ContractError | null {
-  if (!deckId.includes('/')) return null;
-  return {
-    ok: false,
-    error_code: 'INVALID_MINT_REQUEST',
-    message: 'deckId must be a single path segment',
-    correlation: { deckId },
-  };
-}
 
 /** Re-check enrollment after awaits so revoke cannot race a successful response. */
 function revalidateActiveEnrollment(
@@ -292,8 +280,13 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
       }
 
       const { deckId } = request.params;
-      const badSegment = invalidDeckIdPathSegment(deckId);
-      if (badSegment) {
+      if (invalidDeckIdPathSegment(deckId)) {
+        const badSegment: ContractError = {
+          ok: false,
+          error_code: 'INVALID_MINT_REQUEST',
+          message: 'deckId must be a single path segment',
+          correlation: { deckId },
+        };
         return sendContractError(reply, badSegment, statusForContract(badSegment));
       }
       if (!auth.enrollment.allowedDeckIds.includes(deckId)) {

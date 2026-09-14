@@ -24,8 +24,11 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/trusted-session\/admin\/challenges$/, policy: 'allowPublic' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/connect$/, policy: 'allowPublic' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/disconnect$/, policy: 'allowPublic' },
-  { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/disconnect$/, policy: 'allowPublic' },
+  { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/connect-deck$/, policy: 'allowPublic' },
+  { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/disconnect-deck$/, policy: 'allowPublic' },
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/bootstrap\/session$/, policy: 'allowPublic' },
+  { methods: ['GET'], pattern: /^\/api\/launch\/decks$/, policy: 'allowPublic' },
+  { methods: ['GET'], pattern: /^\/api\/launch\/decks\/[^/]+\/playbooks$/, policy: 'allowPublic' },
 
   // Trusted writer (admin secret bearer only — enforced in policy hook)
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/workspace-grants\/issue$/, policy: 'requireTrustedWriter' },

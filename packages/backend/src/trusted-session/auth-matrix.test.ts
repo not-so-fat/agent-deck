@@ -7,11 +7,13 @@ import {
   AGENT_DECK_SESSION_HEADER,
   canonicalizeWorkspacePath,
   digestCanonicalWorkspacePath,
-  generateId,
 } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
+import { PatchManager } from '../playbooks/patch-manager';
+import { PlaybookManager } from '../playbooks/playbook-manager';
 import { registerDeckRoutes } from '../routes/decks';
+import { registerPlaybookPatchRoutes } from '../routes/playbook-patches';
 import { registerPlaybookRoutes } from '../routes/playbooks';
 import { registerServiceRoutes } from '../routes/services';
 import { registerDashboardAuthRoutes, registerTrustedSessionRoutes } from '../routes/trusted-session';
@@ -42,7 +44,7 @@ describe('trusted session auth matrix (§8)', () => {
     });
     await db.addServiceToDeck({ deckId: boundDeck.id, serviceId: serviceOnBound.id, position: 0 });
     const playbook = await db.createPlaybook({
-      id: generateId(),
+      id: 'pb_auth_matrix_test',
       title: 'test-pb',
       body: 'body',
       triggers: ['test'],
@@ -62,6 +64,9 @@ describe('trusted session auth matrix (§8)', () => {
       deckId: boundDeck.id,
     });
 
+    const playbookManager = new PlaybookManager(db);
+    const patchManager = new PatchManager(db, playbookManager);
+
     const fastify = Fastify();
     fastify.decorate('db', db);
     fastify.decorate('trustedSessionStore', store);
@@ -78,17 +83,13 @@ describe('trusted session auth matrix (§8)', () => {
     fastify.decorate('credentialManager', {
       applySecretStatus: async (credentials: unknown[]) => credentials,
     });
-    fastify.decorate('playbookManager', {
-      createWithDependencies: async () => playbook,
-      updateWithDependencies: async () => playbook,
-      delete: async () => true,
-      listSummariesForDeck: async () => [],
-    });
-    fastify.decorate('patchManager', { snapshotVersion: async () => {} });
+    fastify.decorate('playbookManager', playbookManager);
+    fastify.decorate('patchManager', patchManager);
 
     registerHttpPolicyHook(fastify);
     await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
     await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
+    await fastify.register(registerPlaybookPatchRoutes, { prefix: '/api/playbook-patches' });
     await fastify.register(registerDeckRoutes, { prefix: '/api/decks', storeWriter: { writeDeck: async () => {} } });
     await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
     await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
@@ -233,8 +234,8 @@ describe('trusted session auth matrix (§8)', () => {
   it('C8 grant rotation revokes peer sessions (SESSION_REVOKED)', async () => {
     const { fastify, session, otherDeck, store, workspaceRoot } = await buildApp();
     const peer = store.createRuntimeSession({
-      workspaceKeyId: session.workspaceKey,
-      workspaceGrantId: session.workspaceGrantId,
+      workspaceKeyId: session.workspaceKey!,
+      workspaceGrantId: session.workspaceGrantId!,
       deckId: session.deckId,
     });
     store.elevateSessionToAdmin(session.sessionId);
@@ -328,5 +329,77 @@ describe('trusted session auth matrix (§8)', () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ error_code: 'DASHBOARD_REQUIRED' });
+  });
+
+  it('launch session can read own-deck services', async () => {
+    const { fastify, store, boundDeck, serviceOnBound } = await buildApp();
+    const launch = store.createRuntimeSession({
+      workspaceKeyId: null,
+      workspaceGrantId: null,
+      deckId: boundDeck.id,
+    });
+
+    const deckResponse = await fastify.inject({
+      method: 'GET',
+      url: `/api/decks/${boundDeck.id}`,
+      headers: { [AGENT_DECK_SESSION_HEADER]: launch.sessionId },
+    });
+    expect(deckResponse.statusCode).toBe(200);
+    expect(deckResponse.json().data).toMatchObject({ id: boundDeck.id });
+
+    const servicesResponse = await fastify.inject({
+      method: 'GET',
+      url: '/api/services',
+      headers: { [AGENT_DECK_SESSION_HEADER]: launch.sessionId },
+    });
+    expect(servicesResponse.statusCode).toBe(200);
+    const data = servicesResponse.json().data as Array<{ id: string }>;
+    expect(data.some((s) => s.id === serviceOnBound.id)).toBe(true);
+  });
+
+  it('launch session cannot read other-deck resources', async () => {
+    const { fastify, store, boundDeck, otherDeck } = await buildApp();
+    const launch = store.createRuntimeSession({
+      workspaceKeyId: null,
+      workspaceGrantId: null,
+      deckId: boundDeck.id,
+    });
+
+    const response = await fastify.inject({
+      method: 'GET',
+      url: `/api/decks/${otherDeck.id}`,
+      headers: { [AGENT_DECK_SESSION_HEADER]: launch.sessionId },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error_code: 'RESOURCE_OUT_OF_SCOPE' });
+  });
+
+  it('launch session can propose signal_only playbook patch', async () => {
+    const { fastify, store, boundDeck, playbook } = await buildApp();
+    const launch = store.createRuntimeSession({
+      workspaceKeyId: null,
+      workspaceGrantId: null,
+      deckId: boundDeck.id,
+    });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/playbook-patches',
+      headers: { [AGENT_DECK_SESSION_HEADER]: launch.sessionId },
+      payload: {
+        kind: 'signal_only',
+        playbook_id: playbook.id,
+        rationale: 'Note for later',
+        evidence: {
+          failure_summary: 'One-off',
+          user_feedback_excerpt: 'just note this',
+        },
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: { kind: 'signal_only' },
+    });
   });
 });

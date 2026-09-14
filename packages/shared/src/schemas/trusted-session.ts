@@ -13,6 +13,8 @@ export const TrustedSessionErrorCodeSchema = z.enum([
   'ADMIN_CHALLENGE_EXPIRED',
   /** Execution-authority principal hit control-plane / non-worker HTTP (NOT-86). */
   'INTERACTION_REQUIRED',
+  /** Launch-selected deck cannot be changed by the agent (NOT-105). */
+  'DECK_FIXED',
 ]);
 
 export const WorkspaceGrantStatusSchema = z.enum(['pending', 'active', 'revoked']);
@@ -21,8 +23,8 @@ export const RuntimeSessionSchema = z
   .object({
     sessionId: z.string(),
     mcpSessionId: z.string().optional(),
-    workspaceKey: z.string(),
-    workspaceGrantId: z.string(),
+    workspaceKey: z.string().nullable(),
+    workspaceGrantId: z.string().nullable(),
     deckId: z.string(),
     mode: AgentSessionModeSchema,
     lastSeenAt: z.string().datetime(),
@@ -89,6 +91,7 @@ export function httpStatusForTrustedError(code: TrustedSessionErrorCode): number
     case 'ADMIN_REQUIRED':
     case 'DASHBOARD_REQUIRED':
     case 'INTERACTION_REQUIRED':
+    case 'DECK_FIXED':
       return 403;
     case 'ADMIN_CHALLENGE_EXPIRED':
       return 410;

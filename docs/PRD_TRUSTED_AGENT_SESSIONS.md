@@ -133,6 +133,14 @@ File-specific mechanics such as temporary and backup files belong in the technic
 
 There is no temporary deck switch. An approved admin deck change rotates the persistent workspace grant using C7 and revokes peer sessions with `SESSION_REVOKED`. The approving runtime session remains in `agent-admin` on the new deck until the C4 lease or exit conditions end elevation, so it can finish deck composition work. A future runtime session still starts in `normal`.
 
+### C9. Launch-selected deck (NOT-105)
+
+Whoever launches an MCP connection sets its deck via `x-agent-deck-deck-id`. Trust that launch config for the *deck*; never trust the caller for *admin* (elevation + dashboard approval stay as in C4).
+
+**Credential precedence** on every MCP request: execution-authority bearer → grant bearer → deck header → otherwise `GRANT_REQUIRED`. When any bearer is present, the deck header is ignored.
+
+A *launch session* is a normal runtime session with no workspace key and no grant. Deck scoping, `propose_playbook_patch`, and elevation work unchanged. `bind_workspace` with the same deck succeeds from any path and writes no stubs / `.agent-deck/use.json`; a different deck returns `DECK_FIXED` (even when elevated). Grant-based sessions (`Authorization: Bearer <grant>`) keep today's behavior, including `assertWorkspaceScope` / `WORKSPACE_SCOPE_MISMATCH`.
+
 ## 3. User flows
 
 ### A. Restart and automatic binding
@@ -196,6 +204,7 @@ Stable machine-readable errors:
 | `RESOURCE_OUT_OF_SCOPE` | 403 | Resource is outside the bound deck |
 | `ADMIN_REQUIRED` | 403 | Deck-admin elevation is required |
 | `DASHBOARD_REQUIRED` | 403 | Operation is never available to an agent |
+| `DECK_FIXED` | 403 | Launch-selected deck cannot be changed by the agent |
 | `ADMIN_CHALLENGE_EXPIRED` | 410 | Approval challenge expired or was already consumed |
 
 The MCP adapter preserves these codes instead of collapsing them into generic tool failures.

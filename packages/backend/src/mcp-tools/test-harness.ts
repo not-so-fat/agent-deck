@@ -36,10 +36,12 @@ export async function postInitialize(
   id = 1,
   clientName = 'vitest',
   grantSecret?: string,
+  extraHeaders?: Record<string, string>,
 ) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: MCP_ACCEPT,
+    ...extraHeaders,
   };
   if (grantSecret) {
     headers.Authorization = `Bearer ${grantSecret}`;
@@ -93,11 +95,13 @@ export async function callToolMcpResult(
   args: unknown,
   id: number,
   grantSecret?: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<McpToolCallResult> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: MCP_ACCEPT,
     'mcp-session-id': sessionId,
+    ...extraHeaders,
   };
   if (grantSecret) {
     headers.Authorization = `Bearer ${grantSecret}`;
@@ -159,6 +163,7 @@ async function waitForTrustedSession(
   sessionId: string,
   id: number,
   grantSecret?: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<void> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const result = await callToolMcpResult(
@@ -168,6 +173,7 @@ async function waitForTrustedSession(
       {},
       id + 100 + attempt,
       grantSecret,
+      extraHeaders,
     );
     if (!result.isError || result.data.error_code !== 'GRANT_REQUIRED') {
       return;
@@ -177,14 +183,19 @@ async function waitForTrustedSession(
   throw new Error('Trusted MCP session not ready after initialize');
 }
 
-export async function openSession(port: number, id = 1, grantSecret?: string): Promise<string> {
-  const init = await postInitialize(port, id, 'vitest', grantSecret);
+export async function openSession(
+  port: number,
+  id = 1,
+  grantSecret?: string,
+  extraHeaders?: Record<string, string>,
+): Promise<string> {
+  const init = await postInitialize(port, id, 'vitest', grantSecret, extraHeaders);
   const sessionId = init.headers.get('mcp-session-id');
   if (!sessionId) {
-    throw new Error('Missing mcp-session-id');
+    throw new Error(`Missing mcp-session-id (status=${init.status})`);
   }
-  if (grantSecret) {
-    await waitForTrustedSession(port, sessionId, id, grantSecret);
+  if (grantSecret || extraHeaders) {
+    await waitForTrustedSession(port, sessionId, id, grantSecret, extraHeaders);
   }
   return sessionId;
 }

@@ -220,7 +220,33 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         }
 
         const session = resolveRuntimeSessionFromHeader(request, store);
-        assertWorkspaceScope(store, session.workspaceKey, workspaceRoot);
+
+        // Launch session (NOT-105): deck fixed at connect; path is a label only.
+        if (session.workspaceGrantId === null) {
+          if (deckId !== session.deckId) {
+            throw new TrustedAuthError(
+              'DECK_FIXED',
+              "This connection's deck was set when it was launched and cannot be changed by the agent",
+            );
+          }
+          const deck = await fastify.db.getDeck(deckId);
+          if (!deck) {
+            return reply.status(404).send({ success: false, error: 'Deck not found' });
+          }
+          return reply.send({
+            success: true,
+            data: {
+              deckId: session.deckId,
+              deckName: deck.name,
+              mode: session.mode,
+              grantRotated: false,
+              peersRevoked: 0,
+              deckFixed: true,
+            },
+          });
+        }
+
+        assertWorkspaceScope(store, session.workspaceKey!, workspaceRoot);
 
         const deck = await fastify.db.getDeck(deckId);
         if (!deck) {
@@ -470,6 +496,85 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         }
 
         return reply.send({ success: true, data: { revoked: Boolean(session) } });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.post<{ Body: { deckId: string; mcpSessionId?: string } }>(
+    '/mcp/connect-deck',
+    async (request, reply) => {
+      try {
+        const deckId = request.body.deckId?.trim();
+        if (!deckId) {
+          return reply.status(400).send({ success: false, error: 'deckId required' });
+        }
+
+        const deck = await fastify.db.getDeck(deckId);
+        if (!deck) {
+          return reply.status(404).send({ success: false, error: 'Deck not found' });
+        }
+
+        const mcpId = request.body.mcpSessionId?.trim();
+        let session;
+        if (mcpId) {
+          const historical = store.findLatestRuntimeSessionByMcpSessionId(mcpId);
+          if (
+            historical &&
+            (historical.workspaceGrantId !== null || historical.deckId !== deckId)
+          ) {
+            throw new TrustedAuthError('GRANT_REQUIRED', 'Deck does not own this MCP session');
+          }
+          session = store.findActiveLaunchSessionForMcp(mcpId, deckId);
+        }
+        if (!session) {
+          session = store.createRuntimeSession({
+            workspaceKeyId: null,
+            workspaceGrantId: null,
+            deckId,
+            mcpSessionId: mcpId,
+          });
+        }
+
+        return reply.send({
+          success: true,
+          data: {
+            sessionId: session.sessionId,
+            deckId: session.deckId,
+            deckName: deck.name,
+            mode: session.mode,
+            expiresAt: session.expiresAt,
+          },
+        });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.post<{ Body: { mcpSessionId: string } }>(
+    '/mcp/disconnect-deck',
+    async (request, reply) => {
+      try {
+        const mcpSessionId = request.body.mcpSessionId?.trim();
+        if (!mcpSessionId) {
+          return reply.status(400).send({ success: false, error: 'mcpSessionId required' });
+        }
+
+        const session = store.findActiveRuntimeSessionByMcpSessionId(mcpSessionId);
+        const isLaunch = Boolean(session && session.workspaceGrantId === null);
+        if (isLaunch && session) {
+          store.revokeRuntimeSession(session.sessionId);
+        }
+
+        return reply.send({ success: true, data: { revoked: isLaunch } });
       } catch (error) {
         if (error instanceof TrustedAuthError) {
           return sendTrustedAuthError(reply, error);
