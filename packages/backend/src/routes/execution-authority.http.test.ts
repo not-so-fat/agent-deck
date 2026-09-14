@@ -189,6 +189,132 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     expect((auditBody.data?.events.length ?? 0) > 0).toBe(true);
   });
 
+  it('lists playbook summaries only for decks allowed by the coordinator enrollment', async () => {
+    const playbook = await server!.playbookManager.create({
+      id: 'pb_coordinator_metadata',
+      title: 'Coordinator metadata',
+      body: 'Full playbook body must not be exposed by metadata discovery.',
+      triggers: ['coordinate metadata'],
+    });
+    await server!.playbookManager.addToDeck({ deckId, playbookId: playbook.id });
+    const otherDeck = await server!.db.createDeck({ name: 'ea-http-oos-playbooks' });
+    const disposableDeck = await server!.db.createDeck({ name: 'ea-http-deleted-playbooks' });
+
+    const enroll = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        coordinatorId: 'coord-playbook-metadata',
+        allowedDeckIds: [deckId, disposableDeck.id],
+      }),
+    });
+    const enrollBody = (await enroll.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const { enrollmentId } = enrollBody.data.enrollment;
+    const enrollmentBearer = `Bearer ${enrollmentId}:${enrollBody.data.enrollmentSecret}`;
+
+    const decksBefore = await fetch(`${baseUrl}/api/execution-authority/decks`, {
+      headers: { Authorization: enrollmentBearer },
+    });
+    expect(decksBefore.status).toBe(200);
+    expect(await decksBefore.json()).toEqual({
+      ok: true,
+      data: {
+        decks: [
+          { id: deckId, name: 'ea-http-deck' },
+          { id: disposableDeck.id, name: 'ea-http-deleted-playbooks' },
+        ],
+      },
+    });
+
+    const allowed = await fetch(
+      `${baseUrl}/api/execution-authority/decks/${deckId}/playbooks`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toEqual({
+      ok: true,
+      data: [{ id: playbook.id, title: playbook.title, triggers: playbook.triggers }],
+    });
+
+    const outOfScope = await fetch(
+      `${baseUrl}/api/execution-authority/decks/${otherDeck.id}/playbooks`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    expect(outOfScope.status).toBe(403);
+    expect(await outOfScope.json()).toMatchObject({
+      ok: false,
+      error_code: 'RESOURCE_OUT_OF_SCOPE',
+      reason: 'deck_not_permitted',
+      correlation: { enrollmentId, deckId: otherDeck.id },
+    });
+
+    // Allowed id whose deck was deleted: still fail closed, but not as not-in-allowedDeckIds.
+    // Sibling GET /decks omits the id; path-param discovery returns deck_not_found.
+    await server!.db.deleteDeck(disposableDeck.id);
+    const decksAfterDelete = await fetch(`${baseUrl}/api/execution-authority/decks`, {
+      headers: { Authorization: enrollmentBearer },
+    });
+    expect(decksAfterDelete.status).toBe(200);
+    expect(await decksAfterDelete.json()).toEqual({
+      ok: true,
+      data: { decks: [{ id: deckId, name: 'ea-http-deck' }] },
+    });
+    const missingAllowed = await fetch(
+      `${baseUrl}/api/execution-authority/decks/${disposableDeck.id}/playbooks`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    expect(missingAllowed.status).toBe(403);
+    expect(await missingAllowed.json()).toMatchObject({
+      ok: false,
+      error_code: 'RESOURCE_OUT_OF_SCOPE',
+      reason: 'deck_not_found',
+      correlation: { enrollmentId, deckId: disposableDeck.id },
+    });
+
+    await fetch(
+      `${baseUrl}/api/execution-authority/enrollments/${enrollmentId}/revoke`,
+      { method: 'POST', headers: { Authorization: adminBearer } },
+    );
+    const revoked = await fetch(
+      `${baseUrl}/api/execution-authority/decks/${deckId}/playbooks`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    expect(revoked.status).toBe(403);
+    expect(await revoked.json()).toMatchObject({
+      ok: false,
+      error_code: 'ENROLLMENT_REVOKED',
+    });
+  });
+
+  it('rejects encoded-slash deckId path segments with 400 (not scope denial)', async () => {
+    const enroll = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
+      method: 'POST',
+      headers: { Authorization: adminBearer, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        coordinatorId: 'coord-playbook-encoded-slash',
+        allowedDeckIds: [deckId],
+      }),
+    });
+    const enrollBody = (await enroll.json()) as {
+      data: { enrollment: { enrollmentId: string }; enrollmentSecret: string };
+    };
+    const enrollmentBearer = `Bearer ${enrollBody.data.enrollment.enrollmentId}:${enrollBody.data.enrollmentSecret}`;
+
+    const encodedSlash = await fetch(
+      `${baseUrl}/api/execution-authority/decks/x%2Fy/playbooks`,
+      { headers: { Authorization: enrollmentBearer } },
+    );
+    expect(encodedSlash.status).toBe(400);
+    expect(await encodedSlash.json()).toMatchObject({
+      ok: false,
+      error_code: 'INVALID_MINT_REQUEST',
+      message: 'deckId must be a single path segment',
+      correlation: { deckId: 'x/y' },
+    });
+  });
+
   it('isolates enrollments, empty toolScopeHint, and enrollment error codes', async () => {
     const enrollA = await fetch(`${baseUrl}/api/execution-authority/enrollments`, {
       method: 'POST',
@@ -588,6 +714,15 @@ describe('execution-authority HTTP issuer (NOT-86)', () => {
     });
     expect(decksAsWorker.status).toBe(403);
     expect((await decksAsWorker.json() as { error_code?: string }).error_code).toBe(
+      'INTERACTION_REQUIRED',
+    );
+
+    const playbooksAsWorker = await fetch(
+      `${baseUrl}/api/execution-authority/decks/${deckId}/playbooks`,
+      { headers: { Authorization: authorityBearer } },
+    );
+    expect(playbooksAsWorker.status).toBe(403);
+    expect((await playbooksAsWorker.json() as { error_code?: string }).error_code).toBe(
       'INTERACTION_REQUIRED',
     );
 

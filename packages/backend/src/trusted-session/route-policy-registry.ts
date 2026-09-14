@@ -58,6 +58,12 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
     policy: 'requireTrustedWriter',
   },
   { methods: ['GET'], pattern: /^\/api\/execution-authority\/decks$/, policy: 'allowPublic' },
+  {
+    methods: ['GET'],
+    // [^/]+ matches one raw path segment (including %2F). Handler rejects decoded "/" in deckId.
+    pattern: /^\/api\/execution-authority\/decks\/[^/]+\/playbooks$/,
+    policy: 'allowPublic',
+  },
   { methods: ['POST'], pattern: /^\/api\/execution-authority\/authorities$/, policy: 'allowPublic' },
   {
     methods: ['GET'],

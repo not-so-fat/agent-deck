@@ -52,6 +52,9 @@ describe('HTTP route policy registry', () => {
       'requireTrustedWriter',
     );
     expect(resolveRoutePolicy('POST', '/api/execution-authority/authorities')).toBe('allowPublic');
+    expect(
+      resolveRoutePolicy('GET', '/api/execution-authority/decks/deck_123/playbooks'),
+    ).toBe('allowPublic');
     expect(resolveRoutePolicy('POST', '/api/execution-authority/mcp/connect')).toBe('allowPublic');
   });
 });

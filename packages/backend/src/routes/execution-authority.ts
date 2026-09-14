@@ -20,12 +20,28 @@ function intersectTools(policy: AllowedTool[], hint: AllowedTool[] | undefined):
   return hint.filter((t) => allowed.has(key(t)));
 }
 
+type EnrollmentRecord = {
+  enrollmentId: string;
+  status: string;
+  allowedDeckIds: string[];
+};
+
+type EnrollmentStore = {
+  getEnrollment: (id: string) => EnrollmentRecord | undefined;
+  verifyEnrollmentSecret: (id: string, secret: string) => boolean;
+};
+
+type EnrollmentAuthOk = {
+  ok: true;
+  enrollmentId: string;
+  enrollment: EnrollmentRecord;
+};
+
+type EnrollmentAuthFail = { ok: false; contract: ContractError };
+
 function requireEnrollmentAuth(
   request: { headers: Record<string, unknown> },
-  store: {
-    getEnrollment: (id: string) => { enrollmentId: string; status: string; allowedDeckIds: string[] } | undefined;
-    verifyEnrollmentSecret: (id: string, secret: string) => boolean;
-  },
+  store: EnrollmentStore,
 ): { enrollmentId: string } {
   const token = parseBearerToken({ headers: request.headers });
   if (!token) {
@@ -72,16 +88,97 @@ function requireEnrollmentAuth(
   return { enrollmentId: parsed.enrollmentId };
 }
 
+/** Shared enrollment bearer resolve used by coordinator metadata + mint routes. */
+function resolveEnrollmentAuth(
+  request: { headers: Record<string, unknown> },
+  store: EnrollmentStore,
+): EnrollmentAuthOk | EnrollmentAuthFail {
+  try {
+    const { enrollmentId } = requireEnrollmentAuth(request, store);
+    const enrollment = store.getEnrollment(enrollmentId);
+    if (!enrollment) {
+      return {
+        ok: false,
+        contract: {
+          ok: false,
+          error_code: 'COORDINATOR_NOT_ENROLLED',
+          message: 'Unknown enrollment',
+          correlation: { enrollmentId },
+        },
+      };
+    }
+    return { ok: true, enrollmentId, enrollment };
+  } catch (error) {
+    if (error instanceof EnrollmentAuthError) {
+      return { ok: false, contract: error.contract };
+    }
+    throw error;
+  }
+}
+
+function deckNotPermittedError(enrollmentId: string, deckId: string): ContractError {
+  return {
+    ok: false,
+    error_code: 'RESOURCE_OUT_OF_SCOPE',
+    message: 'Deck is not in allowedDeckIds',
+    reason: 'deck_not_permitted',
+    correlation: { enrollmentId, deckId },
+  };
+}
+
+function deckNotFoundError(enrollmentId: string, deckId: string): ContractError {
+  return {
+    ok: false,
+    error_code: 'RESOURCE_OUT_OF_SCOPE',
+    message: 'Deck not found',
+    reason: 'deck_not_found',
+    correlation: { enrollmentId, deckId },
+  };
+}
+
+/**
+ * Fastify decodes path params, so `/decks/x%2Fy/playbooks` yields `deckId === "x/y"`
+ * while the route-policy `[^/]+` still matched one encoded segment. Reject before scope checks.
+ */
+function invalidDeckIdPathSegment(deckId: string): ContractError | null {
+  if (!deckId.includes('/')) return null;
+  return {
+    ok: false,
+    error_code: 'INVALID_MINT_REQUEST',
+    message: 'deckId must be a single path segment',
+    correlation: { deckId },
+  };
+}
+
+/** Re-check enrollment after awaits so revoke cannot race a successful response. */
+function revalidateActiveEnrollment(
+  store: EnrollmentStore,
+  enrollmentId: string,
+  deckId?: string,
+): ContractError | null {
+  const enrollment = store.getEnrollment(enrollmentId);
+  if (!enrollment || enrollment.status !== 'active') {
+    return {
+      ok: false,
+      error_code: 'ENROLLMENT_REVOKED',
+      message: 'Enrollment is revoked',
+      reason: 'enrollment_revoked',
+      correlation: { enrollmentId },
+    };
+  }
+  if (deckId !== undefined && !enrollment.allowedDeckIds.includes(deckId)) {
+    return deckNotPermittedError(enrollmentId, deckId);
+  }
+  return null;
+}
+
 type AuthzPrincipal =
   | { kind: 'enrollment'; enrollmentId: string }
   | { kind: 'trusted-writer' };
 
 async function requireEnrollmentOrTrustedWriter(
   request: Parameters<typeof requireTrustedWriterBearer>[0] & { headers: Record<string, unknown> },
-  store: {
-    getEnrollment: (id: string) => { enrollmentId: string; status: string; allowedDeckIds: string[] } | undefined;
-    verifyEnrollmentSecret: (id: string, secret: string) => boolean;
-  },
+  store: EnrollmentStore,
 ): Promise<AuthzPrincipal> {
   try {
     return { kind: 'enrollment', ...requireEnrollmentAuth(request, store) };
@@ -168,36 +265,62 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
   });
 
   fastify.get('/decks', async (request, reply) => {
-    let enrollmentId: string;
-    try {
-      ({ enrollmentId } = requireEnrollmentAuth(request, store()));
-    } catch (error) {
-      if (error instanceof EnrollmentAuthError) {
-        return sendContractError(reply, error.contract, statusForContract(error.contract));
-      }
-      throw error;
+    const auth = resolveEnrollmentAuth(request, store());
+    if (!auth.ok) {
+      return sendContractError(reply, auth.contract, statusForContract(auth.contract));
     }
-    const enrollment = store().getEnrollment(enrollmentId)!;
     const decks: Array<{ id: string; name: string }> = [];
-    for (const id of enrollment.allowedDeckIds) {
+    for (const id of auth.enrollment.allowedDeckIds) {
       const deck = await fastify.db.getDeck(id);
       if (deck) {
         decks.push({ id: deck.id, name: deck.name });
       }
     }
+    const stale = revalidateActiveEnrollment(store(), auth.enrollmentId);
+    if (stale) {
+      return sendContractError(reply, stale, statusForContract(stale));
+    }
     return { ok: true, data: { decks } };
   });
 
-  fastify.post('/authorities', async (request, reply) => {
-    let enrollmentId: string;
-    try {
-      ({ enrollmentId } = requireEnrollmentAuth(request, store()));
-    } catch (error) {
-      if (error instanceof EnrollmentAuthError) {
-        return sendContractError(reply, error.contract, statusForContract(error.contract));
+  fastify.get<{ Params: { deckId: string } }>(
+    '/decks/:deckId/playbooks',
+    async (request, reply) => {
+      const auth = resolveEnrollmentAuth(request, store());
+      if (!auth.ok) {
+        return sendContractError(reply, auth.contract, statusForContract(auth.contract));
       }
-      throw error;
+
+      const { deckId } = request.params;
+      const badSegment = invalidDeckIdPathSegment(deckId);
+      if (badSegment) {
+        return sendContractError(reply, badSegment, statusForContract(badSegment));
+      }
+      if (!auth.enrollment.allowedDeckIds.includes(deckId)) {
+        return sendContractError(reply, deckNotPermittedError(auth.enrollmentId, deckId));
+      }
+
+      // Fail closed for deleted-but-still-allowed decks (distinct from not-in-allowedDeckIds).
+      // Sibling GET /decks omits missing ids from the list; path-param discovery must not.
+      if (!(await fastify.db.hasDeck(deckId))) {
+        return sendContractError(reply, deckNotFoundError(auth.enrollmentId, deckId));
+      }
+
+      const playbooks = await fastify.playbookManager.listSummariesForDeck(deckId);
+      const stale = revalidateActiveEnrollment(store(), auth.enrollmentId, deckId);
+      if (stale) {
+        return sendContractError(reply, stale, statusForContract(stale));
+      }
+      return { ok: true, data: playbooks };
+    },
+  );
+
+  fastify.post('/authorities', async (request, reply) => {
+    const auth = resolveEnrollmentAuth(request, store());
+    if (!auth.ok) {
+      return sendContractError(reply, auth.contract, statusForContract(auth.contract));
     }
+    const { enrollmentId } = auth;
 
     const body = (request.body ?? {}) as MintAuthorityRequest;
     if (body.enrollmentId && body.enrollmentId !== enrollmentId) {
@@ -222,14 +345,14 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
       });
     }
 
-    const deck = await fastify.db.getDeck(body.deckId);
+    const deckId = body.deckId.trim();
+    // Scope check before existence so missing out-of-scope ids stay deck_not_permitted.
+    if (!auth.enrollment.allowedDeckIds.includes(deckId)) {
+      return sendContractError(reply, deckNotPermittedError(enrollmentId, deckId));
+    }
+    const deck = await fastify.db.getDeck(deckId);
     if (!deck) {
-      return reply.status(403).send({
-        ok: false,
-        error_code: 'RESOURCE_OUT_OF_SCOPE',
-        message: 'Deck not found',
-        reason: 'deck_not_permitted',
-      });
+      return sendContractError(reply, deckNotFoundError(enrollmentId, deckId));
     }
 
     const services = deck.services ?? [];
@@ -253,11 +376,16 @@ export const registerExecutionAuthorityRoutes: FastifyPluginAsync = async (fasti
     const mintServices =
       body.toolScopeHint === undefined ? allowedServices : narrowedServiceIds;
 
+    const stale = revalidateActiveEnrollment(store(), enrollmentId, deckId);
+    if (stale) {
+      return sendContractError(reply, stale, statusForContract(stale));
+    }
+
     const result = store().mintAuthority({
       enrollmentId,
       runId: body.runId.trim(),
       attemptId: body.attemptId.trim(),
-      deckId: body.deckId.trim(),
+      deckId,
       audience: 'dealer-worker',
       idempotencyKey: body.idempotencyKey.trim(),
       allowedServices: mintServices,
