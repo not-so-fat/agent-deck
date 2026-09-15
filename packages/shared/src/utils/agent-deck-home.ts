@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -30,9 +31,39 @@ function isTestRunnerProcess(): boolean {
   return vitest === '1' || vitest === 'true' || process.env.NODE_ENV === 'test';
 }
 
+function containsOrEquals(root: string, target: string): boolean {
+  return target === root || target.startsWith(`${root}${path.sep}`);
+}
+
+/**
+ * `realpathSync` throws on a path that does not exist yet; the literal path is then
+ * all there is to compare, and the lexical pass has already used it.
+ */
+function realpathOrSelf(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return target;
+  }
+}
+
+/**
+ * Exported for tests: is `target` the store root at `root`, or inside it?
+ *
+ * Compares lexically first, then again through `realpathSync`, because this store root
+ * is routinely a symlink into a git-synced tree (and so are its children). A
+ * lexical-only check lets `AGENT_DECK_HOME=<realpath of ~/.agent-deck>`, or a link
+ * pointing back at it, write to the real store while looking isolated.
+ */
+export function isUnderStoreRoot(target: string, root: string): boolean {
+  if (containsOrEquals(root, target)) {
+    return true;
+  }
+  return containsOrEquals(realpathOrSelf(root), realpathOrSelf(target));
+}
+
 function isRealAgentDeckHome(target: string): boolean {
-  const real = realAgentDeckHome();
-  return target === real || target.startsWith(`${real}${path.sep}`);
+  return isUnderStoreRoot(target, realAgentDeckHome());
 }
 
 function agentDeckHomeFromEnv(): string {
@@ -56,10 +87,11 @@ function agentDeckHomeFromEnv(): string {
 export function resolveAgentDeckHome(): string {
   const home = agentDeckHomeFromEnv();
 
+  // Test-runner check first: production never pays for the realpath syscalls.
   if (
-    isRealAgentDeckHome(home) &&
     isTestRunnerProcess() &&
-    process.env[ALLOW_REAL_HOME_IN_TESTS_ENV]?.trim() !== '1'
+    process.env[ALLOW_REAL_HOME_IN_TESTS_ENV]?.trim() !== '1' &&
+    isRealAgentDeckHome(home)
   ) {
     throw new Error(
       `Refusing to use the real Agent Deck store (${home}) from a test process. ` +
