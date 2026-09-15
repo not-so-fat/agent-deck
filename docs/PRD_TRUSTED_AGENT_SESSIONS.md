@@ -12,7 +12,7 @@ Every MCP session receives a bound deck: grant-based sessions use the deck previ
 
 **Shipped in 1.7.0** (NOT-45 + NOT-44 together; see [CHANGELOG](../CHANGELOG.md#170--2026-08-31)).
 
-**Related (NOT-85 / NOT-105):** Unattended Agent Dealer workers use a **launch-selected deck** (`x-agent-deck-deck-id`, NOT-105) — not workspace grants copied into generated worktrees. Coordinator enrollment + short-lived execution authority (NOT-85/NOT-86) remain for coordinator mint until NOT-107 removes them. See [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md). Interactive path-bound grants in this PRD remain unchanged for grant-based sessions.
+**Related (C9 / NOT-105):** Unattended Agent Dealer workers use a **launch-selected deck** (`x-agent-deck-deck-id`) — not workspace grants copied into generated worktrees, and not coordinator enrollment / execution authority (removed in NOT-107). See C9 below and [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md) (superseded). Interactive path-bound grants in this PRD remain unchanged for grant-based sessions.
 
 ## 1. Problem and outcome
 
@@ -139,7 +139,7 @@ There is no temporary deck switch. An approved admin deck change rotates the per
 
 Whoever launches an MCP connection sets its deck via `x-agent-deck-deck-id`. Trust that launch config for the *deck*; never trust the caller for *admin* (elevation + dashboard approval stay as in C4).
 
-**Credential precedence** on every MCP request: execution-authority bearer → grant bearer → deck header → otherwise `GRANT_REQUIRED`. When any bearer is present, the deck header is ignored.
+**Credential precedence** on every MCP request: grant bearer → deck header → otherwise `GRANT_REQUIRED`. When a grant bearer is present, the deck header is ignored.
 
 A *launch session* is a normal runtime session with no workspace key and no grant. Deck scoping, `propose_playbook_patch`, and elevation work unchanged. `bind_workspace` with the same deck succeeds from any path and writes no stubs / `.agent-deck/use.json`; a different deck returns `DECK_FIXED` (even when elevated). Grant-based sessions (`Authorization: Bearer <grant>`) keep today's behavior, including `assertWorkspaceScope` / `WORKSPACE_SCOPE_MISMATCH`.
 
@@ -294,7 +294,7 @@ Primary touchpoints in the 1.7.0 codebase (later tickets called out per bullet):
 - SQLite schema + migrations — trusted session / grant tables
 - `packages/backend/src/trusted-session/` — grants, runtime sessions, elevation
 - `packages/backend/src/lib/http-route-policies.ts` — centralized policy registry + Fastify hook
-- MCP transport session establishment (**NOT-53**, **NOT-105**) — grant Bearer auth **or** launch `x-agent-deck-deck-id` (no bearer) **before** advertising `mcp-session-id`; precedence: execution-authority bearer → grant bearer → deck header → `GRANT_REQUIRED`; follow-up POST/GET/DELETE re-validate the same credential (401 without destroying transport); `wgr_…:secret` (`grantId:secret`) parsed at the auth boundary with claimed-id match; `/mcp/connect` keeps `mcp-session-id` → grant ownership via the latest runtime row (including expired/revoked) so another grant cannot replace it; `/mcp/connect-deck` creates nullable-key launch sessions and rejects grant-owned or other-deck MCP ids; failed initialize after connect revokes via `mcp/disconnect` or `mcp/disconnect-deck`; launch `bind_workspace` skips stub sync and returns `DECK_FIXED` on deck change
+- MCP transport session establishment (**NOT-53**, **NOT-105**) — grant Bearer auth **or** launch `x-agent-deck-deck-id` (no bearer) **before** advertising `mcp-session-id`; precedence: grant bearer → deck header → `GRANT_REQUIRED`; follow-up POST/GET/DELETE re-validate the same credential (401 without destroying transport); `wgr_…:secret` (`grantId:secret`) parsed at the auth boundary with claimed-id match; `/mcp/connect` keeps `mcp-session-id` → grant ownership via the latest runtime row (including expired/revoked) so another grant cannot replace it; `/mcp/connect-deck` creates nullable-key launch sessions and rejects grant-owned or other-deck MCP ids; failed initialize after connect revokes via `mcp/disconnect` or `mcp/disconnect-deck`; launch `bind_workspace` skips stub sync and returns `DECK_FIXED` on deck change
 - CLI `use` / `use --refresh` (**NOT-54** / **NOT-52**) — grant writer + launcher config (`packages/cli/`); explicit Cursor `use` creates or repairs the user-level `mcp-launch` entry with `AGENT_DECK_WORKSPACE` (last explicit workspace wins), while `status` / `use --refresh` run the read-only `inspectCursorMcpConfig` report (global + project, grant presence, bare-URL → `mcp_auth` dead end) and never write; custom wrappers are not overwritten. Contract: [docs/decisions/cursor-mcp-config-resolution.md](./decisions/cursor-mcp-config-resolution.md)
 
 - Dashboard `/admin/approve` + menubar challenge links

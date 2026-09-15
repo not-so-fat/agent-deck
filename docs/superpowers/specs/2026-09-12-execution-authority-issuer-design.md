@@ -1,5 +1,6 @@
 ---
-status: accepted
+status: superseded
+superseded_by: NOT-105, NOT-107
 linear: NOT-86
 parent_contract: docs/superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md
 deferred: NOT-89, NOT-90, NOT-87
@@ -7,7 +8,9 @@ deferred: NOT-89, NOT-90, NOT-87
 
 # Execution authority issuer (Agent Deck) — NOT-86
 
-**Accepted approach:** Promote the NOT-85 in-memory ledger behind a dedicated `ExecutionAuthorityStore` (SQLite), expose contract HTTP APIs, authenticate MCP with short-lived execution authority as a **separate principal** from path-bound workspace grants, and ship CLI enroll/status/revoke. Process-local one-time secret delivery for smoke/Dealer; OS launcher → [NOT-89](https://linear.app/not-so-fat/issue/NOT-89); dashboard UX → [NOT-90](https://linear.app/not-so-fat/issue/NOT-90).
+**Status note (NOT-105 / NOT-107):** This design is **superseded**. Unattended MCP uses a launch-selected deck (`x-agent-deck-deck-id`, NOT-105; Dealer wiring NOT-106). Execution authority and coordinator enrollment were deleted in NOT-107. Sections below are historical.
+
+**Accepted approach (historical):** Promote the NOT-85 in-memory ledger behind a dedicated `ExecutionAuthorityStore` (SQLite), expose contract HTTP APIs, authenticate MCP with short-lived execution authority as a **separate principal** from path-bound workspace grants, and ship CLI enroll/status/revoke. Process-local one-time secret delivery for smoke/Dealer; OS launcher → [NOT-89](https://linear.app/not-so-fat/issue/NOT-89); dashboard UX → [NOT-90](https://linear.app/not-so-fat/issue/NOT-90).
 
 ## Scope (cut B)
 

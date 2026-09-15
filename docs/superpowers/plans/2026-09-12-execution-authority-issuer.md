@@ -1,10 +1,17 @@
+---
+status: superseded
+superseded_by: NOT-105, NOT-107
+---
+
 # Execution authority issuer (NOT-86) Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+**Status note (NOT-105 / NOT-107):** This plan is **superseded**. Do not implement it. Unattended MCP uses a launch-selected deck (`x-agent-deck-deck-id`, NOT-105; Dealer wiring NOT-106). Execution authority and coordinator enrollment were deleted in NOT-107. Sections below are historical.
 
-**Goal:** Durable Deck-side enrollment + short-lived execution authority with HTTP + MCP + CLI (cut B).
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. *(Historical — superseded; do not execute.)*
 
-**Architecture:** Keep `ExecutionAuthorityLedger` as the logic engine; add snapshot export/import + SQLite `ExecutionAuthorityStore`; HTTP `/api/execution-authority/*`; MCP authority principal parallel to grants; CLI `coordinator`.
+**Goal (historical):** Durable Deck-side enrollment + short-lived execution authority with HTTP + MCP + CLI (cut B).
+
+**Architecture (historical):** Keep `ExecutionAuthorityLedger` as the logic engine; add snapshot export/import + SQLite `ExecutionAuthorityStore`; HTTP `/api/execution-authority/*`; MCP authority principal parallel to grants; CLI `coordinator`.
 
 **Tech stack:** Fastify, better-sqlite3, vitest, existing trusted-session hash helpers.
 

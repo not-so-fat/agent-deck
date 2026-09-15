@@ -21,12 +21,6 @@ import {
   requireServiceOnBoundDeck,
 } from '../lib/bound-deck-scope';
 import {
-  AuthorityContractAuthError,
-  authorizeAuthorityServiceCall,
-  filterToolsForAuthority,
-  sendContractError,
-} from '../lib/execution-authority-http';
-import {
   requireDashboard,
   RoutePolicyError,
   sendRoutePolicyError,
@@ -337,15 +331,9 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
         });
       }
 
-      const filtered = filterToolsForAuthority(
-        request,
-        request.params.id,
-        tools as ServiceTool[],
-      ) as ServiceTool[];
-
       const response: ApiResponse<ServiceTool[]> = {
         success: true,
-        data: filtered,
+        data: tools as ServiceTool[],
       };
       
       return reply.send(response);
@@ -396,12 +384,6 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   fastify.post<ServiceCallRequest>('/:id/call', async (request, reply) => {
     try {
       await requireServiceOnBoundDeck(request, fastify.db, request.params.id);
-      authorizeAuthorityServiceCall(
-        request,
-        fastify.executionAuthorityStore,
-        request.params.id,
-        request.body.toolName,
-      );
 
       const result = await fastify.serviceManager.callServiceTool({
         serviceId: request.params.id,
@@ -419,9 +401,6 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
       
       return reply.send(response);
     } catch (error) {
-      if (error instanceof AuthorityContractAuthError) {
-        return sendContractError(reply, error.contract);
-      }
       const scoped = boundDeckScopeResponse(error);
       return reply.status(scoped.status).send({
         success: false,

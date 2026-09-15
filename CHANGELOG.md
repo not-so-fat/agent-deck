@@ -2,12 +2,18 @@
 
 ## Unreleased
 
+### Removed: execution authority and coordinator enrollment (NOT-107)
+
+- Deleted `/api/execution-authority/*`, the SQLite authority/enrollment tables, MCP authority principal, and CLI `agent-deck coordinator enroll|status|revoke`.
+- Unattended workers/coordinators select a deck via launch header (`x-agent-deck-deck-id`, NOT-105). **Agent Dealer must include NOT-106** (no mint, no enrollment env).
+- Grant sessions and launch sessions are unchanged. `RESOURCE_OUT_OF_SCOPE` MCP contract shape is unchanged.
+
 ### Add: launch-selected deck for Agent Deck MCP (NOT-105)
 
 - MCP clients may authenticate with `x-agent-deck-deck-id` (no grant): creates a normal-mode launch session on that deck.
 - `bind_workspace` on a launch session is path-agnostic, writes no stubs / `.agent-deck/use.json`, and returns `DECK_FIXED` if the agent tries a different deck (including when elevated).
 - Public `GET /api/launch/decks` and `/api/launch/decks/:id/playbooks` for orchestrators (e.g. Agent Dealer).
-- Grant sessions and execution authority are unchanged.
+- Grant sessions are unchanged.
 
 ## 1.8.1 — 2026-09-14
 

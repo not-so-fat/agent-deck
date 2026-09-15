@@ -4,7 +4,7 @@ import type { StubBindSyncResult } from '../playbooks/stub-sync';
 import { resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
-import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard, denyControlPlaneUnderAuthority, mcpContractError } from './policy';
+import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard } from './policy';
 import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
 
 type RegisterToolFn = (
@@ -49,9 +49,6 @@ export type McpToolHost = {
       },
     ): void;
     isLaunchSession(sessionId: string): boolean;
-    getExecutionAuthority?(
-      sessionId: string,
-    ): { authorityId: string; authoritySecret: string; audience: string } | undefined;
     hasSessionDeckOverride(sessionId: string): boolean;
   };
   badgeBySession: Map<string, string>;
@@ -101,27 +98,7 @@ async function resolveDeckForBind(
   }
 }
 
-/** Tools allowed under short-lived execution authority (everything else → INTERACTION_REQUIRED). */
-const EXECUTION_AUTHORITY_ALLOWED_TOOLS = new Set([
-  'get_session_binding',
-  'get_bound_deck',
-  'list_service_tools',
-  'call_service_tool',
-  'get_playbook',
-]);
-
 export function registerMcpTools(host: McpToolHost): void {
-  const rawRegister = host.registerTool.bind(host);
-  host.registerTool = (name, config, handler) => {
-    rawRegister(name, config, async (...args: unknown[]) => {
-      if (!EXECUTION_AUTHORITY_ALLOWED_TOOLS.has(name)) {
-        const blocked = denyControlPlaneUnderAuthority(host);
-        if (blocked) return blocked;
-      }
-      return handler(...(args as Parameters<typeof handler>));
-    });
-  };
-
   registerRuntimeTools(host);
   if (profileIncludes(host.profile, 'editing')) {
     registerEditingTools(host);
@@ -144,8 +121,6 @@ function registerRuntimeTools(host: McpToolHost): void {
     },
   }, async ({ workspaceRoot, deckId }) => {
     try {
-      const blocked = denyControlPlaneUnderAuthority(host);
-      if (blocked) return blocked;
       const sessionId = host.getSessionId();
       const current = host.sessionBinding.getBinding(sessionId);
       const resolved = await resolveDeckForBind(host, deckId);
@@ -436,8 +411,6 @@ function registerRuntimeTools(host: McpToolHost): void {
     inputSchema: {},
   }, async () => {
     try {
-      const blocked = denyControlPlaneUnderAuthority(host);
-      if (blocked) return blocked;
       const binding = host.sessionBinding.getBinding(host.getSessionId());
       const runtimeSessionId = binding.runtimeSessionId;
       if (!runtimeSessionId) {
@@ -460,8 +433,6 @@ function registerRuntimeTools(host: McpToolHost): void {
     inputSchema: {},
   }, async () => {
     try {
-      const blocked = denyControlPlaneUnderAuthority(host);
-      if (blocked) return blocked;
       const binding = host.sessionBinding.getBinding(host.getSessionId());
       const runtimeSessionId = binding.runtimeSessionId;
       if (!runtimeSessionId) {
@@ -573,52 +544,6 @@ function registerRuntimeTools(host: McpToolHost): void {
     inputSchema: { serviceId: z.string() },
   }, async ({ serviceId }) => {
     try {
-      const auth = host.sessionBinding.getExecutionAuthority?.(host.getSessionId());
-      if (auth) {
-        const connect = await fetch(`${host.backendUrl}/api/execution-authority/mcp/connect`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${auth.authorityId}:${auth.authoritySecret}`,
-          },
-          body: JSON.stringify({
-            authorityId: auth.authorityId,
-            authoritySecret: auth.authoritySecret,
-            audience: auth.audience,
-          }),
-        });
-        const body = (await connect.json()) as {
-          ok?: boolean;
-          data?: {
-            allowedServices?: string[];
-            allowedTools?: Array<{ serviceId: string; toolName: string }>;
-          };
-          error_code?: string;
-          message?: string;
-        };
-        if (!connect.ok || !body.ok) {
-          return mcpContractError(
-            body.error_code ?? 'AUTHORITY_SECRET_INVALID',
-            body.message ?? 'Authority invalid',
-            { authorityId: auth.authorityId },
-          );
-        }
-        if (!body.data?.allowedServices?.includes(serviceId)) {
-          return host.toolError(
-            new BackendApiError('Service is not on the bound deck', 403, 'RESOURCE_OUT_OF_SCOPE'),
-          );
-        }
-        const tools = await host.callBackendAPI(`/api/services/${serviceId}/tools`);
-        const allowedNames = new Set(
-          (body.data.allowedTools ?? [])
-            .filter((t) => t.serviceId === serviceId)
-            .map((t) => t.toolName),
-        );
-        const filtered = Array.isArray(tools)
-          ? tools.filter((t: { name?: string }) => typeof t.name === 'string' && allowedNames.has(t.name))
-          : tools;
-        return host.toolResult(filtered);
-      }
       const tools = await host.callBackendAPI(`/api/services/${serviceId}/tools`);
       return host.toolResult(tools);
     } catch (error) {
@@ -636,9 +561,6 @@ function registerRuntimeTools(host: McpToolHost): void {
     },
   }, async ({ serviceId, toolName, arguments: args = {} }) => {
     try {
-      // Authorization + audit happen once in POST /api/services/:id/call
-      // (authorizeAuthorityServiceCall → ledger). Do not preflight authorize-call here.
-
       let normalizedArgs: unknown = args;
       if (typeof normalizedArgs === 'string' && normalizedArgs.length > 0) {
         try {

@@ -101,6 +101,12 @@ export class TrustedSessionStore {
 
   private ensureTables(): void {
     this.maybeMigrateRuntimeSessionsNullability();
+    // NOT-107: shed legacy issuer tables (created by the deleted SQLite store).
+    this.db.exec(`
+      DROP TABLE IF EXISTS ea_audit_events;
+      DROP TABLE IF EXISTS ea_authorities;
+      DROP TABLE IF EXISTS ea_enrollments;
+    `);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS workspace_keys (
         id TEXT PRIMARY KEY,

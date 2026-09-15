@@ -46,15 +46,4 @@ describe('HTTP route policy registry', () => {
     expect(resolveRoutePolicy('PUT', '/api/services/svc_123/tool-settings')).toBe('requireDashboard');
     expect(resolveRoutePolicy('POST', '/api/playbook-patches')).toBe('requireAgentOrDashboard');
   });
-
-  it('covers execution-authority issuer routes', () => {
-    expect(resolveRoutePolicy('POST', '/api/execution-authority/enrollments')).toBe(
-      'requireTrustedWriter',
-    );
-    expect(resolveRoutePolicy('POST', '/api/execution-authority/authorities')).toBe('allowPublic');
-    expect(
-      resolveRoutePolicy('GET', '/api/execution-authority/decks/deck_123/playbooks'),
-    ).toBe('allowPublic');
-    expect(resolveRoutePolicy('POST', '/api/execution-authority/mcp/connect')).toBe('allowPublic');
-  });
 });

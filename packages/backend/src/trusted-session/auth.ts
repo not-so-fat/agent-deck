@@ -11,10 +11,6 @@ import {
 
 import { parseBearerToken } from '../lib/http-auth';
 import { parseDashboardCookie } from '../lib/dashboard-auth';
-import { parseAuthorityBearer } from '../execution-authority/bearer';
-import type { ExecutionAuthority } from '../execution-authority/types';
-import type { ExecutionAuthorityStore } from '../execution-authority/store';
-import { AuthorityContractAuthError } from '../lib/execution-authority-http';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from './admin-secret';
 import type { TrustedSessionStore } from './store';
 
@@ -35,10 +31,6 @@ export type RequestPrincipal =
       mode: AgentSessionMode;
       deckId: string;
       workspaceKey: string | null;
-    }
-  | {
-      kind: 'execution-authority';
-      authority: ExecutionAuthority;
     };
 
 export class TrustedAuthError extends Error {
@@ -118,7 +110,6 @@ function resolveAgentFromGrantSecret(
 export async function resolveRequestPrincipal(
   request: FastifyRequest,
   store: TrustedSessionStore,
-  executionAuthorityStore?: ExecutionAuthorityStore,
 ): Promise<RequestPrincipal> {
   const dashboard = await resolveDashboardPrincipal(request, store);
   if (dashboard) {
@@ -137,20 +128,6 @@ export async function resolveRequestPrincipal(
   }
 
   const bearer = parseBearerToken(request);
-  if (bearer && executionAuthorityStore) {
-    const authorityCreds = parseAuthorityBearer(bearer);
-    if (authorityCreds) {
-      const auth = executionAuthorityStore.authenticateAuthority(
-        authorityCreds.authorityId,
-        authorityCreds.secret,
-      );
-      if (!auth.ok) {
-        throw new AuthorityContractAuthError(auth);
-      }
-      return { kind: 'execution-authority', authority: auth.data };
-    }
-  }
-
   if (bearer) {
     const session = resolveAgentFromGrantSecret(bearer, store);
     return {
@@ -186,21 +163,7 @@ export function enforcePolicy(policy: AuthPolicy, principal: RequestPrincipal): 
   }
 
   if (policy === 'requireAgentOrDashboard') {
-    if (
-      principal.kind === 'dashboard' ||
-      principal.kind === 'agent' ||
-      principal.kind === 'execution-authority'
-    ) {
-      return;
-    }
-    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
-  }
-
-  if (principal.kind === 'execution-authority') {
-    if (policy === 'requireDeckAdmin') {
-      throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
-    }
-    if (policy === 'requireAgentResource') {
+    if (principal.kind === 'dashboard' || principal.kind === 'agent') {
       return;
     }
     throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
@@ -222,7 +185,6 @@ export function sendTrustedAuthError(reply: FastifyReply, error: TrustedAuthErro
 
 export function getAgentDeckId(principal: RequestPrincipal): string | null {
   if (principal.kind === 'agent') return principal.deckId;
-  if (principal.kind === 'execution-authority') return principal.authority.deckId;
   return null;
 }
 

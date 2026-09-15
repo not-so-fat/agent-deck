@@ -91,26 +91,14 @@ describe('McpSessionBindingStore', () => {
     expect(store.getBinding('s1').deckSource).toBe('launch');
   });
 
-  it('setExecutionAuthority and clearSession remove the launch flag', () => {
+  it('clearSession removes the launch flag', () => {
     const store = new McpSessionBindingStore();
     store.setLaunchSession('s1', {
       runtimeSessionId: 'ses_launch',
       deckId: '11111111-1111-4111-8111-111111111111',
     });
-    store.setExecutionAuthority('s1', {
-      authorityId: 'authz_1',
-      authoritySecret: 'secret',
-      deckId: '11111111-1111-4111-8111-111111111111',
-      audience: 'dealer-worker',
-    });
+    store.clearSession('s1');
     expect(store.isLaunchSession('s1')).toBe(false);
-
-    store.setLaunchSession('s2', {
-      runtimeSessionId: 'ses_2',
-      deckId: '11111111-1111-4111-8111-111111111111',
-    });
-    store.clearSession('s2');
-    expect(store.isLaunchSession('s2')).toBe(false);
   });
 });
 
