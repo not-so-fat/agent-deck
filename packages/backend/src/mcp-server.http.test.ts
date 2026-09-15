@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { AgentDeckMCPServer } from './mcp-server';
+import { installStrictConsoleCapture } from './mcp-tools/test-harness';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
 
@@ -64,16 +65,23 @@ async function listTools(port: number, sessionId: string, id: number) {
 describe('AgentDeckMCPServer streamable HTTP', () => {
   let port: number;
   let mcpServer: AgentDeckMCPServer;
+  let consoleCapture: ReturnType<typeof installStrictConsoleCapture>;
 
   beforeAll(async () => {
-    port = 36_000 + Math.floor(Math.random() * 2_000);
-    mcpServer = new AgentDeckMCPServer(port, 'http://127.0.0.1:1');
+    // Backend is intentionally unreachable (`:1`); allow expected unregister noise on stop.
+    consoleCapture = installStrictConsoleCapture({
+      allowPrefixes: ['Failed to call backend API'],
+    });
+    mcpServer = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
     await mcpServer.start();
+    port = mcpServer.getPort();
     await waitForMcpHealth(port);
   });
 
   afterAll(async () => {
     await mcpServer.stop();
+    consoleCapture.restore();
+    consoleCapture.assertClean();
   });
 
   it('returns health metadata', async () => {
@@ -172,12 +180,14 @@ type StubBackend = {
   port: number;
   liveDisplayBodies: any[];
   touches: string[];
+  unhandled: string[];
   close: () => Promise<void>;
 };
 
 function startStubBackend(): Promise<StubBackend> {
   const liveDisplayBodies: any[] = [];
   const touches: string[] = [];
+  const unhandled: string[] = [];
   const deck = {
     id: STUB_DECK_ID,
     name: 'Stub Deck',
@@ -192,13 +202,18 @@ function startStubBackend(): Promise<StubBackend> {
       raw += chunk;
     });
     req.on('end', () => {
-      const respond = (body: unknown) => {
+      const respond = (body: unknown, status = 200) => {
+        res.statusCode = status;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify(body));
       };
       const url = req.url ?? '';
       if (req.method === 'GET' && (url === '/api/scope/deck' || url === `/api/decks/${STUB_DECK_ID}`)) {
         respond({ success: true, data: deck });
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/playbooks/summaries') {
+        respond({ success: true, data: [] });
         return;
       }
       if (req.method === 'POST' && url === '/api/scope/live-display') {
@@ -211,7 +226,16 @@ function startStubBackend(): Promise<StubBackend> {
         respond({ success: true });
         return;
       }
-      respond({ success: false, error: `stub: unhandled ${req.method} ${url}` });
+      if (req.method === 'DELETE' && /^\/api\/scope\/live-display\/[^/]+$/.test(url)) {
+        respond({ success: true });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/scope/deck-workspace') {
+        respond({ success: true, data: { ok: true } });
+        return;
+      }
+      unhandled.push(`${req.method} ${url}`);
+      respond({ success: false, error: `stub: unhandled ${req.method} ${url}` }, 500);
     });
   });
 
@@ -223,6 +247,7 @@ function startStubBackend(): Promise<StubBackend> {
         port,
         liveDisplayBodies,
         touches,
+        unhandled,
         close: () => new Promise((done) => server.close(() => done())),
       });
     });
@@ -252,18 +277,23 @@ describe('session badge flow (stub backend)', () => {
   let stub: StubBackend;
   let badgePort: number;
   let badgeServer: AgentDeckMCPServer;
+  let consoleCapture: ReturnType<typeof installStrictConsoleCapture>;
 
   beforeAll(async () => {
+    consoleCapture = installStrictConsoleCapture();
     stub = await startStubBackend();
-    badgePort = 38_000 + Math.floor(Math.random() * 2_000);
-    badgeServer = new AgentDeckMCPServer(badgePort, `http://127.0.0.1:${stub.port}`);
+    badgeServer = new AgentDeckMCPServer(0, `http://127.0.0.1:${stub.port}`);
     await badgeServer.start();
+    badgePort = badgeServer.getPort();
     await waitForMcpHealth(badgePort);
   });
 
   afterAll(async () => {
     await badgeServer.stop();
     await stub.close();
+    expect(stub.unhandled, `Unhandled stub routes: ${stub.unhandled.join(', ')}`).toEqual([]);
+    consoleCapture.restore();
+    consoleCapture.assertClean();
   });
 
   it('bind_workspace registers clientName and echoes display_summary with badge', async () => {

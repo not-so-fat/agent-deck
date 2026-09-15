@@ -206,6 +206,19 @@ describe('MCP session-local context (NOT-84)', () => {
     expect(bound.data.deck_id).toBe(deckAlpha.id);
     expect(bound.data.deck_name).toBe('alpha');
     expect(bound.data.mode).toBe('normal');
+
+    // Idempotent same-deck rebind (NOT-84 regression owned by harness — NOT-47).
+    const rebound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot: workspaceRootA, deckId: deckAlpha.id },
+      3,
+      deckHeaders,
+    );
+    expect(rebound.isError, JSON.stringify(rebound.data)).toBe(false);
+    expect(rebound.data.deck_id).toBe(deckAlpha.id);
+    expect(rebound.data.mode).toBe('normal');
   });
 
   it('different-deck bind returns DECK_FIXED without elevation', async () => {
