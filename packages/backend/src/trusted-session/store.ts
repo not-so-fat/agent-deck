@@ -111,17 +111,17 @@ export class TrustedSessionStore {
   /**
    * NOT-108 PR2: drop grant ledger and rebuild runtime_sessions without
    * workspace_key_id / workspace_grant_id (same drop-and-recreate pattern as NOT-105).
-   * Legacy table name is assembled so the "no grant API symbols" acceptance grep stays clean.
+   * Literals below are intentional — this is the only place that may still name the
+   * legacy tables so upgrades can DROP them.
    */
   private maybeShedGrantSchema(): void {
-    const legacyGrantLedger = ['workspace', 'grants'].join('_');
     const cols = this.db.pragma('table_info(runtime_sessions)') as Array<{
       name: string;
     }>;
     const hasGrantColumn =
       cols.length > 0 && cols.some((col) => col.name === 'workspace_grant_id' || col.name === 'workspace_key_id');
     const grantsExist = (
-      this.db.pragma(`table_info(${legacyGrantLedger})`) as Array<{ name: string }>
+      this.db.pragma('table_info(workspace_grants)') as Array<{ name: string }>
     ).length > 0;
     const keysExist = (
       this.db.pragma('table_info(workspace_keys)') as Array<{ name: string }>
@@ -140,7 +140,7 @@ export class TrustedSessionStore {
       this.db.exec(`
         DROP TABLE IF EXISTS admin_challenges;
         DROP TABLE IF EXISTS runtime_sessions;
-        DROP TABLE IF EXISTS ${legacyGrantLedger};
+        DROP TABLE IF EXISTS workspace_grants;
         DROP TABLE IF EXISTS workspace_keys;
       `);
     } finally {

@@ -148,8 +148,6 @@ describe('TrustedSessionStore', () => {
   it('migrates away grant columns and drops grant tables (NOT-108)', () => {
     const manager = new DatabaseManager(`:memory:${Math.random()}`);
     const db = manager.getSqliteDatabase();
-    const legacyGrantLedger = ['workspace', 'grants'].join('_');
-    const hashCol = ['secret', 'hash'].join('_');
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS workspace_keys (
@@ -157,11 +155,11 @@ describe('TrustedSessionStore', () => {
         path_digest TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS ${legacyGrantLedger} (
+      CREATE TABLE IF NOT EXISTS workspace_grants (
         id TEXT PRIMARY KEY,
         workspace_key_id TEXT NOT NULL,
         deck_id TEXT NOT NULL,
-        ${hashCol} TEXT NOT NULL,
+        secret_hash TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'revoked')),
         created_at TEXT NOT NULL,
         activated_at TEXT,
@@ -182,7 +180,7 @@ describe('TrustedSessionStore', () => {
         admin_expires_at TEXT,
         revoked_at TEXT,
         FOREIGN KEY (workspace_key_id) REFERENCES workspace_keys (id),
-        FOREIGN KEY (workspace_grant_id) REFERENCES ${legacyGrantLedger} (id)
+        FOREIGN KEY (workspace_grant_id) REFERENCES workspace_grants (id)
       );
       CREATE TABLE admin_challenges (
         id TEXT PRIMARY KEY,
@@ -198,8 +196,8 @@ describe('TrustedSessionStore', () => {
       `INSERT INTO workspace_keys (id, path_digest, created_at) VALUES (?, ?, ?)`,
     ).run('wsp_old', 'digest-old', '2020-01-01T00:00:00.000Z');
     db.prepare(
-      `INSERT INTO ${legacyGrantLedger}
-       (id, workspace_key_id, deck_id, ${hashCol}, status, created_at, activated_at)
+      `INSERT INTO workspace_grants
+       (id, workspace_key_id, deck_id, secret_hash, status, created_at, activated_at)
        VALUES (?, ?, ?, ?, 'active', ?, ?)`,
     ).run(
       'wgr_old',
@@ -236,7 +234,7 @@ describe('TrustedSessionStore', () => {
     expect(after.some((c) => c.name === 'workspace_key_id')).toBe(false);
     expect(after.some((c) => c.name === 'workspace_grant_id')).toBe(false);
     expect(
-      (db.pragma(`table_info(${legacyGrantLedger})`) as Array<{ name: string }>).length,
+      (db.pragma('table_info(workspace_grants)') as Array<{ name: string }>).length,
     ).toBe(0);
     expect(
       (db.pragma('table_info(workspace_keys)') as Array<{ name: string }>).length,
