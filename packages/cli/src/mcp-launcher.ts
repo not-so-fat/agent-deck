@@ -1,14 +1,62 @@
 #!/usr/bin/env node
 /**
- * Trusted MCP launcher — reads the workspace grant and proxies MCP with Bearer auth.
+ * Trusted MCP launcher — reads the folder assignment and connects with launch headers.
  * Referenced from project MCP config instead of embedding deck ids in tracked files.
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-import { AGENT_DECK_WORKSPACE_HEADER } from '@agent-deck/shared';
+import {
+  AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_WORKSPACE_HEADER,
+} from '@agent-deck/shared';
 import { buildMcpUrl, type McpEndpoint } from './mcp-config';
-import { readWorkspaceGrant } from './grant-store';
+import { readAssignment, writeAssignment } from './assignment';
+
+export type McpLaunchPlan = {
+  workspaceRoot: string;
+  mcpUrl: string;
+  deckId: string;
+  deckName: string;
+  headers: string[];
+};
+
+export const NO_ASSIGNMENT_MESSAGE =
+  '[agent-deck] No deck assigned — run `agent-deck use <deck>` in this folder.';
+
+/** Resolve launch headers from the folder assignment (migrating v2/Keychain → v3). */
+export async function resolveMcpLaunchPlan(
+  workspaceRoot = path.resolve(process.env.AGENT_DECK_WORKSPACE?.trim() || process.cwd()),
+  endpoint: McpEndpoint = {
+    host: process.env.AGENT_DECK_HOST ?? '127.0.0.1',
+    mcpPort: Number(process.env.AGENT_DECK_MCP_PORT ?? '1110'),
+  },
+): Promise<McpLaunchPlan | { error: string }> {
+  const assignment = await readAssignment(workspaceRoot);
+  if (!assignment) {
+    return { error: NO_ASSIGNMENT_MESSAGE };
+  }
+
+  if (assignment.needsMigration) {
+    await writeAssignment(workspaceRoot, {
+      deckId: assignment.deckId,
+      deckName: assignment.deckName,
+      ...(assignment.mcpUrl ? { mcpUrl: assignment.mcpUrl } : {}),
+    });
+  }
+
+  const mcpUrl = assignment.mcpUrl ?? buildMcpUrl(endpoint);
+  return {
+    workspaceRoot,
+    mcpUrl,
+    deckId: assignment.deckId,
+    deckName: assignment.deckName,
+    headers: [
+      `${AGENT_DECK_DECK_ID_HEADER}: ${assignment.deckId}`,
+      `${AGENT_DECK_WORKSPACE_HEADER}: ${workspaceRoot}`,
+    ],
+  };
+}
 
 export async function runMcpLaunch(): Promise<number> {
   const workspaceRoot = path.resolve(process.env.AGENT_DECK_WORKSPACE?.trim() || process.cwd());
@@ -16,25 +64,21 @@ export async function runMcpLaunch(): Promise<number> {
   const mcpPort = Number(process.env.AGENT_DECK_MCP_PORT ?? '1110');
   const endpoint: McpEndpoint = { host, mcpPort };
 
-  const grant = await readWorkspaceGrant(workspaceRoot);
-  if (!grant) {
-    console.error(
-      '[agent-deck] GRANT_REQUIRED — run `agent-deck use <deck>` in this workspace first.',
-    );
+  const plan = await resolveMcpLaunchPlan(workspaceRoot, endpoint);
+  if ('error' in plan) {
+    console.error(plan.error);
     return 1;
   }
 
-  const mcpUrl = grant.mcpUrl ?? buildMcpUrl(endpoint);
-  // Forward workspace to the HTTP MCP server — process.env there is the daemon, not this folder.
   const supergatewayArgs = [
     '-y',
     'supergateway',
     '--streamableHttp',
-    mcpUrl,
+    plan.mcpUrl,
     '--header',
-    `Authorization: Bearer ${grant.secret}`,
+    plan.headers[0],
     '--header',
-    `${AGENT_DECK_WORKSPACE_HEADER}: ${workspaceRoot}`,
+    plan.headers[1],
   ];
 
   return await new Promise<number>((resolve) => {

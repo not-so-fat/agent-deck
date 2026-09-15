@@ -210,24 +210,48 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     }
   });
 
-  fastify.post<{ Body: { workspaceRoot: string; deckId: string } }>(
+  fastify.post<{ Body: { workspaceRoot: string; deckId: string; updateAssignment?: boolean } }>(
     '/bind-workspace',
     async (request, reply) => {
       try {
-        const { workspaceRoot, deckId } = request.body;
+        const { workspaceRoot, deckId, updateAssignment } = request.body;
         if (!workspaceRoot?.trim() || !deckId?.trim()) {
           return reply.status(400).send({ success: false, error: 'workspaceRoot and deckId required' });
         }
 
         const session = resolveRuntimeSessionFromHeader(request, store);
 
-        // Launch session (NOT-105): deck fixed at connect; path is a label only.
+        // Launch session (NOT-105 / NOT-108): deck fixed at connect unless elevated assignment update.
         if (session.workspaceGrantId === null) {
           if (deckId !== session.deckId) {
-            throw new TrustedAuthError(
-              'DECK_FIXED',
-              "This connection's deck was set when it was launched and cannot be changed by the agent",
-            );
+            if (updateAssignment !== true) {
+              throw new TrustedAuthError(
+                'DECK_FIXED',
+                "This connection's deck was set when it was launched and cannot be changed by the agent",
+              );
+            }
+            if (session.mode !== 'agent-admin') {
+              throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
+            }
+            const updated = store.setRuntimeSessionDeck(session.sessionId, deckId);
+            if (!updated) {
+              throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
+            }
+            const newDeck = await fastify.db.getDeck(updated.deckId);
+            if (!newDeck) {
+              return reply.status(404).send({ success: false, error: 'Deck not found' });
+            }
+            return reply.send({
+              success: true,
+              data: {
+                deckId: updated.deckId,
+                deckName: newDeck.name,
+                mode: updated.mode,
+                grantRotated: false,
+                peersRevoked: 0,
+                assignmentUpdated: true,
+              },
+            });
           }
           const deck = await fastify.db.getDeck(deckId);
           if (!deck) {

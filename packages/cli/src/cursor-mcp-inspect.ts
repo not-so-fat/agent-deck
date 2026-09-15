@@ -250,8 +250,9 @@ function classifyEntry(
 }
 
 /**
- * Read usable v2 grant metadata from `.agent-deck/use.json` without returning secrets.
- * Legacy v1 manifests (deckId only) are not grants — `mcp-launch` still returns GRANT_REQUIRED.
+ * Read usable assignment metadata from `.agent-deck/use.json` without returning secrets.
+ * Accepts v3 assignments and legacy v2 grant manifests (deckId only for display).
+ * Legacy v1 manifests are not assignments — `mcp-launch` still requires `agent-deck use`.
  */
 export function readGrantSummarySync(workspaceRoot: string): CursorMcpGrantSummary {
   const checkedRoot = path.resolve(workspaceRoot);
@@ -265,7 +266,9 @@ export function readGrantSummarySync(workspaceRoot: string): CursorMcpGrantSumma
     const deckName = typeof raw.deckName === 'string' ? raw.deckName : undefined;
     const grantId = typeof raw.grantId === 'string' ? raw.grantId : undefined;
     const version = raw.version;
-    const present = version === 2 && typeof grantId === 'string' && grantId.length > 0;
+    const present =
+      (version === 3 && typeof deckId === 'string' && deckId.length > 0) ||
+      (version === 2 && typeof deckId === 'string' && deckId.length > 0);
     return {
       checkedRoot,
       present,
@@ -298,7 +301,7 @@ function collectOverallIssues(
   if (!grant.present) {
     issues.push({
       code: 'grant-missing',
-      message: `No workspace grant at ${grant.checkedRoot} — run \`agent-deck use <deck>\`.`,
+      message: `No deck assignment at ${grant.checkedRoot} — run \`agent-deck use <deck>\`.`,
     });
   }
   return issues;
@@ -345,7 +348,7 @@ export function formatCursorMcpInspection(report: CursorMcpInspection): string {
     `  Project ${report.project.path}`,
     `    shape=${report.project.shape} transport=${report.project.transport}` +
       (report.project.workspacePin ? ` pin=${report.project.workspacePin}` : ''),
-    `  Grant   ${report.grant.present ? 'present' : 'missing'} @ ${report.grant.checkedRoot}` +
+    `  Assignment ${report.grant.present ? 'present' : 'missing'} @ ${report.grant.checkedRoot}` +
       (report.grant.deckName || report.grant.deckId
         ? ` (${report.grant.deckName ?? report.grant.deckId})`
         : ''),

@@ -99,11 +99,10 @@ describe('stub-sync', () => {
   it('writes and reads use manifest', () => {
     const workspace = makeWorkspace();
     const manifest = {
-      version: 1 as const,
+      version: 3 as const,
       deckId: 'deck-1',
       deckName: 'dev',
       mcpUrl: 'http://127.0.0.1:1110/mcp',
-      updatedAt: new Date().toISOString(),
     };
     writeUseManifest(workspace, manifest);
     expect(readUseManifest(workspace)).toEqual(manifest);

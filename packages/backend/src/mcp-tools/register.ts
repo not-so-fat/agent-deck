@@ -1,6 +1,9 @@
 import { z } from 'zod';
+import fs from 'node:fs';
+import path from 'node:path';
 import { countDeckCards, formatDisplayLine, PatchOpSchema } from '@agent-deck/shared';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
+import { healUseManifest } from '../playbooks/stub-sync';
 import { resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
@@ -59,6 +62,19 @@ export type McpToolHost = {
 
 const cardTypeSchema = z.enum(['service', 'credential', 'playbook']);
 
+function assignmentFileExists(workspaceRoot: string): boolean {
+  return fs.existsSync(path.join(workspaceRoot, '.agent-deck', 'use.json'));
+}
+
+function shouldSyncStubsOnBind(host: McpToolHost, sessionId: string, workspaceRoot: string): boolean {
+  // Grant sessions always sync. Launch sessions sync only when the folder has an assignment
+  // (IDE). Dealer worktrees without use.json keep skipping stub sync (NOT-105 / NOT-108).
+  if (!host.sessionBinding.isLaunchSession(sessionId)) {
+    return true;
+  }
+  return assignmentFileExists(workspaceRoot);
+}
+
 function isOutOfScopeError(error: unknown): boolean {
   return error instanceof BackendApiError && error.errorCode === 'RESOURCE_OUT_OF_SCOPE';
 }
@@ -67,10 +83,13 @@ function isOutOfScopeError(error: unknown): boolean {
  * Resolve deck id/name for bind/switch.
  * Normal agents may only GET the bound deck; out-of-scope requires elevation,
  * then a retry of GET /api/decks/:id (agent-admin is allowed to read any deck).
+ *
+ * Launch sessions without an assignment file stay DECK_FIXED (NOT-108).
  */
 async function resolveDeckForBind(
   host: McpToolHost,
   deckRef: string,
+  workspaceRoot?: string,
 ): Promise<{ id: string; name: string } | ReturnType<typeof mcpPolicyError>> {
   try {
     return await host.fetchDeck(deckRef);
@@ -78,9 +97,10 @@ async function resolveDeckForBind(
     if (!isOutOfScopeError(error)) {
       throw error;
     }
-    // Launch sessions cannot switch decks — do not ask for elevation (NOT-105).
     if (host.sessionBinding.isLaunchSession(host.getSessionId())) {
-      return mcpPolicyError('DECK_FIXED');
+      if (!workspaceRoot || !assignmentFileExists(workspaceRoot)) {
+        return mcpPolicyError('DECK_FIXED');
+      }
     }
     const denied = await requireMcpAdmin(host);
     if (denied) {
@@ -123,7 +143,8 @@ function registerRuntimeTools(host: McpToolHost): void {
     try {
       const sessionId = host.getSessionId();
       const current = host.sessionBinding.getBinding(sessionId);
-      const resolved = await resolveDeckForBind(host, deckId);
+      const isLaunch = host.sessionBinding.isLaunchSession(sessionId);
+      const resolved = await resolveDeckForBind(host, deckId, workspaceRoot);
       if ('isError' in resolved) {
         return resolved;
       }
@@ -131,30 +152,45 @@ function registerRuntimeTools(host: McpToolHost): void {
       let bindResult: Record<string, unknown> | undefined;
 
       if (current.runtimeSessionId) {
-        if (
-          host.sessionBinding.isLaunchSession(sessionId) &&
-          current.deckId &&
-          current.deckId !== deck.id
-        ) {
-          return mcpPolicyError('DECK_FIXED');
-        }
-        if (current.deckId && current.deckId !== deck.id) {
+        if (isLaunch && current.deckId && current.deckId !== deck.id) {
+          if (!assignmentFileExists(workspaceRoot)) {
+            return mcpPolicyError('DECK_FIXED');
+          }
           const denied = await requireMcpAdmin(host);
           if (denied) {
             return denied;
           }
+          bindResult = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspaceRoot, deckId: deck.id, updateAssignment: true }),
+          })) as Record<string, unknown>;
+          host.sessionBinding.setTrustedSession(sessionId, {
+            runtimeSessionId: current.runtimeSessionId,
+            deckId: String(bindResult?.deckId ?? deck.id),
+            workspaceRoot,
+            mode: (bindResult?.mode as 'normal' | 'agent-admin' | undefined) ?? current.mode ?? 'normal',
+          });
+          healUseManifest(workspaceRoot, deck);
+        } else {
+          if (current.deckId && current.deckId !== deck.id) {
+            const denied = await requireMcpAdmin(host);
+            if (denied) {
+              return denied;
+            }
+          }
+          bindResult = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
+          })) as Record<string, unknown>;
+          host.sessionBinding.setTrustedSession(sessionId, {
+            runtimeSessionId: current.runtimeSessionId,
+            deckId: String(bindResult?.deckId ?? deck.id),
+            workspaceRoot,
+            mode: (bindResult?.mode as 'normal' | 'agent-admin' | undefined) ?? current.mode ?? 'normal',
+          });
         }
-        bindResult = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
-        })) as Record<string, unknown>;
-        host.sessionBinding.setTrustedSession(sessionId, {
-          runtimeSessionId: current.runtimeSessionId,
-          deckId: String(bindResult?.deckId ?? deck.id),
-          workspaceRoot,
-          mode: (bindResult?.mode as 'normal' | 'agent-admin' | undefined) ?? current.mode ?? 'normal',
-        });
       } else {
         if (current.deckId && current.deckId !== deck.id) {
           const denied = await requireMcpAdmin(host);
@@ -167,7 +203,7 @@ function registerRuntimeTools(host: McpToolHost): void {
       }
 
       let stubSync: StubBindSyncResult | null = null;
-      if (!host.sessionBinding.isLaunchSession(sessionId)) {
+      if (shouldSyncStubsOnBind(host, sessionId, workspaceRoot)) {
         try {
           stubSync = await host.syncWorkspaceOnBind(workspaceRoot, deck);
         } catch {
@@ -179,15 +215,20 @@ function registerRuntimeTools(host: McpToolHost): void {
       const response: Record<string, unknown> = {
         ...payload,
         deck_name: deck.name,
-        message: bindResult?.grantRotated
-          ? 'Workspace grant rotated to new deck. Peer sessions revoked.'
-          : 'Session bound to deck.',
+        message: bindResult?.assignmentUpdated
+          ? 'Folder assignment updated to new deck.'
+          : bindResult?.grantRotated
+            ? 'Workspace grant rotated to new deck. Peer sessions revoked.'
+            : 'Session bound to deck.',
       };
       if (bindResult?.grantRotated) {
         response.grant_rotated = true;
         response.peers_revoked = bindResult.peersRevoked;
         response.previous_deck_workspace_count = bindResult.previousDeckWorkspaceCount;
         response.grant_refresh_note = bindResult.grantRefreshNote;
+      }
+      if (bindResult?.assignmentUpdated) {
+        response.assignment_updated = true;
       }
       if (stubSync) {
         response.stubs = {
@@ -220,18 +261,12 @@ function registerRuntimeTools(host: McpToolHost): void {
   r('switch_bound_deck', {
     title: 'Switch Bound Deck',
     description:
-      'Persistently bind this workspace to another deck (requires agent-admin). Rotates the workspace grant and revokes peer sessions.',
+      'Persistently bind this workspace to another deck (requires agent-admin). Updates the folder assignment when present.',
     inputSchema: { deckId: z.string().min(1) },
   }, async ({ deckId }) => {
-    const denied = await requireMcpAdmin(host);
-    if (denied) {
-      return denied;
-    }
     try {
       const sessionId = host.getSessionId();
       const snapshot = host.sessionBinding.getBinding(sessionId);
-      // Already elevated above — GET /api/decks/:id allows agent-admin any deck.
-      const deck = await host.fetchDeck(deckId);
       const workspaceRoot = snapshot.workspaceRoot;
       if (!workspaceRoot) {
         return host.toolError(new Error('workspaceRoot missing — call bind_workspace first'));
@@ -240,11 +275,28 @@ function registerRuntimeTools(host: McpToolHost): void {
         return host.toolError(new Error('GRANT_REQUIRED'));
       }
 
-      const bound = await host.callBackendAPI('/api/trusted-session/bind-workspace', {
+      const isLaunch = host.sessionBinding.isLaunchSession(sessionId);
+      if (isLaunch && !assignmentFileExists(workspaceRoot)) {
+        return mcpPolicyError('DECK_FIXED');
+      }
+
+      const denied = await requireMcpAdmin(host);
+      if (denied) {
+        return denied;
+      }
+
+      // Already elevated above — GET /api/decks/:id allows agent-admin any deck.
+      const deck = await host.fetchDeck(deckId);
+
+      const bound = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
-      }) as Record<string, unknown>;
+        body: JSON.stringify({
+          workspaceRoot,
+          deckId: deck.id,
+          ...(isLaunch ? { updateAssignment: true } : {}),
+        }),
+      })) as Record<string, unknown>;
 
       host.sessionBinding.setTrustedSession(sessionId, {
         runtimeSessionId: snapshot.runtimeSessionId,
@@ -253,8 +305,12 @@ function registerRuntimeTools(host: McpToolHost): void {
         mode: (bound.mode as 'normal' | 'agent-admin' | undefined) ?? 'agent-admin',
       });
 
+      if (isLaunch || assignmentFileExists(workspaceRoot)) {
+        healUseManifest(workspaceRoot, deck);
+      }
+
       let stubSync: StubBindSyncResult | null = null;
-      if (workspaceRoot) {
+      if (shouldSyncStubsOnBind(host, sessionId, workspaceRoot)) {
         try {
           stubSync = await host.syncWorkspaceOnBind(workspaceRoot, deck);
         } catch {
@@ -266,15 +322,20 @@ function registerRuntimeTools(host: McpToolHost): void {
       const response: Record<string, unknown> = {
         ...payload,
         deck_name: deck.name,
-        message: bound.grantRotated
-          ? 'Workspace grant rotated. Peer sessions on the old grant were revoked.'
-          : 'Already bound to this deck.',
+        message: bound.assignmentUpdated
+          ? 'Folder assignment updated to new deck.'
+          : bound.grantRotated
+            ? 'Workspace grant rotated. Peer sessions on the old grant were revoked.'
+            : 'Already bound to this deck.',
       };
       if (bound.grantRotated) {
         response.grant_rotated = true;
         response.peers_revoked = bound.peersRevoked;
         response.previous_deck_workspace_count = bound.previousDeckWorkspaceCount;
         response.grant_refresh_note = bound.grantRefreshNote;
+      }
+      if (bound.assignmentUpdated) {
+        response.assignment_updated = true;
       }
       if (stubSync) {
         response.stubs = {

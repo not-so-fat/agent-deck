@@ -146,6 +146,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       deckBeta,
       playbook,
       secret,
+      store,
       workspaceRoot,
     };
   }
@@ -296,5 +297,141 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     expect(response.status).toBe(401);
     const body = (await response.json()) as { error?: { message?: string } };
     expect(body.error?.message).toBe('GRANT_REQUIRED');
+  });
+
+  it('elevated launch session with use.json can switch decks', async () => {
+    const { backendUrl, deckAlpha, deckBeta, store } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-assign-'));
+    fs.mkdirSync(path.join(tmpRoot, '.agent-deck'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpRoot, '.agent-deck', 'use.json'),
+      `${JSON.stringify({ version: 3, deckId: deckAlpha.id, deckName: 'alpha' }, null, 2)}\n`,
+    );
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const runtime = store.findActiveRuntimeSessionByMcpSessionId(sessionId);
+    expect(runtime).toBeTruthy();
+    store.elevateSessionToAdmin(runtime!.sessionId);
+
+    const switched = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot: tmpRoot, deckId: deckBeta.id },
+      2,
+      undefined,
+      deckHeaders,
+    );
+    expect(switched.isError).toBe(false);
+    expect(switched.data.assignment_updated).toBe(true);
+    expect(switched.data.deck_name).toBe('beta');
+
+    const assigned = JSON.parse(
+      fs.readFileSync(path.join(tmpRoot, '.agent-deck', 'use.json'), 'utf8'),
+    ) as { version: number; deckId: string; deckName: string };
+    expect(assigned.version).toBe(3);
+    expect(assigned.deckId).toBe(deckBeta.id);
+    expect(assigned.deckName).toBe('beta');
+
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_bound_deck',
+      {},
+      3,
+      undefined,
+      deckHeaders,
+    );
+    expect(bound.isError).toBe(false);
+    expect(bound.data.id).toBe(deckBeta.id);
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('launch session with use.json but not elevated → ADMIN_REQUIRED', async () => {
+    const { backendUrl, deckAlpha, deckBeta } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-admin-req-'));
+    fs.mkdirSync(path.join(tmpRoot, '.agent-deck'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpRoot, '.agent-deck', 'use.json'),
+      `${JSON.stringify({ version: 3, deckId: deckAlpha.id, deckName: 'alpha' }, null, 2)}\n`,
+    );
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const denied = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot: tmpRoot, deckId: deckBeta.id },
+      2,
+      undefined,
+      deckHeaders,
+    );
+    expect(denied.isError).toBe(true);
+    expect(denied.data.error_code).toBe('ADMIN_REQUIRED');
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('launch session without use.json → DECK_FIXED', async () => {
+    const { backendUrl, deckAlpha, deckBeta } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const denied = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot: '/tmp/agent-deck-launch-no-assign', deckId: deckBeta.id },
+      2,
+      undefined,
+      deckHeaders,
+    );
+    expect(denied.isError).toBe(true);
+    expect(denied.data.error_code).toBe('DECK_FIXED');
+  });
+
+  it('same-deck bind with use.json in a git repo leaves porcelain empty', async () => {
+    const { backendUrl, deckAlpha } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-git-bind-'));
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: tmpRoot, stdio: 'ignore' });
+    fs.mkdirSync(path.join(tmpRoot, '.agent-deck'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpRoot, '.agent-deck', 'use.json'),
+      `${JSON.stringify({ version: 3, deckId: deckAlpha.id, deckName: 'alpha' }, null, 2)}\n`,
+    );
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot: tmpRoot, deckId: deckAlpha.id },
+      2,
+      undefined,
+      deckHeaders,
+    );
+    expect(bound.isError).toBe(false);
+    expect(bound.data.stubs).toBeDefined();
+
+    const porcelain = execFileSync('git', ['status', '--porcelain'], {
+      cwd: tmpRoot,
+      encoding: 'utf8',
+    });
+    expect(porcelain.trim()).toBe('');
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 });
