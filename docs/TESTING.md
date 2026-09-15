@@ -93,6 +93,28 @@ Release / user path (packaged artifact)
 
 ---
 
+## Store isolation (never touch the real `~/.agent-deck`)
+
+Every package's `vitest.config.ts` calls `useIsolatedAgentDeckHome()`
+(`scripts/vitest/test-home.mjs`), which points `AGENT_DECK_HOME` at a fresh
+`$TMPDIR/agent-deck-test-<pkg>-<pid>` for the run; `scripts/vitest/global-setup.mjs`
+creates it and removes it afterwards. Tests that mint their own temp home keep
+working — they just override an already-safe default.
+
+`resolveAgentDeckHome()` backs this with a guard: under a test runner (`VITEST`,
+`NODE_ENV=test`) it **throws** rather than resolve to `~/.agent-deck` or
+`~/.agent-deck/dev`, so a test that loses its isolation fails loudly instead of
+writing stray decks and services into the developer's (often git-synced) store —
+strays that then fail every `reindex` on duplicate display names (NOT-122).
+
+| Need | Do |
+|------|-----|
+| A test needs its own store | `fs.mkdtemp()` + set `AGENT_DECK_HOME`, restore after |
+| Assert default path resolution | `AGENT_DECK_ALLOW_REAL_HOME_IN_TESTS=1` — read-only assertions, never a write |
+| See what a run wrote | `AGENT_DECK_KEEP_TEST_HOME=1 npm test` — teardown prints and keeps the temp store |
+
+---
+
 ## MCP testing — best practice (what works here)
 
 Hosts (Cursor / Claude) are **not** in CI. Treat MCP as a **protocol server** we own:
