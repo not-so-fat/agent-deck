@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import { DatabaseManager } from '../models/database';
 import {
   TrustedSessionStore,
-  generateGrantSecret,
   hashDashboardSessionToken,
 } from './store';
 
@@ -55,22 +54,10 @@ describe('TrustedSessionStore', () => {
     expect(Date.parse(touched.expires_at)).toBeLessThan(Date.parse('2099-01-01T00:00:00.000Z'));
   });
 
-  it('issues and validates grants through runtime sessions', () => {
+  it('creates runtime sessions for a deck', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
-    const workspace = store.getOrCreateWorkspaceKey('abc123');
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, 'deck-1', secret);
-    store.activateGrant(pending.id);
-
-    const grant = store.findActiveGrantBySecret(secret);
-    expect(grant?.deck_id).toBe('deck-1');
-
-    const session = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant!.id,
-      deckId: grant!.deck_id,
-    });
+    const session = store.createRuntimeSession({ deckId: 'deck-1' });
     expect(session.mode).toBe('normal');
     expect(session.deckId).toBe('deck-1');
   });
@@ -78,16 +65,7 @@ describe('TrustedSessionStore', () => {
   it('elevates and downgrades admin mode', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
-    const workspace = store.getOrCreateWorkspaceKey('def456');
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, 'deck-2', secret);
-    store.activateGrant(pending.id);
-    const grant = store.findActiveGrantBySecret(secret)!;
-    const session = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant.id,
-      deckId: grant.deck_id,
-    });
+    const session = store.createRuntimeSession({ deckId: 'deck-2' });
 
     const challenge = store.createAdminChallenge(session.sessionId);
     expect(store.consumeAdminChallenge(challenge.id, session.sessionId)).toBe(true);
@@ -102,140 +80,72 @@ describe('TrustedSessionStore', () => {
   it('lists unconsumed admin challenges for menubar', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
-    const workspace = store.getOrCreateWorkspaceKey('menubar');
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, 'deck-m', secret);
-    store.activateGrant(pending.id);
-    const grant = store.findActiveGrantBySecret(secret)!;
-    const session = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant.id,
-      deckId: grant.deck_id,
-    });
+    const session = store.createRuntimeSession({ deckId: 'deck-m' });
     const challenge = store.createAdminChallenge(session.sessionId);
     const listed = store.listPendingAdminChallenges();
     expect(listed).toHaveLength(1);
     expect(listed[0].challengeId).toBe(challenge.id);
   });
 
-  it('pending grants are inactive until activation (C7)', () => {
+  it('reuses launch session for the same MCP transport id and deck', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
-    const workspace = store.getOrCreateWorkspaceKey('c7-test');
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, 'deck-c7', secret);
-
-    expect(store.findActiveGrantBySecret(secret)).toBeNull();
-    store.activateGrant(pending.id);
-    expect(store.findActiveGrantBySecret(secret)?.status).toBe('active');
-  });
-
-  it('reuses runtime session for the same MCP transport id', () => {
-    const db = new Database(':memory:');
-    const store = new TrustedSessionStore(db);
-    const workspace = store.getOrCreateWorkspaceKey('reuse');
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, 'deck-r', secret);
-    store.activateGrant(pending.id);
-    const grant = store.findActiveGrantBySecret(secret)!;
 
     const first = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant.id,
-      deckId: grant.deck_id,
+      deckId: 'deck-r',
       mcpSessionId: 'mcp-transport-1',
     });
     store.elevateSessionToAdmin(first.sessionId);
 
-    const reused = store.findActiveRuntimeSessionForMcp('mcp-transport-1', grant.id);
+    const reused = store.findActiveLaunchSessionForMcp('mcp-transport-1', 'deck-r');
     expect(reused?.sessionId).toBe(first.sessionId);
     expect(reused?.mode).toBe('agent-admin');
   });
 
-  it('keeps mcp-session ownership after runtime revoke (NOT-53)', () => {
+  it('keeps mcp-session ownership by deck after runtime revoke (NOT-53)', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
-    const workspace = store.getOrCreateWorkspaceKey('own');
-    const secretA = generateGrantSecret();
-    const secretB = generateGrantSecret();
-    const pendingA = store.createPendingGrant(workspace.id, 'deck-a', secretA);
-    store.activateGrant(pendingA.id);
-    const grantA = store.findActiveGrantBySecret(secretA)!;
-
-    // Second grant on another workspace key (one active grant per workspace).
-    const workspaceB = store.getOrCreateWorkspaceKey('own-b');
-    const pendingB = store.createPendingGrant(workspaceB.id, 'deck-b', secretB);
-    store.activateGrant(pendingB.id);
-    const grantB = store.findActiveGrantBySecret(secretB)!;
 
     const session = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grantA.id,
-      deckId: grantA.deck_id,
+      deckId: 'deck-a',
       mcpSessionId: 'mcp-owned',
     });
     store.revokeRuntimeSession(session.sessionId);
 
     expect(store.findActiveRuntimeSessionByMcpSessionId('mcp-owned')).toBeNull();
     const historical = store.findLatestRuntimeSessionByMcpSessionId('mcp-owned');
-    expect(historical?.workspaceGrantId).toBe(grantA.id);
-    expect(historical?.workspaceGrantId).not.toBe(grantB.id);
+    expect(historical?.deckId).toBe('deck-a');
+    expect(historical?.deckId).not.toBe('deck-b');
   });
 
-  it('rotates grant for elevated session and revokes peers (C8)', () => {
+  it('setRuntimeSessionDeck switches deck for elevated sessions only', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
-    const workspace = store.getOrCreateWorkspaceKey('c8-rotate');
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, 'deck-a', secret);
-    store.activateGrant(pending.id);
-    const grant = store.findActiveGrantBySecret(secret)!;
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
 
-    const admin = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant.id,
-      deckId: 'deck-a',
-      mcpSessionId: 'mcp-admin',
-    });
-    store.elevateSessionToAdmin(admin.sessionId);
+    expect(store.setRuntimeSessionDeck(session.sessionId, 'deck-b')).toBeNull();
 
-    const peer = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant.id,
-      deckId: 'deck-a',
-      mcpSessionId: 'mcp-peer',
-    });
-
-    const rotated = store.rotateGrantForElevatedSession(admin.sessionId, 'deck-b');
-    expect(rotated?.session.deckId).toBe('deck-b');
-    expect(rotated?.peersRevoked).toBe(1);
-
-    const peerRow = store.getRuntimeSessionRow(peer.sessionId);
-    expect(peerRow?.revoked_at).toBeTruthy();
-
-    const adminRow = store.getRuntimeSessionRow(admin.sessionId);
-    expect(adminRow?.revoked_at).toBeFalsy();
-    expect(adminRow?.mode).toBe('agent-admin');
+    store.elevateSessionToAdmin(session.sessionId);
+    const updated = store.setRuntimeSessionDeck(session.sessionId, 'deck-b');
+    expect(updated?.deckId).toBe('deck-b');
+    expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe('deck-b');
   });
 
-  it('creates a launch session with null workspace key and grant (NOT-105)', () => {
+  it('creates a launch session with mcpSessionId (NOT-105)', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
     const session = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: 'deck-launch',
       mcpSessionId: 'mcp-launch-1',
     });
-    expect(session.workspaceKey).toBeNull();
-    expect(session.workspaceGrantId).toBeNull();
     expect(session.deckId).toBe('deck-launch');
+    expect(session.mcpSessionId).toBe('mcp-launch-1');
 
     const found = store.findActiveLaunchSessionForMcp('mcp-launch-1', 'deck-launch');
     expect(found?.sessionId).toBe(session.sessionId);
   });
 
-  it('migrates runtime_sessions NOT NULL columns to nullable (NOT-105)', () => {
+  it('migrates away grant columns and drops grant tables (NOT-108)', () => {
     const manager = new DatabaseManager(`:memory:${Math.random()}`);
     const db = manager.getSqliteDatabase();
 
@@ -314,24 +224,25 @@ describe('TrustedSessionStore', () => {
 
     const before = db.pragma('table_info(runtime_sessions)') as Array<{
       name: string;
-      notnull: number;
     }>;
-    expect(before.find((c) => c.name === 'workspace_key_id')?.notnull).toBe(1);
+    expect(before.some((c) => c.name === 'workspace_grant_id')).toBe(true);
 
     const store = new TrustedSessionStore(db);
     const after = db.pragma('table_info(runtime_sessions)') as Array<{
       name: string;
-      notnull: number;
     }>;
-    expect(after.find((c) => c.name === 'workspace_key_id')?.notnull).toBe(0);
-    expect(after.find((c) => c.name === 'workspace_grant_id')?.notnull).toBe(0);
+    expect(after.some((c) => c.name === 'workspace_key_id')).toBe(false);
+    expect(after.some((c) => c.name === 'workspace_grant_id')).toBe(false);
+    expect(
+      (db.pragma('table_info(workspace_grants)') as Array<{ name: string }>).length,
+    ).toBe(0);
+    expect(
+      (db.pragma('table_info(workspace_keys)') as Array<{ name: string }>).length,
+    ).toBe(0);
 
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: 'deck-new',
     });
-    expect(launch.workspaceKey).toBeNull();
-    expect(launch.workspaceGrantId).toBeNull();
+    expect(launch.deckId).toBe('deck-new');
   });
 });

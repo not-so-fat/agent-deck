@@ -40,7 +40,7 @@ export async function requireAgentBoundDeck(
 export function requireAgentAdmin(request: FastifyRequest): void {
   const sessionId = request.headers['x-agent-deck-session-id'];
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
-    throw new RoutePolicyError('GRANT_REQUIRED', 'No valid workspace grant');
+    throw new RoutePolicyError('GRANT_REQUIRED', 'No deck selected for this connection');
   }
 
   const session = request.server.trustedSessionStore.touchRuntimeSession(sessionId.trim());
@@ -56,7 +56,7 @@ export async function getBoundDeckServices(
   const deckId = await requireAgentBoundDeck(request, db);
   const deck = await db.getDeck(deckId);
   if (!deck) {
-    throw new RoutePolicyError('GRANT_REQUIRED', 'No valid workspace grant');
+    throw new RoutePolicyError('GRANT_REQUIRED', 'No deck selected for this connection');
   }
   return deck.services ?? [];
 }

@@ -1,16 +1,12 @@
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  AGENT_DECK_SESSION_HEADER,
-  canonicalizeWorkspacePath,
-  digestCanonicalWorkspacePath,
-} from '@agent-deck/shared';
+import { AGENT_DECK_SESSION_HEADER } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
 import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
-import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
+import { TrustedSessionStore } from '../trusted-session/store';
 
 describe('trusted-session launch routes (NOT-105)', () => {
   const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
@@ -27,13 +23,6 @@ describe('trusted-session launch routes (NOT-105)', () => {
     const otherDeck = await db.createDeck({ name: 'other' });
     const store = new TrustedSessionStore(db.getSqliteDatabase());
 
-    const workspaceRoot = '/Users/test/agent-deck';
-    const digest = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRoot));
-    const workspace = store.getOrCreateWorkspaceKey(digest);
-    const secret = generateGrantSecret();
-    store.activateGrant(store.createPendingGrant(workspace.id, boundDeck.id, secret).id);
-    const grant = store.findActiveGrantBySecret(secret)!;
-
     const fastify = Fastify();
     fastify.decorate('db', db);
     fastify.decorate('trustedSessionStore', store);
@@ -42,7 +31,7 @@ describe('trusted-session launch routes (NOT-105)', () => {
     await fastify.ready();
     servers.push(fastify);
 
-    return { fastify, store, boundDeck, otherDeck, grant, secret, workspace };
+    return { fastify, store, boundDeck, otherDeck };
   }
 
   it('connect-deck creates a launch session', async () => {
@@ -92,24 +81,6 @@ describe('trusted-session launch routes (NOT-105)', () => {
     expect(second.json().data.sessionId).toBe(first.json().data.sessionId);
   });
 
-  it('connect-deck rejects mcpSessionId owned by a grant session', async () => {
-    const { fastify, store, boundDeck, grant } = await buildApp();
-    store.createRuntimeSession({
-      workspaceKeyId: grant.workspace_key_id,
-      workspaceGrantId: grant.id,
-      deckId: boundDeck.id,
-      mcpSessionId: 'mcp-grant-owned',
-    });
-
-    const response = await fastify.inject({
-      method: 'POST',
-      url: '/api/trusted-session/mcp/connect-deck',
-      payload: { deckId: boundDeck.id, mcpSessionId: 'mcp-grant-owned' },
-    });
-    expect(response.statusCode).toBe(401);
-    expect(response.json()).toMatchObject({ error_code: 'GRANT_REQUIRED' });
-  });
-
   it('connect-deck rejects same mcpSessionId with a different deck', async () => {
     const { fastify, boundDeck, otherDeck } = await buildApp();
     await fastify.inject({
@@ -130,8 +101,6 @@ describe('trusted-session launch routes (NOT-105)', () => {
   it('bind-workspace launch session: same deck any path succeeds with deckFixed', async () => {
     const { fastify, store, boundDeck } = await buildApp();
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: boundDeck.id,
     });
 
@@ -144,15 +113,13 @@ describe('trusted-session launch routes (NOT-105)', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       success: true,
-      data: { deckFixed: true, grantRotated: false, peersRevoked: 0 },
+      data: { deckFixed: true },
     });
   });
 
   it('bind-workspace launch session: different deck → DECK_FIXED', async () => {
     const { fastify, store, boundDeck, otherDeck } = await buildApp();
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: boundDeck.id,
     });
 
@@ -169,8 +136,6 @@ describe('trusted-session launch routes (NOT-105)', () => {
   it('bind-workspace launch session: DECK_FIXED even after elevation without updateAssignment', async () => {
     const { fastify, store, boundDeck, otherDeck } = await buildApp();
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: boundDeck.id,
     });
     store.elevateSessionToAdmin(launch.sessionId);
@@ -188,8 +153,6 @@ describe('trusted-session launch routes (NOT-105)', () => {
   it('bind-workspace launch session: updateAssignment requires elevation', async () => {
     const { fastify, store, boundDeck, otherDeck } = await buildApp();
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: boundDeck.id,
     });
 
@@ -206,8 +169,6 @@ describe('trusted-session launch routes (NOT-105)', () => {
   it('bind-workspace launch session: elevated updateAssignment switches deck', async () => {
     const { fastify, store, boundDeck, otherDeck } = await buildApp();
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: boundDeck.id,
     });
     store.elevateSessionToAdmin(launch.sessionId);

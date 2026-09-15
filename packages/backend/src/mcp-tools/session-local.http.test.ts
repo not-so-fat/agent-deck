@@ -6,9 +6,8 @@ import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_SESSION_HEADER,
-  canonicalizeWorkspacePath,
-  digestCanonicalWorkspacePath,
   generateId,
 } from '@agent-deck/shared';
 
@@ -22,7 +21,7 @@ import { registerServiceRoutes } from '../routes/services';
 import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
-import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
+import { TrustedSessionStore } from '../trusted-session/store';
 import type { ServiceManager } from '../services/service-manager';
 import {
   callToolMcpResult,
@@ -94,16 +93,6 @@ describe('MCP session-local context (NOT-84)', () => {
     const workspaceRootB = '/tmp/agent-deck-not84-b';
     const store = new TrustedSessionStore(db.getSqliteDatabase());
     const liveDisplayRegistry = new LiveDisplayRegistry();
-
-    const digestA = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRootA));
-    const digestB = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRootB));
-    const workspaceA = store.getOrCreateWorkspaceKey(digestA);
-    const workspaceB = store.getOrCreateWorkspaceKey(digestB);
-
-    const secretA = generateGrantSecret();
-    const secretB = generateGrantSecret();
-    store.activateGrant(store.createPendingGrant(workspaceA.id, deckAlpha.id, secretA).id);
-    store.activateGrant(store.createPendingGrant(workspaceB.id, deckBeta.id, secretB).id);
 
     const fastify = Fastify();
     if (opts?.delayScopeDeckMs || opts?.onScopeHit || opts?.hangLiveDisplayDelete) {
@@ -191,26 +180,25 @@ describe('MCP session-local context (NOT-84)', () => {
       workspaceRootB,
       deckAlpha,
       deckBeta,
-      secretA,
-      secretB,
       liveDisplayRegistry,
       store,
     };
   }
 
   it('same-deck bind_workspace succeeds without admin elevation', async () => {
-    const { backendUrl, workspaceRootA, deckAlpha, secretA } = await buildListeningBackend();
+    const { backendUrl, workspaceRootA, deckAlpha } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
 
-    const sessionId = await openSession(started.port, 1, secretA);
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const bound = await callToolMcpResult(
       started.port,
       sessionId,
       'bind_workspace',
       { workspaceRoot: workspaceRootA, deckId: deckAlpha.id },
       2,
-      secretA,
+      deckHeaders,
     );
 
     expect(bound.isError).toBe(false);
@@ -220,28 +208,29 @@ describe('MCP session-local context (NOT-84)', () => {
     expect(bound.data.mode).toBe('normal');
   });
 
-  it('different-deck bind returns ADMIN_REQUIRED without elevation', async () => {
-    const { backendUrl, workspaceRootA, deckBeta, secretA } = await buildListeningBackend();
+  it('different-deck bind returns DECK_FIXED without elevation', async () => {
+    const { backendUrl, workspaceRootA, deckAlpha, deckBeta } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
 
-    const sessionId = await openSession(started.port, 1, secretA);
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const denied = await callToolMcpResult(
       started.port,
       sessionId,
       'bind_workspace',
       { workspaceRoot: workspaceRootA, deckId: deckBeta.id },
       2,
-      secretA,
+      deckHeaders,
     );
 
     expect(denied.isError).toBe(true);
-    expect(denied.data.error_code).toBe('ADMIN_REQUIRED');
+    expect(denied.data.error_code).toBe('DECK_FIXED');
   });
 
   it('overlapping tool calls keep each session scoped to its origin', async () => {
     const hits: ScopeHit[] = [];
-    const { backendUrl, secretA, secretB, deckAlpha, deckBeta, store } =
+    const { backendUrl, deckAlpha, deckBeta, store } =
       await buildListeningBackend({
         delayScopeDeckMs: 80,
         onScopeHit: (hit) => hits.push(hit),
@@ -249,8 +238,10 @@ describe('MCP session-local context (NOT-84)', () => {
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
 
-    const sessionA = await openSession(started.port, 1, secretA);
-    const sessionB = await openSession(started.port, 10, secretB);
+    const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const headersB = { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id };
+    const sessionA = await openSession(started.port, 1, headersA);
+    const sessionB = await openSession(started.port, 10, headersB);
 
     const runtimeA = store.findActiveRuntimeSessionByMcpSessionId(sessionA)?.sessionId;
     const runtimeB = store.findActiveRuntimeSessionByMcpSessionId(sessionB)?.sessionId;
@@ -260,8 +251,8 @@ describe('MCP session-local context (NOT-84)', () => {
 
     hits.length = 0;
     const [boundA, boundB] = await Promise.all([
-      callToolMcpResult(started.port, sessionA, 'get_bound_deck', {}, 20, secretA),
-      callToolMcpResult(started.port, sessionB, 'get_bound_deck', {}, 21, secretB),
+      callToolMcpResult(started.port, sessionA, 'get_bound_deck', {}, 20, headersA),
+      callToolMcpResult(started.port, sessionB, 'get_bound_deck', {}, 21, headersB),
     ]);
 
     expect(boundA.isError).toBe(false);
@@ -281,13 +272,15 @@ describe('MCP session-local context (NOT-84)', () => {
   });
 
   it('closing one session does not remove the other session live display', async () => {
-    const { backendUrl, secretA, secretB, liveDisplayRegistry, workspaceRootA, workspaceRootB, deckAlpha, deckBeta } =
+    const { backendUrl, liveDisplayRegistry, workspaceRootA, workspaceRootB, deckAlpha, deckBeta } =
       await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
 
-    const sessionA = await openSession(started.port, 1, secretA);
-    const sessionB = await openSession(started.port, 10, secretB);
+    const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const headersB = { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id };
+    const sessionA = await openSession(started.port, 1, headersA);
+    const sessionB = await openSession(started.port, 10, headersB);
 
     const bindA = await callToolMcpResult(
       started.port,
@@ -295,7 +288,7 @@ describe('MCP session-local context (NOT-84)', () => {
       'bind_workspace',
       { workspaceRoot: workspaceRootA, deckId: deckAlpha.id },
       2,
-      secretA,
+      headersA,
     );
     const bindB = await callToolMcpResult(
       started.port,
@@ -303,7 +296,7 @@ describe('MCP session-local context (NOT-84)', () => {
       'bind_workspace',
       { workspaceRoot: workspaceRootB, deckId: deckBeta.id },
       12,
-      secretB,
+      headersB,
     );
     expect(bindA.isError).toBe(false);
     expect(bindB.isError).toBe(false);
@@ -320,7 +313,7 @@ describe('MCP session-local context (NOT-84)', () => {
       headers: {
         Accept: 'application/json, text/event-stream',
         'mcp-session-id': sessionA,
-        Authorization: `Bearer ${secretA}`,
+        ...headersA,
       },
     });
     expect(close.ok).toBe(true);
@@ -339,7 +332,7 @@ describe('MCP session-local context (NOT-84)', () => {
       'get_session_binding',
       {},
       30,
-      secretB,
+      headersB,
     );
     expect(stillBound.isError, JSON.stringify(stillBound.data)).toBe(false);
     expect(stillBound.data.effective_deck_id).toBe(deckBeta.id);
@@ -349,19 +342,20 @@ describe('MCP session-local context (NOT-84)', () => {
 
   it('hung live-display DELETE still clears session maps after abort timeout', async () => {
     process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS = '40';
-    const { backendUrl, secretA, workspaceRootA, deckAlpha, liveDisplayRegistry } =
+    const { backendUrl, workspaceRootA, deckAlpha, liveDisplayRegistry } =
       await buildListeningBackend({ hangLiveDisplayDelete: true });
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
 
-    const sessionId = await openSession(started.port, 1, secretA);
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const bound = await callToolMcpResult(
       started.port,
       sessionId,
       'bind_workspace',
       { workspaceRoot: workspaceRootA, deckId: deckAlpha.id },
       2,
-      secretA,
+      deckHeaders,
     );
     expect(bound.isError).toBe(false);
     expect(liveDisplayRegistry.list().some((e) => e.mcpSessionId === sessionId)).toBe(true);
@@ -379,7 +373,7 @@ describe('MCP session-local context (NOT-84)', () => {
       headers: {
         Accept: 'application/json, text/event-stream',
         'mcp-session-id': sessionId,
-        Authorization: `Bearer ${secretA}`,
+        ...deckHeaders,
       },
     });
     expect(close.ok).toBe(true);

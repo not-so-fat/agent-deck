@@ -6,7 +6,6 @@ export const TrustedSessionErrorCodeSchema = z.enum([
   'GRANT_REQUIRED',
   'SESSION_INVALID',
   'SESSION_REVOKED',
-  'WORKSPACE_SCOPE_MISMATCH',
   'RESOURCE_OUT_OF_SCOPE',
   'ADMIN_REQUIRED',
   'DASHBOARD_REQUIRED',
@@ -15,14 +14,13 @@ export const TrustedSessionErrorCodeSchema = z.enum([
   'DECK_FIXED',
 ]);
 
+/** @deprecated Legacy v2 grant file shape — CLI reads for migration only (NOT-108). */
 export const WorkspaceGrantStatusSchema = z.enum(['pending', 'active', 'revoked']);
 
 export const RuntimeSessionSchema = z
   .object({
     sessionId: z.string(),
     mcpSessionId: z.string().optional(),
-    workspaceKey: z.string().nullable(),
-    workspaceGrantId: z.string().nullable(),
     deckId: z.string(),
     mode: AgentSessionModeSchema,
     lastSeenAt: z.string().datetime(),
@@ -31,6 +29,7 @@ export const RuntimeSessionSchema = z
   })
   .strict();
 
+/** Legacy v2 grant manifest — CLI assignment migration only. */
 export const WorkspaceGrantManifestSchema = z
   .object({
     version: z.literal(2),
@@ -58,7 +57,6 @@ export const WorkspaceAssignmentSchema = z
 export const RedactedSessionBindingSchema = z
   .object({
     sessionId: z.string(),
-    workspaceKey: z.string(),
     deckId: z.string(),
     deckName: z.string().optional(),
     mode: AgentSessionModeSchema,
@@ -95,7 +93,6 @@ export function httpStatusForTrustedError(code: TrustedSessionErrorCode): number
     case 'SESSION_INVALID':
     case 'SESSION_REVOKED':
       return 401;
-    case 'WORKSPACE_SCOPE_MISMATCH':
     case 'RESOURCE_OUT_OF_SCOPE':
     case 'ADMIN_REQUIRED':
     case 'DASHBOARD_REQUIRED':

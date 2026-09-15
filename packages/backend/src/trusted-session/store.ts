@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import {
   ADMIN_CHALLENGE_TTL_MS,
@@ -8,34 +8,12 @@ import {
   prefixTrustedId,
   type AgentSessionMode,
   type RuntimeSession,
-  type WorkspaceGrantStatus,
 } from '@agent-deck/shared';
 import type Database from 'better-sqlite3';
-
-import { normalizeWorkspaceGrantSecret } from '../lib/http-auth';
-
-export type WorkspaceKeyRow = {
-  id: string;
-  path_digest: string;
-  created_at: string;
-};
-
-export type WorkspaceGrantRow = {
-  id: string;
-  workspace_key_id: string;
-  deck_id: string;
-  secret_hash: string;
-  status: WorkspaceGrantStatus;
-  created_at: string;
-  activated_at: string | null;
-  revoked_at: string | null;
-};
 
 export type RuntimeSessionRow = {
   id: string;
   mcp_session_id: string | null;
-  workspace_key_id: string | null;
-  workspace_grant_id: string | null;
   deck_id: string;
   mode: AgentSessionMode;
   last_seen_at: string;
@@ -65,25 +43,8 @@ function hashSecret(secret: string): string {
   return createHash('sha256').update(secret, 'utf8').digest('hex');
 }
 
-export function hashGrantSecret(secret: string): string {
-  return hashSecret(secret);
-}
-
 export function hashDashboardSessionToken(token: string): string {
   return hashSecret(token);
-}
-
-export function generateGrantSecret(): string {
-  return randomBytes(32).toString('base64url');
-}
-
-export function verifyGrantSecret(secret: string, secretHash: string): boolean {
-  const digest = Buffer.from(hashGrantSecret(secret), 'hex');
-  const expected = Buffer.from(secretHash, 'hex');
-  if (digest.length !== expected.length) {
-    return false;
-  }
-  return timingSafeEqual(digest, expected);
 }
 
 function nowIso(): string {
@@ -100,7 +61,7 @@ export class TrustedSessionStore {
   }
 
   private ensureTables(): void {
-    this.maybeMigrateRuntimeSessionsNullability();
+    this.maybeShedGrantSchema();
     // NOT-107: shed legacy issuer tables (created by the deleted SQLite store).
     this.db.exec(`
       DROP TABLE IF EXISTS ea_audit_events;
@@ -108,45 +69,16 @@ export class TrustedSessionStore {
       DROP TABLE IF EXISTS ea_enrollments;
     `);
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS workspace_keys (
-        id TEXT PRIMARY KEY,
-        path_digest TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS workspace_grants (
-        id TEXT PRIMARY KEY,
-        workspace_key_id TEXT NOT NULL,
-        deck_id TEXT NOT NULL,
-        secret_hash TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'revoked')),
-        created_at TEXT NOT NULL,
-        activated_at TEXT,
-        revoked_at TEXT,
-        FOREIGN KEY (workspace_key_id) REFERENCES workspace_keys (id)
-      );
-
-      CREATE UNIQUE INDEX IF NOT EXISTS workspace_grants_one_active
-        ON workspace_grants (workspace_key_id)
-        WHERE status = 'active';
-
       CREATE TABLE IF NOT EXISTS runtime_sessions (
         id TEXT PRIMARY KEY,
         mcp_session_id TEXT,
-        workspace_key_id TEXT,
-        workspace_grant_id TEXT,
         deck_id TEXT NOT NULL,
         mode TEXT NOT NULL CHECK (mode IN ('normal', 'agent-admin')),
         last_seen_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         admin_expires_at TEXT,
-        revoked_at TEXT,
-        FOREIGN KEY (workspace_key_id) REFERENCES workspace_keys (id),
-        FOREIGN KEY (workspace_grant_id) REFERENCES workspace_grants (id)
+        revoked_at TEXT
       );
-
-      CREATE INDEX IF NOT EXISTS runtime_sessions_grant_idx
-        ON runtime_sessions (workspace_grant_id);
 
       CREATE TABLE IF NOT EXISTS admin_challenges (
         id TEXT PRIMARY KEY,
@@ -177,20 +109,25 @@ export class TrustedSessionStore {
   }
 
   /**
-   * SQLite cannot drop NOT NULL in place. When an older schema still has
-   * workspace_key_id NOT NULL, drop runtime_sessions (+ admin_challenges FK child)
-   * and let CREATE TABLE IF NOT EXISTS recreate them nullable (NOT-105).
+   * NOT-108 PR2: drop grant ledger and rebuild runtime_sessions without
+   * workspace_key_id / workspace_grant_id (same drop-and-recreate pattern as NOT-105).
+   * Literals below are intentional — this is the only place that may still name the
+   * legacy tables so upgrades can DROP them.
    */
-  private maybeMigrateRuntimeSessionsNullability(): void {
+  private maybeShedGrantSchema(): void {
     const cols = this.db.pragma('table_info(runtime_sessions)') as Array<{
       name: string;
-      notnull: number;
     }>;
-    if (cols.length === 0) {
-      return;
-    }
-    const keyCol = cols.find((col) => col.name === 'workspace_key_id');
-    if (!keyCol || keyCol.notnull !== 1) {
+    const hasGrantColumn =
+      cols.length > 0 && cols.some((col) => col.name === 'workspace_grant_id' || col.name === 'workspace_key_id');
+    const grantsExist = (
+      this.db.pragma('table_info(workspace_grants)') as Array<{ name: string }>
+    ).length > 0;
+    const keysExist = (
+      this.db.pragma('table_info(workspace_keys)') as Array<{ name: string }>
+    ).length > 0;
+
+    if (!hasGrantColumn && !grantsExist && !keysExist) {
       return;
     }
 
@@ -203,6 +140,8 @@ export class TrustedSessionStore {
       this.db.exec(`
         DROP TABLE IF EXISTS admin_challenges;
         DROP TABLE IF EXISTS runtime_sessions;
+        DROP TABLE IF EXISTS workspace_grants;
+        DROP TABLE IF EXISTS workspace_keys;
       `);
     } finally {
       if (foreignKeysEnabled) {
@@ -211,141 +150,7 @@ export class TrustedSessionStore {
     }
   }
 
-  getOrCreateWorkspaceKey(pathDigest: string): WorkspaceKeyRow {
-    const existing = this.db
-      .prepare('SELECT id, path_digest, created_at FROM workspace_keys WHERE path_digest = ?')
-      .get(pathDigest) as WorkspaceKeyRow | undefined;
-
-    if (existing) {
-      return existing;
-    }
-
-    const id = prefixTrustedId('wsp', randomUUID());
-    const createdAt = nowIso();
-    this.db
-      .prepare('INSERT INTO workspace_keys (id, path_digest, created_at) VALUES (?, ?, ?)')
-      .run(id, pathDigest, createdAt);
-
-    return { id, path_digest: pathDigest, created_at: createdAt };
-  }
-
-  getWorkspaceKeyById(id: string): WorkspaceKeyRow | null {
-    return (
-      (this.db
-        .prepare('SELECT id, path_digest, created_at FROM workspace_keys WHERE id = ?')
-        .get(id) as WorkspaceKeyRow | undefined) ?? null
-    );
-  }
-
-  getActiveGrantForWorkspace(workspaceKeyId: string): WorkspaceGrantRow | null {
-    return (
-      (this.db
-        .prepare(
-          `SELECT id, workspace_key_id, deck_id, secret_hash, status, created_at, activated_at, revoked_at
-           FROM workspace_grants
-           WHERE workspace_key_id = ? AND status = 'active'`,
-        )
-        .get(workspaceKeyId) as WorkspaceGrantRow | undefined) ?? null
-    );
-  }
-
-  getGrantById(grantId: string): WorkspaceGrantRow | null {
-    return (
-      (this.db
-        .prepare(
-          `SELECT id, workspace_key_id, deck_id, secret_hash, status, created_at, activated_at, revoked_at
-           FROM workspace_grants WHERE id = ?`,
-        )
-        .get(grantId) as WorkspaceGrantRow | undefined) ?? null
-    );
-  }
-
-  findActiveGrantBySecret(secret: string): WorkspaceGrantRow | null {
-    const hash = hashGrantSecret(normalizeWorkspaceGrantSecret(secret));
-    return (
-      (this.db
-        .prepare(
-          `SELECT id, workspace_key_id, deck_id, secret_hash, status, created_at, activated_at, revoked_at
-           FROM workspace_grants WHERE secret_hash = ? AND status = 'active'`,
-        )
-        .get(hash) as WorkspaceGrantRow | undefined) ?? null
-    );
-  }
-
-  createPendingGrant(workspaceKeyId: string, deckId: string, secret: string): WorkspaceGrantRow {
-    const id = prefixTrustedId('wgr', randomUUID());
-    const createdAt = nowIso();
-    const secretHash = hashGrantSecret(secret);
-
-    this.db
-      .prepare(
-        `INSERT INTO workspace_grants
-         (id, workspace_key_id, deck_id, secret_hash, status, created_at)
-         VALUES (?, ?, ?, ?, 'pending', ?)`,
-      )
-      .run(id, workspaceKeyId, deckId, secretHash, createdAt);
-
-    return {
-      id,
-      workspace_key_id: workspaceKeyId,
-      deck_id: deckId,
-      secret_hash: secretHash,
-      status: 'pending',
-      created_at: createdAt,
-      activated_at: null,
-      revoked_at: null,
-    };
-  }
-
-  activateGrant(grantId: string): WorkspaceGrantRow | null {
-    const grant = this.getGrantById(grantId);
-    if (!grant || grant.status !== 'pending') {
-      return null;
-    }
-
-    const activatedAt = nowIso();
-    const revokeActive = this.db.prepare(
-      `UPDATE workspace_grants
-       SET status = 'revoked', revoked_at = ?
-       WHERE workspace_key_id = ? AND status = 'active'`,
-    );
-    const activate = this.db.prepare(
-      `UPDATE workspace_grants
-       SET status = 'active', activated_at = ?
-       WHERE id = ? AND status = 'pending'`,
-    );
-
-    const tx = this.db.transaction(() => {
-      revokeActive.run(activatedAt, grant.workspace_key_id);
-      activate.run(activatedAt, grantId);
-    });
-    tx();
-
-    return this.getGrantById(grantId);
-  }
-
-  revokeGrant(grantId: string): void {
-    const revokedAt = nowIso();
-    this.db
-      .prepare(
-        `UPDATE workspace_grants SET status = 'revoked', revoked_at = ? WHERE id = ? AND status != 'revoked'`,
-      )
-      .run(revokedAt, grantId);
-    this.revokeSessionsForGrant(grantId, revokedAt);
-  }
-
-  revokeSessionsForGrant(grantId: string, revokedAt: string = nowIso()): number {
-    const result = this.db
-      .prepare(
-        `UPDATE runtime_sessions SET revoked_at = ? WHERE workspace_grant_id = ? AND revoked_at IS NULL`,
-      )
-      .run(revokedAt, grantId);
-    return result.changes;
-  }
-
   createRuntimeSession(input: {
-    workspaceKeyId: string | null;
-    workspaceGrantId: string | null;
     deckId: string;
     mcpSessionId?: string;
   }): RuntimeSession {
@@ -356,31 +161,22 @@ export class TrustedSessionStore {
     this.db
       .prepare(
         `INSERT INTO runtime_sessions
-         (id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
-          last_seen_at, expires_at, admin_expires_at)
-         VALUES (?, ?, ?, ?, ?, 'normal', ?, ?, NULL)`,
+         (id, mcp_session_id, deck_id, mode, last_seen_at, expires_at, admin_expires_at)
+         VALUES (?, ?, ?, 'normal', ?, ?, NULL)`,
       )
-      .run(
-        id,
-        input.mcpSessionId ?? null,
-        input.workspaceKeyId,
-        input.workspaceGrantId,
-        input.deckId,
-        lastSeenAt,
-        expiresAt,
-      );
+      .run(id, input.mcpSessionId ?? null, input.deckId, lastSeenAt, expiresAt);
 
     return this.toRuntimeSession(this.getRuntimeSessionRow(id)!);
   }
 
   /**
    * Latest runtime row for an MCP transport id, including expired/revoked.
-   * Used to keep transport→grant ownership immutable after the active lease ends.
+   * Used to keep transport→deck ownership immutable after the active lease ends.
    */
   findLatestRuntimeSessionByMcpSessionId(mcpSessionId: string): RuntimeSession | null {
     const row = this.db
       .prepare(
-        `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+        `SELECT id, mcp_session_id, deck_id, mode,
                 last_seen_at, expires_at, admin_expires_at, revoked_at
          FROM runtime_sessions
          WHERE mcp_session_id = ?
@@ -396,7 +192,7 @@ export class TrustedSessionStore {
     const now = nowIso();
     const row = this.db
       .prepare(
-        `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+        `SELECT id, mcp_session_id, deck_id, mode,
                 last_seen_at, expires_at, admin_expires_at, revoked_at
          FROM runtime_sessions
          WHERE mcp_session_id = ?
@@ -409,34 +205,14 @@ export class TrustedSessionStore {
     return row ? this.toRuntimeSession(row) : null;
   }
 
-  findActiveRuntimeSessionForMcp(mcpSessionId: string, grantId: string): RuntimeSession | null {
-    const now = nowIso();
-    const row = this.db
-      .prepare(
-        `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
-                last_seen_at, expires_at, admin_expires_at, revoked_at
-         FROM runtime_sessions
-         WHERE mcp_session_id = ? AND workspace_grant_id = ?
-           AND revoked_at IS NULL AND expires_at > ?`,
-      )
-      .get(mcpSessionId, grantId, now) as RuntimeSessionRow | undefined;
-
-    if (!row) {
-      return null;
-    }
-
-    const touched = this.touchRuntimeSession(row.id);
-    return touched;
-  }
-
   findActiveLaunchSessionForMcp(mcpSessionId: string, deckId: string): RuntimeSession | null {
     const now = nowIso();
     const row = this.db
       .prepare(
-        `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+        `SELECT id, mcp_session_id, deck_id, mode,
                 last_seen_at, expires_at, admin_expires_at, revoked_at
          FROM runtime_sessions
-         WHERE mcp_session_id = ? AND workspace_grant_id IS NULL AND deck_id = ?
+         WHERE mcp_session_id = ? AND deck_id = ?
            AND revoked_at IS NULL AND expires_at > ?`,
       )
       .get(mcpSessionId, deckId, now) as RuntimeSessionRow | undefined;
@@ -445,8 +221,7 @@ export class TrustedSessionStore {
       return null;
     }
 
-    const touched = this.touchRuntimeSession(row.id);
-    return touched;
+    return this.touchRuntimeSession(row.id);
   }
 
   getRuntimeSessionModeByMcpSessionId(mcpSessionId: string): AgentSessionMode | null {
@@ -469,16 +244,6 @@ export class TrustedSessionStore {
       .all(...uniqueIds, now) as Array<{ mcp_session_id: string; mode: AgentSessionMode }>;
 
     return new Map(rows.map((row) => [row.mcp_session_id, row.mode]));
-  }
-
-  revokePendingGrant(grantId: string): void {
-    const revokedAt = nowIso();
-    this.db
-      .prepare(
-        `UPDATE workspace_grants SET status = 'revoked', revoked_at = ?
-         WHERE id = ? AND status = 'pending'`,
-      )
-      .run(revokedAt, grantId);
   }
 
   createDashboardNonce(nonce: string, expiresAtIso: string): void {
@@ -565,7 +330,7 @@ export class TrustedSessionStore {
     return (
       (this.db
         .prepare(
-          `SELECT id, mcp_session_id, workspace_key_id, workspace_grant_id, deck_id, mode,
+          `SELECT id, mcp_session_id, deck_id, mode,
                   last_seen_at, expires_at, admin_expires_at, revoked_at
            FROM runtime_sessions WHERE id = ?`,
         )
@@ -747,79 +512,6 @@ export class TrustedSessionStore {
     }));
   }
 
-  countWorkspacesForDeck(deckId: string): number {
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(DISTINCT workspace_key_id) AS count
-         FROM workspace_grants
-         WHERE deck_id = ? AND status = 'active'`,
-      )
-      .get(deckId) as { count: number };
-    return row.count;
-  }
-
-  /**
-   * C8: elevated-agent deck change — rotate grant, rebind approving session, revoke peers.
-   * Plaintext grant secret is stored hashed only; caller must run `agent-deck use` to refresh local grant file.
-   */
-  rotateGrantForElevatedSession(
-    runtimeSessionId: string,
-    newDeckId: string,
-  ): { session: RuntimeSession; peersRevoked: number; grantId: string } | null {
-    const row = this.getRuntimeSessionRow(runtimeSessionId);
-    if (!row || row.revoked_at || Date.parse(row.expires_at) <= Date.now()) {
-      return null;
-    }
-    if (row.mode !== 'agent-admin') {
-      return null;
-    }
-    if (!row.workspace_key_id || !row.workspace_grant_id) {
-      return null;
-    }
-    if (row.deck_id === newDeckId) {
-      const session = this.touchRuntimeSession(runtimeSessionId);
-      return session
-        ? { session, peersRevoked: 0, grantId: row.workspace_grant_id }
-        : null;
-    }
-
-    const oldGrantId = row.workspace_grant_id;
-    const secret = generateGrantSecret();
-    const pending = this.createPendingGrant(row.workspace_key_id, newDeckId, secret);
-    const activated = this.activateGrant(pending.id);
-    if (!activated) {
-      this.revokePendingGrant(pending.id);
-      return null;
-    }
-
-    const revokedAt = nowIso();
-    const peersRevoked = this.db
-      .prepare(
-        `UPDATE runtime_sessions SET revoked_at = ?
-         WHERE workspace_grant_id = ? AND id != ? AND revoked_at IS NULL`,
-      )
-      .run(revokedAt, oldGrantId, runtimeSessionId).changes;
-
-    const now = nowIso();
-    const adminExpiresAt = row.admin_expires_at;
-    this.db
-      .prepare(
-        `UPDATE runtime_sessions
-         SET workspace_grant_id = ?, deck_id = ?, last_seen_at = ?, expires_at = ?
-         WHERE id = ?`,
-      )
-      .run(
-        activated.id,
-        newDeckId,
-        now,
-        addMs(now, RUNTIME_SESSION_LEASE_MS),
-        runtimeSessionId,
-      );
-
-    const session = this.toRuntimeSession(this.getRuntimeSessionRow(runtimeSessionId)!);
-    return { session, peersRevoked, grantId: activated.id };
-  }
-
   expireStaleSessions(): number {
     const now = nowIso();
     const downgrade = this.db.prepare(
@@ -847,8 +539,6 @@ export class TrustedSessionStore {
     return {
       sessionId: row.id,
       mcpSessionId: row.mcp_session_id ?? undefined,
-      workspaceKey: row.workspace_key_id,
-      workspaceGrantId: row.workspace_grant_id,
       deckId: row.deck_id,
       mode: row.mode,
       lastSeenAt: row.last_seen_at,

@@ -45,7 +45,7 @@ export default function AdminApprovePage() {
           <CardTitle>Approve agent-admin elevation</CardTitle>
           <CardDescription>
             Grants ephemeral deck-admin mode to one MCP session (30-minute lease). This does not change
-            the persistent workspace grant.
+            the folder&apos;s deck assignment.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

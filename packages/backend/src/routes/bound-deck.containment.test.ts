@@ -8,7 +8,7 @@ import { registerCredentialRoutes } from './credentials';
 import { registerDeckRoutes } from './decks';
 import { registerPlaybookRoutes } from './playbooks';
 import { registerServiceRoutes } from './services';
-import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
+import { TrustedSessionStore } from '../trusted-session/store';
 import type { ServiceManager } from '../services/service-manager';
 
 describe('bound-deck containment verification (NOT-44)', () => {
@@ -61,14 +61,7 @@ describe('bound-deck containment verification (NOT-44)', () => {
     });
 
     const store = new TrustedSessionStore(db.getSqliteDatabase());
-    const workspace = store.getOrCreateWorkspaceKey('not-44');
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, boundDeck.id, secret);
-    store.activateGrant(pending.id);
-    const grant = store.findActiveGrantBySecret(secret)!;
     const session = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant.id,
       deckId: boundDeck.id,
     });
 

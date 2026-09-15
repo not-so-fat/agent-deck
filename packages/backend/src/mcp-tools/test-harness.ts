@@ -35,7 +35,6 @@ export async function postInitialize(
   port: number,
   id = 1,
   clientName = 'vitest',
-  grantSecret?: string,
   extraHeaders?: Record<string, string>,
 ) {
   const headers: Record<string, string> = {
@@ -43,9 +42,6 @@ export async function postInitialize(
     Accept: MCP_ACCEPT,
     ...extraHeaders,
   };
-  if (grantSecret) {
-    headers.Authorization = `Bearer ${grantSecret}`;
-  }
   return fetch(`http://127.0.0.1:${port}/mcp`, {
     method: 'POST',
     headers,
@@ -57,16 +53,14 @@ export async function listTools(
   port: number,
   sessionId: string,
   id: number,
-  grantSecret?: string,
+  extraHeaders?: Record<string, string>,
 ) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: MCP_ACCEPT,
     'mcp-session-id': sessionId,
+    ...extraHeaders,
   };
-  if (grantSecret) {
-    headers.Authorization = `Bearer ${grantSecret}`;
-  }
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: 'POST',
     headers,
@@ -94,7 +88,6 @@ export async function callToolMcpResult(
   name: string,
   args: unknown,
   id: number,
-  grantSecret?: string,
   extraHeaders?: Record<string, string>,
 ): Promise<McpToolCallResult> {
   const headers: Record<string, string> = {
@@ -103,9 +96,6 @@ export async function callToolMcpResult(
     'mcp-session-id': sessionId,
     ...extraHeaders,
   };
-  if (grantSecret) {
-    headers.Authorization = `Bearer ${grantSecret}`;
-  }
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: 'POST',
     headers,
@@ -139,8 +129,9 @@ export async function callTool(
   name: string,
   args: unknown,
   id: number,
+  extraHeaders?: Record<string, string>,
 ) {
-  const result = await callToolMcpResult(port, sessionId, name, args, id);
+  const result = await callToolMcpResult(port, sessionId, name, args, id, extraHeaders);
   if (result.isError) {
     throw new Error(JSON.stringify(result.data));
   }
@@ -162,7 +153,6 @@ async function waitForTrustedSession(
   port: number,
   sessionId: string,
   id: number,
-  grantSecret?: string,
   extraHeaders?: Record<string, string>,
 ): Promise<void> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -172,7 +162,6 @@ async function waitForTrustedSession(
       'get_bound_deck',
       {},
       id + 100 + attempt,
-      grantSecret,
       extraHeaders,
     );
     if (!result.isError || result.data.error_code !== 'GRANT_REQUIRED') {
@@ -186,16 +175,15 @@ async function waitForTrustedSession(
 export async function openSession(
   port: number,
   id = 1,
-  grantSecret?: string,
   extraHeaders?: Record<string, string>,
 ): Promise<string> {
-  const init = await postInitialize(port, id, 'vitest', grantSecret, extraHeaders);
+  const init = await postInitialize(port, id, 'vitest', extraHeaders);
   const sessionId = init.headers.get('mcp-session-id');
   if (!sessionId) {
     throw new Error(`Missing mcp-session-id (status=${init.status})`);
   }
-  if (grantSecret || extraHeaders) {
-    await waitForTrustedSession(port, sessionId, id, grantSecret, extraHeaders);
+  if (extraHeaders) {
+    await waitForTrustedSession(port, sessionId, id, extraHeaders);
   }
   return sessionId;
 }
