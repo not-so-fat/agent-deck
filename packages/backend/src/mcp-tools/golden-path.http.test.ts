@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { listToolNamesForProfile } from './register';
 import {
   callTool,
+  installStrictConsoleCapture,
   listTools,
   openSession,
   startMcpServer,
@@ -30,6 +31,7 @@ type StubBackend = {
   collectionCredentials: Array<{ id: string; label: string; envName: string }>;
   liveDisplayBodies: unknown[];
   serviceCalls: Array<{ serviceId: string; toolName: string; arguments: unknown }>;
+  unhandled: string[];
   close: () => Promise<void>;
 };
 
@@ -60,6 +62,7 @@ function startRichStubBackend(): Promise<StubBackend> {
 
   const liveDisplayBodies: unknown[] = [];
   const serviceCalls: StubBackend['serviceCalls'] = [];
+  const unhandled: string[] = [];
   const decksById = new Map<string, { id: string; name: string }>([
     [DECK_ID, { id: DECK_ID, name: 'dev' }],
   ]);
@@ -125,6 +128,14 @@ function startRichStubBackend(): Promise<StubBackend> {
       }
       if (method === 'POST' && /^\/api\/scope\/live-display\/.+\/touch$/.test(url)) {
         respond({ success: true });
+        return;
+      }
+      if (method === 'DELETE' && /^\/api\/scope\/live-display\/[^/]+$/.test(url)) {
+        respond({ success: true });
+        return;
+      }
+      if (method === 'POST' && url === '/api/scope/deck-workspace') {
+        respond({ success: true, data: { ok: true } });
         return;
       }
       if (method === 'GET' && url === '/api/services') {
@@ -271,6 +282,7 @@ function startRichStubBackend(): Promise<StubBackend> {
       }
 
       respond({ success: false, error: `stub: unhandled ${method} ${url}` }, 500);
+      unhandled.push(`${method} ${url}`);
     });
   });
 
@@ -286,6 +298,7 @@ function startRichStubBackend(): Promise<StubBackend> {
         collectionCredentials,
         liveDisplayBodies,
         serviceCalls,
+        unhandled,
         close: () => new Promise((done) => server.close(() => done())),
       });
     });
@@ -297,8 +310,10 @@ describe('MCP golden paths (CI)', () => {
   let port: number;
   let mcpServer: AgentDeckMCPServer;
   let rpcId = 1;
+  let consoleCapture: ReturnType<typeof installStrictConsoleCapture>;
 
   beforeAll(async () => {
+    consoleCapture = installStrictConsoleCapture();
     stub = await startRichStubBackend();
     const started = await startMcpServer(`http://127.0.0.1:${stub.port}`, 'standard');
     port = started.port;
@@ -308,6 +323,9 @@ describe('MCP golden paths (CI)', () => {
   afterAll(async () => {
     await mcpServer.stop();
     await stub.close();
+    expect(stub.unhandled, `Unhandled stub routes: ${stub.unhandled.join(', ')}`).toEqual([]);
+    consoleCapture.restore();
+    consoleCapture.assertClean();
   });
 
   async function nextSession(): Promise<string> {

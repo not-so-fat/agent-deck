@@ -10,6 +10,7 @@ import {
 } from '@agent-deck/shared';
 import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
+import type { Server as HttpServer } from 'node:http';
 import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
 import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error';
@@ -50,6 +51,7 @@ export class AgentDeckMCPServer {
   private port: number;
   private host: string;
   private app: express.Application;
+  private httpServer: HttpServer | null = null;
   private backendUrl: string;
   private toolProfile: McpToolProfile;
   private sessions = new Map<string, McpSession>();
@@ -60,6 +62,8 @@ export class AgentDeckMCPServer {
   /** Session badge from the backend registry (POST /api/scope/live-display response). */
   private badgeBySession = new Map<string, string>();
   private lastTouchAtMs = new Map<string, number>();
+  /** In-flight live-display unregisters so `stop()` can drain them before closing. */
+  private unregisterTasks = new Map<string, Promise<void>>();
 
   private get server(): McpServer {
     if (!this.mcpServerForRegistration) {
@@ -87,6 +91,11 @@ export class AgentDeckMCPServer {
       workspace: process.env.AGENT_DECK_WORKSPACE,
       deckId: process.env.AGENT_DECK_DECK_ID,
     });
+  }
+
+  /** Actual listening port (resolves OS-assigned `port: 0` after `start()`). */
+  getPort(): number {
+    return this.port;
   }
 
   /**
@@ -842,11 +851,13 @@ export class AgentDeckMCPServer {
         this.sessions.delete(closedSessionId);
         // Unregister while session headers still resolve — clearSession would drop
         // the runtime session id and live-display DELETE would 401.
-        void this.unregisterLiveDisplay(closedSessionId).finally(() => {
+        const task = this.unregisterLiveDisplay(closedSessionId).finally(() => {
           this.sessionBinding.clearSession(closedSessionId);
           this.badgeBySession.delete(closedSessionId);
           this.lastTouchAtMs.delete(closedSessionId);
+          this.unregisterTasks.delete(closedSessionId);
         });
+        this.unregisterTasks.set(closedSessionId, task);
       }
     };
 
@@ -902,33 +913,49 @@ export class AgentDeckMCPServer {
   }
 
   async start() {
+    if (this.httpServer) {
+      throw new Error('MCP server already started');
+    }
+
     try {
-      console.log(`🚀 Starting Agent Deck MCP Server on port ${this.port}...`);
+      console.log(
+        `🚀 Starting Agent Deck MCP Server on port ${this.port === 0 ? '(OS-assigned)' : this.port}...`,
+      );
       console.log(`🔗 Backend API URL: ${this.backendUrl}`);
 
-      this.app.listen(this.port, this.host, () => {
-        console.log(`✅ Agent Deck MCP Server is ready to accept connections`);
-        console.log(`📋 Available tools:`);
-        console.log(`   - bind_workspace: Bind session to workspace + deck (deckId required)`);
-        console.log(`   - switch_bound_deck: Switch deck for this session only`);
-        console.log(`   - get_session_binding: Show session workspace + effective deck`);
-        console.log(`   - get_bound_deck: Get session-bound deck`);
-        console.log(`   - list_service_tools: List tools for a specific service`);
-        console.log(`   - call_service_tool: Call a tool on a service`);
-        console.log(`📋 Available resources:`);
-        console.log(`   - agent-deck://decks: List of all available decks`);
-        console.log(`   - agent-deck://active-deck: The currently active deck`);
-        console.log(`   - agent-deck://active-deck/credentials: API keys on the active deck`);
-        console.log(`   - agent-deck://active-deck/services: Services in the active deck`);
-        console.log(`🌐 Server running on http://${this.host}:${this.port}`);
-        console.log(`🔧 MCP endpoint: http://${this.host}:${this.port}/mcp`);
-        console.log(`❤️  Health check: http://${this.host}:${this.port}/health`);
-        console.log(`🔗 Backend status: http://${this.host}:${this.port}/backend-status`);
-        console.log(`📝 Architecture: MCP Server → Backend API → Active Deck Services`);
+      await new Promise<void>((resolve, reject) => {
+        const httpServer = this.app.listen(this.port, this.host, () => {
+          const address = httpServer.address();
+          if (typeof address === 'object' && address && typeof address.port === 'number') {
+            this.port = address.port;
+          }
+          console.log(`✅ Agent Deck MCP Server is ready to accept connections`);
+          console.log(`📋 Available tools:`);
+          console.log(`   - bind_workspace: Bind session to workspace + deck (deckId required)`);
+          console.log(`   - switch_bound_deck: Switch deck for this session only`);
+          console.log(`   - get_session_binding: Show session workspace + effective deck`);
+          console.log(`   - get_bound_deck: Get session-bound deck`);
+          console.log(`   - list_service_tools: List tools for a specific service`);
+          console.log(`   - call_service_tool: Call a tool on a service`);
+          console.log(`📋 Available resources:`);
+          console.log(`   - agent-deck://decks: List of all available decks`);
+          console.log(`   - agent-deck://active-deck: The currently active deck`);
+          console.log(`   - agent-deck://active-deck/credentials: API keys on the active deck`);
+          console.log(`   - agent-deck://active-deck/services: Services in the active deck`);
+          console.log(`🌐 Server running on http://${this.host}:${this.port}`);
+          console.log(`🔧 MCP endpoint: http://${this.host}:${this.port}/mcp`);
+          console.log(`❤️  Health check: http://${this.host}:${this.port}/health`);
+          console.log(`🔗 Backend status: http://${this.host}:${this.port}/backend-status`);
+          console.log(`📝 Architecture: MCP Server → Backend API → Active Deck Services`);
+          resolve();
+        });
+        httpServer.once('error', reject);
+        this.httpServer = httpServer;
       });
-      
+
       return this.app;
     } catch (error) {
+      this.httpServer = null;
       console.error(`❌ Failed to start MCP server:`, error);
       throw error;
     }
@@ -944,9 +971,27 @@ export class AgentDeckMCPServer {
         }
       }
       this.sessions.clear();
+      // Drain fire-and-forget live-display unregisters before tearing down HTTP —
+      // otherwise tests close the stub backend and see ECONNRESET console.error noise.
+      await Promise.all([...this.unregisterTasks.values()]);
+
+      if (this.httpServer) {
+        const httpServer = this.httpServer;
+        this.httpServer = null;
+        await new Promise<void>((resolve, reject) => {
+          httpServer.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          });
+        });
+      }
       console.log(`🛑 MCP server stopped`);
     } catch (error) {
       console.error(`❌ Error stopping MCP server:`, error);
+      throw error;
     }
   }
 }

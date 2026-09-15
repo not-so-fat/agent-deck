@@ -61,14 +61,15 @@ Release / user path (packaged artifact)
 - Reject calls without session
 - Default profile tool names (`manage_deck_card`, `create_deck`; no `list_playbooks` / `delete_*`)
 - `bind_workspace` → live-display badge (stub backend)
+- Golden agent path S2–S8 (`golden-path.http.test.ts`) and authenticated concurrent/idempotent bind (`session-local.http.test.ts`)
+- OS-assigned MCP ports under parallel start (`test-harness.port.test.ts` — NOT-47)
 
 **MCP HTTP tests do not yet assert:**
 
-- Full agent flows: bind → `get_bound_deck` → `manage_deck_card` → `get_playbook` / `update_playbook`
-- `list_collection` / `register_*` against real API
-- Profile matrix (`runtime` / `legacy`) end-to-end
-- Error shapes (`NOT_BOUND`, playbook dependency on delete via CLI)
-- Proxy `call_service_tool` (needs fake upstream MCP)
+- `register_*` collection create flows against a full Fastify API (link/unlink covered via `manage_deck_card`)
+- Profile matrix (`runtime` / `legacy`) end-to-end over HTTP (unit coverage in `profile.test.ts`)
+- Error shapes such as `NOT_BOUND` on every tool (partial coverage elsewhere)
+- Proxy `call_service_tool` against a real upstream MCP peer (stubbed echo only)
 
 ### CLI (`packages/cli`)
 
@@ -99,10 +100,11 @@ Hosts (Cursor / Claude) are **not** in CI. Treat MCP as a **protocol server** we
 | Practice | How |
 |----------|-----|
 | **1. Unit the handlers** | Pure functions (`executeManageDeckCard`, profile lists) — no ports |
-| **2. Contract-test the wire** | Real `AgentDeckMCPServer` on ephemeral port; JSON-RPC `initialize` → `tools/list` → `tools/call` |
-| **3. Stub the backend** | Tiny `http.createServer` (already in `mcp-server.http.test.ts`) — assert paths/bodies, not full SQLite unless needed |
+| **2. Contract-test the wire** | Real `AgentDeckMCPServer` via `startMcpServer()` — binds **OS-assigned** `port: 0` (not a random 36k pool; parallel Vitest workers collided there — NOT-47) |
+| **3. Stub the backend** | Tiny `http.createServer` (already in `mcp-server.http.test.ts`) — assert paths/bodies, not full SQLite unless needed; unhandled routes must fail the suite |
 | **4. Snapshot the catalog** | `tools/list` names must match profile (guards accidental tool sprawl / renames) |
 | **5. One golden agent path** | Bind → get_bound_deck → (optional manage_deck_card) → get_playbook — against stub or temp DB |
+| **5b. Authenticated concurrent path** | `session-local.http.test.ts` — grant/admin bypasses off, real HTTP policy, overlapping tool calls, same-deck bind idempotency (NOT-84 / NOT-47) |
 | **6. Do not wait on host `list_changed`** | Dynamic tools are host-blocked; do not invent flaky host tests |
 
 **Anti-patterns:** only unit-testing registration without `tools/list`; only manual Cursor clicks; testing OAuth browser flows in MCP suite.
@@ -113,8 +115,8 @@ Hosts (Cursor / Claude) are **not** in CI. Treat MCP as a **protocol server** we
 
 | Priority | Gap | Suggested home |
 |----------|-----|----------------|
-| P0 | Golden MCP path: bind + `get_bound_deck` + `manage_deck_card` link/unlink | `mcp-server.http.test.ts` + richer stub |
-| P0 | Catalog snapshot per profile (`runtime` / `standard` / `legacy`) | `profile.test.ts` (done) + HTTP list for `standard` (partial) |
+| Done | Golden MCP path: bind + `get_bound_deck` + `manage_deck_card` link/unlink | `golden-path.http.test.ts` |
+| Done | Catalog snapshot for `standard` over HTTP | `golden-path.http.test.ts` (+ `profile.test.ts` unit) |
 | P1 | CLI `service|playbook|deck delete` command wiring | `packages/cli` thin tests or extend `cli-runtime` |
 | P1 | Harness template never mentions removed tools | `agent-harness.test.ts` (partial — checks `get_bound_deck`) |
 | P2 | FE: deck editor link/unlink still works with API (not MCP) | Component or route tests; optional later Playwright |
@@ -151,8 +153,10 @@ Use this table to decide what we automate next. Mark **Auto** (CI), **Smoke** (r
 
 | File | Scenarios |
 |------|-----------|
-| `packages/backend/src/mcp-tools/test-harness.ts` | Shared MCP HTTP helpers |
+| `packages/backend/src/mcp-tools/test-harness.ts` | Shared MCP HTTP helpers (`port: 0`, strict console capture) |
+| `packages/backend/src/mcp-tools/test-harness.port.test.ts` | Parallel OS-assigned bind (NOT-47) |
 | `packages/backend/src/mcp-tools/golden-path.http.test.ts` | S2–S8 + catalog snapshot |
+| `packages/backend/src/mcp-tools/session-local.http.test.ts` | Authenticated concurrent / idempotent bind (NOT-84) |
 | `packages/backend/src/mcp-tools/profile.test.ts` | Profile tool lists |
 | `packages/backend/src/mcp-tools/deck-card-ops.test.ts` | Link/unlink/reorder unit |
 | `packages/backend/src/cli-runtime.test.ts` | S9–S10 |

@@ -138,13 +138,65 @@ export async function callTool(
   return result.data;
 }
 
+/**
+ * Capture console.error / connection-reset noise so a green suite cannot hide
+ * unexpected backend failures. Call `assertClean()` in afterEach/afterAll.
+ */
+export function installStrictConsoleCapture(options?: {
+  /** Prefixes that are expected and ignored (e.g. intentional negative-path logs). */
+  allowPrefixes?: string[];
+}) {
+  const errors: string[] = [];
+  const allowPrefixes = options?.allowPrefixes ?? [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    const line = args
+      .map((arg) => (typeof arg === 'string' ? arg : safeStringify(arg)))
+      .join(' ');
+    if (!allowPrefixes.some((prefix) => line.includes(prefix))) {
+      errors.push(line);
+    }
+    originalError.apply(console, args as Parameters<typeof console.error>);
+  };
+  return {
+    errors,
+    restore() {
+      console.error = originalError;
+    },
+    assertClean() {
+      if (errors.length > 0) {
+        throw new Error(
+          `Unexpected error-level server output (${errors.length}):\n${errors.join('\n')}`,
+        );
+      }
+    },
+  };
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * Start an MCP server for tests.
+ * Bind with `port: 0` (OS-assigned ephemeral) — do not pick a random port in a
+ * fixed range; parallel Vitest workers collide there (CI EADDRINUSE / NOT-47).
+ */
 export async function startMcpServer(
   backendUrl: string,
   profile: McpToolProfile = 'standard',
 ): Promise<{ port: number; server: AgentDeckMCPServer }> {
-  const port = 36_000 + Math.floor(Math.random() * 3_000);
-  const server = new AgentDeckMCPServer(port, backendUrl, profile);
+  const server = new AgentDeckMCPServer(0, backendUrl, profile);
   await server.start();
+  const port = server.getPort();
+  if (!port || port <= 0) {
+    await server.stop();
+    throw new Error('MCP server started but did not expose a listening port');
+  }
   await waitForMcpHealth(port);
   return { port, server };
 }
