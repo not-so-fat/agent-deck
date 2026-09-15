@@ -6,27 +6,26 @@
 
 ### Add: launch-selected deck + folder assignment (NOT-105, NOT-108)
 
-- MCP clients authenticate with `x-agent-deck-deck-id` (launch session). Precedence: deck header → 401 (`GRANT_REQUIRED`: **No deck selected for this connection**).
+- MCP connections need `x-agent-deck-deck-id` or they get **No deck selected for this connection** (HTTP 401; machine code still `GRANT_REQUIRED`).
 - `agent-deck use` / `mcp-launch` write and read `<folder>/.agent-deck/use.json` **v3** (`deckId`, `deckName`, optional `mcpUrl`) — **no secret**. Legacy v2 / Keychain migrate once to v3.
 - Elevated agent may switch a folder’s deck only when an assignment file exists; otherwise `DECK_FIXED` / `ADMIN_REQUIRED`. Peers pick up the new deck on reconnect.
 - Public `GET /api/launch/decks` and `/api/launch/decks/:id/playbooks` for orchestrators (e.g. Agent Dealer).
 
 ### Removed: workspace grant machinery (NOT-108)
 
-- Deleted grant routes, grant-bearer auth, grant store methods/tables, and CLI grant issue/store. SQLite rebuilds `runtime_sessions` without grant columns and drops `workspace_grants` / `workspace_keys`.
-- Runtime principal no longer carries `workspaceKey` / `workspaceGrantId`. `WORKSPACE_SCOPE_MISMATCH` removed.
+- No more workspace grant secrets, grant HTTP/MCP auth, or grant CLI issue/store. Restarting the daemon rebuilds the session DB without the old grant tables.
+- Removed error code `WORKSPACE_SCOPE_MISMATCH`.
 
 ### Removed: execution authority and coordinator enrollment (NOT-107)
 
-- Deleted `/api/execution-authority/*`, SQLite authority/enrollment tables, MCP authority principal, and CLI `agent-deck coordinator enroll|status|revoke`.
-- Unattended workers select a deck via launch header (NOT-105). **Agent Dealer must include NOT-106** (no mint, no enrollment env).
+- Deleted `/api/execution-authority/*` and CLI `agent-deck coordinator enroll|status|revoke`. Unattended workers select a deck with `x-agent-deck-deck-id` only — Agent Dealer must not mint or set enrollment env (NOT-106).
 - `RESOURCE_OUT_OF_SCOPE` MCP contract shape is unchanged.
 
 ### After upgrade
 
 - Upgrade the CLI, then `agent-deck stop && agent-deck start`.
-- Re-run `agent-deck use <deck>` in each project folder (migrates assignment to v3; IDE MCP reconnects with deck header).
-- Reload IDE MCP hosts. Agent Dealer worktrees stay launch-selected (`DECK_FIXED` without an assignment file).
+- Re-run `agent-deck use <deck>` in each project folder (migrates assignment to v3).
+- Reload IDE MCP hosts so connections send the deck header. Agent Dealer worktrees stay deck-fixed without an assignment file (`DECK_FIXED`).
 
 ## 1.8.1 — 2026-09-14
 
