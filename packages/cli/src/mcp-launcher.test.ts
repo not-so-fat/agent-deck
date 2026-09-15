@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AGENT_DECK_DECK_ID_HEADER,
@@ -11,9 +11,21 @@ import {
 import { NO_ASSIGNMENT_MESSAGE, resolveMcpLaunchPlan } from './mcp-launcher';
 import { writeAssignment } from './assignment';
 
+const clearKeychainAssignment = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock('./assignment', async () => {
+  const actual = await vi.importActual<typeof import('./assignment')>('./assignment');
+  return {
+    ...actual,
+    clearKeychainAssignment,
+  };
+});
+
 const tmpDirs: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  clearKeychainAssignment.mockClear();
   for (const dir of tmpDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -46,6 +58,7 @@ describe('mcp-launch assignment headers', () => {
       `${AGENT_DECK_WORKSPACE_HEADER}: ${workspace}`,
     ]);
     expect(plan.headers.join('\n')).not.toMatch(/Authorization/i);
+    expect(clearKeychainAssignment).not.toHaveBeenCalled();
   });
 
   it('migrates a v2 grant file to v3 and sends the deck header', async () => {
@@ -79,6 +92,28 @@ describe('mcp-launch assignment headers', () => {
     expect(migrated.version).toBe(3);
     expect(migrated.deckId).toBe('deck-v2');
     expect(migrated.secret).toBeUndefined();
+    expect(clearKeychainAssignment).not.toHaveBeenCalled();
+  });
+
+  it('clears the legacy Keychain entry when migrating from Keychain', async () => {
+    const workspace = makeWorkspace();
+    const assignment = await import('./assignment');
+    vi.spyOn(assignment, 'readAssignment').mockResolvedValue({
+      deckId: 'deck-kc',
+      deckName: 'from-keychain',
+      mcpUrl: 'http://127.0.0.1:1110/mcp',
+      needsMigration: true,
+      source: 'keychain',
+    });
+
+    const plan = await resolveMcpLaunchPlan(workspace, endpoint);
+    expect('error' in plan).toBe(false);
+    if ('error' in plan) {
+      return;
+    }
+    expect(plan.deckId).toBe('deck-kc');
+    expect(clearKeychainAssignment).toHaveBeenCalledWith(workspace);
+    expect(fs.existsSync(path.join(workspace, '.agent-deck', 'use.json'))).toBe(true);
   });
 
   it('exits with the ticket message when no assignment exists', async () => {

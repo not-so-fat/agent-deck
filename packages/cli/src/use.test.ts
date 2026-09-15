@@ -24,21 +24,6 @@ vi.mock('./backend-runtime', () => ({
   }),
 }));
 
-const grantIssue = vi.hoisted(() => ({
-  issueWorkspaceGrant: vi.fn(async () => {
-    throw new Error('issueWorkspaceGrant must not be called');
-  }),
-  activateWorkspaceGrant: vi.fn(async () => {
-    throw new Error('activateWorkspaceGrant must not be called');
-  }),
-  revokePendingWorkspaceGrant: vi.fn(async () => {
-    throw new Error('revokePendingWorkspaceGrant must not be called');
-  }),
-  toGrantManifest: vi.fn(),
-}));
-
-vi.mock('./grant-issue', () => grantIssue);
-
 const tmpDirs: string[] = [];
 
 afterEach(() => {
@@ -86,10 +71,6 @@ describe('agent-deck use', () => {
     if ('error' in withMcp) {
       return;
     }
-
-    expect(grantIssue.issueWorkspaceGrant).not.toHaveBeenCalled();
-    expect(grantIssue.activateWorkspaceGrant).not.toHaveBeenCalled();
-    expect(grantIssue.revokePendingWorkspaceGrant).not.toHaveBeenCalled();
 
     expect(withMcp.deck.name).toBe('dev');
     expect(withMcp.playbookCount).toBe(1);

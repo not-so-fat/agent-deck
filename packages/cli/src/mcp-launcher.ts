@@ -11,7 +11,7 @@ import {
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
 import { buildMcpUrl, type McpEndpoint } from './mcp-config';
-import { readAssignment, writeAssignment } from './assignment';
+import { clearKeychainAssignment, readAssignment, writeAssignment } from './assignment';
 
 export type McpLaunchPlan = {
   workspaceRoot: string;
@@ -43,6 +43,9 @@ export async function resolveMcpLaunchPlan(
       deckName: assignment.deckName,
       ...(assignment.mcpUrl ? { mcpUrl: assignment.mcpUrl } : {}),
     });
+    if (assignment.source === 'keychain') {
+      await clearKeychainAssignment(workspaceRoot);
+    }
   }
 
   const mcpUrl = assignment.mcpUrl ?? buildMcpUrl(endpoint);

@@ -63,6 +63,32 @@ async function readKeychainAssignment(workspaceRoot: string): Promise<Assignment
   }
 }
 
+/** Best-effort delete of the legacy workspace-grant Keychain item after v3 migration. */
+export async function clearKeychainAssignment(workspaceRoot: string): Promise<void> {
+  if (process.platform !== 'darwin') {
+    return;
+  }
+
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execFileAsync = promisify(execFile);
+    await execFileAsync(
+      'security',
+      [
+        'delete-generic-password',
+        '-s',
+        KEYCHAIN_SERVICE,
+        '-a',
+        `workspace-grant:${workspaceRoot}`,
+      ],
+      { encoding: 'utf8' as BufferEncoding },
+    );
+  } catch {
+    // may not exist
+  }
+}
+
 /**
  * Read the folder's deck assignment (v3), or migrate-ready fields from a v2
  * grant manifest / legacy macOS Keychain entry.
