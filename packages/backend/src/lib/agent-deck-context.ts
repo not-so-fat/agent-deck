@@ -26,7 +26,7 @@ export async function resolveAgentDeckId(
   const sessionId = headerValue(request, AGENT_DECK_SESSION_HEADER);
   if (!sessionId) {
     throw new AgentDeckContextError(
-      trustedSessionError('GRANT_REQUIRED', 'No valid workspace grant').error,
+      trustedSessionError('GRANT_REQUIRED', 'No deck selected for this connection').error,
       'GRANT_REQUIRED',
     );
   }
@@ -41,7 +41,7 @@ export async function resolveAgentDeckId(
   }
   if (row.revoked_at) {
     throw new AgentDeckContextError(
-      trustedSessionError('SESSION_REVOKED', 'Grant rotation or explicit revocation ended the session').error,
+      trustedSessionError('SESSION_REVOKED', 'Session was revoked').error,
       'SESSION_REVOKED',
     );
   }
@@ -62,7 +62,7 @@ export async function resolveAgentDeckId(
 
   const deck = await db.getDeck(session.deckId);
   if (!deck) {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+    throw new TrustedAuthError('GRANT_REQUIRED', 'No deck selected for this connection');
   }
 
   return session.deckId;

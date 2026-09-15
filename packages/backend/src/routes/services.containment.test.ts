@@ -5,7 +5,7 @@ import { AGENT_DECK_SESSION_HEADER } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
 import { registerServiceRoutes } from './services';
-import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
+import { TrustedSessionStore } from '../trusted-session/store';
 import type { ServiceManager } from '../services/service-manager';
 
 describe('service route containment (NOT-44)', () => {
@@ -35,14 +35,7 @@ describe('service route containment (NOT-44)', () => {
     await db.addServiceToDeck({ deckId: boundDeck.id, serviceId: serviceOnBound.id, position: 0 });
 
     const store = new TrustedSessionStore(db.getSqliteDatabase());
-    const workspace = store.getOrCreateWorkspaceKey('ws-digest');
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, boundDeck.id, secret);
-    store.activateGrant(pending.id);
-    const grant = store.findActiveGrantBySecret(secret)!;
     const session = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant.id,
       deckId: boundDeck.id,
     });
 

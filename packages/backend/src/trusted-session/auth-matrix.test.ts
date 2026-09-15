@@ -5,8 +5,6 @@ import {
   AGENT_DECK_CLIENT_HEADER,
   AGENT_DECK_DASHBOARD_CLIENT,
   AGENT_DECK_SESSION_HEADER,
-  canonicalizeWorkspacePath,
-  digestCanonicalWorkspacePath,
 } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
@@ -19,7 +17,7 @@ import { registerServiceRoutes } from '../routes/services';
 import { registerDashboardAuthRoutes, registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
-import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
+import { TrustedSessionStore } from '../trusted-session/store';
 import type { ServiceManager } from '../services/service-manager';
 
 describe('trusted session auth matrix (§8)', () => {
@@ -35,7 +33,6 @@ describe('trusted session auth matrix (§8)', () => {
     const db = new DatabaseManager(`:memory:${Math.random()}`);
     const boundDeck = await db.createDeck({ name: 'bound' });
     const otherDeck = await db.createDeck({ name: 'other' });
-    const workspaceRoot = '/Users/test/agent-deck';
 
     const serviceOnBound = await db.createService({
       name: 'bound-svc',
@@ -52,15 +49,7 @@ describe('trusted session auth matrix (§8)', () => {
     await db.addPlaybookToDeck({ deckId: boundDeck.id, playbookId: playbook.id, position: 0 });
 
     const store = new TrustedSessionStore(db.getSqliteDatabase());
-    const digest = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRoot));
-    const workspace = store.getOrCreateWorkspaceKey(digest);
-    const secret = generateGrantSecret();
-    const pending = store.createPendingGrant(workspace.id, boundDeck.id, secret);
-    store.activateGrant(pending.id);
-    const grant = store.findActiveGrantBySecret(secret)!;
     const session = store.createRuntimeSession({
-      workspaceKeyId: workspace.id,
-      workspaceGrantId: grant.id,
       deckId: boundDeck.id,
     });
 
@@ -96,7 +85,7 @@ describe('trusted session auth matrix (§8)', () => {
     await fastify.ready();
     servers.push(fastify);
 
-    return { fastify, db, session, boundDeck, otherDeck, store, secret, workspaceRoot, serviceOnBound, playbook };
+    return { fastify, db, session, boundDeck, otherDeck, store, serviceOnBound, playbook };
   }
 
   it('exchanges a one-shot nonce for a persistent dashboard cookie', async () => {
@@ -213,53 +202,6 @@ describe('trusted session auth matrix (§8)', () => {
     expect(createDeck.statusCode).toBe(201);
   });
 
-  it('bind-workspace rejects mismatched workspace root (WORKSPACE_SCOPE_MISMATCH)', async () => {
-    const { fastify, session, otherDeck, store } = await buildApp();
-    store.elevateSessionToAdmin(session.sessionId);
-
-    const response = await fastify.inject({
-      method: 'POST',
-      url: '/api/trusted-session/bind-workspace',
-      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
-      payload: {
-        workspaceRoot: '/totally/different/path',
-        deckId: otherDeck.id,
-      },
-    });
-
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toMatchObject({ error_code: 'WORKSPACE_SCOPE_MISMATCH' });
-  });
-
-  it('C8 grant rotation revokes peer sessions (SESSION_REVOKED)', async () => {
-    const { fastify, session, otherDeck, store, workspaceRoot } = await buildApp();
-    const peer = store.createRuntimeSession({
-      workspaceKeyId: session.workspaceKey!,
-      workspaceGrantId: session.workspaceGrantId!,
-      deckId: session.deckId,
-    });
-    store.elevateSessionToAdmin(session.sessionId);
-
-    const bind = await fastify.inject({
-      method: 'POST',
-      url: '/api/trusted-session/bind-workspace',
-      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
-      payload: { workspaceRoot, deckId: otherDeck.id },
-    });
-    expect(bind.statusCode).toBe(200);
-
-    const peerRow = store.getRuntimeSessionRow(peer.sessionId);
-    expect(peerRow?.revoked_at).toBeTruthy();
-
-    const peerCall = await fastify.inject({
-      method: 'GET',
-      url: '/api/services',
-      headers: { [AGENT_DECK_SESSION_HEADER]: peer.sessionId },
-    });
-    expect(peerCall.statusCode).toBe(401);
-    expect(peerCall.json()).toMatchObject({ error_code: 'SESSION_REVOKED' });
-  });
-
   it('lists pending admin challenges for menubar', async () => {
     const { fastify, session } = await buildApp();
 
@@ -334,8 +276,6 @@ describe('trusted session auth matrix (§8)', () => {
   it('launch session can read own-deck services', async () => {
     const { fastify, store, boundDeck, serviceOnBound } = await buildApp();
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: boundDeck.id,
     });
 
@@ -360,8 +300,6 @@ describe('trusted session auth matrix (§8)', () => {
   it('launch session cannot read other-deck resources', async () => {
     const { fastify, store, boundDeck, otherDeck } = await buildApp();
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: boundDeck.id,
     });
 
@@ -377,8 +315,6 @@ describe('trusted session auth matrix (§8)', () => {
   it('launch session can propose signal_only playbook patch', async () => {
     const { fastify, store, boundDeck, playbook } = await buildApp();
     const launch = store.createRuntimeSession({
-      workspaceKeyId: null,
-      workspaceGrantId: null,
       deckId: boundDeck.id,
     });
 

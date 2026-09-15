@@ -1,50 +1,65 @@
 ---
 status: shipped
 linear: NOT-45
-related: NOT-44
+related: NOT-44, NOT-105, NOT-108
 playbooks: pb_ai_codegen_prd, pb_product_principle
 shipped: 1.7.0
 ---
 
 # Trusted agent sessions & ephemeral admin mode — AI Codegen PRD
 
-Every MCP session receives a bound deck: grant-based sessions use the deck previously authorized for the workspace; launch sessions (C9 / NOT-105) use the deck selected at connect via `x-agent-deck-deck-id`. Normal agents can use that deck and preserve the feedback-to-playbook suggestion loop; temporary admin mode adds narrowly scoped deck administration without becoming persistent authority.
+Every MCP session receives a bound deck selected at connect via `x-agent-deck-deck-id` (launch session). For IDE folders, that deck comes from the folder assignment file (`<folder>/.agent-deck/use.json`); for unattended workers it comes from the launch config. Normal agents can use that deck and preserve the feedback-to-playbook suggestion loop; temporary admin mode adds narrowly scoped deck administration without becoming persistent authority.
 
-**Shipped in 1.7.0** (NOT-45 + NOT-44 together; see [CHANGELOG](../CHANGELOG.md#170--2026-08-31)).
+**Shipped in 1.7.0** (NOT-45 + NOT-44 together; see [CHANGELOG](../CHANGELOG.md#170--2026-08-31)). **1.7.0 shipped workspace grants**; **NOT-108 replaces them** with a plain folder assignment file and launch-header-only MCP auth (see as-built below).
 
-**Related (C9 / NOT-105):** Unattended Agent Dealer workers use a **launch-selected deck** (`x-agent-deck-deck-id`) — not workspace grants copied into generated worktrees, and not coordinator enrollment / execution authority (removed in NOT-107). See C9 below and [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md) (superseded). Interactive path-bound grants in this PRD remain unchanged for grant-based sessions.
+**Related (C9 / NOT-105):** Unattended Agent Dealer workers use a **launch-selected deck** (`x-agent-deck-deck-id`) — not folder assignments copied into generated worktrees, and not coordinator enrollment / execution authority (removed in NOT-107). See C9 below and [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md) (superseded). **NOT-108:** the interactive IDE path is the same launch session model; the folder’s assignment file is how the launcher chooses the deck header.
 
 ## 1. Problem and outcome
 
-The current agent path relies too much on caller-supplied role and deck context, and route-by-route opt-in makes omissions dangerous. It also lacks a durable workspace-to-deck grant and a safe way for a user to administer decks conversationally.
+The current agent path relies too much on caller-supplied role and deck context, and route-by-route opt-in makes omissions dangerous. It also needs a durable folder-to-deck assignment and a safe way for a user to administer decks conversationally.
 
-NOT-45 adds three distinct concepts:
+NOT-45 added three distinct concepts (as shipped in 1.7.0 with **workspace grants**). **NOT-108** keeps the runtime session and ephemeral admin ideas, and replaces the grant with a folder assignment file:
 
-- a persistent workspace grant that binds one canonical workspace to one deck;
+- a folder assignment file that binds one project folder to one deck (no secret; backend stores no workspace→deck grant);
 - a runtime MCP session that starts in normal mode and expires after inactivity;
 - an ephemeral `agent-admin` elevation for deck administration only.
 
 The existing learning loop is a critical product feature, not admin work: normal agents can read bound playbooks and submit create, update, or retire suggestions with `propose_playbook_patch`; review in the dashboard remains the authority that applies them.
 
-This work is complete when a restarted agent automatically receives the workspace's previously bound deck in normal mode, forged headers cannot expand authority, one approved admin session can create or switch and then edit its now-bound deck, abandoned authority expires, legacy workspaces migrate only after explicit confirmation, and NOT-44 denies all cross-deck service access.
+This work is complete when a restarted agent in a folder automatically receives that folder’s assigned deck in normal mode, forged headers cannot expand authority, one approved admin session can create or switch and then edit its now-bound deck (when an assignment file exists), abandoned authority expires, legacy workspaces migrate only after explicit confirmation, and NOT-44 denies all cross-deck service access.
 
 ## 2. Normative product contract
 
-### C1. Canonical workspace identity
+### C1. Folder identity for assignment
 
-The trusted CLI derives a canonical path by resolving symlinks, normalizing separators and trailing separators, applying Unicode NFC, and applying documented platform rules including Windows path behavior. It registers an immutable opaque `workspaceKey`; the backend authorizes by that key, not by a path supplied by an MCP caller. Aliases of one workspace resolve consistently, and a grant for workspace A can never target workspace B.
+The trusted CLI resolves the folder path (symlinks, separators, Unicode NFC, documented platform rules including Windows). That resolved folder is where `<folder>/.agent-deck/use.json` lives. The backend does **not** store a workspace→deck grant or authorize by an opaque workspace key supplied by an MCP caller. Deck authority for a connection is the launch-selected deck (C9), not a path claim from the agent.
 
-### C2. Persistent workspace grant
+### C2. Folder assignment file
 
-Each `workspaceKey` has at most one active grant, bound to exactly one deck and containing no admin authority. A grant can be created or rotated only by:
+Each project folder may have at most one assignment file:
+
+`<folder>/.agent-deck/use.json` **version 3:**
+
+```json
+{
+  "version": 3,
+  "deckId": "…",
+  "deckName": "…",
+  "mcpUrl": "…" 
+}
+```
+
+`mcpUrl` is optional. **No secret.** This file **is** the folder’s assignment; the backend stores no workspace→deck grant.
+
+The assignment is created or rewritten only by:
 
 - an explicit trusted `agent-deck use <deck>` command;
 - an authenticated dashboard action; or
-- the trusted daemon executing a deck change approved for an elevated session.
+- an elevated MCP session rewriting the file after an approved deck switch (C4).
 
-The grant has no time expiry in v1; deletion or rotation revokes it. The backend stores only a hash or signed representation, never the plaintext grant.
+Tracked project configuration (`.mcp.json`, `.cursor/mcp.json`, Claude configuration, test fixtures, logs, diffs) must never carry a grant secret. Project MCP configuration uses a non-secret local launcher or reference; the launcher reads the assignment at runtime and connects with launch headers (C9).
 
-Raw grant material may exist only in an ignored, user-readable-only private file such as `.agent-deck/use.json` with mode `0600`, or in an OS secret store. Tracked project configuration, including `.mcp.json`, `.cursor/mcp.json`, Claude configuration, test fixtures, logs, and diffs, must never contain it. Project MCP configuration uses a non-secret local launcher or reference; the launcher reads the private grant at runtime.
+Legacy v2 grant-shaped `use.json` (and macOS Keychain grant entries) may be read once and migrated to v3; after NOT-108 PR2 they are not issued or accepted as credentials.
 
 ### C3. Runtime MCP session
 
@@ -54,8 +69,6 @@ An authenticated connection creates this runtime principal:
 {
   "sessionId": "ses_...",
   "mcpSessionId": "transport_...",
-  "workspaceKey": "wsp_... | null",
-  "workspaceGrantId": "wgr_... | null",
   "deckId": "deck_...",
   "mode": "normal",
   "lastSeenAt": "...",
@@ -64,15 +77,15 @@ An authenticated connection creates this runtime principal:
 }
 ```
 
-Grant-based sessions set both `workspaceKey` and `workspaceGrantId`. Launch sessions (C9) set both to `null` and fix `deckId` at connect.
+There is no `workspaceKey` or `workspaceGrantId` on the principal. Every MCP session is a launch session: `deckId` is fixed at connect from `x-agent-deck-deck-id`.
 
-Every session starts in `normal`. Authenticated MCP activity renews a 24-hour inactivity lease. MCP transport close, explicit runtime-session close, grant revocation, server restart, or 24 hours without activity removes the session. A later **grant-based** session on the same workspace starts in `normal` and inherits the grant's deck.
+Every session starts in `normal`. Authenticated MCP activity renews a 24-hour inactivity lease. MCP transport close, explicit runtime-session close, session revocation, server restart, or 24 hours without activity removes the session. A later connection for the same folder reads the current assignment file (if any) and starts in `normal` on that deck.
 
-The backend establishes this principal before tool routing. After the principal exists, caller-supplied role, workspace, admin, or dashboard headers are never principals and cannot expand authority. Establishing a **launch** principal (C9) uses `x-agent-deck-deck-id` only when no bearer is present; once any bearer authenticates the session, that deck header is ignored.
+The backend establishes this principal before tool routing. After the principal exists, caller-supplied role, workspace, admin, or dashboard headers are never principals and cannot expand authority. Establishing a launch principal (C9) uses `x-agent-deck-deck-id` only when no dashboard bearer is present; a bearer that authenticates is the admin secret (dashboard principal), not a workspace grant.
 
 Here, “session” means the MCP transport session, not a chat window. If a host reuses one MCP transport across chat restarts, the runtime session continues until transport close, explicit runtime-session close, revocation, restart, or lease expiry. This behavior must be documented and tested per supported host.
 
-**As-built (NOT-84 / NOT-105):** One Agent Deck MCP process may host many transport sessions. Request scope is immutable per transport: each `McpServer` closes over its MCP transport session id (`mcpSessionId`); backend calls look up that transport’s binding and send the **runtime** session id in `x-agent-deck-session-id` (C3 `sessionId`, including on `fetchDeck` and live-display touch/unregister). There is no process-global `activeSessionId`. Same-workspace + same-deck `bind_workspace` is idempotent in normal mode for **grant** sessions; a different-deck bind probes `fetchDeck`; on `RESOURCE_OUT_OF_SCOPE` it requires elevation (`ADMIN_REQUIRED` if not elevated), then retries `GET /api/decks/:id` (agent-admin may read any deck). **Launch** sessions (C9) skip path checks and stub sync; same-deck bind returns `deckFixed:true`; a different deck returns `DECK_FIXED` without elevation. Live-display unregister on transport close uses a short abort timeout so local session maps always clear even if the backend hangs.
+**As-built (NOT-84 / NOT-105 / NOT-108):** One Agent Deck MCP process may host many transport sessions. Request scope is immutable per transport: each `McpServer` closes over its MCP transport session id (`mcpSessionId`); backend calls look up that transport’s binding and send the **runtime** session id in `x-agent-deck-session-id` (C3 `sessionId`, including on `fetchDeck` and live-display touch/unregister). There is no process-global `activeSessionId`. Same-deck `bind_workspace` is idempotent in normal mode. A different-deck bind is allowed only under the C4 switch rule (elevated + assignment file); otherwise `DECK_FIXED` or `ADMIN_REQUIRED`. Sessions **with** an assignment file run stub sync on same-deck bind; sessions **without** one (e.g. Dealer worktrees) skip stub sync. Live-display unregister on transport close uses a short abort timeout so local session maps always clear even if the backend hangs.
 
 ### C4. Ephemeral `agent-admin`
 
@@ -83,9 +96,16 @@ Elevation is session-specific:
 3. The user approves the exact MCP session.
 4. The backend changes only that session to `agent-admin`.
 
-Admin authority has a 30-minute inactivity lease renewed only by authenticated MCP activity. It ends on lease expiry, explicit `exit_admin_mode`, MCP transport or runtime-session close, grant revocation, or server restart. `exit_admin_mode` downgrades the existing session to `normal`; it does not close that session. Admin state is visibly indicated in the agent binding response, dashboard, and menubar. It is never written into the persistent workspace grant.
+Admin authority has a 30-minute inactivity lease renewed only by authenticated MCP activity. It ends on lease expiry, explicit `exit_admin_mode`, MCP transport or runtime-session close, session revocation, or server restart. `exit_admin_mode` downgrades the existing session to `normal`; it does not close that session. Admin state is visibly indicated in the agent binding response, dashboard, and menubar. It is never written into the folder assignment file.
 
 The single elevation approval covers all C5 actions for that session until elevation ends; create, switch, bind, and edit do not require separate approvals.
+
+**Switch rule (NOT-108):** An agent may change the folder’s deck (`bind_workspace` / `switch_bound_deck` to another deck) only when **both** hold:
+
+1. The session is elevated (`agent-admin`); and
+2. The session’s workspace folder has a `.agent-deck/use.json`.
+
+Otherwise the call returns `DECK_FIXED` (no assignment file — e.g. a Dealer worktree) or `ADMIN_REQUIRED` (file present, not elevated). On success the MCP server rewrites `use.json`, syncs stubs, and the backend moves **that** session to the new deck. **Other open sessions in the same folder switch on their next reconnect** (they are not force-revoked solely because the assignment changed).
 
 ### C5. Admin scope
 
@@ -93,69 +113,53 @@ An elevated session may:
 
 - list safe metadata for all decks and cards, including how many workspaces use each deck;
 - create a deck and bind its own workspace to it;
-- change its own workspace's persistent deck binding; and
+- change its own folder’s assignment (when an assignment file exists — C4 switch rule); and
 - add, remove, or reorder existing cards only in the currently bound deck.
 
-When the bound deck is shared, a composition change intentionally affects every workspace using that deck. The agent must surface the workspace usage count and shared impact before mutation, but no additional approval is required. It may not change another workspace's grant, binding, or runtime session; edit an unbound deck; call services outside the bound deck; read full out-of-deck records; mutate the collection; directly mutate playbooks; change tool settings or OAuth; read secrets; or approve its own elevation.
+When the bound deck is shared, a composition change intentionally affects every workspace using that deck. The agent must surface the workspace usage count and shared impact before mutation, but no additional approval is required. It may not change another folder’s assignment, binding, or runtime session; edit an unbound deck; call services outside the bound deck; read full out-of-deck records; mutate the collection; directly mutate playbooks; change tool settings or OAuth; read secrets; or approve its own elevation.
 
 ### C6. Playbook learning remains available to normal agents
 
 Normal and elevated agents may read playbooks on the bound deck and call `propose_playbook_patch` to suggest creating, updating, or retiring playbooks based on user feedback. The dashboard applies reviewed suggestions. Direct playbook registration, update, deletion, or dependency mutation remains dashboard-only.
 
-### C7. Store-independent grant issuance and rotation
+### C7. Assignment write (replaces grant issuance / rotation)
 
-Actors are explicit:
+**Historical (1.7.0):** C7 described store-independent grant issuance and rotation (pending → install → activate, secret material, peer revoke on rotation). **NOT-108 removes that machinery.**
 
-- the trusted grant writer is the CLI, authenticated dashboard backend, or daemon executing an approved admin action;
-- the registry tracks pending, active, and revoked grants;
-- an agent or MCP caller never receives a replacement raw grant or an activation credential.
+**Current:** Changing a folder’s deck is an **assignment rewrite**, not grant rotation:
 
-Rotation uses this protocol:
-
-1. The registry creates pending grant G2 while G1 stays active.
-2. Only the trusted grant writer receives G2 and a single-use activation credential; agent-facing responses are redacted.
-3. The writer durably installs and read-verifies G2 in the selected private store before activation.
-4. The writer activates G2 and the backend atomically makes G2 active and revokes G1. For an elevated-agent rotation, it rebinds the approving session while preserving its current admin lease and revokes every peer session using G1. For a CLI or dashboard rotation with no approving MCP session, it revokes every live session using G1; the next connection starts in `normal` on G2.
-5. The writer verifies the active binding and cleans obsolete local material.
-
-Initial issuance uses the same pending-install-activate order without G1: the registry creates a pending grant, the trusted writer durably installs and read-verifies it, and only then activates it. Until activation the workspace remains unbound and returns `GRANT_REQUIRED`. Installation or activation failure revokes the pending grant and rolls the private store back to no grant; successful activation leaves the already-durable grant active. There is no approving or peer runtime session to rebind or revoke.
-
-Every supported private store must provide equivalent staging, rollback, and crash recovery for first issuance and rotation:
-
-- before activation, G1 remains usable;
-- after activation, G2 is already durable;
-- activation failure retains G1 and revokes G2; and
-- crash tests cover both ignored-file and OS-secret-store implementations.
-
-For first issuance, the equivalent invariant is: no grant is usable before activation, the new grant is durable before activation, and any failure restores the no-grant state. CLI- and dashboard-initiated first use must both satisfy this invariant.
-
-File-specific mechanics such as temporary and backup files belong in the technical design, not this product contract.
+- Trusted writers are the CLI (`agent-deck use <deck>`), the authenticated dashboard, or an elevated MCP session under the C4 switch rule.
+- The writer updates `<folder>/.agent-deck/use.json` (v3). No secret is minted; the backend stores no grant ledger.
+- An agent or MCP caller never receives a replacement credential.
+- Peer sessions are **not** revoked solely because the assignment file changed; they pick up the new deck on their next reconnect (C4).
 
 ### C8. Deck changes are persistent
 
-There is no temporary deck switch. An approved admin deck change rotates the persistent workspace grant using C7 and revokes peer sessions with `SESSION_REVOKED`. The approving runtime session remains in `agent-admin` on the new deck until the C4 lease or exit conditions end elevation, so it can finish deck composition work. A future runtime session still starts in `normal`.
+There is no temporary deck switch. An approved admin deck change rewrites the folder assignment (C7). The approving runtime session remains in `agent-admin` on the new deck until the C4 lease or exit conditions end elevation, so it can finish deck composition work. A future runtime session still starts in `normal` on whatever the assignment file currently names. `SESSION_REVOKED` means the runtime session was explicitly revoked or ended by session lifecycle — **not** “grant rotation.”
 
-### C9. Launch-selected deck (NOT-105)
+### C9. Launch-selected deck (NOT-105 / NOT-108)
 
 Whoever launches an MCP connection sets its deck via `x-agent-deck-deck-id`. Trust that launch config for the *deck*; never trust the caller for *admin* (elevation + dashboard approval stay as in C4).
 
-**Credential precedence** on every MCP request: grant bearer → deck header → otherwise `GRANT_REQUIRED`. When a grant bearer is present, the deck header is ignored.
+**Credential precedence** on every MCP request: deck header → otherwise `GRANT_REQUIRED` (401). There is no grant bearer.
 
-A *launch session* is a normal runtime session with no workspace key and no grant. Deck scoping, `propose_playbook_patch`, and elevation work unchanged. `bind_workspace` with the same deck succeeds from any path and writes no stubs / `.agent-deck/use.json`; a different deck returns `DECK_FIXED` (even when elevated). Grant-based sessions (`Authorization: Bearer <grant>`) keep today's behavior, including `assertWorkspaceScope` / `WORKSPACE_SCOPE_MISMATCH`.
+IDE `agent-deck mcp-launch` reads the folder assignment and connects with `x-agent-deck-deck-id` (+ workspace header). Unattended workers pass the deck header from their launch config without an assignment file.
+
+Deck scoping, `propose_playbook_patch`, and elevation work unchanged. `bind_workspace` with the same deck succeeds; a different deck follows the C4 switch rule (`DECK_FIXED` / `ADMIN_REQUIRED` / rewrite assignment when elevated).
 
 ## 3. User flows
 
 ### A. Restart and automatic binding
 
-The user starts a supported agent in a previously authorized workspace. The launcher reads the private grant, the backend creates a normal runtime session under C3, and the agent receives the bound deck summary. No deck selection or admin approval is required.
+The user starts a supported agent in a folder that already has `.agent-deck/use.json`. The launcher reads the assignment, connects with the deck header under C9, the backend creates a normal runtime session under C3, and the agent receives the bound deck summary. No deck selection or admin approval is required.
 
 ### B. Conversational deck administration
 
-The user asks the agent to create or change a deck. The normal call returns `ADMIN_REQUIRED`; the agent requests C4 elevation and the menubar opens approval. After that one approval, the agent may create or switch, bind the workspace, surface any shared-deck impact, and edit the now-bound deck. If the binding changes, C7 and C8 apply; the same session may finish configuring the new deck before elevation ends under C4.
+The user asks the agent to create or change a deck. The normal call returns `ADMIN_REQUIRED`; the agent requests C4 elevation and the menubar opens approval. After that one approval, the agent may create or switch (when an assignment file exists), bind the workspace, surface any shared-deck impact, and edit the now-bound deck. If the assignment changes, C7 and C8 apply; the same session may finish configuring the new deck before elevation ends under C4.
 
 ### C. Concurrent agents during a deck change
 
-Two normal sessions share one workspace grant. One is elevated and changes the deck. The approving flow rotates the grant and retains its admin lease; the other session receives `SESSION_REVOKED`. Its next connection uses the new grant and starts normal on the new deck.
+Two normal sessions share one folder assignment. One is elevated and changes the deck. The approving session rewrites `use.json` and stays on the new deck with its admin lease; peer sessions keep their current deck until reconnect, then start normal on the updated assignment.
 
 ### D. Learning from feedback without admin mode
 
@@ -172,22 +176,22 @@ A host is killed without a disconnect. MCP activity stops, admin mode downgrades
 | Read binding, bound deck summaries/services/playbooks | Yes | Yes | Yes |
 | Propose playbook create/update/retire | Yes | Yes | Review/apply |
 | List safe metadata across decks/cards | No | Yes | Yes |
-| Create/bind deck; change own binding; edit currently bound deck membership/order | No | Yes | Yes |
+| Create/bind deck; change own assignment (when file exists); edit currently bound deck membership/order | No | Yes | Yes |
 | Direct playbook or collection mutation | No | No | Yes |
 | Call a service outside the bound deck | No | No | Yes |
 | Change tool settings/OAuth or read secrets | No | No | Yes |
 | Approve elevation | No | No | Yes |
 
-Every HTTP and MCP operation declares exactly one centralized policy: `requireAgentResource`, `requireDeckAdmin`, `requireDashboard`, or an explicit `allowPublic`. The guard derives authority from the authenticated runtime or dashboard principal before the handler runs; caller-supplied role, workspace, admin, or dashboard headers are never principals. Establishing a launch principal may use `x-agent-deck-deck-id` per C9 (only when no bearer is present); that header never elevates admin and never overrides an already-authenticated bearer principal. An undeclared operation is denied before its handler runs. Public operations cannot access principal-scoped resources.
+Every HTTP and MCP operation declares exactly one centralized policy: `requireAgentResource`, `requireDeckAdmin`, `requireDashboard`, or an explicit `allowPublic`. The guard derives authority from the authenticated runtime or dashboard principal before the handler runs; caller-supplied role, workspace, admin, or dashboard headers are never principals. Establishing a launch principal may use `x-agent-deck-deck-id` per C9; that header never elevates admin. An undeclared operation is denied before its handler runs. Public operations cannot access principal-scoped resources.
 
 ## 5. MCP and error contracts
 
 Required behavior:
 
-- binding and grant inspection returns redacted identity and expiry information;
+- binding inspection returns redacted identity and expiry information;
 - deck listing returns only the bound deck to normal sessions and safe metadata to admin sessions;
 - binding the current deck is idempotent;
-- for **grant** sessions, binding a different deck requires admin, is limited to the session's own workspace, and uses C7; for **launch** sessions, a different deck returns `DECK_FIXED` (even when elevated) and writes no stubs;
+- binding a different deck follows the C4 switch rule (elevated + assignment file → rewrite; else `DECK_FIXED` or `ADMIN_REQUIRED`);
 - create/switch/manage-deck actions require admin;
 - manage-deck actions target only the currently bound deck and surface shared-workspace impact without a second approval;
 - collection listing and mutation are denied to normal agents; admin receives only safe metadata;
@@ -199,15 +203,14 @@ Stable machine-readable errors:
 
 | Code | HTTP | Meaning |
 | --- | ---: | --- |
-| `GRANT_REQUIRED` | 401 | No valid workspace grant (MCP / API agent path — fix: `agent-deck use <deck>`). Distinct from the dashboard SPA cookie miss, which renders **Dashboard Access Expired** with `agent-deck open` recovery. |
+| `GRANT_REQUIRED` | 401 | No deck selected for this connection (MCP / API agent path — fix: `agent-deck use <deck>` so the launcher can send `x-agent-deck-deck-id`). Distinct from the dashboard SPA cookie miss, which renders **Dashboard Access Expired** with `agent-deck open` recovery. Code name kept for compatibility; not a workspace-grant miss. |
 | `SESSION_INVALID` | 401 | Runtime session absent or expired |
-| `SESSION_REVOKED` | 401 | Grant rotation or explicit revocation ended the session |
-| `WORKSPACE_SCOPE_MISMATCH` | 403 | Request targets a different workspace; elevation cannot override it |
+| `SESSION_REVOKED` | 401 | Runtime session was explicitly revoked or ended by session lifecycle (not assignment rewrite) |
 | `RESOURCE_OUT_OF_SCOPE` | 403 | Resource is outside the bound deck |
 | `ADMIN_REQUIRED` | 403 | Deck-admin elevation is required |
 | `DASHBOARD_REQUIRED` | 403 | Operation is never available to an agent |
-| `DECK_FIXED` | 403 | Launch-selected deck cannot be changed by the agent |
-| `ADMIN_CHALLENGE_EXPIRED` | 410 | Approval challenge expired or was already consumed |
+| `DECK_FIXED` | 403 | Deck cannot be changed (no assignment file, or switch not allowed for this session) |
+| `ADMIN_CHALLENGE_EXPIRED` | 410 | Elevation challenge expired or was already consumed |
 
 The MCP adapter preserves these codes instead of collapsing them into generic tool failures.
 
@@ -219,20 +222,21 @@ The dashboard admin secret remains outside the workspace in a user-only store. A
 
 ## 7. Migration and setup
 
-Legacy manifests and MCP configuration are hints, never authority. `agent-deck use --refresh` diagnoses state and prints the explicit `agent-deck use <deck>` command; it does not mint a first grant.
+Legacy manifests and MCP configuration are hints, never authority. `agent-deck use --refresh` diagnoses state and prints the explicit `agent-deck use <deck>` command; it does not invent a deck choice.
 
 | Legacy state | Required behavior |
 | --- | --- |
-| Valid manifest and matching host config | Require explicit `use`, then install the private grant, non-secret launcher/reference, stubs, and reload guidance |
+| Valid manifest and matching host config | Require explicit `use`, then write the v3 assignment, non-secret launcher/reference, stubs, and reload guidance |
 | Valid manifest but one or more supported host configs are missing or partial | Treat the manifest only as a hint, require explicit `use`, preserve matching host configuration, install the selected missing pieces, leave unrelated host configuration untouched, and report reload guidance per changed host |
 | Manifest missing but one host config names a deck | Show the hint and require explicit `use` |
 | Corrupt metadata | Preserve it for diagnosis and require explicit selection |
 | Stale deck ID with one exact-name match | Offer that match but require explicit confirmation |
 | Ambiguous matches | List safe candidates in the trusted CLI and require a choice |
 | Host configs disagree | Refuse automatic conversion and require an explicit choice |
-| `agent-deck use <deck> --no-mcp` | Create the grant, manifest, and stubs; warn that no host transport is configured |
+| `agent-deck use <deck> --no-mcp` | Write the assignment, manifest, and stubs; warn that no host transport is configured |
+| Legacy v2 grant-shaped `use.json` / Keychain grant | Launcher migrates once to v3 assignment (NOT-108 PR1); after PR2, grant credentials are not accepted |
 
-All grant installation and later changes use C7. Setup reports each changed configuration file and the host reload or restart required.
+Assignment writes use C7. Setup reports each changed configuration file and the host reload or restart required.
 
 The harness starts with binding inspection. On `GRANT_REQUIRED`, it tells the user to run the explicit `use` command and never chooses a deck itself. It shows the bound summary once and requests admin only after a user asks for an admin-scoped action. Setup, harness, migration, and troubleshooting docs must reflect the same model.
 
@@ -242,14 +246,13 @@ Target verification matrix (design spec; 1.7.0 shipped with partial automated co
 
 Automated and manual coverage should include:
 
-- canonical path aliases, platform behavior, and cross-workspace denial;
-- grant entropy, hashing, redaction, tracked-config scanning, file mode, and OS-secret-store behavior;
+- folder path resolution and assignment read/write (v3; legacy v2 / Keychain migration);
+- tracked-config scanning so no grant secret is reintroduced;
 - supported-host transport reuse, transport/session close, `exit_admin_mode` downgrade without session close, hard kill, 30-minute admin expiry, and 24-hour session cleanup;
 - every authorization-matrix cell across HTTP and MCP; route-registry enumeration proving every operation declares exactly one policy, including explicit public exceptions; denial of undeclared operations before handler execution; and forged-header/direct-HTTP attempts against agent-admin and dashboard-only actions;
-- C7 fault injection across all actors and stores, including CLI- and dashboard-initiated first issuance plus rotation crashes before and after activation;
-- elevated-agent rotation retaining only the approving session, CLI/dashboard rotation revoking all old-grant sessions, and normal peer reconnect on the new deck;
+- elevated switch with assignment file, `ADMIN_REQUIRED` / `DECK_FIXED` negatives, and peer reconnect on the new assignment;
 - every migration row, including partially configured supported hosts, and required reload behavior for each changed host; and
-- a real flow: `use` → restart agent → automatic normal binding → playbook proposal → one admin approval → create or switch and bind → surface shared impact → edit the bound deck → peer revocation → restart normal on the new deck.
+- a real flow: `use` → restart agent → automatic normal binding → playbook proposal → one admin approval → create or switch and bind → surface shared impact → edit the bound deck → peer reconnect on the new deck.
 
 NOT-44 verification remains separate and mandatory: direct HTTP and MCP calls for a service outside the bound deck return `RESOURCE_OUT_OF_SCOPE`, while authenticated dashboard behavior remains unchanged.
 
@@ -259,43 +262,53 @@ NOT-44 verification remains separate and mandatory: direct HTTP and MCP calls fo
 
 | PRD area | Status |
 | --- | --- |
-| C1–C4 grants, runtime sessions, admin elevation | Shipped — MCP reads live mode from backend; `/admin/approve` dashboard page |
+| C1–C4 **workspace grants**, runtime sessions, admin elevation | Shipped — MCP reads live mode from backend; `/admin/approve` dashboard page. **Superseded for grants by NOT-108** (assignment file + launch header). |
 | C5 admin scope (list decks + workspace counts) | Shipped for HTTP + MCP |
 | C6 playbook proposals | Shipped (agent `propose_playbook_patch`; direct mutation dashboard-only) |
-| C7 pending → install → activate | Shipped for CLI `use` |
-| C8 persistent deck change + peer revocation | Shipped via `bind-workspace` grant rotation |
+| C7 pending → install → activate (grants) | Shipped for CLI `use` in 1.7.0 — **removed in NOT-108 PR2** |
+| C8 persistent deck change + peer revocation (grant rotation) | Shipped via `bind-workspace` grant rotation in 1.7.0 — **replaced in NOT-108** by assignment rewrite; peers switch on reconnect |
 | Central policy registry + route enumeration | Shipped — `HTTP_ROUTE_POLICIES` + `onRequest` hook; enumeration test on boot |
-| §8 verification matrix (partial automated) | Partial — `auth-matrix.test.ts`, route-policy enumeration, containment tests, and related unit tests cover forged headers, elevation e2e, C8 peer revoke, and NOT-44 scope; C7 fault injection across all stores, full host-transport lifecycle, and canonical-path alias rows remain manual / follow-up |
+| §8 verification matrix (partial automated) | Partial — `auth-matrix.test.ts`, route-policy enumeration, containment tests, and related unit tests cover forged headers, elevation e2e, and NOT-44 scope; full host-transport lifecycle and canonical-path alias rows remain manual / follow-up |
 | Menubar deep link to approval | Shipped — `GET /api/trusted-session/admin/challenges`; 1.7.1 menubar rows run `agent-deck open --path …` (not bare `href=`) |
 
 ### As-built (NOT-105)
 
 | PRD area | Status |
 | --- | --- |
-| C9 launch-selected deck | Shipped — `x-agent-deck-deck-id` launch sessions; nullable runtime key/grant; `DECK_FIXED`; public `/api/launch/*`; grant sessions unchanged |
+| C9 launch-selected deck | Shipped — `x-agent-deck-deck-id` launch sessions; `DECK_FIXED`; public `/api/launch/*` |
+
+### As-built (NOT-108)
+
+| PRD area | Status |
+| --- | --- |
+| C1–C2 folder assignment file (v3) | Shipped — PR1 writes/reads assignment; no secret; backend stores no workspace→deck grant |
+| C4 switch rule (elevated + assignment file) | Shipped — else `DECK_FIXED` / `ADMIN_REQUIRED`; peers switch on reconnect |
+| C7–C8 assignment rewrite (no grant rotation) | Shipped — PR2 deletes grant issuance/rotation |
+| C3 / C9 principal + credential precedence | Shipped — no `workspaceKey` / `workspaceGrantId`; deck header → `GRANT_REQUIRED` (“No deck selected for this connection”) |
+| DB shed of grant tables | Shipped — PR2 drops `workspace_grants` / `workspace_keys`; rebuilds `runtime_sessions` without grant columns |
 
 ## 9. Threats and non-goals
 
 Design threats this feature mitigates (full automated coverage per §8 matrix not yet complete — see as-built gaps):
-- forged authorization headers, copied grants used from another workspace, raw grants committed to source control, reused or self-approved admin challenges, leaked replacement grants, server restart, crashed hosts, concurrent deck changes, and newly added routes that omit policy.
+- forged authorization headers, reused or self-approved admin challenges, server restart, crashed hosts, concurrent deck changes without elevation, and newly added routes that omit policy.
 
 Non-goals for v1:
 
 - temporary deck switching;
-- persistent admin grants;
-- multiple simultaneous deck grants per workspace;
+- persistent admin authority in the assignment file;
+- multiple simultaneous deck assignments per folder;
 - agent access to OAuth, secrets, tool settings, collection mutation, or direct playbook mutation; and
 - replacing dashboard review of playbook suggestions.
 
 ## 10. Implementation map (as-built)
 
-Primary touchpoints in the 1.7.0 codebase (later tickets called out per bullet):
+Primary touchpoints (1.7.0 baseline; later tickets called out per bullet):
 
-- SQLite schema + migrations — trusted session / grant tables
-- `packages/backend/src/trusted-session/` — grants, runtime sessions, elevation
+- SQLite schema + migrations — trusted **runtime** sessions (grant tables removed in NOT-108 PR2)
+- `packages/backend/src/trusted-session/` — runtime sessions, elevation (no grant store after NOT-108)
 - `packages/backend/src/lib/http-route-policies.ts` — centralized policy registry + Fastify hook
-- MCP transport session establishment (**NOT-53**, **NOT-105**) — grant Bearer auth **or** launch `x-agent-deck-deck-id` (no bearer) **before** advertising `mcp-session-id`; precedence: grant bearer → deck header → `GRANT_REQUIRED`; follow-up POST/GET/DELETE re-validate the same credential (401 without destroying transport); `wgr_…:secret` (`grantId:secret`) parsed at the auth boundary with claimed-id match; `/mcp/connect` keeps `mcp-session-id` → grant ownership via the latest runtime row (including expired/revoked) so another grant cannot replace it; `/mcp/connect-deck` creates nullable-key launch sessions and rejects grant-owned or other-deck MCP ids; failed initialize after connect revokes via `mcp/disconnect` or `mcp/disconnect-deck`; launch `bind_workspace` skips stub sync and returns `DECK_FIXED` on deck change
-- CLI `use` / `use --refresh` (**NOT-54** / **NOT-52**) — grant writer + launcher config (`packages/cli/`); explicit Cursor `use` creates or repairs the user-level `mcp-launch` entry with `AGENT_DECK_WORKSPACE` (last explicit workspace wins), while `status` / `use --refresh` run the read-only `inspectCursorMcpConfig` report (global + project, grant presence, bare-URL → `mcp_auth` dead end) and never write; custom wrappers are not overwritten. Contract: [docs/decisions/cursor-mcp-config-resolution.md](./decisions/cursor-mcp-config-resolution.md)
+- MCP transport session establishment (**NOT-53**, **NOT-105**, **NOT-108**) — launch `x-agent-deck-deck-id` **before** advertising `mcp-session-id`; precedence: deck header → `GRANT_REQUIRED`; follow-up POST/GET/DELETE re-validate the same deck credential (401 without destroying transport); `/mcp/connect-deck` creates launch sessions; failed initialize after connect revokes via `mcp/disconnect-deck`; elevated assignment switch may call `setRuntimeSessionDeck`
+- CLI `use` / `use --refresh` / `mcp-launch` (**NOT-108**) — assignment writer + launcher (`packages/cli/src/assignment.ts`); explicit Cursor `use` creates or repairs the user-level `mcp-launch` entry with `AGENT_DECK_WORKSPACE` (last explicit workspace wins), while `status` / `use --refresh` run the read-only `inspectCursorMcpConfig` report and never write; custom wrappers are not overwritten. Contract: [docs/decisions/cursor-mcp-config-resolution.md](./decisions/cursor-mcp-config-resolution.md)
 
 - Dashboard `/admin/approve` + menubar challenge links
 - Harness + docs — `CLAUDE.md`, setup/migration copy, `CHANGELOG.md`

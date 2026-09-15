@@ -7,11 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  AGENT_DECK_DECK_ID_HEADER,
-  canonicalizeWorkspacePath,
-  digestCanonicalWorkspacePath,
-} from '@agent-deck/shared';
+import { AGENT_DECK_DECK_ID_HEADER } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
 import type { AgentDeckMCPServer } from '../mcp-server';
@@ -26,7 +22,7 @@ import { registerServiceRoutes } from '../routes/services';
 import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
-import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
+import { TrustedSessionStore } from '../trusted-session/store';
 import type { ServiceManager } from '../services/service-manager';
 import {
   MCP_ACCEPT,
@@ -89,13 +85,8 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     });
     await db.addPlaybookToDeck({ deckId: deckAlpha.id, playbookId: playbook.id, position: 0 });
 
-    const workspaceRoot = '/tmp/agent-deck-not105-grant';
     const store = new TrustedSessionStore(db.getSqliteDatabase());
     const liveDisplayRegistry = new LiveDisplayRegistry();
-    const digest = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRoot));
-    const workspace = store.getOrCreateWorkspaceKey(digest);
-    const secret = generateGrantSecret();
-    store.activateGrant(store.createPendingGrant(workspace.id, deckAlpha.id, secret).id);
 
     const playbookManager = new PlaybookManager(db);
     const patchManager = new PatchManager(db, playbookManager);
@@ -145,9 +136,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       deckAlpha,
       deckBeta,
       playbook,
-      secret,
       store,
-      workspaceRoot,
     };
   }
 
@@ -157,14 +146,13 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     mcpServer = started.server;
 
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const bound = await callToolMcpResult(
       started.port,
       sessionId,
       'get_bound_deck',
       {},
       2,
-      undefined,
       deckHeaders,
     );
 
@@ -180,7 +168,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
 
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-launch-'));
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
 
     const bound = await callToolMcpResult(
       started.port,
@@ -188,7 +176,6 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       'bind_workspace',
       { workspaceRoot: tmpRoot, deckId: deckAlpha.id },
       2,
-      undefined,
       deckHeaders,
     );
 
@@ -204,14 +191,13 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     mcpServer = started.server;
 
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const denied = await callToolMcpResult(
       started.port,
       sessionId,
       'bind_workspace',
       { workspaceRoot: '/tmp/agent-deck-launch-other', deckId: deckBeta.id },
       2,
-      undefined,
       deckHeaders,
     );
 
@@ -225,7 +211,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     mcpServer = started.server;
 
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const result = await callToolMcpResult(
       started.port,
       sessionId,
@@ -240,35 +226,11 @@ describe('MCP launch-selected deck (NOT-105)', () => {
         },
       },
       2,
-      undefined,
       deckHeaders,
     );
 
     expect(result.isError).toBe(false);
     expect(result.data.kind).toBe('signal_only');
-  });
-
-  it('grant bearer + deck header for a different deck binds to the grant deck', async () => {
-    const { backendUrl, deckAlpha, deckBeta, secret } = await buildListeningBackend();
-    const started = await startMcpServer(backendUrl, 'standard');
-    mcpServer = started.server;
-
-    const sessionId = await openSession(started.port, 1, secret, {
-      [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id,
-    });
-    const bound = await callToolMcpResult(
-      started.port,
-      sessionId,
-      'get_bound_deck',
-      {},
-      2,
-      secret,
-      { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id },
-    );
-
-    expect(bound.isError).toBe(false);
-    expect(bound.data.id).toBe(deckAlpha.id);
-    expect(bound.data.name).toBe('alpha');
   });
 
   it('follow-up request without the deck header → 401', async () => {
@@ -277,7 +239,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     mcpServer = started.server;
 
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
 
     const response = await fetch(`http://127.0.0.1:${started.port}/mcp`, {
       method: 'POST',
@@ -312,7 +274,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     );
 
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const runtime = store.findActiveRuntimeSessionByMcpSessionId(sessionId);
     expect(runtime).toBeTruthy();
     store.elevateSessionToAdmin(runtime!.sessionId);
@@ -323,7 +285,6 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       'bind_workspace',
       { workspaceRoot: tmpRoot, deckId: deckBeta.id },
       2,
-      undefined,
       deckHeaders,
     );
     expect(switched.isError).toBe(false);
@@ -343,7 +304,6 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       'get_bound_deck',
       {},
       3,
-      undefined,
       deckHeaders,
     );
     expect(bound.isError).toBe(false);
@@ -364,14 +324,13 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     );
 
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const denied = await callToolMcpResult(
       started.port,
       sessionId,
       'bind_workspace',
       { workspaceRoot: tmpRoot, deckId: deckBeta.id },
       2,
-      undefined,
       deckHeaders,
     );
     expect(denied.isError).toBe(true);
@@ -385,14 +344,13 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     mcpServer = started.server;
 
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const denied = await callToolMcpResult(
       started.port,
       sessionId,
       'bind_workspace',
       { workspaceRoot: '/tmp/agent-deck-launch-no-assign', deckId: deckBeta.id },
       2,
-      undefined,
       deckHeaders,
     );
     expect(denied.isError).toBe(true);
@@ -414,14 +372,13 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     );
 
     const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
-    const sessionId = await openSession(started.port, 1, undefined, deckHeaders);
+    const sessionId = await openSession(started.port, 1, deckHeaders);
     const bound = await callToolMcpResult(
       started.port,
       sessionId,
       'bind_workspace',
       { workspaceRoot: tmpRoot, deckId: deckAlpha.id },
       2,
-      undefined,
       deckHeaders,
     );
     expect(bound.isError).toBe(false);

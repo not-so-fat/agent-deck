@@ -199,7 +199,6 @@ export async function registerDeckRoutes(
             name: deck.name,
             isActive: deck.isActive,
             cardCounts: countDeckCards(deck),
-            workspaceCount: fastify.trustedSessionStore.countWorkspacesForDeck(deck.id),
           }));
           return reply.send({ success: true, data: list } satisfies ApiResponse<DeckListEntry[]>);
         }

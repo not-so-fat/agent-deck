@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Add: folder-to-deck assignment file (NOT-108 PR 1)
+
+- `agent-deck use` / `mcp-launch` write and read `<folder>/.agent-deck/use.json` **v3** (`deckId`, `deckName`, optional `mcpUrl`) — **no secret**. Backend stores no workspace→deck grant for the assignment itself.
+- Launcher connects with `x-agent-deck-deck-id` (+ workspace header). Legacy v2 / Keychain entries migrate once to v3.
+- Elevated agent may switch a folder’s deck only when an assignment file exists; otherwise `DECK_FIXED` / `ADMIN_REQUIRED`. Peers in the same folder pick up the new deck on reconnect.
+
+### Removed: workspace grant machinery (NOT-108 PR 2)
+
+- Deleted grant routes, grant-bearer auth, grant store methods, and CLI grant issue/store modules. MCP auth is **launch deck header only** (precedence: deck header → 401).
+- `GRANT_REQUIRED` message is now **No deck selected for this connection** (code name kept).
+- SQLite: rebuild `runtime_sessions` without workspace/grant columns; drop `workspace_grants` and `workspace_keys`.
+- Runtime principal no longer carries `workspaceKey` / `workspaceGrantId`. `WORKSPACE_SCOPE_MISMATCH` removed.
+
 ### Removed: execution authority and coordinator enrollment (NOT-107)
 
 - Deleted `/api/execution-authority/*`, the SQLite authority/enrollment tables, MCP authority principal, and CLI `agent-deck coordinator enroll|status|revoke`.

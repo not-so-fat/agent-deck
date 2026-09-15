@@ -217,16 +217,8 @@ function registerRuntimeTools(host: McpToolHost): void {
         deck_name: deck.name,
         message: bindResult?.assignmentUpdated
           ? 'Folder assignment updated to new deck.'
-          : bindResult?.grantRotated
-            ? 'Workspace grant rotated to new deck. Peer sessions revoked.'
-            : 'Session bound to deck.',
+          : 'Session bound to deck.',
       };
-      if (bindResult?.grantRotated) {
-        response.grant_rotated = true;
-        response.peers_revoked = bindResult.peersRevoked;
-        response.previous_deck_workspace_count = bindResult.previousDeckWorkspaceCount;
-        response.grant_refresh_note = bindResult.grantRefreshNote;
-      }
       if (bindResult?.assignmentUpdated) {
         response.assignment_updated = true;
       }
@@ -324,16 +316,8 @@ function registerRuntimeTools(host: McpToolHost): void {
         deck_name: deck.name,
         message: bound.assignmentUpdated
           ? 'Folder assignment updated to new deck.'
-          : bound.grantRotated
-            ? 'Workspace grant rotated. Peer sessions on the old grant were revoked.'
-            : 'Already bound to this deck.',
+          : 'Already bound to this deck.',
       };
-      if (bound.grantRotated) {
-        response.grant_rotated = true;
-        response.peers_revoked = bound.peersRevoked;
-        response.previous_deck_workspace_count = bound.previousDeckWorkspaceCount;
-        response.grant_refresh_note = bound.grantRefreshNote;
-      }
       if (bound.assignmentUpdated) {
         response.assignment_updated = true;
       }

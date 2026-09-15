@@ -30,7 +30,6 @@ export type RequestPrincipal =
       session: RuntimeSession;
       mode: AgentSessionMode;
       deckId: string;
-      workspaceKey: string | null;
     };
 
 export class TrustedAuthError extends Error {
@@ -42,6 +41,8 @@ export class TrustedAuthError extends Error {
     this.name = 'TrustedAuthError';
   }
 }
+
+const GRANT_REQUIRED_MESSAGE = 'No deck selected for this connection';
 
 async function resolveDashboardPrincipal(
   request: FastifyRequest,
@@ -78,7 +79,7 @@ function resolveAgentFromSessionHeader(
     throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
   }
   if (row.revoked_at) {
-    throw new TrustedAuthError('SESSION_REVOKED', 'Grant rotation or explicit revocation ended the session');
+    throw new TrustedAuthError('SESSION_REVOKED', 'Session was revoked');
   }
   if (Date.parse(row.expires_at) <= Date.now()) {
     throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
@@ -89,22 +90,6 @@ function resolveAgentFromSessionHeader(
     throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
   }
   return session;
-}
-
-function resolveAgentFromGrantSecret(
-  grantSecret: string,
-  store: TrustedSessionStore,
-): RuntimeSession {
-  const grant = store.findActiveGrantBySecret(grantSecret);
-  if (!grant) {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
-  }
-
-  return store.createRuntimeSession({
-    workspaceKeyId: grant.workspace_key_id,
-    workspaceGrantId: grant.id,
-    deckId: grant.deck_id,
-  });
 }
 
 export async function resolveRequestPrincipal(
@@ -123,23 +108,10 @@ export async function resolveRequestPrincipal(
       session: sessionFromHeader,
       mode: sessionFromHeader.mode,
       deckId: sessionFromHeader.deckId,
-      workspaceKey: sessionFromHeader.workspaceKey,
     };
   }
 
-  const bearer = parseBearerToken(request);
-  if (bearer) {
-    const session = resolveAgentFromGrantSecret(bearer, store);
-    return {
-      kind: 'agent',
-      session,
-      mode: session.mode,
-      deckId: session.deckId,
-      workspaceKey: session.workspaceKey,
-    };
-  }
-
-  throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+  throw new TrustedAuthError('GRANT_REQUIRED', GRANT_REQUIRED_MESSAGE);
 }
 
 export async function requireTrustedWriterBearer(request: FastifyRequest): Promise<void> {
@@ -166,11 +138,11 @@ export function enforcePolicy(policy: AuthPolicy, principal: RequestPrincipal): 
     if (principal.kind === 'dashboard' || principal.kind === 'agent') {
       return;
     }
-    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+    throw new TrustedAuthError('GRANT_REQUIRED', GRANT_REQUIRED_MESSAGE);
   }
 
   if (principal.kind !== 'agent') {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+    throw new TrustedAuthError('GRANT_REQUIRED', GRANT_REQUIRED_MESSAGE);
   }
 
   if (policy === 'requireDeckAdmin' && principal.mode !== 'agent-admin') {

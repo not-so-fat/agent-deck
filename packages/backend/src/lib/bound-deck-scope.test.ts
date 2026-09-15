@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { AGENT_DECK_SESSION_HEADER } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
-import { TrustedSessionStore, generateGrantSecret } from '../trusted-session/store';
+import { TrustedSessionStore } from '../trusted-session/store';
 import {
   BoundDeckScopeError,
   requireBoundDeckScope,
@@ -18,14 +18,7 @@ async function agentRequest(deckId: string) {
   const otherDeck = await db.createDeck({ name: 'other' });
 
   const store = new TrustedSessionStore(db.getSqliteDatabase());
-  const workspace = store.getOrCreateWorkspaceKey('scope-test');
-  const secret = generateGrantSecret();
-  const pending = store.createPendingGrant(workspace.id, boundDeck.id, secret);
-  store.activateGrant(pending.id);
-  const grant = store.findActiveGrantBySecret(secret)!;
   const session = store.createRuntimeSession({
-    workspaceKeyId: workspace.id,
-    workspaceGrantId: grant.id,
     deckId: boundDeck.id,
   });
 

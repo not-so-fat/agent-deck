@@ -7,8 +7,6 @@ import {
   AGENT_DECK_SESSION_HEADER,
   DASHBOARD_NONCE_TTL_MS,
   DASHBOARD_COOKIE_MAX_AGE_MS,
-  canonicalizeWorkspacePath,
-  digestCanonicalWorkspacePath,
 } from '@agent-deck/shared';
 
 import { parseBearerToken } from '../lib/http-auth';
@@ -19,8 +17,9 @@ import {
 } from '../trusted-session/auth';
 import { isDashboardAuthenticated } from '../lib/dashboard-auth';
 import type { TrustedSessionStore } from '../trusted-session/store';
-import { generateGrantSecret } from '../trusted-session/store';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
+
+const GRANT_REQUIRED_MESSAGE = 'No deck selected for this connection';
 
 /** Caller must own the runtime session (session header matches body id). */
 function requireRuntimeSessionOwnership(request: FastifyRequest, runtimeSessionId: string): void {
@@ -31,24 +30,6 @@ function requireRuntimeSessionOwnership(request: FastifyRequest, runtimeSessionI
   }
 }
 
-function assertWorkspaceScope(
-  store: TrustedSessionStore,
-  workspaceKeyId: string,
-  workspaceRoot: string,
-): void {
-  const key = store.getWorkspaceKeyById(workspaceKeyId);
-  if (!key) {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
-  }
-  const digest = digestCanonicalWorkspacePath(canonicalizeWorkspacePath(workspaceRoot));
-  if (key.path_digest !== digest) {
-    throw new TrustedAuthError(
-      'WORKSPACE_SCOPE_MISMATCH',
-      'Request targets a different workspace; elevation cannot override it',
-    );
-  }
-}
-
 function resolveRuntimeSessionFromHeader(
   request: FastifyRequest,
   store: TrustedSessionStore,
@@ -56,11 +37,11 @@ function resolveRuntimeSessionFromHeader(
   const sessionHeader = request.headers[AGENT_DECK_SESSION_HEADER];
   const sessionId = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
   if (!sessionId) {
-    throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+    throw new TrustedAuthError('GRANT_REQUIRED', GRANT_REQUIRED_MESSAGE);
   }
   const row = store.getRuntimeSessionRow(sessionId);
   if (!row || row.revoked_at) {
-    throw new TrustedAuthError('SESSION_REVOKED', 'Grant rotation or explicit revocation ended the session');
+    throw new TrustedAuthError('SESSION_REVOKED', 'Session was revoked');
   }
   if (Date.parse(row.expires_at) <= Date.now()) {
     throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
@@ -75,110 +56,17 @@ function resolveRuntimeSessionFromHeader(
 export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
   const store = fastify.trustedSessionStore;
 
-  fastify.post<{ Body: { workspaceRoot: string; deckId: string } }>(
-    '/workspace-grants/issue',
-    async (request, reply) => {
-      try {
-        await requireTrustedWriterBearer(request);
-
-        const { workspaceRoot, deckId } = request.body;
-        if (!workspaceRoot?.trim() || !deckId?.trim()) {
-          return reply.status(400).send({ success: false, error: 'workspaceRoot and deckId required' });
-        }
-
-        const deck = await fastify.db.getDeck(deckId);
-        if (!deck) {
-          return reply.status(404).send({ success: false, error: 'Deck not found' });
-        }
-
-        const canonical = canonicalizeWorkspacePath(workspaceRoot);
-        const digest = digestCanonicalWorkspacePath(canonical);
-        const workspaceKey = store.getOrCreateWorkspaceKey(digest);
-        const secret = generateGrantSecret();
-        const pending = store.createPendingGrant(workspaceKey.id, deckId, secret);
-
-        return reply.send({
-          success: true,
-          data: {
-            workspaceKey: workspaceKey.id,
-            grantId: pending.id,
-            deckId,
-            deckName: deck.name,
-            secret,
-            status: 'pending' as const,
-          },
-        });
-      } catch (error) {
-        if (error instanceof TrustedAuthError) {
-          return sendTrustedAuthError(reply, error);
-        }
-        throw error;
-      }
-    },
-  );
-
-  fastify.post<{ Params: { grantId: string } }>(
-    '/workspace-grants/:grantId/revoke-pending',
-    async (request, reply) => {
-      try {
-        await requireTrustedWriterBearer(request);
-        store.revokePendingGrant(request.params.grantId);
-        return reply.send({ success: true });
-      } catch (error) {
-        if (error instanceof TrustedAuthError) {
-          return sendTrustedAuthError(reply, error);
-        }
-        throw error;
-      }
-    },
-  );
-
-  fastify.post<{ Params: { grantId: string } }>(
-    '/workspace-grants/:grantId/activate',
-    async (request, reply) => {
-      try {
-        await requireTrustedWriterBearer(request);
-
-        const { grantId } = request.params;
-        const activated = store.activateGrant(grantId);
-        if (!activated) {
-          return reply.status(409).send({
-            success: false,
-            error: 'Grant not pending or not found',
-          });
-        }
-
-        const deck = await fastify.db.getDeck(activated.deck_id);
-
-        return reply.send({
-          success: true,
-          data: {
-            grantId: activated.id,
-            deckId: activated.deck_id,
-            deckName: deck?.name,
-            status: activated.status,
-          },
-        });
-      } catch (error) {
-        if (error instanceof TrustedAuthError) {
-          return sendTrustedAuthError(reply, error);
-        }
-        throw error;
-      }
-    },
-  );
-
   fastify.get('/runtime-session', async (request, reply) => {
     try {
       const sessionHeader = request.headers[AGENT_DECK_SESSION_HEADER];
       const sessionId = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
       if (!sessionId) {
-        throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
+        throw new TrustedAuthError('GRANT_REQUIRED', GRANT_REQUIRED_MESSAGE);
       }
 
       const row = store.getRuntimeSessionRow(sessionId);
       if (!row || row.revoked_at) {
-        throw new TrustedAuthError('SESSION_REVOKED', 'Grant rotation or explicit revocation ended the session');
+        throw new TrustedAuthError('SESSION_REVOKED', 'Session was revoked');
       }
       if (Date.parse(row.expires_at) <= Date.now()) {
         throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
@@ -221,98 +109,46 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
 
         const session = resolveRuntimeSessionFromHeader(request, store);
 
-        // Launch session (NOT-105 / NOT-108): deck fixed at connect unless elevated assignment update.
-        if (session.workspaceGrantId === null) {
-          if (deckId !== session.deckId) {
-            if (updateAssignment !== true) {
-              throw new TrustedAuthError(
-                'DECK_FIXED',
-                "This connection's deck was set when it was launched and cannot be changed by the agent",
-              );
-            }
-            if (session.mode !== 'agent-admin') {
-              throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
-            }
-            const updated = store.setRuntimeSessionDeck(session.sessionId, deckId);
-            if (!updated) {
-              throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
-            }
-            const newDeck = await fastify.db.getDeck(updated.deckId);
-            if (!newDeck) {
-              return reply.status(404).send({ success: false, error: 'Deck not found' });
-            }
-            return reply.send({
-              success: true,
-              data: {
-                deckId: updated.deckId,
-                deckName: newDeck.name,
-                mode: updated.mode,
-                grantRotated: false,
-                peersRevoked: 0,
-                assignmentUpdated: true,
-              },
-            });
+        // Launch session: deck fixed at connect unless elevated assignment update.
+        if (deckId !== session.deckId) {
+          if (updateAssignment !== true) {
+            throw new TrustedAuthError(
+              'DECK_FIXED',
+              "This connection's deck was set when it was launched and cannot be changed by the agent",
+            );
           }
-          const deck = await fastify.db.getDeck(deckId);
-          if (!deck) {
+          if (session.mode !== 'agent-admin') {
+            throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
+          }
+          const updated = store.setRuntimeSessionDeck(session.sessionId, deckId);
+          if (!updated) {
+            throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
+          }
+          const newDeck = await fastify.db.getDeck(updated.deckId);
+          if (!newDeck) {
             return reply.status(404).send({ success: false, error: 'Deck not found' });
           }
           return reply.send({
             success: true,
             data: {
-              deckId: session.deckId,
-              deckName: deck.name,
-              mode: session.mode,
-              grantRotated: false,
-              peersRevoked: 0,
-              deckFixed: true,
+              deckId: updated.deckId,
+              deckName: newDeck.name,
+              mode: updated.mode,
+              assignmentUpdated: true,
             },
           });
         }
-
-        assertWorkspaceScope(store, session.workspaceKey!, workspaceRoot);
-
         const deck = await fastify.db.getDeck(deckId);
         if (!deck) {
           return reply.status(404).send({ success: false, error: 'Deck not found' });
         }
-
-        if (session.deckId === deckId) {
-          return reply.send({
-            success: true,
-            data: {
-              deckId: session.deckId,
-              deckName: deck.name,
-              mode: session.mode,
-              grantRotated: false,
-              peersRevoked: 0,
-            },
-          });
-        }
-
-        if (session.mode !== 'agent-admin') {
-          throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
-        }
-
-        const workspaceCount = store.countWorkspacesForDeck(session.deckId);
-        const rotated = store.rotateGrantForElevatedSession(session.sessionId, deckId);
-        if (!rotated) {
-          throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
-        }
-
-        const newDeck = await fastify.db.getDeck(rotated.session.deckId);
-
         return reply.send({
           success: true,
           data: {
-            deckId: rotated.session.deckId,
-            deckName: newDeck?.name ?? deck.name,
-            mode: rotated.session.mode,
-            grantRotated: true,
-            peersRevoked: rotated.peersRevoked,
-            previousDeckWorkspaceCount: workspaceCount,
-            grantRefreshNote:
-              'Run `agent-deck use <deck>` in this workspace to refresh the local grant file before the next MCP reconnect.',
+            deckId: session.deckId,
+            deckName: deck.name,
+            mode: session.mode,
+            deckFixed: true,
           },
         });
       } catch (error) {
@@ -438,97 +274,6 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.post<{
-    Body: { grantSecret: string; mcpSessionId?: string; claimedGrantId?: string };
-  }>('/mcp/connect', async (request, reply) => {
-    try {
-      const { grantSecret, mcpSessionId, claimedGrantId } = request.body;
-      if (!grantSecret?.trim()) {
-        throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
-      }
-
-      const grant = store.findActiveGrantBySecret(grantSecret);
-      if (!grant) {
-        throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
-      }
-
-      const claimed = claimedGrantId?.trim();
-      if (claimed && claimed !== grant.id) {
-        throw new TrustedAuthError('GRANT_REQUIRED', 'Claimed grant id does not match secret');
-      }
-
-      const mcpId = mcpSessionId?.trim();
-      let session;
-      if (mcpId) {
-        // Ownership survives lease expiry / revoke: another grant must not
-        // create a replacement runtime row for the same MCP transport id.
-        const historical = store.findLatestRuntimeSessionByMcpSessionId(mcpId);
-        if (historical && historical.workspaceGrantId !== grant.id) {
-          throw new TrustedAuthError('GRANT_REQUIRED', 'Grant does not own this MCP session');
-        }
-        session = store.findActiveRuntimeSessionForMcp(mcpId, grant.id);
-      }
-      if (!session) {
-        session = store.createRuntimeSession({
-          workspaceKeyId: grant.workspace_key_id,
-          workspaceGrantId: grant.id,
-          deckId: grant.deck_id,
-          mcpSessionId: mcpId,
-        });
-      }
-
-      const deck = await fastify.db.getDeck(session.deckId);
-
-      return reply.send({
-        success: true,
-        data: {
-          sessionId: session.sessionId,
-          workspaceKey: session.workspaceKey,
-          workspaceGrantId: grant.id,
-          deckId: session.deckId,
-          deckName: deck?.name,
-          mode: session.mode,
-          expiresAt: session.expiresAt,
-        },
-      });
-    } catch (error) {
-      if (error instanceof TrustedAuthError) {
-        return sendTrustedAuthError(reply, error);
-      }
-      throw error;
-    }
-  });
-
-  fastify.post<{ Body: { grantSecret: string; mcpSessionId: string } }>(
-    '/mcp/disconnect',
-    async (request, reply) => {
-      try {
-        const grantSecret = request.body.grantSecret?.trim();
-        const mcpSessionId = request.body.mcpSessionId?.trim();
-        if (!grantSecret || !mcpSessionId) {
-          throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
-        }
-
-        const grant = store.findActiveGrantBySecret(grantSecret);
-        if (!grant) {
-          throw new TrustedAuthError('GRANT_REQUIRED', 'No valid workspace grant');
-        }
-
-        const session = store.findActiveRuntimeSessionForMcp(mcpSessionId, grant.id);
-        if (session) {
-          store.revokeRuntimeSession(session.sessionId);
-        }
-
-        return reply.send({ success: true, data: { revoked: Boolean(session) } });
-      } catch (error) {
-        if (error instanceof TrustedAuthError) {
-          return sendTrustedAuthError(reply, error);
-        }
-        throw error;
-      }
-    },
-  );
-
   fastify.post<{ Body: { deckId: string; mcpSessionId?: string } }>(
     '/mcp/connect-deck',
     async (request, reply) => {
@@ -547,18 +292,13 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         let session;
         if (mcpId) {
           const historical = store.findLatestRuntimeSessionByMcpSessionId(mcpId);
-          if (
-            historical &&
-            (historical.workspaceGrantId !== null || historical.deckId !== deckId)
-          ) {
+          if (historical && historical.deckId !== deckId) {
             throw new TrustedAuthError('GRANT_REQUIRED', 'Deck does not own this MCP session');
           }
           session = store.findActiveLaunchSessionForMcp(mcpId, deckId);
         }
         if (!session) {
           session = store.createRuntimeSession({
-            workspaceKeyId: null,
-            workspaceGrantId: null,
             deckId,
             mcpSessionId: mcpId,
           });
@@ -593,12 +333,11 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         }
 
         const session = store.findActiveRuntimeSessionByMcpSessionId(mcpSessionId);
-        const isLaunch = Boolean(session && session.workspaceGrantId === null);
-        if (isLaunch && session) {
+        if (session) {
           store.revokeRuntimeSession(session.sessionId);
         }
 
-        return reply.send({ success: true, data: { revoked: isLaunch } });
+        return reply.send({ success: true, data: { revoked: Boolean(session) } });
       } catch (error) {
         if (error instanceof TrustedAuthError) {
           return sendTrustedAuthError(reply, error);

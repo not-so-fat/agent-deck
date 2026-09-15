@@ -243,7 +243,7 @@ The terminal status line reflects the live MCP bind on the backend API; it stays
 
 ## Dashboard
 
-Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](#quick-start-npm--end-users). Dev: `npm run dev:all` then use the Vite UI. `status` and start banners intentionally do not print the one-shot bootstrap URL. A valid dashboard session survives backend/browser restarts and renews for 24 hours after activity. If dashboard authority is missing or expired, the UI tells you to run `agent-deck open`; restarting the daemon is only for an actual API outage. Bare `http://127.0.0.1:1111` grants no authority by itself. MCP `GRANT_REQUIRED` is separate and is fixed with `agent-deck use <deck>` in the workspace.
+Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](#quick-start-npm--end-users). Dev: `npm run dev:all` then use the Vite UI. `status` and start banners intentionally do not print the one-shot bootstrap URL. A valid dashboard session survives backend/browser restarts and renews for 24 hours after activity. If dashboard authority is missing or expired, the UI tells you to run `agent-deck open`; restarting the daemon is only for an actual API outage. Bare `http://127.0.0.1:1111` grants no authority by itself. MCP `GRANT_REQUIRED` (**No deck selected for this connection**) is separate and is fixed with `agent-deck use <deck>` in the workspace (writes the folder assignment so the launcher can send `x-agent-deck-deck-id`).
 
 | Area | What it does |
 |------|----------------|

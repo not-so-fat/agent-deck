@@ -46,7 +46,7 @@ function bodyMessage(code: TrustedSessionErrorCode): string {
     case 'DASHBOARD_REQUIRED':
       return 'Operation is never available to an agent';
     case 'GRANT_REQUIRED':
-      return 'No valid workspace grant';
+      return 'No deck selected for this connection';
     case 'RESOURCE_OUT_OF_SCOPE':
       return 'Resource is outside the bound deck';
     case 'DECK_FIXED':

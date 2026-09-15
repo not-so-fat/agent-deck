@@ -22,8 +22,6 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/scope\/display$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/api\/scope\/bindings$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/api\/trusted-session\/admin\/challenges$/, policy: 'allowPublic' },
-  { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/connect$/, policy: 'allowPublic' },
-  { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/disconnect$/, policy: 'allowPublic' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/connect-deck$/, policy: 'allowPublic' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/disconnect-deck$/, policy: 'allowPublic' },
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/bootstrap\/session$/, policy: 'allowPublic' },
@@ -31,20 +29,9 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/launch\/decks\/[^/]+\/playbooks$/, policy: 'allowPublic' },
 
   // Trusted writer (admin secret bearer only — enforced in policy hook)
-  { methods: ['POST'], pattern: /^\/api\/trusted-session\/workspace-grants\/issue$/, policy: 'requireTrustedWriter' },
-  {
-    methods: ['POST'],
-    pattern: /^\/api\/trusted-session\/workspace-grants\/[^/]+\/revoke-pending$/,
-    policy: 'requireTrustedWriter',
-  },
-  {
-    methods: ['POST'],
-    pattern: /^\/api\/trusted-session\/workspace-grants\/[^/]+\/activate$/,
-    policy: 'requireTrustedWriter',
-  },
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/bootstrap\/nonce$/, policy: 'requireTrustedWriter' },
 
-  // Agent resource (runtime session or grant bearer)
+  // Agent resource (runtime session)
   { methods: ['GET'], pattern: /^\/api\/trusted-session\/runtime-session$/, policy: 'requireAgentResource' },
   {
     methods: ['POST'],
