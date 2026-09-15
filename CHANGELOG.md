@@ -2,31 +2,31 @@
 
 ## Unreleased
 
-### Add: folder-to-deck assignment file (NOT-108 PR 1)
+## 1.8.2 — 2026-09-15
 
-- `agent-deck use` / `mcp-launch` write and read `<folder>/.agent-deck/use.json` **v3** (`deckId`, `deckName`, optional `mcpUrl`) — **no secret**. Backend stores no workspace→deck grant for the assignment itself.
-- Launcher connects with `x-agent-deck-deck-id` (+ workspace header). Legacy v2 / Keychain entries migrate once to v3.
-- Elevated agent may switch a folder’s deck only when an assignment file exists; otherwise `DECK_FIXED` / `ADMIN_REQUIRED`. Peers in the same folder pick up the new deck on reconnect.
+### Add: launch-selected deck + folder assignment (NOT-105, NOT-108)
 
-### Removed: workspace grant machinery (NOT-108 PR 2)
+- MCP clients authenticate with `x-agent-deck-deck-id` (launch session). Precedence: deck header → 401 (`GRANT_REQUIRED`: **No deck selected for this connection**).
+- `agent-deck use` / `mcp-launch` write and read `<folder>/.agent-deck/use.json` **v3** (`deckId`, `deckName`, optional `mcpUrl`) — **no secret**. Legacy v2 / Keychain migrate once to v3.
+- Elevated agent may switch a folder’s deck only when an assignment file exists; otherwise `DECK_FIXED` / `ADMIN_REQUIRED`. Peers pick up the new deck on reconnect.
+- Public `GET /api/launch/decks` and `/api/launch/decks/:id/playbooks` for orchestrators (e.g. Agent Dealer).
 
-- Deleted grant routes, grant-bearer auth, grant store methods, and CLI grant issue/store modules. MCP auth is **launch deck header only** (precedence: deck header → 401).
-- `GRANT_REQUIRED` message is now **No deck selected for this connection** (code name kept).
-- SQLite: rebuild `runtime_sessions` without workspace/grant columns; drop `workspace_grants` and `workspace_keys`.
+### Removed: workspace grant machinery (NOT-108)
+
+- Deleted grant routes, grant-bearer auth, grant store methods/tables, and CLI grant issue/store. SQLite rebuilds `runtime_sessions` without grant columns and drops `workspace_grants` / `workspace_keys`.
 - Runtime principal no longer carries `workspaceKey` / `workspaceGrantId`. `WORKSPACE_SCOPE_MISMATCH` removed.
 
 ### Removed: execution authority and coordinator enrollment (NOT-107)
 
-- Deleted `/api/execution-authority/*`, the SQLite authority/enrollment tables, MCP authority principal, and CLI `agent-deck coordinator enroll|status|revoke`.
-- Unattended workers/coordinators select a deck via launch header (`x-agent-deck-deck-id`, NOT-105). **Agent Dealer must include NOT-106** (no mint, no enrollment env).
-- Grant sessions and launch sessions are unchanged. `RESOURCE_OUT_OF_SCOPE` MCP contract shape is unchanged.
+- Deleted `/api/execution-authority/*`, SQLite authority/enrollment tables, MCP authority principal, and CLI `agent-deck coordinator enroll|status|revoke`.
+- Unattended workers select a deck via launch header (NOT-105). **Agent Dealer must include NOT-106** (no mint, no enrollment env).
+- `RESOURCE_OUT_OF_SCOPE` MCP contract shape is unchanged.
 
-### Add: launch-selected deck for Agent Deck MCP (NOT-105)
+### After upgrade
 
-- MCP clients may authenticate with `x-agent-deck-deck-id` (no grant): creates a normal-mode launch session on that deck.
-- `bind_workspace` on a launch session is path-agnostic, writes no stubs / `.agent-deck/use.json`, and returns `DECK_FIXED` if the agent tries a different deck (including when elevated).
-- Public `GET /api/launch/decks` and `/api/launch/decks/:id/playbooks` for orchestrators (e.g. Agent Dealer).
-- Grant sessions are unchanged.
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Re-run `agent-deck use <deck>` in each project folder (migrates assignment to v3; IDE MCP reconnects with deck header).
+- Reload IDE MCP hosts. Agent Dealer worktrees stay launch-selected (`DECK_FIXED` without an assignment file).
 
 ## 1.8.1 — 2026-09-14
 
