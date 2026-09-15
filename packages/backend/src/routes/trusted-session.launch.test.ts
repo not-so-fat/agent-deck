@@ -166,7 +166,7 @@ describe('trusted-session launch routes (NOT-105)', () => {
     expect(response.json()).toMatchObject({ error_code: 'DECK_FIXED' });
   });
 
-  it('bind-workspace launch session: DECK_FIXED even after elevation', async () => {
+  it('bind-workspace launch session: DECK_FIXED even after elevation without updateAssignment', async () => {
     const { fastify, store, boundDeck, otherDeck } = await buildApp();
     const launch = store.createRuntimeSession({
       workspaceKeyId: null,
@@ -183,5 +183,49 @@ describe('trusted-session launch routes (NOT-105)', () => {
     });
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ error_code: 'DECK_FIXED' });
+  });
+
+  it('bind-workspace launch session: updateAssignment requires elevation', async () => {
+    const { fastify, store, boundDeck, otherDeck } = await buildApp();
+    const launch = store.createRuntimeSession({
+      workspaceKeyId: null,
+      workspaceGrantId: null,
+      deckId: boundDeck.id,
+    });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/trusted-session/bind-workspace',
+      headers: { [AGENT_DECK_SESSION_HEADER]: launch.sessionId },
+      payload: { workspaceRoot: '/nope/x', deckId: otherDeck.id, updateAssignment: true },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error_code: 'ADMIN_REQUIRED' });
+  });
+
+  it('bind-workspace launch session: elevated updateAssignment switches deck', async () => {
+    const { fastify, store, boundDeck, otherDeck } = await buildApp();
+    const launch = store.createRuntimeSession({
+      workspaceKeyId: null,
+      workspaceGrantId: null,
+      deckId: boundDeck.id,
+    });
+    store.elevateSessionToAdmin(launch.sessionId);
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/trusted-session/bind-workspace',
+      headers: { [AGENT_DECK_SESSION_HEADER]: launch.sessionId },
+      payload: { workspaceRoot: '/nope/x', deckId: otherDeck.id, updateAssignment: true },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: {
+        deckId: otherDeck.id,
+        assignmentUpdated: true,
+      },
+    });
+    expect(store.getRuntimeSessionRow(launch.sessionId)?.deck_id).toBe(otherDeck.id);
   });
 });

@@ -12,6 +12,12 @@ function loadStubSyncModule(): {
     options?: { cursor?: boolean; claude?: boolean },
   ) => StubSyncResult;
   readUseManifest: (workspaceRoot: string) => {
+    version: 3;
+    deckId: string;
+    deckName: string;
+    mcpUrl?: string;
+  } | null;
+  readLegacyUseManifestV1: (workspaceRoot: string) => {
     version: 1;
     deckId: string;
     deckName: string;
@@ -21,11 +27,10 @@ function loadStubSyncModule(): {
   writeUseManifest: (
     workspaceRoot: string,
     manifest: {
-      version: 1;
+      version: 3;
       deckId: string;
       deckName: string;
-      mcpUrl: string;
-      updatedAt: string;
+      mcpUrl?: string;
     },
   ) => string;
 } {
@@ -39,4 +44,5 @@ const stubSync = loadStubSyncModule();
 
 export const syncPlaybookStubs = stubSync.syncPlaybookStubs;
 export const readUseManifest = stubSync.readUseManifest;
+export const readLegacyUseManifestV1 = stubSync.readLegacyUseManifestV1;
 export const writeUseManifest = stubSync.writeUseManifest;

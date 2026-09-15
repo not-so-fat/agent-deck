@@ -1,7 +1,8 @@
 import path from 'node:path';
 
+import { ensureGitExcluded } from '@agent-deck/shared';
 import { createCollectionAdmin } from './backend-runtime';
-import { CLI_DEFAULT_MCP_PORT, parseCliMcpPort } from './defaults';
+import { parseCliMcpPort } from './defaults';
 import {
   buildAgentDeckEntry,
   buildMcpUrl,
@@ -15,9 +16,8 @@ import {
 } from './mcp-config';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
 import { syncPlaybookStubs, type StubSyncResult } from './playbook-stubs';
-import { issueWorkspaceGrant, activateWorkspaceGrant, revokePendingWorkspaceGrant, toGrantManifest } from './grant-issue';
-import { FileGrantStore, KeychainGrantStore, readWorkspaceGrant } from './grant-store';
-import { readUseManifest } from './playbook-stubs';
+import { readAssignment, writeAssignment } from './assignment';
+import { readLegacyUseManifestV1 } from './playbook-stubs';
 
 export type UseClientTarget = 'cursor' | 'claude' | 'both';
 
@@ -114,28 +114,21 @@ function clientsToWrite(target: UseClientTarget): McpClient[] {
   return ['cursor', 'claude'];
 }
 
-function resolveGrantStoreKind(): 'file' | 'keychain' {
-  if (process.env.AGENT_DECK_GRANT_STORE === 'file' || process.env.AGENT_DECK_DEV === '1') {
-    return 'file';
-  }
-  return process.platform === 'darwin' ? 'keychain' : 'file';
-}
-
 export async function runUse(parsed: UseOptions): Promise<UseResult | { error: string }> {
   const admin = createCollectionAdmin();
 
   if (parsed.refresh) {
-    const grant = await readWorkspaceGrant(parsed.workspaceRoot);
-    const legacy = readUseManifest(parsed.workspaceRoot);
+    const assignment = await readAssignment(parsed.workspaceRoot);
+    const legacy = readLegacyUseManifestV1(parsed.workspaceRoot);
     const inspection = inspectCursorMcpConfig({
       cwd: parsed.workspaceRoot,
       endpoint: { host: parsed.host, mcpPort: parsed.mcpPort },
     });
     console.log(formatCursorMcpInspection(inspection));
-    if (grant) {
-      console.log(`Bound deck: ${grant.deckName ?? grant.deckId} (${grant.deckId})`);
-      console.log(`Grant: ${grant.grantId} · workspace ${grant.workspaceKey}`);
-      console.log('To rotate or change deck, run: agent-deck use <deck>');
+    if (assignment) {
+      console.log(`Bound deck: ${assignment.deckName} (${assignment.deckId})`);
+      console.log('Assignment: .agent-deck/use.json (folder → deck)');
+      console.log('To change deck, run: agent-deck use <deck>');
       return { error: 'refresh-diagnosis-only' };
     }
     if (legacy) {
@@ -143,7 +136,7 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
       console.log(`Run explicitly: agent-deck use ${legacy.deckName}`);
       return { error: 'refresh-diagnosis-only' };
     }
-    console.log('No workspace grant — run: agent-deck use <deck>');
+    console.log('No deck assignment — run: agent-deck use <deck>');
     return { error: 'refresh-diagnosis-only' };
   }
 
@@ -161,49 +154,11 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   const endpoint = { host: parsed.host, mcpPort: parsed.mcpPort };
   const mcpUrl = buildMcpUrl(endpoint);
 
-  const issued = await issueWorkspaceGrant({
-    workspaceRoot: parsed.workspaceRoot,
+  const manifestPath = await writeAssignment(parsed.workspaceRoot, {
     deckId: deck.id,
-    host: parsed.host,
+    deckName: deck.name,
+    mcpUrl,
   });
-  if ('error' in issued) {
-    return { error: issued.error };
-  }
-
-  const storeKind = resolveGrantStoreKind();
-  const manifest = toGrantManifest(issued, mcpUrl, storeKind);
-  const fileStore = new FileGrantStore(parsed.workspaceRoot);
-  const keychainStore =
-    storeKind === 'keychain' ? new KeychainGrantStore(parsed.workspaceRoot) : null;
-
-  try {
-    await fileStore.stage(manifest);
-    if (keychainStore) {
-      await keychainStore.stage(manifest);
-    }
-
-    const activated = await activateWorkspaceGrant({
-      grantId: issued.grantId,
-      host: parsed.host,
-    });
-    if ('error' in activated) {
-      throw new Error(activated.error);
-    }
-
-    await fileStore.activate();
-    if (keychainStore) {
-      await keychainStore.activate();
-    }
-  } catch (error) {
-    await revokePendingWorkspaceGrant({ grantId: issued.grantId, host: parsed.host });
-    await fileStore.rollback();
-    if (keychainStore) {
-      await keychainStore.rollback();
-    }
-    return { error: error instanceof Error ? error.message : 'Grant installation failed' };
-  }
-
-  const manifestPath = path.join(parsed.workspaceRoot, '.agent-deck', 'use.json');
 
   const mcpWritten: Array<{ client: McpClient; path: string }> = [];
   if (!parsed.skipMcp) {
@@ -217,7 +172,7 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
       mcpWritten.push({ client, path: configPath });
 
       // Cursor Agent chat loads the user-level MCP server (`user-agent-deck`).
-      // Pin it to the workspace whose grant was just issued. Last explicit use wins.
+      // Pin it to this workspace. Last explicit use wins.
       if (client === 'cursor') {
         const globalResult = ensureGlobalCursorMcpLaunch(endpoint, {
           workspaceRoot: parsed.workspaceRoot,
@@ -241,6 +196,7 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
     cursor: parsed.clients !== 'claude',
     claude: parsed.clients !== 'cursor',
   });
+  ensureGitExcluded(parsed.workspaceRoot);
 
   return {
     deck,

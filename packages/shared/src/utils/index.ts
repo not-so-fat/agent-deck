@@ -10,3 +10,4 @@ export * from './local-mcp-manifest';
 export * from './agent-deck-home';
 export * from './trigger-hygiene';
 export * from './workspace-key';
+export * from './git-exclude';

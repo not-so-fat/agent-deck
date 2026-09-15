@@ -197,7 +197,7 @@ describe('inspectCursorMcpConfig', () => {
 
     expect(report.grant.present).toBe(false);
     expect(report.issues.map((i) => i.code)).toContain('grant-missing');
-    expect(formatCursorMcpInspection(report)).toContain('Grant   missing');
+    expect(formatCursorMcpInspection(report)).toContain('Assignment missing');
   });
 
   it('does not promote shadow missing when global-only setup is healthy', () => {

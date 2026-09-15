@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { normalizeTriggers } from '@agent-deck/shared';
+import { ensureGitExcluded, normalizeTriggers } from '@agent-deck/shared';
 
 export const STUB_MARKER_START_PREFIX = '<!-- agent-deck:stub:start';
 export const STUB_MARKER_END = '<!-- agent-deck:stub:end -->';
@@ -285,7 +285,15 @@ export function syncPlaybookStubs(
   return result;
 }
 
+/** Folder→deck assignment written by `agent-deck use` and bind stub-sync (NOT-108). */
 export type UseManifest = {
+  version: 3;
+  deckId: string;
+  deckName: string;
+  mcpUrl?: string;
+};
+
+export type LegacyUseManifestV1 = {
   version: 1;
   deckId: string;
   deckName: string;
@@ -295,25 +303,61 @@ export type UseManifest = {
 
 export const USE_MANIFEST_PATH = '.agent-deck/use.json';
 
-export function readUseManifest(workspaceRoot: string): UseManifest | null {
+function readRawUseJson(workspaceRoot: string): Record<string, unknown> | null {
   const manifestPath = path.join(workspaceRoot, USE_MANIFEST_PATH);
   if (!fs.existsSync(manifestPath)) {
     return null;
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as UseManifest;
-    if (parsed?.version === 1 && typeof parsed.deckId === 'string') {
-      return parsed;
-    }
-    return null;
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
   } catch {
     return null;
   }
 }
 
+export function readUseManifest(workspaceRoot: string): UseManifest | null {
+  const parsed = readRawUseJson(workspaceRoot);
+  if (!parsed || parsed.version !== 3 || typeof parsed.deckId !== 'string') {
+    return null;
+  }
+  if (typeof parsed.deckName !== 'string') {
+    return null;
+  }
+  return {
+    version: 3,
+    deckId: parsed.deckId,
+    deckName: parsed.deckName,
+    ...(typeof parsed.mcpUrl === 'string' && parsed.mcpUrl.length > 0
+      ? { mcpUrl: parsed.mcpUrl }
+      : {}),
+  };
+}
+
+/** Pre-assignment v1 manifest (diagnosis only). */
+export function readLegacyUseManifestV1(workspaceRoot: string): LegacyUseManifestV1 | null {
+  const parsed = readRawUseJson(workspaceRoot);
+  if (!parsed || parsed.version !== 1 || typeof parsed.deckId !== 'string') {
+    return null;
+  }
+  return {
+    version: 1,
+    deckId: parsed.deckId,
+    deckName: typeof parsed.deckName === 'string' ? parsed.deckName : parsed.deckId,
+    mcpUrl: typeof parsed.mcpUrl === 'string' ? parsed.mcpUrl : '',
+    updatedAt:
+      typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+  };
+}
+
 export function writeUseManifest(workspaceRoot: string, manifest: UseManifest): string {
+  const next: UseManifest = {
+    version: 3,
+    deckId: manifest.deckId,
+    deckName: manifest.deckName,
+    ...(manifest.mcpUrl ? { mcpUrl: manifest.mcpUrl } : {}),
+  };
   const manifestPath = path.join(workspaceRoot, USE_MANIFEST_PATH);
-  writeText(manifestPath, JSON.stringify(manifest, null, 2));
+  writeText(manifestPath, JSON.stringify(next, null, 2));
   return manifestPath;
 }
 
@@ -331,20 +375,26 @@ export function healUseManifest(
   mcpUrl?: string,
 ): string | undefined {
   const existing = readUseManifest(workspaceRoot);
+  const raw = readRawUseJson(workspaceRoot);
+  const priorMcpUrl =
+    mcpUrl ??
+    existing?.mcpUrl ??
+    (typeof raw?.mcpUrl === 'string' && raw.mcpUrl.length > 0 ? raw.mcpUrl : undefined);
   const next: UseManifest = {
-    version: 1,
+    version: 3,
     deckId: deck.id,
     deckName: deck.name,
-    mcpUrl: mcpUrl ?? existing?.mcpUrl ?? '',
-    updatedAt: new Date().toISOString(),
+    ...(priorMcpUrl ? { mcpUrl: priorMcpUrl } : {}),
   };
   if (
     existing &&
     existing.deckId === next.deckId &&
     existing.deckName === next.deckName &&
-    existing.mcpUrl === next.mcpUrl
+    (existing.mcpUrl ?? undefined) === (next.mcpUrl ?? undefined)
   ) {
     return undefined;
   }
-  return writeUseManifest(workspaceRoot, next);
+  const written = writeUseManifest(workspaceRoot, next);
+  ensureGitExcluded(workspaceRoot);
+  return written;
 }

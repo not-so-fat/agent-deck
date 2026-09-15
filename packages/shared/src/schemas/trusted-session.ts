@@ -45,6 +45,16 @@ export const WorkspaceGrantManifestSchema = z
   })
   .strict();
 
+/** Plain folder→deck assignment (NOT-108). No secret. */
+export const WorkspaceAssignmentSchema = z
+  .object({
+    version: z.literal(3),
+    deckId: z.string().min(1),
+    deckName: z.string().min(1),
+    mcpUrl: z.string().url().optional(),
+  })
+  .strict();
+
 export const RedactedSessionBindingSchema = z
   .object({
     sessionId: z.string(),
@@ -63,6 +73,7 @@ export type TrustedSessionErrorCode = z.infer<typeof TrustedSessionErrorCodeSche
 export type WorkspaceGrantStatus = z.infer<typeof WorkspaceGrantStatusSchema>;
 export type RuntimeSession = z.infer<typeof RuntimeSessionSchema>;
 export type WorkspaceGrantManifest = z.infer<typeof WorkspaceGrantManifestSchema>;
+export type WorkspaceAssignment = z.infer<typeof WorkspaceAssignmentSchema>;
 export type RedactedSessionBinding = z.infer<typeof RedactedSessionBindingSchema>;
 
 export type TrustedSessionErrorBody = {

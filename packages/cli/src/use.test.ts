@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 
 import { parseUseArgs, runUse } from './use';
 import { writeUseManifest } from './playbook-stubs';
@@ -20,43 +21,6 @@ vi.mock('./backend-runtime', () => ({
     listDeckPlaybookStubs: async () => [
       { id: 'pb_test', title: 'Test playbook', triggers: ['test trigger'] },
     ],
-  }),
-}));
-
-vi.mock('./grant-issue', () => ({
-  issueWorkspaceGrant: async () => ({
-    workspaceKey: 'wk-test',
-    grantId: 'grant-test',
-    deckId: 'deck-1',
-    deckName: 'dev',
-    secret: 'secret-test',
-    status: 'pending' as const,
-  }),
-  activateWorkspaceGrant: async () => ({
-    grantId: 'grant-test',
-    deckId: 'deck-1',
-    deckName: 'dev',
-  }),
-  revokePendingWorkspaceGrant: async () => {},
-  toGrantManifest: (
-    issued: {
-      workspaceKey: string;
-      grantId: string;
-      deckId: string;
-      deckName: string;
-      secret: string;
-    },
-    mcpUrl: string,
-  ) => ({
-    version: 2 as const,
-    workspaceKey: issued.workspaceKey,
-    grantId: issued.grantId,
-    secret: issued.secret,
-    deckId: issued.deckId,
-    deckName: issued.deckName,
-    mcpUrl,
-    store: 'file' as const,
-    updatedAt: new Date().toISOString(),
   }),
 }));
 
@@ -83,9 +47,9 @@ describe('agent-deck use', () => {
     expect(parseUseArgs(['--refresh'])).toMatchObject({ refresh: true });
   });
 
-  it('writes mcp config, grant manifest, and stubs for a deck', async () => {
-    vi.stubEnv('AGENT_DECK_GRANT_STORE', 'file');
+  it('writes v3 assignment, exclude lines, and stubs without calling grant endpoints', async () => {
     const workspace = makeWorkspace();
+    execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
     const fakeHome = makeWorkspace();
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
     fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
@@ -101,14 +65,15 @@ describe('agent-deck use', () => {
     }
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const result = await runUse({ ...parsed, workspaceRoot: workspace });
-    expect('error' in result).toBe(false);
-    if ('error' in result) {
+    // Full use (writes project mcp.json + stubs + assignment)
+    const withMcp = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in withMcp).toBe(false);
+    if ('error' in withMcp) {
       return;
     }
 
-    expect(result.deck.name).toBe('dev');
-    expect(result.playbookCount).toBe(1);
+    expect(withMcp.deck.name).toBe('dev');
+    expect(withMcp.playbookCount).toBe(1);
     expect(fs.existsSync(path.join(workspace, '.cursor', 'mcp.json'))).toBe(true);
     expect(fs.existsSync(path.join(workspace, '.agent-deck', 'use.json'))).toBe(true);
     expect(fs.existsSync(path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'pb_test.mdc'))).toBe(
@@ -139,13 +104,37 @@ describe('agent-deck use', () => {
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),
-    ) as { version: number; deckId: string; grantId: string };
-    expect(manifest.version).toBe(2);
-    expect(manifest.deckId).toBe(result.deck.id);
-    expect(manifest.grantId).toBe('grant-test');
+    ) as { version: number; deckId: string; deckName: string; grantId?: string; secret?: string };
+    expect(manifest.version).toBe(3);
+    expect(manifest.deckId).toBe(withMcp.deck.id);
+    expect(manifest.deckName).toBe('dev');
+    expect(manifest.grantId).toBeUndefined();
+    expect(manifest.secret).toBeUndefined();
+
+    const excludeRel = execFileSync('git', ['-C', workspace, 'rev-parse', '--git-path', 'info/exclude'], {
+      encoding: 'utf8',
+    }).trim();
+    const excludePath = path.isAbsolute(excludeRel) ? excludeRel : path.join(workspace, excludeRel);
+    const exclude = fs.readFileSync(excludePath, 'utf8');
+    expect(exclude).toContain('/.agent-deck/');
+    expect(exclude).toContain('/.cursor/rules/agent-deck-stubs/');
+    expect(exclude).toContain('/.claude/skills/agent-deck-*/');
+
+    // Trackable launcher config may be committed by the user; local assignment + stubs must not.
+    execFileSync('git', ['add', '.cursor/mcp.json'], { cwd: workspace, stdio: 'ignore' });
+    execFileSync(
+      'git',
+      ['-c', 'user.email=test@example.com', '-c', 'user.name=test', 'commit', '-m', 'mcp'],
+      { cwd: workspace, stdio: 'ignore' },
+    );
+    const porcelain = execFileSync('git', ['status', '--porcelain'], {
+      cwd: workspace,
+      encoding: 'utf8',
+    });
+    expect(porcelain.trim()).toBe('');
   });
 
-  it('refresh diagnoses grant or legacy manifest without rewriting', async () => {
+  it('refresh diagnoses assignment or legacy manifest without rewriting', async () => {
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
@@ -158,11 +147,10 @@ describe('agent-deck use', () => {
       `${JSON.stringify(globalConfig, null, 2)}\n`,
     );
     writeUseManifest(workspace, {
-      version: 1,
-      deckId: '761f3c44-21b3-4298-81e4-4c85bb963eb1',
+      version: 3,
+      deckId: 'deck-1',
       deckName: 'dev',
       mcpUrl: 'http://127.0.0.1:1110/mcp',
-      updatedAt: new Date().toISOString(),
     });
 
     const parsed = parseUseArgs(['--refresh']);
@@ -177,18 +165,12 @@ describe('agent-deck use', () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),
     ) as { deckId: string; version: number };
-    expect(manifest.version).toBe(1);
-    expect(manifest.deckId).toBe('761f3c44-21b3-4298-81e4-4c85bb963eb1');
-    const unchangedGlobalConfig = JSON.parse(
-      fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8'),
-    );
-    expect(unchangedGlobalConfig).toEqual(globalConfig);
-    expect(log.mock.calls.flat().join('\n')).toContain('mcp_auth');
-    expect(log.mock.calls.flat().join('\n')).toContain('read-only');
+    expect(manifest.version).toBe(3);
+    expect(manifest.deckId).toBe('deck-1');
+    expect(log.mock.calls.flat().join('\n')).toContain('Bound deck: dev');
   });
 
   it('prints a repair message for an existing unpinned launcher', async () => {
-    vi.stubEnv('AGENT_DECK_GRANT_STORE', 'file');
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
@@ -218,7 +200,6 @@ describe('agent-deck use', () => {
   });
 
   it('prints a warning when a custom global wrapper is skipped', async () => {
-    vi.stubEnv('AGENT_DECK_GRANT_STORE', 'file');
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);

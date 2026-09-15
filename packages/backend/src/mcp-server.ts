@@ -5,6 +5,7 @@ import {
   AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
+  ensureGitExcluded,
   formatDisplayLine,
 } from '@agent-deck/shared';
 import express, { Request, Response } from 'express';
@@ -325,6 +326,7 @@ export class AgentDeckMCPServer {
     )) as PlaybookStubInput[];
     const stubs = syncPlaybookStubs(workspaceRoot, summaries ?? []);
     const manifestPath = healUseManifest(workspaceRoot, deck);
+    ensureGitExcluded(workspaceRoot);
 
     await this.callBackendAPI(
       '/api/scope/deck-workspace',
@@ -708,6 +710,21 @@ export class AgentDeckMCPServer {
       throw new Error('GRANT_REQUIRED');
     }
 
+    const existing = this.sessionBinding.getBinding(sessionId);
+    // Follow-up after elevated assignment switch (NOT-108): the launcher may still
+    // send the old deck header until reconnect. Keep the runtime session and refresh.
+    if (this.sessionBinding.isLaunchSession(sessionId) && existing.runtimeSessionId) {
+      await this.refreshRuntimeSession(sessionId);
+      const workspaceRoot =
+        readWorkspaceRootHeader(req) ??
+        existing.workspaceRoot ??
+        (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
+      if (workspaceRoot) {
+        this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
+      }
+      return;
+    }
+
     const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
@@ -732,7 +749,6 @@ export class AgentDeckMCPServer {
       throw new Error(body.error ?? 'LAUNCH_DECK_INVALID');
     }
 
-    const existing = this.sessionBinding.getBinding(sessionId);
     const workspaceRoot =
       readWorkspaceRootHeader(req) ??
       existing.workspaceRoot ??

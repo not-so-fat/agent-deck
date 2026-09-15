@@ -625,6 +625,28 @@ export class TrustedSessionStore {
     return this.toRuntimeSession(this.getRuntimeSessionRow(sessionId)!);
   }
 
+  /** Launch-session deck switch after elevated assignment update (NOT-108). */
+  setRuntimeSessionDeck(sessionId: string, deckId: string): RuntimeSession | null {
+    const row = this.getRuntimeSessionRow(sessionId);
+    if (!row || row.revoked_at || Date.parse(row.expires_at) <= Date.now()) {
+      return null;
+    }
+    if (row.mode !== 'agent-admin') {
+      return null;
+    }
+
+    const now = nowIso();
+    this.db
+      .prepare(
+        `UPDATE runtime_sessions
+         SET deck_id = ?, last_seen_at = ?, expires_at = ?
+         WHERE id = ?`,
+      )
+      .run(deckId, now, addMs(now, RUNTIME_SESSION_LEASE_MS), sessionId);
+
+    return this.toRuntimeSession(this.getRuntimeSessionRow(sessionId)!);
+  }
+
   downgradeSessionToNormal(sessionId: string): RuntimeSession | null {
     const row = this.getRuntimeSessionRow(sessionId);
     if (!row || row.revoked_at) {
