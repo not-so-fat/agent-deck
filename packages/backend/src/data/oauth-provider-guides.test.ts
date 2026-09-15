@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   getOAuthProviderGuide,
@@ -9,6 +9,20 @@ import {
 import { hasSharedOAuthApp } from '../config/shared-oauth-apps';
 
 describe('oauth-provider-guides', () => {
+  // The guides quote the default dashboard host/port; an ambient HOST/PORT must
+  // not decide what these assertions expect (same guard as oauth-redirect.test).
+  const env = process.env;
+
+  beforeEach(() => {
+    process.env = { ...env };
+    delete process.env.HOST;
+    delete process.env.PORT;
+  });
+
+  afterEach(() => {
+    process.env = env;
+  });
+
   it('marks figma as unavailable', () => {
     expect(resolveOAuthSetupMode('figma', false)).toBe('unavailable');
     expect(getOAuthProviderGuide('figma').unavailableReason).toContain('Figma');

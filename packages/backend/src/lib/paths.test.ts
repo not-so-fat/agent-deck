@@ -19,6 +19,8 @@ describe('agent deck paths', () => {
     delete process.env.AGENT_DECK_USE_CWD_DB;
     delete process.env.AGENT_DECK_DEV;
     delete process.env.NODE_ENV;
+    // These cases assert default path resolution only; nothing here writes a store.
+    process.env.AGENT_DECK_ALLOW_REAL_HOME_IN_TESTS = '1';
   });
 
   afterEach(() => {
