@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Credential,
-  Deck,
   Playbook,
   StoreCredentialMeta,
   StoreDeck,
@@ -11,6 +10,7 @@ import type {
   StoreService,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
+import { storeDeckFromDb } from './deck-file';
 import { storePaths } from './paths';
 import { storeServiceFromDb } from './service-codec';
 import { FileStoreWriter } from './writer';
@@ -83,18 +83,6 @@ function storeCredentialFromDb(
     ...(credential.docsUrl !== undefined
       ? { docsUrl: credential.docsUrl }
       : {}),
-  };
-}
-
-function storeDeckFromDb(deck: Deck): StoreDeck {
-  return {
-    id: deck.id,
-    name: deck.name,
-    serviceIds: deck.services.map((service) => service.id),
-    credentialIds: deck.credentials.map((credential) => credential.id),
-    playbookIds: deck.playbooks.map((playbook) => playbook.id),
-    createdAt: deck.createdAt,
-    updatedAt: deck.updatedAt,
   };
 }
 

@@ -4,15 +4,23 @@ import os from 'node:os';
 import path from 'node:path';
 import { createCliCollectionAdmin } from './cli-runtime';
 import { DatabaseManager } from './models/database';
+import { parseDeckJson } from './store/deck-codec';
+import { storePaths } from './store/paths';
+import { FileStoreWriter } from './store/writer';
 
 describe('createCliCollectionAdmin', () => {
   let dbPath: string;
+  let home: string;
   let previousDbPath: string | undefined;
+  let previousHome: string | undefined;
 
   beforeEach(() => {
-    dbPath = path.join(os.tmpdir(), `agent-deck-cli-admin-${Date.now()}.db`);
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-cli-admin-'));
+    dbPath = path.join(home, 'agent_deck.db');
     previousDbPath = process.env.AGENT_DECK_DB_PATH;
+    previousHome = process.env.AGENT_DECK_HOME;
     process.env.AGENT_DECK_DB_PATH = dbPath;
+    process.env.AGENT_DECK_HOME = home;
 
     const db = new DatabaseManager(dbPath);
     // Seed via direct DB so admin only exercises delete/list paths.
@@ -26,7 +34,12 @@ describe('createCliCollectionAdmin', () => {
     } else {
       process.env.AGENT_DECK_DB_PATH = previousDbPath;
     }
-    fs.rmSync(dbPath, { force: true });
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   it('lists and deletes a deck', async () => {
@@ -68,6 +81,37 @@ describe('createCliCollectionAdmin', () => {
     if (!result.ok) {
       expect(result.error).toContain('referenced by playbook');
     }
+  });
+
+  it('drops a deleted service from the deck file', async () => {
+    const seed = new DatabaseManager(dbPath);
+    const service = await seed.createService({
+      name: 'Linear',
+      type: 'mcp',
+      url: 'https://mcp.linear.app/mcp',
+    });
+    const deck = await seed.createDeck({ name: 'scratch' });
+    await seed.addServiceToDeck({ deckId: deck.id, serviceId: service.id });
+
+    const writer = new FileStoreWriter(home);
+    await writer.ensureLayout();
+    await writer.writeDeck({
+      id: deck.id,
+      name: deck.name,
+      serviceIds: [service.id],
+      credentialIds: [],
+      playbookIds: [],
+      createdAt: deck.createdAt,
+      updatedAt: deck.updatedAt,
+    });
+    seed.close();
+
+    expect(await createCliCollectionAdmin().deleteService(service.id)).toEqual({ ok: true });
+
+    const deckFile = parseDeckJson(
+      fs.readFileSync(path.join(storePaths(home).decksDir, `${deck.id}.json`), 'utf8'),
+    );
+    expect(deckFile.serviceIds).toEqual([]);
   });
 
   it('S10: deletes a playbook', async () => {

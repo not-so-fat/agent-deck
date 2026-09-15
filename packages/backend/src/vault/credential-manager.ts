@@ -15,6 +15,7 @@ import {
 import { CredentialYamlSync } from './yaml-sync';
 import { SecretStore, VaultUnsupportedError } from './secret-store';
 import { buildCredentialAuthHeaders } from './credential-auth-headers';
+import { flushDeckFile, flushDeckFiles } from '../store/deck-file';
 import { FileStoreWriter } from '../store/writer';
 
 export class CredentialManager {
@@ -22,11 +23,10 @@ export class CredentialManager {
     private db: DatabaseManager,
     private secretStore: SecretStore,
     private yamlSync: CredentialYamlSync = new CredentialYamlSync(),
-    /** Kept for call-site compatibility; credential YAML is always written. */
-    _storeWriter?: FileStoreWriter,
-  ) {
-    void _storeWriter;
-  }
+    /** Credential YAML always goes through {@link CredentialYamlSync}; the writer
+     * is only for the deck files this manager's membership changes touch. */
+    private storeWriter?: FileStoreWriter,
+  ) {}
 
   private async writeToStore(credential: Credential): Promise<void> {
     try {
@@ -251,8 +251,14 @@ export class CredentialManager {
       }
     }
 
+    // Capture the decks before the row goes: the delete cascades the
+    // deck_credentials links, and a deck file still naming this id fails reindex.
+    const deckIds = await this.db.listDeckIdsForCredential(id);
     const deleted = await this.db.deleteCredential(id);
     if (deleted) {
+      // Decks before the card file: a deck naming a missing card breaks reindex,
+      // while an orphan card file no deck points at is harmless.
+      await flushDeckFiles(this.db, deckIds, this.storeWriter);
       await this.deleteFromStore(id);
       await removeCachedIcon(id);
     }
@@ -286,10 +292,12 @@ export class CredentialManager {
     }
 
     await this.db.addCredentialToDeck(input);
+    await flushDeckFile(this.db, input.deckId, this.storeWriter);
   }
 
   async removeFromDeck(input: RemoveCredentialFromDeckInput): Promise<void> {
     await this.db.removeCredentialFromDeck(input);
+    await flushDeckFile(this.db, input.deckId, this.storeWriter);
   }
 
   async recordExecRun(input: {

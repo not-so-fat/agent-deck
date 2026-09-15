@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fix: deck membership outside the deck routes reaches the store files (NOT-121)
+
+- Accepting a `kind: create` playbook proposal now writes the new playbook id into `decks/<id>.json`. Previously the `.md` landed but the deck link lived only in SQLite, so `agent-deck reindex` (and every git-sync pull) dropped the playbook from the deck.
+- Same flush for every other non-route caller: credential/service/playbook deck links, bundle import, and CLI service delete. Deleting a card now also removes it from the deck files it was on — a deck naming a missing card used to abort the next reindex.
+- No change to reindex semantics: files still win.
+
 ## 1.8.2 — 2026-09-15
 
 ### Add: launch-selected deck + folder assignment (NOT-105, NOT-108)

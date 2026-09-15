@@ -7,6 +7,7 @@ import {
   type BundleService,
 } from '@agent-deck/shared';
 import type { DatabaseManager } from '../models/database';
+import { migrateSqliteToStore } from '../store/migrate';
 import { serviceNeedsOauthReconnect } from './sanitize-for-export';
 
 export class ImportBundleError extends Error {
@@ -203,9 +204,22 @@ async function linkPlaybook(
   return true;
 }
 
+export type ImportBundleOptions = {
+  /**
+   * Flush the imported rows to the file store (cards *and* deck membership).
+   * Import writes straight to SQLite, so without this the whole bundle is lost
+   * on the next reindex. Off by default so callers without a store — tests,
+   * dry runs — never touch the file tree.
+   */
+  syncStore?: boolean;
+  /** Store root override; defaults to the resolved Agent Deck home. */
+  storeHome?: string;
+};
+
 export async function importBundle(
   db: DatabaseManager,
   raw: unknown,
+  options: ImportBundleOptions = {},
 ): Promise<ImportReport> {
   const parsed = BundleV1Schema.safeParse(raw);
   if (!parsed.success) {
@@ -224,6 +238,7 @@ export async function importBundle(
     playbooks: { created: 0, reused: 0 },
     decks: { created: 0, reused: 0 },
   };
+  let report: ImportReport;
 
   try {
     const seenBundleServiceIds = new Set<string>();
@@ -309,7 +324,7 @@ export async function importBundle(
       }
     }
 
-    return ImportReportSchema.parse({
+    report = ImportReportSchema.parse({
       status: 'completed',
       counts,
       servicesNeedingOauth,
@@ -321,7 +336,7 @@ export async function importBundle(
       throw error;
     }
     const message = error instanceof Error ? error.message : String(error);
-    return ImportReportSchema.parse({
+    report = ImportReportSchema.parse({
       status: 'failed',
       counts,
       servicesNeedingOauth,
@@ -329,6 +344,14 @@ export async function importBundle(
       idMap,
     });
   }
+
+  // Outside the catch on purpose: a store write that fails must surface as an
+  // error, not as a "failed" report for rows that did land in SQLite.
+  if (options.syncStore && report.status !== 'failed') {
+    await migrateSqliteToStore(db, { home: options.storeHome, force: true });
+  }
+
+  return report;
 }
 
 export function parseBundleJson(text: string): unknown {
