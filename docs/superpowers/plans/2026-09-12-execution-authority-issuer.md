@@ -1,3 +1,8 @@
+---
+status: superseded
+superseded_by: NOT-105, NOT-107
+---
+
 # Execution authority issuer (NOT-86) Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.

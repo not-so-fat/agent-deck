@@ -27,7 +27,6 @@ export function parseBackendErrorBody(text: string, status: number): BackendApiE
       message = String(body.message);
     }
     if (body.error_code) {
-      // May be a trusted-session code or an execution-authority contract code.
       errorCode = body.error_code as TrustedSessionErrorCode;
     }
   } catch {

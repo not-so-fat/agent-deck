@@ -12,7 +12,7 @@ Every MCP session receives a bound deck: grant-based sessions use the deck previ
 
 **Shipped in 1.7.0** (NOT-45 + NOT-44 together; see [CHANGELOG](../CHANGELOG.md#170--2026-08-31)).
 
-**Related (NOT-85 / NOT-105):** Unattended Agent Dealer workers use a **launch-selected deck** (`x-agent-deck-deck-id`, NOT-105) — not workspace grants copied into generated worktrees. Coordinator enrollment + short-lived execution authority (NOT-85/NOT-86) remain for coordinator mint until NOT-107 removes them. See [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md). Interactive path-bound grants in this PRD remain unchanged for grant-based sessions.
+**Related (C9 / NOT-105):** Unattended Agent Dealer workers use a **launch-selected deck** (`x-agent-deck-deck-id`) — not workspace grants copied into generated worktrees, and not coordinator enrollment / execution authority (removed in NOT-107). See C9 below and [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md) (superseded). Interactive path-bound grants in this PRD remain unchanged for grant-based sessions.
 
 ## 1. Problem and outcome
 

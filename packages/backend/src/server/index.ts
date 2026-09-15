@@ -24,9 +24,7 @@ import { CollectionWarningService } from '../services/collection-warning-service
 import { registerCollectionRoutes } from '../routes/collection';
 import { registerExportImportRoutes } from '../routes/export-import';
 import { registerTrustedSessionRoutes, registerDashboardAuthRoutes } from '../routes/trusted-session';
-import { registerExecutionAuthorityRoutes } from '../routes/execution-authority';
 import { registerLaunchRoutes } from '../routes/launch';
-import { ExecutionAuthorityStore } from '../execution-authority';
 import { PlaybookManager } from '../playbooks/playbook-manager';
 import { PatchManager } from '../playbooks/patch-manager';
 import { registerPlaybookPatchRoutes } from '../routes/playbook-patches';
@@ -87,7 +85,6 @@ export async function createServer() {
   await ensureStoreReady(db);
   const secretStore = createSecretStore();
   const trustedSessionStore = new TrustedSessionStore(db.getSqliteDatabase());
-  const executionAuthorityStore = new ExecutionAuthorityStore(db.getSqliteDatabase());
   await ensureAdminSecret();
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
   const oauthTokenVault = new OAuthTokenVault(secretStore, db);
@@ -114,7 +111,6 @@ export async function createServer() {
 
   fastify.decorate('db', db);
   fastify.decorate('trustedSessionStore', trustedSessionStore);
-  fastify.decorate('executionAuthorityStore', executionAuthorityStore);
   registerHttpPolicyHook(fastify);
 
   const sweepStaleSessions = () => {
@@ -146,7 +142,6 @@ export async function createServer() {
   await fastify.register(registerLocalMCPRoutes, { prefix: '/api/local-mcp' });
   await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
   await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
-  await fastify.register(registerExecutionAuthorityRoutes, { prefix: '/api/execution-authority' });
   await fastify.register(registerLaunchRoutes, { prefix: '/api/launch' });
 
   // Health check endpoint
@@ -218,7 +213,6 @@ declare module 'fastify' {
   interface FastifyInstance {
     db: DatabaseManager;
     trustedSessionStore: TrustedSessionStore;
-    executionAuthorityStore: ExecutionAuthorityStore;
     serviceManager: ServiceManager;
     mcpClient: MCPClientManager;
     oauthManager: OAuthManager;

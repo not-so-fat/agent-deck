@@ -1,12 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import { parseAuthorityBearer } from '../execution-authority/bearer';
-import { parseBearerToken } from '../lib/http-auth';
-import {
-  AuthorityContractAuthError,
-  isExecutionAuthorityHttpAllowed,
-  sendContractError,
-} from '../lib/execution-authority-http';
 import {
   enforcePolicy,
   requireTrustedWriterBearer,
@@ -30,19 +23,6 @@ declare module 'fastify' {
 
 export const registeredHttpRoutes: RegisteredRoute[] = [];
 
-function tryParseAuthorityBearer(request: FastifyRequest) {
-  const bearer = parseBearerToken(request);
-  return bearer ? parseAuthorityBearer(bearer) : null;
-}
-
-/** Worker bootstrap only — coordinator issuer routes stay off-limits to authority bearers. */
-function isExecutionAuthorityWorkerBootstrap(pathname: string): boolean {
-  return (
-    pathname === '/api/execution-authority/mcp/connect' ||
-    pathname === '/api/execution-authority/authorize-call'
-  );
-}
-
 export function registerHttpPolicyHook(fastify: FastifyInstance): void {
   registeredHttpRoutes.length = 0;
 
@@ -64,47 +44,6 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
       return;
     }
     if (request.method === 'HEAD') {
-      return;
-    }
-
-    // NOT-86: detect authority bearer before any generic policy rejection
-    // (DASHBOARD_REQUIRED / GRANT_REQUIRED / unmatched route / trusted-writer).
-    const authorityCreds = tryParseAuthorityBearer(request);
-    if (authorityCreds && fastify.executionAuthorityStore) {
-      const auth = fastify.executionAuthorityStore.authenticateAuthority(
-        authorityCreds.authorityId,
-        authorityCreds.secret,
-      );
-      if (!auth.ok) {
-        return sendContractError(reply, auth);
-      }
-      request.requestPrincipal = { kind: 'execution-authority', authority: auth.data };
-
-      const policy = resolveRoutePolicy(request.method, pathname);
-      if (policy === 'allowPublic') {
-        if (isExecutionAuthorityWorkerBootstrap(pathname)) {
-          // connect / authorize-call authenticate again in-handler.
-          return;
-        }
-        if (pathname.startsWith('/api/execution-authority/')) {
-          return sendContractError(reply, {
-            ok: false,
-            error_code: 'INTERACTION_REQUIRED',
-            message: 'Control-plane decision required; do not hold the worker',
-            correlation: { authorityId: auth.data.authorityId },
-          });
-        }
-        return;
-      }
-
-      if (!policy || !isExecutionAuthorityHttpAllowed(request.method, pathname)) {
-        return sendContractError(reply, {
-          ok: false,
-          error_code: 'INTERACTION_REQUIRED',
-          message: 'Control-plane decision required; do not hold the worker',
-          correlation: { authorityId: auth.data.authorityId },
-        });
-      }
       return;
     }
 
@@ -135,17 +74,10 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
     }
 
     try {
-      const principal = await resolveRequestPrincipal(
-        request,
-        fastify.trustedSessionStore,
-        fastify.executionAuthorityStore,
-      );
+      const principal = await resolveRequestPrincipal(request, fastify.trustedSessionStore);
       enforcePolicy(policy, principal);
       request.requestPrincipal = principal;
     } catch (error) {
-      if (error instanceof AuthorityContractAuthError) {
-        return sendContractError(reply, error.contract);
-      }
       if (error instanceof TrustedAuthError) {
         return sendTrustedAuthError(reply, error);
       }

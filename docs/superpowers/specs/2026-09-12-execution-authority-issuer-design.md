@@ -1,5 +1,6 @@
 ---
-status: accepted
+status: superseded
+superseded_by: NOT-105, NOT-107
 linear: NOT-86
 parent_contract: docs/superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md
 deferred: NOT-89, NOT-90, NOT-87
