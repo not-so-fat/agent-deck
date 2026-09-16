@@ -553,6 +553,12 @@ export class McpStdioHttpBridge {
         );
         return;
       }
+      // The recovery may have latched a refusal that was not in force when this
+      // request went out — a binding answer from the lost session can land while
+      // the handshake is running, and it names a deck the replacement is not on.
+      if (this.refuseUntilRebound(message)) {
+        return;
+      }
       await this.deliver(message, { allowRecovery: false });
       return;
     }
@@ -717,8 +723,13 @@ export class McpStdioHttpBridge {
     // Only a deck the client bound itself can be lost here. Following the folder
     // assignment somewhere else is the reconnect working as intended, and latching
     // on it would wedge every host that never calls `bind_workspace`.
-    const chosen = this.clientChosenDeckId;
     this.boundDeckId = await this.resolveSessionDeck();
+    // Read the client's choice *after* the probe, never before it. A binding answer
+    // from the session we just lost can land during any of the awaits above, and it
+    // is a later statement of what the client wants than anything snapshotted
+    // earlier — reading a stale `undefined` here would clear the refusal that answer
+    // just latched and let the next mutation through on the wrong deck.
+    const chosen = this.clientChosenDeckId;
     if (chosen === undefined || this.boundDeckId === chosen) {
       // Either the client never chose, or a later restart put us back where it was.
       this.deckAwaitingRebind = undefined;

@@ -699,6 +699,78 @@ describe('McpStdioHttpBridge across a deck change', () => {
     );
   });
 
+  // Same lost binding, but the answer lands while the recovery is still asking the
+  // replacement session which deck it sits on. Recovery must read the client's
+  // choice after that probe, or it clears the refusal the answer just raised.
+  it('keeps the refusal a binding answer raises during the recovery probe', async () => {
+    const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
+    let releaseBind: () => void = () => {};
+    const bindGate = new Promise<void>((resolve) => {
+      releaseBind = resolve;
+    });
+    // Filled in once the bridge exists; the probe waits on it to know the obsolete
+    // bind answer has been handed to the client before it answers.
+    let clientMessages: any[] = [];
+
+    const deckAware = deckAwareFetch(state);
+    const gatedFetch = (async (url: any, init: any): Promise<Response> => {
+      const body = init?.method === 'POST' ? JSON.parse(init.body as string) : undefined;
+      const response = await deckAware(url, init);
+      if (body?.params?.name === 'bind_workspace') {
+        await bindGate;
+      }
+      if (typeof body?.id === 'string' && body.id.startsWith('agent-deck-bridge/binding-')) {
+        releaseBind();
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if (clientMessages.some((message) => message.id === 2)) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      }
+      return response;
+    }) as unknown as typeof fetch;
+
+    const { bridge, send, waitFor, out, finish } = await driveBridge(state, gatedFetch);
+    clientMessages = out;
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'bind_workspace', arguments: { deckId: 'deck-2' } },
+    });
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (state.calls.some((call) => call.body.params?.name === 'bind_workspace')) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // The restart, with the bind answer still on the wire. Recovery lands on
+    // deck-1 — the same deck this call was sent for, so the retry guard alone
+    // would wave it through.
+    state.sessionId = 'session-b';
+    send({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'register_service', arguments: { name: 'svc' } },
+    });
+
+    expect((await waitFor(2)).error?.message).toContain('no longer exists');
+    expect((await waitFor(3)).error?.message).toContain('not deck-2');
+    await finish();
+
+    expect(bridge.getBoundDeckId()).toBe('deck-1');
+    // Its one attempt died with the old session; nothing was replayed onto the
+    // live one, which is the deck the client did not choose.
+    const writes = state.calls.filter((call) => call.body.params?.name === 'register_service');
+    expect(writes.map((call) => call.sessionId)).toEqual(['session-a']);
+  });
+
   it('replays the handshake to the endpoint the assignment names now', async () => {
     const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
     const urls: string[] = [];
