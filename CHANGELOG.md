@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 — 2026-09-16
 
 ### Fix: MCP clients recover from a backend restart on their own (NOT-101)
 
