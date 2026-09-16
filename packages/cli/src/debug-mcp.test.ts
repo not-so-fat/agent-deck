@@ -83,6 +83,19 @@ describe('assessClaudeMcpConfig', () => {
     expect(result.ok).toBe(false);
     expect(result.lines.join('\n')).toContain('conflicts with the project launcher');
     expect(result.lines.join('\n')).toContain('cannot select a deck');
+    expect(result.lines).toContain(
+      '     Fix: claude mcp remove agent-deck -s user && agent-deck setup --client claude',
+    );
+  });
+
+  it('reports a bad project entry as conflicting with a trusted user launcher', () => {
+    const result = assessClaudeMcpConfig(bareHttp, launcher);
+
+    expect(result.ok).toBe(false);
+    expect(result.lines.join('\n')).toContain('conflicts with the user launcher');
+    expect(result.lines).toContain(
+      '     Fix: claude mcp remove agent-deck -s project && agent-deck setup --client claude --scope project',
+    );
   });
 
   it('reports how to configure Claude only when both scopes are missing', () => {

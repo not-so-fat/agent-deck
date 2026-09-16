@@ -105,7 +105,7 @@ export function assessClaudeMcpConfig(
     label: 'project' | 'user',
     displayPath: string,
     result: ClaudeMcpEntryRead,
-    conflictsWithProjectLauncher = false,
+    conflictingLauncher: 'project' | 'user' | null = null,
   ): boolean => {
     if (result.kind === 'missing') {
       return false;
@@ -125,15 +125,22 @@ export function assessClaudeMcpConfig(
     const shape = isLegacyBareHttpAgentDeckEntry(result.entry)
       ? 'bare HTTP entry'
       : 'custom entry';
-    const conflict = conflictsWithProjectLauncher ? ' conflicts with the project launcher and' : '';
+    const conflict = conflictingLauncher
+      ? ` conflicts with the ${conflictingLauncher} launcher and`
+      : '';
     lines.push(`WARN Claude ${label} config (${displayPath}) has a ${shape} that${conflict} cannot select a deck: ${serialized}`);
     lines.push(`     Expected the trusted \`agent-deck mcp-launch\` stdio entry.`);
+    const scope = label === 'project' ? 'project' : 'user';
+    const setupScope = label === 'project' ? ' --scope project' : '';
+    lines.push(`     Fix: claude mcp remove agent-deck -s ${scope} && agent-deck setup --client claude${setupScope}`);
     ok = false;
     return false;
   };
 
-  const projectTrusted = assess('project', './.mcp.json', project);
-  const userTrusted = assess('user', '~/.claude.json', user, projectTrusted);
+  const projectTrusted = project.kind === 'entry' && isMcpLaunchEntry(project.entry);
+  const userTrusted = user.kind === 'entry' && isMcpLaunchEntry(user.entry);
+  assess('project', './.mcp.json', project, userTrusted ? 'user' : null);
+  assess('user', '~/.claude.json', user, projectTrusted ? 'project' : null);
 
   if (!projectTrusted && !userTrusted && project.kind === 'missing' && user.kind === 'missing') {
     lines.push('Claude config: no agent-deck entry in ./.mcp.json or ~/.claude.json');

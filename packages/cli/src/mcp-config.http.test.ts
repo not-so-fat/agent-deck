@@ -8,6 +8,10 @@ describe('MCP client config', () => {
       type: 'stdio',
       command: 'agent-deck',
       args: ['mcp-launch'],
+      env: {
+        AGENT_DECK_MCP_PORT: '3001',
+        AGENT_DECK_HOST: '127.0.0.1',
+      },
     });
   });
 

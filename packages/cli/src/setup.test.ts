@@ -35,22 +35,31 @@ describe('setup statusline defaults', () => {
   });
 
   it('registers Claude Code with the trusted stdio launcher in the requested scope', () => {
-    expect(buildClaudeCliAddArgs('global')).toEqual([
+    const endpoint = { host: '127.0.0.2', mcpPort: 2110 };
+    expect(buildClaudeCliAddArgs('global', endpoint)).toEqual([
       'mcp',
       'add',
       '--scope',
       'user',
       'agent-deck',
+      '-e',
+      'AGENT_DECK_MCP_PORT=2110',
+      '-e',
+      'AGENT_DECK_HOST=127.0.0.2',
       '--',
       'agent-deck',
       'mcp-launch',
     ]);
-    expect(buildClaudeCliAddArgs('project')).toEqual([
+    expect(buildClaudeCliAddArgs('project', endpoint)).toEqual([
       'mcp',
       'add',
       '--scope',
       'project',
       'agent-deck',
+      '-e',
+      'AGENT_DECK_MCP_PORT=2110',
+      '-e',
+      'AGENT_DECK_HOST=127.0.0.2',
       '--',
       'agent-deck',
       'mcp-launch',

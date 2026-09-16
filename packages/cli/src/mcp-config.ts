@@ -62,16 +62,19 @@ export function buildAgentDeckEntry(
   }
 
   if (client === 'claude') {
+    const env: Record<string, string> = {
+      AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
+      AGENT_DECK_HOST: endpoint.host,
+    };
+    if (options?.workspaceRoot) {
+      env.AGENT_DECK_WORKSPACE = path.resolve(options.workspaceRoot);
+    }
     const entry: Record<string, unknown> = {
       type: 'stdio',
       command: 'agent-deck',
       args: ['mcp-launch'],
+      env,
     };
-    if (options?.workspaceRoot) {
-      entry.env = {
-        AGENT_DECK_WORKSPACE: path.resolve(options.workspaceRoot),
-      };
-    }
     return entry;
   }
 

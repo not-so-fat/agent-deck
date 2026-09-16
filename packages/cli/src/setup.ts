@@ -135,24 +135,31 @@ export function resolveSetupStatusline(client: SetupClient, explicit?: boolean):
   return client === 'cursor' || client === 'claude';
 }
 
-export function buildClaudeCliAddArgs(scope: SetupScope): string[] {
+export function buildClaudeCliAddArgs(scope: SetupScope, endpoint: McpEndpoint): string[] {
   return [
     'mcp',
     'add',
     '--scope',
     scope === 'global' ? 'user' : 'project',
     'agent-deck',
+    '-e',
+    `AGENT_DECK_MCP_PORT=${endpoint.mcpPort}`,
+    '-e',
+    `AGENT_DECK_HOST=${endpoint.host}`,
     '--',
     'agent-deck',
     'mcp-launch',
   ];
 }
 
-async function tryClaudeCliAdd(scope: SetupScope): Promise<{ ok: boolean; error?: string }> {
+async function tryClaudeCliAdd(
+  scope: SetupScope,
+  endpoint: McpEndpoint,
+): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     const child = spawn(
       'claude',
-      buildClaudeCliAddArgs(scope),
+      buildClaudeCliAddArgs(scope, endpoint),
       { stdio: ['ignore', 'pipe', 'pipe'], env: process.env },
     );
 
@@ -274,7 +281,7 @@ export async function runSetup(args: string[]): Promise<number> {
   }
 
   if (client === 'claude') {
-    const added = await tryClaudeCliAdd(scope);
+    const added = await tryClaudeCliAdd(scope, endpoint);
     if (added.ok) {
       const target = scope === 'project' ? '.mcp.json' : '~/.claude.json';
       console.log(`Configured Claude Code via \`claude mcp add\` → ${target}`);

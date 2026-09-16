@@ -9,6 +9,7 @@
 - The session skill permits only Agent Deck configuration detection and read-only connection diagnostics before the bootstrap gate passes.
 - Connection recovery now distinguishes host transport, folder assignment, instruction discovery, and session bootstrap. Codex transport uses the plugin's `agent-deck mcp-launch`; `agent-deck setup --client codex` now marker-merges the bootstrap harness into global or project `AGENTS.md` without replacing unrelated instructions.
 - `agent-deck debug-mcp` now probes with the folder's deck/workspace headers, flags stale bare-HTTP Claude configuration, and reports a missing assignment explicitly instead of misdiagnosing the expected `GRANT_REQUIRED` response as a daemon failure.
+- Claude Code setup now registers the trusted stdio `agent-deck mcp-launch` bridge and preserves custom host/port values in its environment. Migrate an older user-scope HTTP entry with `claude mcp remove agent-deck -s user && agent-deck setup --client claude`.
 
 ### Fix: deck membership outside the deck routes reaches the store files (NOT-121)
 
