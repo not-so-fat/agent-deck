@@ -31,7 +31,7 @@ import {
   resolveMcpErrorMessage,
 } from '../lib/mcp-connection-error';
 import { normalizeServiceToolResult } from '../lib/normalize-service-tool-result';
-import { flushDeckFile, flushDeckFilesThenDeleteCard } from '../store/deck-file';
+import { deleteCardFromStoreThenDb, flushDeckFile } from '../store/deck-file';
 import { storeServiceFromDb } from '../store/service-codec';
 import { FileStoreWriter } from '../store/writer';
 import { ServiceHeaderVault } from '../vault/service-header-vault';
@@ -401,15 +401,19 @@ export class ServiceManager {
       );
     }
     
-    // Capture the decks before the row goes: the delete cascades the deck_services
-    // links, and a deck file still naming this id fails reindex.
-    const deckIds = await this.db.listDeckIdsForService(id);
-    const deleted = await this.db.deleteService(id);
+    // Store first, row last: the deck links are still readable here, and a deck
+    // file left naming a deleted service fails every later reindex.
+    const deleted = await deleteCardFromStoreThenDb(
+      this.db,
+      { kind: 'service', id },
+      this.storeWriter,
+      () => this.deleteFromStore(id),
+      () => this.db.deleteService(id),
+    );
     if (deleted) {
-      await flushDeckFilesThenDeleteCard(this.db, deckIds, this.storeWriter, async () => {
-        await this.deleteFromStore(id);
-        await this.headerVault?.delete(id);
-      });
+      // After the delete commits — dropping the headers of a service that
+      // survived a failed write would be the worse outcome.
+      await this.headerVault?.delete(id);
     }
     return deleted;
   }

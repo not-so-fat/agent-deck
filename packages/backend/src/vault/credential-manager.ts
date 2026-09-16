@@ -15,7 +15,7 @@ import {
 import { CredentialYamlSync } from './yaml-sync';
 import { SecretStore, VaultUnsupportedError } from './secret-store';
 import { buildCredentialAuthHeaders } from './credential-auth-headers';
-import { flushDeckFile, flushDeckFilesThenDeleteCard } from '../store/deck-file';
+import { deleteCardFromStoreThenDb, flushDeckFile } from '../store/deck-file';
 import { FileStoreWriter } from '../store/writer';
 
 export class CredentialManager {
@@ -243,23 +243,28 @@ export class CredentialManager {
       );
     }
 
-    try {
-      await this.secretStore.delete(existing.keychainAccount);
-    } catch (error) {
-      if (!(error instanceof VaultUnsupportedError)) {
-        throw error;
-      }
-    }
+    // Store first, row last: the deck links are still readable here, and a deck
+    // file left naming a deleted credential fails every later reindex.
+    const deleted = await deleteCardFromStoreThenDb(
+      this.db,
+      { kind: 'credential', id },
+      this.storeWriter,
+      () => this.deleteFromStore(id),
+      () => this.db.deleteCredential(id),
+    );
 
-    // Capture the decks before the row goes: the delete cascades the
-    // deck_credentials links, and a deck file still naming this id fails reindex.
-    const deckIds = await this.db.listDeckIdsForCredential(id);
-    const deleted = await this.db.deleteCredential(id);
+    // Only once the delete has committed: the secret is the one thing here that
+    // cannot be put back, so a credential that survived a failed write must keep
+    // it rather than come back unusable.
     if (deleted) {
-      await flushDeckFilesThenDeleteCard(this.db, deckIds, this.storeWriter, async () => {
-        await this.deleteFromStore(id);
-        await removeCachedIcon(id);
-      });
+      try {
+        await this.secretStore.delete(existing.keychainAccount);
+      } catch (error) {
+        if (!(error instanceof VaultUnsupportedError)) {
+          throw error;
+        }
+      }
+      await removeCachedIcon(id);
     }
     return deleted;
   }

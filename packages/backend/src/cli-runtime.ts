@@ -13,7 +13,7 @@ import {
   parseBundleJson,
 } from './export-import';
 import {
-  flushDeckFilesThenDeleteCard,
+  deleteCardFromStoreThenDb,
   migrateSqliteToStore,
   reindexStoreToSqlite,
 } from './store';
@@ -51,16 +51,18 @@ export function createCliCollectionAdmin() {
         };
       }
 
-      // Deck files first: the delete cascades the deck_services links, and a deck
-      // still naming a removed service fails every later reindex.
-      const deckIds = await db.listDeckIdsForService(id);
-      const deleted = await db.deleteService(id);
+      // Store first, row last: a deck still naming a removed service fails every
+      // later reindex, and a write that fails here leaves the service intact.
+      const deleted = await deleteCardFromStoreThenDb(
+        db,
+        { kind: 'service', id },
+        storeWriter,
+        () => storeWriter.deleteService(id),
+        () => db.deleteService(id),
+      );
       if (!deleted) {
         return { ok: false, error: `Service not found: ${id}` };
       }
-      await flushDeckFilesThenDeleteCard(db, deckIds, storeWriter, () =>
-        storeWriter.deleteService(id),
-      );
       return { ok: true };
     },
 

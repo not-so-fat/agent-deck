@@ -15,6 +15,36 @@ export function storeDeckFromDb(deck: Deck): StoreDeck {
   };
 }
 
+/** The three card types a deck can hold. */
+export type DeckCardKind = 'playbook' | 'service' | 'credential';
+
+function withoutCard(deck: StoreDeck, kind: DeckCardKind, cardId: string): StoreDeck {
+  const drop = (ids: string[]) => ids.filter((id) => id !== cardId);
+  switch (kind) {
+    case 'playbook':
+      return { ...deck, playbookIds: drop(deck.playbookIds) };
+    case 'service':
+      return { ...deck, serviceIds: drop(deck.serviceIds) };
+    case 'credential':
+      return { ...deck, credentialIds: drop(deck.credentialIds) };
+  }
+}
+
+function listDeckIdsForCard(
+  db: DatabaseManager,
+  kind: DeckCardKind,
+  cardId: string,
+): Promise<string[]> {
+  switch (kind) {
+    case 'playbook':
+      return db.listDeckIdsForPlaybook(cardId);
+    case 'service':
+      return db.listDeckIdsForService(cardId);
+    case 'credential':
+      return db.listDeckIdsForCredential(cardId);
+  }
+}
+
 /**
  * Rewrite `decks/<id>.json` from the DB after a membership change.
  *
@@ -44,48 +74,77 @@ export async function flushDeckFile(
   }
 }
 
-/** Flush several decks — e.g. every deck that held a card being deleted. */
-async function flushDeckFiles(
+/**
+ * Delete a card from the file store first, then from SQLite.
+ *
+ * The files are the source of truth and SQLite is a rebuildable cache, so the
+ * store has to be internally consistent at every instant: a deck file naming a
+ * card whose file is gone aborts the *whole* reindex, not just that deck. So
+ * every deck that held the card is rewritten without it and the card file is
+ * removed before the row goes — and if any of that fails we put the deck files
+ * we already rewrote back and rethrow with the row still there. The delete then
+ * simply did not happen, and a plain retry redoes it from a clean state.
+ *
+ * Auxiliary cleanup a card may need (header vault, cached icon) belongs *after*
+ * this call: it can't be undone, and losing it while the card survives is a
+ * worse trade than an orphan the next delete removes.
+ */
+export async function deleteCardFromStoreThenDb(
   db: DatabaseManager,
-  deckIds: Iterable<string>,
-  writer?: FileStoreWriter,
-): Promise<void> {
+  card: { kind: DeckCardKind; id: string },
+  writer: FileStoreWriter | undefined,
+  deleteCardFile: () => Promise<void>,
+  deleteRow: () => Promise<boolean>,
+): Promise<boolean> {
   if (!writer) {
-    return;
+    return deleteRow();
   }
 
-  for (const deckId of new Set(deckIds)) {
-    await flushDeckFile(db, deckId, writer);
+  const deckIds = await listDeckIdsForCard(db, card.kind, card.id);
+  const rewritten: StoreDeck[] = [];
+
+  try {
+    for (const deckId of new Set(deckIds)) {
+      const deck = await db.getDeck(deckId);
+      if (!deck) {
+        throw new Error(`Deck not found while deleting ${card.kind} ${card.id}: ${deckId}`);
+      }
+      const before = storeDeckFromDb(deck);
+      await writer.writeDeck(withoutCard(before, card.kind, card.id));
+      // Only decks we actually changed — an atomic write that threw left the
+      // old file in place and must not be "restored" over.
+      rewritten.push(before);
+    }
+
+    // Last, so nothing fallible runs between the card file going away and the
+    // deck files that point at it already being clean.
+    await deleteCardFile();
+  } catch (error) {
+    await restoreDeckFiles(writer, rewritten);
+    console.error(`Failed to remove ${card.kind} ${card.id} from the file store:`, error);
+    throw error;
   }
+
+  return deleteRow();
 }
 
 /**
- * Deck flush for a card delete, paired with the card's own cleanup.
+ * Put back the deck files an aborted delete had already rewritten.
  *
- * Decks go first because a deck naming a missing card aborts the *whole* reindex,
- * while an orphan card file no deck points at only resurrects that one card. But
- * the DB row is already gone by now, so `deleteCard` has to run even when a deck
- * file won't write — otherwise one EACCES leaves `<card>.json` behind with no row
- * and the next reindex, where files win, undoes the delete. The write error is
- * re-thrown once the cleanup is done.
+ * Best effort on purpose: a deck file that stayed stripped still reindexes fine
+ * — only a deck naming a *missing* card aborts the rebuild — so a restore that
+ * itself fails costs one membership, never the whole store.
  */
-export async function flushDeckFilesThenDeleteCard(
-  db: DatabaseManager,
-  deckIds: Iterable<string>,
-  writer: FileStoreWriter | undefined,
-  deleteCard: () => Promise<void>,
+async function restoreDeckFiles(
+  writer: FileStoreWriter,
+  decks: StoreDeck[],
 ): Promise<void> {
-  let flushError: unknown;
-  try {
-    await flushDeckFiles(db, deckIds, writer);
-  } catch (error) {
-    flushError = error;
-  }
-
-  await deleteCard();
-
-  if (flushError) {
-    throw flushError;
+  for (const deck of decks) {
+    try {
+      await writer.writeDeck(deck);
+    } catch (error) {
+      console.error(`Failed to restore deck ${deck.id} after an aborted delete:`, error);
+    }
   }
 }
 

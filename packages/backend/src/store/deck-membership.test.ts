@@ -233,7 +233,7 @@ describe('deck membership dual-write', () => {
     await expectStoreInSyncWithDb();
   });
 
-  it('still removes the card file when a deck file cannot be written', async () => {
+  it('leaves the card and its row untouched when a deck file cannot be written', async () => {
     const playbook = await playbookManager.create({
       title: 'Doomed',
       body: 'Gone soon.\n',
@@ -241,9 +241,9 @@ describe('deck membership dual-write', () => {
     });
     await playbookManager.addToDeck({ deckId, playbookId: playbook.id });
 
-    // The row is deleted before the flush, so a deck file that refuses to write
-    // must not strand `playbooks/<id>.md` — files win the next reindex, and the
-    // orphan would resurrect the card we just deleted.
+    // A deck file that refuses to write must abort the whole delete: the store is
+    // the source of truth, and a deck naming a card with no file aborts every
+    // later reindex — of the *whole* store, not just that deck.
     const writeDeck = vi
       .spyOn(writer, 'writeDeck')
       .mockRejectedValueOnce(new Error('EACCES: deck file is read-only'));
@@ -251,9 +251,51 @@ describe('deck membership dual-write', () => {
     await expect(playbookManager.delete(playbook.id)).rejects.toThrow('EACCES');
     expect(writeDeck).toHaveBeenCalled();
 
-    await expect(
-      fs.access(path.join(storePaths(home).playbooksDir, `${playbook.id}.md`)),
-    ).rejects.toThrow();
+    // Nothing happened: card file, deck file, and row are all as they were.
+    await fs.access(path.join(storePaths(home).playbooksDir, `${playbook.id}.md`));
+    expect((await deckFileMembership()).playbookIds).toEqual([playbook.id]);
+    expect(await db.getPlaybook(playbook.id)).not.toBeNull();
+    await expectStoreInSyncWithDb();
+
+    // And because the row survived, a plain retry finishes the job.
+    writeDeck.mockRestore();
+    expect(await playbookManager.delete(playbook.id)).toBe(true);
+    expect((await deckFileMembership()).playbookIds).toEqual([]);
+    await expectStoreInSyncWithDb();
+  });
+
+  it('restores the decks it already rewrote when a later deck file fails', async () => {
+    const second = await db.createDeck({ name: 'Second' });
+    await flushDeckFile(db, second.id, writer);
+
+    const playbook = await playbookManager.create({
+      title: 'On two decks',
+      body: 'Shared.\n',
+      triggers: ['shared'],
+    });
+    await playbookManager.addToDeck({ deckId, playbookId: playbook.id });
+    await playbookManager.addToDeck({ deckId: second.id, playbookId: playbook.id });
+
+    // Failing on the second deck must not leave the first one stripped while the
+    // delete reports failure — the store has to read as if nothing was attempted.
+    const realWriteDeck = writer.writeDeck.bind(writer);
+    let writes = 0;
+    vi.spyOn(writer, 'writeDeck').mockImplementation(async (deck) => {
+      writes += 1;
+      if (writes === 2) {
+        throw new Error('EACCES: deck file is read-only');
+      }
+      return realWriteDeck(deck);
+    });
+
+    await expect(playbookManager.delete(playbook.id)).rejects.toThrow('EACCES');
+    vi.restoreAllMocks();
+
+    expect((await deckFileMembership()).playbookIds).toEqual([playbook.id]);
+    expect((await deckFileMembership(second.id)).playbookIds).toEqual([playbook.id]);
+    await fs.access(path.join(storePaths(home).playbooksDir, `${playbook.id}.md`));
+    await expectStoreInSyncWithDb();
+    await expectStoreInSyncWithDb(db, second.id);
   });
 
   it('writes imported deck membership to the store', async () => {

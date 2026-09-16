@@ -19,7 +19,7 @@ import {
   type PlaybookDependencyCatalog,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
-import { flushDeckFile, flushDeckFilesThenDeleteCard } from '../store/deck-file';
+import { deleteCardFromStoreThenDb, flushDeckFile } from '../store/deck-file';
 import { FileStoreWriter } from '../store/writer';
 
 export class PlaybookDependencyError extends Error {
@@ -235,17 +235,20 @@ export class PlaybookManager {
   }
 
   async delete(id: string): Promise<boolean> {
-    // Deleting the row cascades the deck_playbooks links away, so capture the
-    // decks first — their files must drop the id too or reindex fails on a
-    // deck referencing a missing playbook.
-    const deckIds = await this.db.listDeckIdsForPlaybook(id);
-    const deleted = await this.db.deletePlaybook(id);
-    if (deleted) {
-      await flushDeckFilesThenDeleteCard(this.db, deckIds, this.storeWriter, () =>
-        this.deleteFromStore(id),
-      );
+    // The store is cleaned before the row, so the deck links are still readable
+    // and a failed write leaves the playbook whole instead of half-deleted.
+    const existing = await this.db.getPlaybook(id);
+    if (!existing) {
+      return false;
     }
-    return deleted;
+
+    return deleteCardFromStoreThenDb(
+      this.db,
+      { kind: 'playbook', id },
+      this.storeWriter,
+      () => this.deleteFromStore(id),
+      () => this.db.deletePlaybook(id),
+    );
   }
 
   async addToDeck(input: AddPlaybookToDeckInput): Promise<void> {
