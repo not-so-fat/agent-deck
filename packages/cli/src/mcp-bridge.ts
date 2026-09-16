@@ -11,6 +11,7 @@
  * replays it against the server when a session goes missing, then retries the
  * request that failed. The stdio client upstream never sees the gap.
  */
+import { AGENT_DECK_RECOVERED_SESSION_HEADER } from '@agent-deck/shared';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 
@@ -40,14 +41,6 @@ export type McpBridgeOptions = {
 
 const SESSION_HEADER = 'mcp-session-id';
 const MCP_ACCEPT = 'application/json, text/event-stream';
-
-/**
- * Tells the server which session we were holding when we re-initialized, so its
- * stale-session tally can mark that one recovered instead of reporting the client
- * as stranded forever (a wedged supergateway sends no such header and stays
- * counted as unresolved, which is the case operators need to see).
- */
-export const RECOVERED_SESSION_HEADER = 'x-agent-deck-recovered-session';
 
 const DEFAULT_DRAIN_TIMEOUT_MS = 2_000;
 
@@ -114,7 +107,7 @@ export class McpStdioHttpBridge {
   private handshake: Promise<void> | undefined;
   /** Every dispatched client message, so stdin closing can drain instead of cutting them off. */
   private readonly inFlight = new Set<Promise<void>>();
-  /** Test/observability hook: how many times we re-initialized after a restart. */
+  /** How many times we re-initialized after a restart — otherwise invisible, so the tests read it. */
   private recoveryCount = 0;
 
   constructor(options: McpBridgeOptions) {
@@ -381,9 +374,12 @@ export class McpStdioHttpBridge {
 
     let response: Response;
     try {
+      // Naming the lost session lets the server mark it recovered instead of
+      // reporting this client as stranded forever (a wedged supergateway sends no
+      // such header and stays unresolved, which is the case operators need to see).
       response = await this.post(
         initialize,
-        lostSessionId ? { [RECOVERED_SESSION_HEADER]: lostSessionId } : undefined,
+        lostSessionId ? { [AGENT_DECK_RECOVERED_SESSION_HEADER]: lostSessionId } : undefined,
       );
     } catch (error) {
       this.log(`[agent-deck] bridge: re-initialize failed: ${describeError(error)}`);

@@ -8,7 +8,7 @@ describe('isSessionInvalidResponse', () => {
     expect(isSessionInvalidResponse(404, '')).toBe(true);
   });
 
-  it('treats the pre-1.8.3 400 body as session-expired too', () => {
+  it('treats the older 400 body as session-expired too', () => {
     // Older servers answered an unknown session with 400; a new bridge still has
     // to recover against a backend the user has not upgraded yet.
     const legacy = JSON.stringify({

@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_RECOVERED_SESSION_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
   ensureGitExcluded,
@@ -70,12 +71,6 @@ type StaleSessionStats = {
   /** Last attempt from a session nobody has re-initialized away from. */
   lastUnresolvedAt?: string;
 };
-
-/**
- * Set by the first-party bridge on a replayed handshake, naming the session it
- * lost to the restart. Lower-case: Node normalises request header names.
- */
-const RECOVERED_SESSION_HEADER = 'x-agent-deck-recovered-session';
 
 export class AgentDeckMCPServer {
   /** Cap on remembered stale session ids — the tally is diagnostics, not a ledger. */
@@ -704,13 +699,14 @@ export class AgentDeckMCPServer {
   }
 
   /**
-   * A client that re-initializes after a restart tells us which session it lost
-   * (`x-agent-deck-recovered-session`), so we can stop counting it as stranded.
-   * Without this the tally only ever grows and `agent-deck status` would warn
-   * about clients that recovered on their own seconds earlier.
+   * A client that re-initializes after a restart names the session it lost, so we
+   * can stop counting it as stranded. Without this the tally only ever grows and
+   * `agent-deck status` would warn about clients that recovered on their own
+   * seconds earlier.
    */
   private markStaleSessionRecovered(req: Request): void {
-    const header = req.headers[RECOVERED_SESSION_HEADER];
+    // Node lower-cases request header names, which is how the constant is written.
+    const header = req.headers[AGENT_DECK_RECOVERED_SESSION_HEADER];
     const recoveredId = Array.isArray(header) ? header[0] : header;
     if (!recoveredId) {
       return;

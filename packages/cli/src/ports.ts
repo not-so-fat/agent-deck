@@ -1,21 +1,30 @@
 import { execSync } from 'node:child_process';
 import net from 'node:net';
 
-/** Stale-session tally reported by the MCP server's `/health` (NOT-101). */
+/** Sessions from a previous MCP process, as `/health` tallies them (NOT-101). */
+export interface McpStaleSessionTally {
+  /** Requests rejected because they carried a session this process never issued. */
+  count: number;
+  /** How many distinct pre-restart sessions those requests came from. */
+  distinctSessions: number;
+  /** Of those, the ones whose client re-initialized on its own. */
+  recoveredSessions?: number;
+  /** The rest — nobody reconnected from them, so those clients are stranded. */
+  unresolvedSessions?: number;
+  lastAt?: string;
+  lastUnresolvedAt?: string;
+}
+
+/**
+ * MCP session health, field for field as the server reports it — one vocabulary
+ * across the wire, the server, and `agent-deck status`.
+ */
 export interface McpSessionHealth {
   /** New on every MCP process start — a changed id means a restart happened. */
   instanceId?: string;
   startedAt?: string;
   liveSessions?: number;
-  /** Requests rejected because they carried a session from a previous process. */
-  staleSessionCount: number;
-  staleSessionClients: number;
-  staleSessionLastAt?: string;
-  /** Pre-restart sessions whose client re-initialized on its own. */
-  staleSessionsRecovered?: number;
-  /** Pre-restart sessions nobody has reconnected from — the stranded clients. */
-  staleSessionsUnresolved?: number;
-  staleSessionLastUnresolvedAt?: string;
+  staleSessions: McpStaleSessionTally;
 }
 
 export interface AgentDeckProbe {
@@ -86,9 +95,9 @@ export async function probeAgentDeck(
   };
 }
 
-function readMcpSessionHealth(health: Record<string, unknown> | null): McpSessionHealth {
+/** Read `/health` defensively — an older MCP server reports fewer fields. */
+export function readMcpSessionHealth(health: Record<string, unknown> | null): McpSessionHealth {
   const stale = (health?.staleSessions ?? {}) as Record<string, unknown>;
-  const asCount = (value: unknown): number => (typeof value === 'number' ? value : 0);
   const asOptionalCount = (value: unknown): number | undefined =>
     typeof value === 'number' ? value : undefined;
   const asText = (value: unknown): string | undefined =>
@@ -97,14 +106,16 @@ function readMcpSessionHealth(health: Record<string, unknown> | null): McpSessio
   return {
     instanceId: asText(health?.instanceId),
     startedAt: asText(health?.startedAt),
-    liveSessions: typeof health?.liveSessions === 'number' ? health.liveSessions : undefined,
-    staleSessionCount: asCount(stale.count),
-    staleSessionClients: asCount(stale.distinctSessions),
-    staleSessionLastAt: asText(stale.lastAt),
-    // Absent on a pre-1.8.3 server: we then only know the historical totals.
-    staleSessionsRecovered: asOptionalCount(stale.recoveredSessions),
-    staleSessionsUnresolved: asOptionalCount(stale.unresolvedSessions),
-    staleSessionLastUnresolvedAt: asText(stale.lastUnresolvedAt),
+    liveSessions: asOptionalCount(health?.liveSessions),
+    staleSessions: {
+      count: asOptionalCount(stale.count) ?? 0,
+      distinctSessions: asOptionalCount(stale.distinctSessions) ?? 0,
+      // Absent on a server that predates NOT-101: only the totals are known there.
+      recoveredSessions: asOptionalCount(stale.recoveredSessions),
+      unresolvedSessions: asOptionalCount(stale.unresolvedSessions),
+      lastAt: asText(stale.lastAt),
+      lastUnresolvedAt: asText(stale.lastUnresolvedAt),
+    },
   };
 }
 
@@ -127,37 +138,35 @@ export function formatMcpSessionStatus(sessions: McpSessionHealth | undefined): 
   const live = sessions.liveSessions ?? 0;
   lines.push(`  Sessions   ${live} live${sessions.startedAt ? `  (since ${sessions.startedAt})` : ''}`);
 
-  if (sessions.staleSessionCount === 0) {
+  const stale = sessions.staleSessions;
+  if (stale.count === 0) {
     return lines;
   }
 
   // A server that predates recovery reporting only gives us the totals; treat
   // every stale session it saw as unresolved, which is what it meant back then.
-  const unresolved = sessions.staleSessionsUnresolved ?? sessions.staleSessionClients;
+  const unresolved = stale.unresolvedSessions ?? stale.distinctSessions;
 
   if (unresolved > 0) {
     const clients = unresolved === 1 ? '1 client' : `${unresolved} clients`;
-    const lastAt = sessions.staleSessionLastUnresolvedAt ?? sessions.staleSessionLastAt;
+    const lastAt = stale.lastUnresolvedAt ?? stale.lastAt;
     lines.push(
       `  ⚠ Stale     ${clients} still using a session from before the last MCP restart` +
         `${lastAt ? ` (last attempt ${lastAt})` : ''}`,
     );
     lines.push('             Their tool calls fail with 404 until they re-initialize.');
     lines.push(
-      '             agent-deck ≥1.8.3 bridges reconnect on their own; older bridges ' +
-        '(supergateway) must be restarted with their host.',
+      "             Agent Deck's own bridge reconnects; a supergateway bridge must be " +
+        'restarted with its host.',
     );
     return lines;
   }
 
-  const attempts =
-    sessions.staleSessionCount === 1 ? '1 request' : `${sessions.staleSessionCount} requests`;
-  const recovered = sessions.staleSessionsRecovered ?? sessions.staleSessionClients;
+  const attempts = stale.count === 1 ? '1 request' : `${stale.count} requests`;
+  const recovered = stale.recoveredSessions ?? stale.distinctSessions;
   lines.push(
     `  Recovered  ${recovered === 1 ? '1 client' : `${recovered} clients`} re-initialized after a ` +
-      `restart (${attempts} rejected before they did${
-        sessions.staleSessionLastAt ? `, last ${sessions.staleSessionLastAt}` : ''
-      })`,
+      `restart (${attempts} rejected before they did${stale.lastAt ? `, last ${stale.lastAt}` : ''})`,
   );
 
   return lines;

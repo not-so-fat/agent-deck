@@ -13,7 +13,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { AgentDeckMCPServer } from '../../backend/src/mcp-server';
 import { McpStdioHttpBridge } from './mcp-bridge';
-import { formatMcpSessionStatus } from './ports';
+import { formatMcpSessionStatus, readMcpSessionHealth } from './ports';
 
 type JsonRpcMessage = {
   id?: string | number | null;
@@ -37,10 +37,44 @@ async function findFreePort(): Promise<number> {
   });
 }
 
+function isAddressInUse(error: unknown): boolean {
+  return (error as { code?: string } | undefined)?.code === 'EADDRINUSE';
+}
+
+/**
+ * Bind this exact port, which the restart half of the test depends on. A parallel
+ * vitest worker can hold it for a moment, so retry briefly before giving up.
+ */
 async function startServer(port: number): Promise<AgentDeckMCPServer> {
-  const server = new AgentDeckMCPServer(port, UNREACHABLE_BACKEND);
-  await server.start();
-  return server;
+  for (let attempt = 0; ; attempt += 1) {
+    const server = new AgentDeckMCPServer(port, UNREACHABLE_BACKEND);
+    try {
+      await server.start();
+      return server;
+    } catch (error) {
+      if (!isAddressInUse(error) || attempt >= 4) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
+/**
+ * A free port is only free until someone else takes it — `findFreePort` closes its
+ * probe socket before we listen. Take the next candidate when that happens.
+ */
+async function startServerOnFreePort(): Promise<{ server: AgentDeckMCPServer; port: number }> {
+  for (let attempt = 0; ; attempt += 1) {
+    const port = await findFreePort();
+    try {
+      return { server: await startServer(port), port };
+    } catch (error) {
+      if (!isAddressInUse(error) || attempt >= 4) {
+        throw error;
+      }
+    }
+  }
 }
 
 /** Collects NDJSON written by the bridge and hands back messages by JSON-RPC id. */
@@ -96,7 +130,6 @@ function initializeMessage(id: number) {
 }
 
 describe('MCP bridge survives a server restart', () => {
-  let port: number;
   const cleanups: Array<() => Promise<void>> = [];
 
   beforeAll(() => {
@@ -111,8 +144,9 @@ describe('MCP bridge survives a server restart', () => {
   });
 
   it('re-initializes transparently when the server restarts under it', async () => {
-    port = await findFreePort();
-    let server = await startServer(port);
+    const started = await startServerOnFreePort();
+    const port = started.port;
+    let server = started.server;
     cleanups.push(async () => {
       await server.stop();
     });
@@ -165,12 +199,13 @@ describe('MCP bridge survives a server restart', () => {
     // The client did come back, so the tally must not keep calling it stranded.
     expect(health.staleSessions.recoveredSessions).toBe(1);
     expect(health.staleSessions.unresolvedSessions).toBe(0);
-    expect(formatMcpSessionStatus(readHealth(health)).join('\n')).not.toContain('still using');
+    expect(formatMcpSessionStatus(readMcpSessionHealth(health)).join('\n')).not.toContain(
+      'still using',
+    );
   });
 
   it('leaves a client that never reconnects counted as unresolved', async () => {
-    const wedgedPort = await findFreePort();
-    const server = await startServer(wedgedPort);
+    const { server, port: wedgedPort } = await startServerOnFreePort();
     cleanups.push(async () => {
       await server.stop();
     });
@@ -190,19 +225,8 @@ describe('MCP bridge survives a server restart', () => {
 
     const health = await (await fetch(`http://127.0.0.1:${wedgedPort}/health`)).json();
     expect(health.staleSessions.unresolvedSessions).toBe(1);
-    expect(formatMcpSessionStatus(readHealth(health)).join('\n')).toContain('1 client still using');
+    expect(formatMcpSessionStatus(readMcpSessionHealth(health)).join('\n')).toContain(
+      '1 client still using',
+    );
   });
 });
-
-/** The shape `agent-deck status` reads out of `/health`, without a live probe. */
-function readHealth(health: any) {
-  return {
-    liveSessions: health.liveSessions,
-    staleSessionCount: health.staleSessions.count,
-    staleSessionClients: health.staleSessions.distinctSessions,
-    staleSessionLastAt: health.staleSessions.lastAt,
-    staleSessionsRecovered: health.staleSessions.recoveredSessions,
-    staleSessionsUnresolved: health.staleSessions.unresolvedSessions,
-    staleSessionLastUnresolvedAt: health.staleSessions.lastUnresolvedAt,
-  };
-}
