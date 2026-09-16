@@ -78,7 +78,7 @@ Add your own notes above/below the harness markers in `agent-deck.mdc`, or anywh
 Three behaviors in one rule block (templates stay generic — no project-specific examples):
 
 0. **Fail-closed bootstrap** — when Agent Deck MCP is configured for the session or the optional assignment file indicates it is expected, require `get_session_binding` → `get_bound_deck` before any task work; load matching playbooks and stop on connection or deck-selection failure. This also covers launch-selected sessions without `.agent-deck/use.json`.
-1. **Capability rescue** — use agent-deck before declining tool requests (`bind_workspace`, `get_bound_deck`, `call_service_tool`).
+1. **Capability rescue** — use agent-deck before declining tool requests (`get_bound_deck`, `call_service_tool`).
 2. **Playbooks as source of truth** — `get_bound_deck` playbook `triggers`, then `get_playbook`; don’t mirror into `.cursor/skills/`.
 3. **Self-improvement loop** — applies when the user gives feedback on output you produced **after** `get_playbook` + following that playbook this session (identify from session trace, not title or artifact type). Default actions:
    1. Fix the current output.

@@ -23,4 +23,8 @@ improvise from memory, or silently fall back to another route. Before the gate p
 checking for the optional assignment signal, checking whether Agent Deck is configured, and
 other read-only diagnostics needed to restore the connection are allowed.
 
+Give the operator a concrete recovery: use `agent-deck use <deck>` for an IDE folder
+assignment, or fix `x-agent-deck-deck-id` / the launch configuration for an unattended
+session.
+
 Do not repeat the status line every turn unless the user asks or the bind changes.

@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -89,6 +91,16 @@ describe('agent-harness templates', () => {
     expect(block).toContain('## Agent Deck');
     expect(block).not.toContain('DocMost');
     expect(block).not.toContain('slip-risk');
+  });
+
+  it('keeps this repo dogfooding the exact generated project harness', () => {
+    const file = fs.readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8');
+    const start = file.indexOf(HARNESS_MARKER_START);
+    const end = file.indexOf(HARNESS_MARKER_END);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const checkedInBlock = file.slice(start + HARNESS_MARKER_START.length, end).trim();
+    expect(checkedInBlock).toBe(buildClaudeHarnessBlock('project'));
   });
 });
 
