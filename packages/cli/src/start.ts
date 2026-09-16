@@ -154,7 +154,7 @@ async function printRunningEndpoints(
   console.log(`  API health ${backendUrl}/health`);
   console.log('');
   console.log('Claude Code:');
-  console.log(`  claude mcp add --scope user --transport http agent-deck http://${host}:${mcpPort}/mcp`);
+  console.log('  claude mcp add --scope user agent-deck -- agent-deck mcp-launch');
   console.log('');
 }
 
@@ -438,7 +438,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     `  API health ${backendUrl}/health`,
     '',
     'Claude Code:',
-    `  claude mcp add --scope user --transport http agent-deck http://${host}:${mcpPort}/mcp`,
+    '  claude mcp add --scope user agent-deck -- agent-deck mcp-launch',
     '',
   ];
 

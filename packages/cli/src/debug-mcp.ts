@@ -9,6 +9,7 @@ import {
 import { readAssignment } from './assignment';
 import { isTcpPortOpen, listListeningPids, probeAgentDeck } from './ports';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
+import { isLegacyBareHttpAgentDeckEntry, isMcpLaunchEntry } from './mcp-config';
 
 async function fetchText(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; body: string }> {
   try {
@@ -61,24 +62,101 @@ export async function probeMcpInitialize(
   };
 }
 
-function readClaudeMcpEntry(): string | null {
-  const configPath = path.join(os.homedir(), '.claude.json');
+type ClaudeMcpEntryRead =
+  | { kind: 'missing' }
+  | { kind: 'entry'; entry: unknown }
+  | { kind: 'error'; message: string };
+
+export type ClaudeMcpConfigAssessment = {
+  ok: boolean;
+  lines: string[];
+};
+
+function readClaudeMcpEntry(configPath: string, displayPath: string): ClaudeMcpEntryRead {
   if (!fs.existsSync(configPath)) {
-    return null;
+    return { kind: 'missing' };
   }
 
   try {
     const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      mcpServers?: Record<string, { type?: string; url?: string }>;
+      mcpServers?: Record<string, unknown>;
     };
     const entry = parsed.mcpServers?.['agent-deck'];
     if (!entry) {
-      return 'agent-deck not in ~/.claude.json mcpServers';
+      return { kind: 'missing' };
     }
-    return JSON.stringify(entry);
+    return { kind: 'entry', entry };
   } catch (error) {
-    return `Could not parse ~/.claude.json: ${error instanceof Error ? error.message : error}`;
+    return {
+      kind: 'error',
+      message: `Could not parse ${displayPath}: ${error instanceof Error ? error.message : error}`,
+    };
   }
+}
+
+export function assessClaudeMcpConfig(
+  project: ClaudeMcpEntryRead,
+  user: ClaudeMcpEntryRead,
+): ClaudeMcpConfigAssessment {
+  const lines: string[] = [];
+  let ok = true;
+
+  const assess = (
+    label: 'project' | 'user',
+    displayPath: string,
+    result: ClaudeMcpEntryRead,
+    conflictsWithProjectLauncher = false,
+  ): boolean => {
+    if (result.kind === 'missing') {
+      return false;
+    }
+    if (result.kind === 'error') {
+      lines.push(`WARN ${result.message}`);
+      ok = false;
+      return false;
+    }
+
+    const serialized = JSON.stringify(result.entry);
+    if (isMcpLaunchEntry(result.entry)) {
+      lines.push(`OK  Claude ${label} config (${displayPath}): ${serialized}`);
+      return true;
+    }
+
+    const shape = isLegacyBareHttpAgentDeckEntry(result.entry)
+      ? 'bare HTTP entry'
+      : 'custom entry';
+    const conflict = conflictsWithProjectLauncher ? ' conflicts with the project launcher and' : '';
+    lines.push(`WARN Claude ${label} config (${displayPath}) has a ${shape} that${conflict} cannot select a deck: ${serialized}`);
+    lines.push(`     Expected the trusted \`agent-deck mcp-launch\` stdio entry.`);
+    ok = false;
+    return false;
+  };
+
+  const projectTrusted = assess('project', './.mcp.json', project);
+  const userTrusted = assess('user', '~/.claude.json', user, projectTrusted);
+
+  if (!projectTrusted && !userTrusted && project.kind === 'missing' && user.kind === 'missing') {
+    lines.push('Claude config: no agent-deck entry in ./.mcp.json or ~/.claude.json');
+    lines.push('  Fix: agent-deck setup --client claude');
+  }
+
+  return { ok, lines };
+}
+
+export function buildMcpProbePlan(
+  workspaceRoot: string,
+  assignment: { deckId: string } | null,
+): { shouldProbe: boolean; launchHeaders: Record<string, string> } {
+  if (!assignment) {
+    return { shouldProbe: false, launchHeaders: {} };
+  }
+  return {
+    shouldProbe: true,
+    launchHeaders: {
+      [AGENT_DECK_DECK_ID_HEADER]: assignment.deckId,
+      [AGENT_DECK_WORKSPACE_HEADER]: workspaceRoot,
+    },
+  };
 }
 
 export async function runDebugMcp(): Promise<number> {
@@ -140,37 +218,39 @@ export async function runDebugMcp(): Promise<number> {
     ok = false;
   }
 
-  const launchHeaders: Record<string, string> = {};
+  const probePlan = buildMcpProbePlan(workspaceRoot, assignment);
   if (assignment) {
-    launchHeaders[AGENT_DECK_DECK_ID_HEADER] = assignment.deckId;
-    launchHeaders[AGENT_DECK_WORKSPACE_HEADER] = workspaceRoot;
     console.log(`OK  Folder assignment ${assignment.deckName} (${assignment.source}) @ ${workspaceRoot}`);
   } else {
     console.log(`WARN No v2/v3 folder assignment @ ${workspaceRoot}`);
     console.log('     Run `agent-deck use <deck>` for an IDE folder, or supply the deck header in an unattended launch.');
-    ok = false;
+    console.log('INFO Skipping authenticated MCP initialize probe; the deck must come from the launcher.');
   }
 
-  const init = await probeMcpInitialize(probe.mcpUrl, launchHeaders);
-  if (init.ok) {
-    console.log(`OK  ${init.detail} (same deck headers mcp-launch uses)`);
-  } else {
-    console.log(`FAIL ${init.detail}`);
-    ok = false;
+  if (probePlan.shouldProbe) {
+    const init = await probeMcpInitialize(probe.mcpUrl, probePlan.launchHeaders);
+    if (init.ok) {
+      console.log(`OK  ${init.detail} (same deck headers mcp-launch uses)`);
+    } else {
+      console.log(`FAIL ${init.detail}`);
+      ok = false;
+    }
   }
 
   console.log('');
-  const claudeEntry = readClaudeMcpEntry();
-  if (claudeEntry) {
-    console.log(`Claude config (~/.claude.json agent-deck): ${claudeEntry}`);
-    if (!claudeEntry.includes('"mcp-launch"')) {
-      console.log('WARN expected the trusted `agent-deck mcp-launch` stdio entry; a bare HTTP URL cannot select a deck');
-      ok = false;
-    }
-  } else {
-    console.log('Claude config: no agent-deck entry in ~/.claude.json');
-    console.log('  Fix: agent-deck setup --client claude');
+  const projectClaudeEntry = readClaudeMcpEntry(
+    path.join(workspaceRoot, '.mcp.json'),
+    './.mcp.json',
+  );
+  const userClaudeEntry = readClaudeMcpEntry(
+    path.join(os.homedir(), '.claude.json'),
+    '~/.claude.json',
+  );
+  const claudeAssessment = assessClaudeMcpConfig(projectClaudeEntry, userClaudeEntry);
+  for (const line of claudeAssessment.lines) {
+    console.log(line);
   }
+  ok = ok && claudeAssessment.ok;
 
   console.log('');
   if (ok) {

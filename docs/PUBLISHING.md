@@ -160,7 +160,7 @@ npx @agent-deck/cli start
 ```
 
 ```bash
-claude mcp add --scope user --transport http agent-deck http://127.0.0.1:1110/mcp
+claude mcp add --scope user agent-deck -- agent-deck mcp-launch
 ```
 
 ### MCP client setup
@@ -171,7 +171,7 @@ claude mcp add --scope user --transport http agent-deck http://127.0.0.1:1110/mc
 | Codex (project instructions) | `agent-deck setup --client codex --scope project` → `./AGENTS.md` |
 | Cursor (global) | `agent-deck setup --client cursor` |
 | Cursor (project) | `agent-deck setup --client cursor --scope project` |
-| Claude Code | `agent-deck setup --client claude` (uses `claude mcp add` → `~/.claude.json`; fallback writes same file — **not** `settings.json`) |
+| Claude Code | `agent-deck setup --client claude` (uses `claude mcp add` with the stdio `mcp-launch` bridge → `~/.claude.json`; fallback writes the same entry — **not** `settings.json`) |
 | Claude Code (project) | `agent-deck setup --client claude --scope project` → `.mcp.json` |
 | Claude Desktop | `agent-deck setup --client claude-desktop` (stdio bridge via supergateway) |
 

@@ -2,7 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { resolveSetupMenubar, resolveSetupStatusline, runSetup } from './setup';
+import {
+  buildClaudeCliAddArgs,
+  resolveSetupMenubar,
+  resolveSetupStatusline,
+  runSetup,
+} from './setup';
 
 describe('setup statusline defaults', () => {
   it('enables status line for Claude Code by default', () => {
@@ -27,6 +32,29 @@ describe('setup statusline defaults', () => {
 
   it('honors explicit --statusline for claude-desktop', () => {
     expect(resolveSetupStatusline('claude-desktop', true)).toBe(true);
+  });
+
+  it('registers Claude Code with the trusted stdio launcher in the requested scope', () => {
+    expect(buildClaudeCliAddArgs('global')).toEqual([
+      'mcp',
+      'add',
+      '--scope',
+      'user',
+      'agent-deck',
+      '--',
+      'agent-deck',
+      'mcp-launch',
+    ]);
+    expect(buildClaudeCliAddArgs('project')).toEqual([
+      'mcp',
+      'add',
+      '--scope',
+      'project',
+      'agent-deck',
+      '--',
+      'agent-deck',
+      'mcp-launch',
+    ]);
   });
 
   it('enables menubar on macOS by default', () => {

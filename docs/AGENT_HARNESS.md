@@ -74,7 +74,7 @@ Add your own notes above/below the harness markers in `agent-deck.mdc`, or anywh
 
 **Data:** decks, collection, and credentials in `~/.agent-deck/` are separate from setup; upgrade does not reset them.
 
-**Claude Code:** if `claude mcp add` succeeds, MCP is registered via the CLI (second run is usually harmless). If the CLI fails, setup falls back to merging `~/.claude.json` like Cursor.
+**Claude Code:** if `claude mcp add` succeeds, MCP is registered via the CLI as the stdio `agent-deck mcp-launch` bridge (second run is usually harmless). If the CLI fails, setup falls back to merging the same launcher into `~/.claude.json` or project `.mcp.json`.
 
 ---
 

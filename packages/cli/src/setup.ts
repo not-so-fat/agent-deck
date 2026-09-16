@@ -135,20 +135,24 @@ export function resolveSetupStatusline(client: SetupClient, explicit?: boolean):
   return client === 'cursor' || client === 'claude';
 }
 
-async function tryClaudeCliAdd(endpoint: McpEndpoint): Promise<{ ok: boolean; error?: string }> {
+export function buildClaudeCliAddArgs(scope: SetupScope): string[] {
+  return [
+    'mcp',
+    'add',
+    '--scope',
+    scope === 'global' ? 'user' : 'project',
+    'agent-deck',
+    '--',
+    'agent-deck',
+    'mcp-launch',
+  ];
+}
+
+async function tryClaudeCliAdd(scope: SetupScope): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     const child = spawn(
       'claude',
-      [
-        'mcp',
-        'add',
-        '--scope',
-        'user',
-        '--transport',
-        'http',
-        'agent-deck',
-        buildMcpUrl(endpoint),
-      ],
+      buildClaudeCliAddArgs(scope),
       { stdio: ['ignore', 'pipe', 'pipe'], env: process.env },
     );
 
@@ -219,7 +223,7 @@ async function finishSetup(
         console.log('  Restart Cursor CLI after setup.');
       }
     } else {
-      console.log('  --statusline applies to Cursor CLI and Claude Code only (not Claude Desktop).');
+      console.log('  --statusline applies to Cursor CLI and Claude Code only.');
     }
   }
 
@@ -270,9 +274,10 @@ export async function runSetup(args: string[]): Promise<number> {
   }
 
   if (client === 'claude') {
-    const added = await tryClaudeCliAdd(endpoint);
+    const added = await tryClaudeCliAdd(scope);
     if (added.ok) {
-      console.log('Configured Claude Code via `claude mcp add` → ~/.claude.json');
+      const target = scope === 'project' ? '.mcp.json' : '~/.claude.json';
+      console.log(`Configured Claude Code via \`claude mcp add\` → ${target}`);
       console.log('Verify: claude mcp list');
       return await finishSetup(client, scope, endpoint, parsed.start === true, parsed.statusline, parsed.menubar);
     }
