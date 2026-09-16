@@ -14,7 +14,9 @@ export const HARNESS_RULE_DESCRIPTION =
 
 const GLOBAL_BODY = `**Connect first:** Ensure Agent Deck MCP is connected before using deck tools (\`agent-deck setup --client cursor|claude --start\`, then restart the host). Claude Code: \`claude mcp list\` should show agent-deck as Connected when the backend is running.
 
-**Session opener (first turn only):** When Agent Deck MCP is connected and this is a new conversation in a workspace, call \`get_session_binding\` then \`get_bound_deck\`, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Grant auth is automatic from \`agent-deck use\` — do **not** call \`get_decks\` or pick a deck. On \`GRANT_REQUIRED\`, tell the user to run \`agent-deck use <deck>\` and stop. Do **not** repeat the status line every turn unless the user asks or the bind changes.
+**Deck-bound hard gate:** A workspace containing \`.agent-deck/use.json\` is explicitly deck-bound. Before reading repo files, running task commands, or answering the task, require \`get_session_binding\` and \`get_bound_deck\` to succeed. If the tools are unavailable, disconnected, return \`GRANT_REQUIRED\`, or otherwise fail, stop and report the connection problem — do not improvise without the deck. Only read-only connection diagnostics are allowed before the gate passes.
+
+**Session opener (first turn only):** In a deck-bound workspace, call \`get_session_binding\` then \`get_bound_deck\`, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Grant auth is automatic from \`agent-deck use\` — do **not** call \`get_decks\` or pick a deck. Match the task against the returned playbook triggers and call \`get_playbook\` for every match before taking task action. On \`GRANT_REQUIRED\`, tell the user to run \`agent-deck use <deck>\` and stop. Do **not** repeat the status line every turn unless the user asks or the bind changes.
 
 **Later turns:** Deck scope comes from the workspace grant. Do not re-bind unless the user asks for deck administration.
 

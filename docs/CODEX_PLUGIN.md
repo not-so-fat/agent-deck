@@ -112,7 +112,7 @@ Version: add `.codex-plugin/plugin.json` to `scripts/sync-versions.mjs` so it tr
 Playbook bodies live on the deck; the plugin ships only generic protocol stubs (same rule as `.cursor/skills/` stubs — pointers, never mirrored content). This also helps Skill Security scoring: no fat prompt bodies, no elevated steps.
 
 - **`agent-deck-setup`** — triggers: "set up agent deck", "agent deck not connected". Body: check `<mcp-url>/health`; if down, guide `npm i -g agent-deck && agent-deck setup --client codex --start`, then restart the host. Read-only checks only; the *user* runs install commands.
-- **`agent-deck-session`** — triggers: session start in a deck-bound workspace. Body: the generalized session opener — `get_decks` → `bind_workspace` (honor `.agent-deck/use.json` `deckId`) → `get_session_binding` → print the one-line `display_summary`. Once per session.
+- **`agent-deck-session`** — triggers: session start in a deck-bound workspace. Body: `.agent-deck/use.json` makes bootstrap fail-closed — require `get_session_binding` → `get_bound_deck`, print the one-line `display_summary`, load every matching playbook, and stop before task work if the tools or grant are unavailable. Once per session.
 - **`agent-deck-playbooks`** — triggers: task matches a bound-deck playbook / user corrects playbook-derived output. Body: check `triggers` on `get_bound_deck`, `get_playbook` before improvising; on correction, `propose_playbook_patch` (update case) or `kind: "create"` (genesis case) with `evidence.user_feedback_excerpt`.
 
 Skill format is the standard Agent Skills `SKILL.md` (name/description frontmatter) — identical for Codex and Claude Code, so one `skills/` tree serves both (§5).

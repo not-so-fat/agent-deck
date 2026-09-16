@@ -27,6 +27,10 @@ describe('agent-harness templates', () => {
     expect(file).toContain('display_summary');
     expect(file).toContain('Session opener');
     expect(file).toContain('get_session_binding');
+    expect(file).toContain('Deck-bound hard gate');
+    expect(file).toContain('Before reading repo files');
+    expect(file).toContain('do not improvise without the deck');
+    expect(file).toContain('for every match before taking task action');
     expect(file).toContain('Genesis case');
     expect(file).toContain('signal_only');
     expect(file).toContain('signal_ids');
