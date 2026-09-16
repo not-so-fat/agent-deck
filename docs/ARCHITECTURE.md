@@ -161,6 +161,16 @@ The bridge must send the launch headers (`x-agent-deck-deck-id`,
 `x-agent-deck-workspace`) on **every** request, not just `initialize` — the server
 re-validates the launch deck per call.
 
+**A replayed handshake can land on a different deck.** A session deck override
+(`bind_workspace`) does not survive a restart, and `switch_bound_deck` can move the
+folder assignment while the bridge is connected, so the launch headers it started
+with are not necessarily the binding that is current. Before it replays, the bridge
+re-reads the assignment, and after the new session exists it asks
+`get_session_binding` which deck that session actually acts on. A pending request is
+retried only when that deck is the one it was sent for; otherwise the client is told
+the deck changed and re-binds itself, because silently replaying a mutation onto
+another deck is worse than the gap.
+
 ---
 
 ## Key patterns

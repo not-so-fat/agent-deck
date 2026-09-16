@@ -66,6 +66,25 @@ describe('mcp-launch assignment headers', () => {
     expect(clearKeychainAssignment).not.toHaveBeenCalled();
   });
 
+  // What the bridge calls before it replays a handshake (NOT-101): an elevated
+  // `switch_bound_deck` rewrites the assignment mid-session, and reconnecting with
+  // the deck this process started on would put the client back on the old deck.
+  it('re-resolves to the deck the assignment names now, not the one we launched on', async () => {
+    const workspace = makeWorkspace();
+    await writeAssignment(workspace, { deckId: 'deck-a', deckName: 'a' });
+    const launch = await resolveMcpLaunchPlan(workspace, endpoint);
+
+    await writeAssignment(workspace, { deckId: 'deck-b', deckName: 'b' });
+    const afterSwitch = await resolveMcpLaunchPlan(workspace, endpoint);
+
+    expect(parseLaunchHeaders(('headers' in launch && launch.headers) || [])).toMatchObject({
+      [AGENT_DECK_DECK_ID_HEADER]: 'deck-a',
+    });
+    expect(parseLaunchHeaders(('headers' in afterSwitch && afterSwitch.headers) || [])).toMatchObject({
+      [AGENT_DECK_DECK_ID_HEADER]: 'deck-b',
+    });
+  });
+
   it('migrates a v2 grant file to v3 and sends the deck header', async () => {
     const workspace = makeWorkspace();
     fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
