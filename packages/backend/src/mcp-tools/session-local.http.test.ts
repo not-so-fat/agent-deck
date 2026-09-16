@@ -85,7 +85,7 @@ describe('MCP session-local context (NOT-84)', () => {
     /** Never respond to DELETE /api/scope/live-display/:id (hang until client abort). */
     hangLiveDisplayDelete?: boolean;
   }) {
-    const db = new DatabaseManager(`:memory:${Math.random()}`);
+    const db = new DatabaseManager(':memory:');
     const deckAlpha = await db.createDeck({ name: 'alpha' });
     const deckBeta = await db.createDeck({ name: 'beta' });
 

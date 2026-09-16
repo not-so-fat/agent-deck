@@ -74,7 +74,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
   });
 
   async function buildListeningBackend() {
-    const db = new DatabaseManager(`:memory:${Math.random()}`);
+    const db = new DatabaseManager(':memory:');
     const deckAlpha = await db.createDeck({ name: 'alpha' });
     const deckBeta = await db.createDeck({ name: 'beta' });
     const playbook = await db.createPlaybook({

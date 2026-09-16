@@ -18,7 +18,7 @@ describe('service route containment (NOT-44)', () => {
   });
 
   async function buildApp() {
-    const db = new DatabaseManager(`:memory:${Math.random()}`);
+    const db = new DatabaseManager(':memory:');
     const boundDeck = await db.createDeck({ name: 'bound' });
     await db.createDeck({ name: 'other' });
 
