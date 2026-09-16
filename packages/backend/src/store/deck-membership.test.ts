@@ -32,9 +32,11 @@ describe('deck membership dual-write', () => {
   let serviceManager: ServiceManager;
   let deckId: string;
   const replicas = new Set<DatabaseManager>();
+  let replica: DatabaseManager | undefined;
 
   beforeEach(async () => {
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-deck-membership-'));
+    replica = undefined;
     previousHome = process.env.AGENT_DECK_HOME;
     // Credential YAML resolves the home from the environment, the writer takes it
     // as an argument — both must land in this test's temp store.
@@ -114,10 +116,16 @@ describe('deck membership dual-write', () => {
     const expected = await dbMembership(database, id);
     expect(await deckFileMembership(id)).toEqual(expected);
 
-    const replica = new DatabaseManager(
-      path.join(os.tmpdir(), `ad-deck-membership-replica-${replicas.size}-${Date.now()}.db`),
-    );
-    replicas.add(replica);
+    // One replica per test, reused across the assertions in it: reindex wipes the
+    // card and membership tables before it rebuilds them from the files, so a
+    // reused database proves exactly what a fresh one does. Bootstrapping a new
+    // on-disk SQLite per assertion is what pushed the heaviest test in this file
+    // past vitest's 5s default on a loaded CI runner. It lives under `home` so the
+    // afterEach cleanup takes it with the rest of the store.
+    if (!replica) {
+      replica = new DatabaseManager(path.join(home, 'reindex-replica.db'));
+      replicas.add(replica);
+    }
     const result = await reindexStoreToSqlite(replica, { home });
     expect(result).toMatchObject({ ok: true });
     expect(await dbMembership(replica, id)).toEqual(expected);
