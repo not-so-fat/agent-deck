@@ -9,6 +9,12 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // These are integration-weight tests — real SQLite files, real store
+    // writes, real HTTP servers — not unit tests. vitest's 5s default is
+    // calibrated for the latter and leaves no headroom on a 2-core CI runner
+    // that runs this suite ~10x slower than a dev laptop.
+    testTimeout: 20000,
+    hookTimeout: 20000,
     globalSetup: [path.resolve(__dirname, '../../scripts/vitest/global-setup.mjs')],
     env: {
       AGENT_DECK_HOME: agentDeckHome,
