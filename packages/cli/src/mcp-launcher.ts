@@ -107,11 +107,14 @@ export async function runMcpLaunch(): Promise<number> {
       url: plan.mcpUrl,
       headers: parseLaunchHeaders(plan.headers),
       // An elevated `switch_bound_deck` rewrites the folder assignment while we
-      // are connected. Re-reading it before a replayed handshake is what keeps a
-      // restart from reconnecting to the deck this process started on.
-      resolveHeaders: async () => {
+      // are connected, and `agent-deck use` can point it at another endpoint.
+      // Re-reading it before a replayed handshake is what keeps a restart from
+      // reconnecting to the deck and server this process started on.
+      resolveTarget: async () => {
         const current = await resolveMcpLaunchPlan(workspaceRoot, endpoint);
-        return 'error' in current ? undefined : parseLaunchHeaders(current.headers);
+        return 'error' in current
+          ? undefined
+          : { url: current.mcpUrl, headers: parseLaunchHeaders(current.headers) };
       },
       stdin: process.stdin,
       stdout: process.stdout,

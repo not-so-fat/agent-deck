@@ -98,6 +98,13 @@ export class AgentDeckMCPServer {
   private staleSessionCount = 0;
   /** Pre-restart session id → whether its client has since re-initialized. */
   private staleSessionsById = new Map<string, { recovered: boolean; lastAt: string }>();
+  /**
+   * Sessions this process issued and then closed. A late request on one of them is
+   * an ordinary end-of-session race, not a client left behind by a restart, and
+   * tallying it would make `agent-deck status` warn about a restart that never
+   * happened.
+   */
+  private closedSessionIds = new Set<string>();
   private staleSessionFirstAt: string | undefined;
   private staleSessionLastAt: string | undefined;
   private staleSessionLastId: string | undefined;
@@ -731,6 +738,12 @@ export class AgentDeckMCPServer {
    * malformed request, so bridges parked on it forever instead of reconnecting.
    */
   private sendSessionNotFound(sessionId: string, res: Response): void {
+    if (this.closedSessionIds.has(sessionId)) {
+      // We issued this session and it ended here; the client is not stranded.
+      this.sendSessionExpired(sessionId, res);
+      return;
+    }
+
     const at = new Date().toISOString();
     const known = this.staleSessionsById.get(sessionId);
 
@@ -756,6 +769,11 @@ export class AgentDeckMCPServer {
       );
     }
 
+    this.sendSessionExpired(sessionId, res);
+  }
+
+  /** The wire half of a 404: the same answer whether or not the session was tallied. */
+  private sendSessionExpired(sessionId: string, res: Response): void {
     res.status(404)
       .set('mcp-session-status', 'expired')
       .json({
@@ -768,6 +786,17 @@ export class AgentDeckMCPServer {
         },
         id: null,
       });
+  }
+
+  /** Remember a session we closed ourselves, keeping the set bounded like the tally. */
+  private rememberClosedSession(sessionId: string): void {
+    if (this.closedSessionIds.size >= AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT) {
+      const oldest = this.closedSessionIds.values().next().value;
+      if (oldest !== undefined) {
+        this.closedSessionIds.delete(oldest);
+      }
+    }
+    this.closedSessionIds.add(sessionId);
   }
 
   private async refreshRuntimeSession(sessionId: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
@@ -994,6 +1023,7 @@ export class AgentDeckMCPServer {
       const closedSessionId = transport.sessionId;
       if (closedSessionId) {
         this.sessions.delete(closedSessionId);
+        this.rememberClosedSession(closedSessionId);
         // Unregister while session headers still resolve — clearSession would drop
         // the runtime session id and live-display DELETE would 401.
         const task = this.unregisterLiveDisplay(closedSessionId).finally(() => {

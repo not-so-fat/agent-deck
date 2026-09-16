@@ -421,13 +421,79 @@ describe('McpStdioHttpBridge across a deck change', () => {
     expect(bridge.getBoundDeckId()).toBe('deck-1');
   });
 
+  it('keeps refusing deck-scoped calls until the client binds again', async () => {
+    const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
+    const { bridge, send, waitFor, finish } = await driveBridge(
+      state,
+      deckAwareFetch(state) as unknown as typeof fetch,
+    );
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'bind_workspace', arguments: { deckId: 'deck-2' } },
+    });
+    await waitFor(2);
+
+    // The restart: recovery lands on deck-1, the deck the launch headers name.
+    state.sessionId = 'session-b';
+    send({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'register_service', arguments: { name: 'svc' } },
+    });
+    await waitFor(3);
+
+    // The client retries instead of re-binding — the call must still not go out.
+    send({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: 'register_service', arguments: { name: 'svc' } },
+    });
+    const refusedAgain = await waitFor(4);
+    expect(refusedAgain.error?.message).toContain('not sent');
+    expect(refusedAgain.error?.message).toContain('not deck-2');
+    // Deck-scoped reads are held back on the same grounds.
+    send({ jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'agent-deck://bound-deck' } });
+    expect((await waitFor(5)).error?.message).toContain('not deck-2');
+    expect(state.calls.filter((call) => call.body.params?.name === 'register_service')).toHaveLength(
+      1,
+    );
+
+    // Binding again is how the client gets out, and the next call goes through.
+    send({
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'tools/call',
+      params: { name: 'bind_workspace', arguments: { deckId: 'deck-2' } },
+    });
+    await waitFor(6);
+    send({
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: { name: 'register_service', arguments: { name: 'svc' } },
+    });
+    const applied = await waitFor(7);
+    await finish();
+
+    expect(applied.error).toBeUndefined();
+    expect(JSON.parse(applied.result.content[0].text).applied_to_deck).toBe('deck-2');
+    expect(bridge.getRecoveryCount()).toBe(1);
+  });
+
   it('reconnects to the deck an elevated switch persisted, and retries there', async () => {
     const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
     const { bridge, send, waitFor, finish } = await driveBridge(
       state,
       deckAwareFetch(state) as unknown as typeof fetch,
       // What the launcher wires up: the assignment, re-read at recovery time.
-      { resolveHeaders: async () => ({ 'x-agent-deck-deck-id': state.assignedDeck }) },
+      { resolveTarget: async () => ({ headers: { 'x-agent-deck-deck-id': state.assignedDeck } }) },
     );
 
     send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
@@ -457,6 +523,139 @@ describe('McpStdioHttpBridge across a deck change', () => {
     const handshakes = state.calls.filter((call) => call.body.method === 'initialize');
     expect(handshakes.map((call) => call.deck)).toEqual(['deck-1', 'deck-2']);
     expect(bridge.getBoundDeckId()).toBe('deck-2');
+  });
+
+  // `agent-deck use <other-deck>` while we are connected. The client never chose a
+  // deck, so following the assignment is the reconnect doing its job — latching on
+  // it would wedge every host that does not call bind_workspace.
+  it('follows a reassigned folder without holding later calls back', async () => {
+    const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
+    const { bridge, send, waitFor, finish } = await driveBridge(
+      state,
+      deckAwareFetch(state) as unknown as typeof fetch,
+      { resolveTarget: async () => ({ headers: { 'x-agent-deck-deck-id': state.assignedDeck } }) },
+    );
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+
+    state.assignedDeck = 'deck-2';
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'register_service' } });
+    // The in-flight call was meant for deck-1, so it is still not replayed blind…
+    expect((await waitFor(2)).error?.message).toContain('not deck-1');
+
+    // …but the client is on deck-2 now, and its next call goes through there.
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'register_service' } });
+    const applied = await waitFor(3);
+    await finish();
+
+    expect(applied.error).toBeUndefined();
+    expect(JSON.parse(applied.result.content[0].text).applied_to_deck).toBe('deck-2');
+    expect(bridge.getBoundDeckId()).toBe('deck-2');
+  });
+
+  it('lifts the refusal when a later restart lands back on the chosen deck', async () => {
+    const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
+    const { bridge, send, waitFor, finish } = await driveBridge(
+      state,
+      deckAwareFetch(state) as unknown as typeof fetch,
+      { resolveTarget: async () => ({ headers: { 'x-agent-deck-deck-id': state.assignedDeck } }) },
+    );
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'bind_workspace', arguments: { deckId: 'deck-2' } },
+    });
+    await waitFor(2);
+
+    // Restart 1: the assignment still says deck-1, so the override is lost.
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'register_service' } });
+    expect((await waitFor(3)).error?.message).toContain('not deck-2');
+
+    // Restart 2, after someone moved the assignment to the deck the client chose.
+    // A binding call is the one thing still allowed out, so it is what discovers
+    // the second restart — and it lands on deck-2 this time.
+    state.assignedDeck = 'deck-2';
+    state.sessionId = 'session-c';
+    send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_session_binding' } });
+    expect((await waitFor(4)).error).toBeUndefined();
+
+    send({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'register_service' } });
+    const applied = await waitFor(5);
+    await finish();
+
+    // The session is where the client wanted it, so nothing is held back — and the
+    // refusal must not have inverted into "deck-2, not deck-1".
+    expect(applied.error).toBeUndefined();
+    expect(JSON.parse(applied.result.content[0].text).applied_to_deck).toBe('deck-2');
+    expect(bridge.getBoundDeckId()).toBe('deck-2');
+  });
+
+  it('drops the refusal when the client re-initializes on its own', async () => {
+    const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
+    const { bridge, send, waitFor, finish } = await driveBridge(
+      state,
+      deckAwareFetch(state) as unknown as typeof fetch,
+    );
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'bind_workspace', arguments: { deckId: 'deck-2' } },
+    });
+    await waitFor(2);
+
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'register_service' } });
+    expect((await waitFor(3)).error?.message).toContain('not deck-2');
+
+    // The host re-handshakes over the same bridge process: a new session bound from
+    // the launch headers, which is a clean slate rather than a locked-out one.
+    state.sessionId = 'session-c';
+    send({ jsonrpc: '2.0', id: 4, method: 'initialize', params: {} });
+    await waitFor(4);
+    send({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'register_service' } });
+    const applied = await waitFor(5);
+    await finish();
+
+    expect(applied.error).toBeUndefined();
+    expect(JSON.parse(applied.result.content[0].text).applied_to_deck).toBe('deck-1');
+    expect(bridge.getBoundDeckId()).toBe('deck-1');
+  });
+
+  it('replays the handshake to the endpoint the assignment names now', async () => {
+    const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
+    const urls: string[] = [];
+    const deckAware = deckAwareFetch(state) as unknown as typeof fetch;
+    const { send, waitFor, finish } = await driveBridge(
+      state,
+      ((url: any, init: any) => {
+        urls.push(String(url));
+        return deckAware(url, init);
+      }) as unknown as typeof fetch,
+      // `agent-deck use` can repoint the assignment at another MCP port.
+      { resolveTarget: async () => ({ url: 'http://moved/mcp' }) },
+    );
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'register_service' } });
+    await waitFor(2);
+    await finish();
+
+    expect(urls[0]).toBe('http://stub/mcp');
+    expect(urls[urls.length - 1]).toBe('http://moved/mcp');
   });
 });
 

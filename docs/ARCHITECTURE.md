@@ -139,8 +139,10 @@ recoverable:
    **not** implement the reconnect half and stays wedged until its host restarts.
 3. MCP `/health` exposes `instanceId`, `startedAt`, `liveSessions`, and a
    `staleSessions` tally so `agent-deck status` can say "clients are stranded on a
-   pre-restart session" instead of a bare "running". The tally is cumulative for the
-   life of the process, so it is split: a bridge names the session it lost on the
+   pre-restart session" instead of a bare "running". Sessions this process issued
+   and then closed are left out of it, so an ordinary end-of-session straggler never
+   reads as a client left behind by a restart. The tally is cumulative for the life
+   of the process, so it is split: a bridge names the session it lost on the
    replayed handshake (`x-agent-deck-recovered-session`), and once that handshake
    establishes a replacement session the lost one moves from `unresolvedSessions`
    to `recoveredSessions`. A handshake rejected on the way (launch-deck auth, a
@@ -170,6 +172,17 @@ re-reads the assignment, and after the new session exists it asks
 retried only when that deck is the one it was sent for; otherwise the client is told
 the deck changed and re-binds itself, because silently replaying a mutation onto
 another deck is worse than the gap.
+
+When the client had *bound a deck itself*, that refusal is latched rather than
+one-shot: every deck-scoped call (`tools/call` other than the binding tools,
+`resources/read`) is answered with the same error until the client is back on the
+deck it chose — it binds again, it re-initializes (a fresh handshake binds from the
+launch headers and is a clean slate), or a later reconnect lands on that deck
+anyway. A client that simply retried the failed call would otherwise have it
+applied to the new deck without ever being told. The binding tools are never held
+back, so they are also what discovers a *second* restart while the latch is up.
+A client that never bound anything is not latched: it takes whatever deck the
+folder assignment names now, which is the reconnect working as intended.
 
 ---
 

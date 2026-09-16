@@ -297,6 +297,40 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
     expect(afterRecovery.unresolvedSessions).toBe(stranded.unresolvedSessions - 1);
     expect(afterRecovery.recoveredSessions).toBe(stranded.recoveredSessions + 1);
   });
+
+  // A session this process ended is not a client left behind by a restart, so a
+  // late request on it must not make `agent-deck status` warn about one.
+  it('does not count a session it closed itself as a stranded client', async () => {
+    const initialized = await postInitialize(port, 90);
+    const sessionId = initialized.headers.get('mcp-session-id')!;
+    expect(sessionId).toBeTruthy();
+    const before = await readStaleSessions(port);
+
+    const closed = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'DELETE',
+      headers: { Accept: MCP_ACCEPT, 'mcp-session-id': sessionId },
+    });
+    expect(closed.status).toBeLessThan(400);
+
+    // The straggler every client sends: an in-flight call, or the GET stream
+    // reconnecting, after the session was terminated.
+    const late = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 91, method: 'tools/list', params: {} }),
+    });
+
+    // Still the spec answer, so the client re-initializes...
+    expect(late.status).toBe(404);
+    expect(late.headers.get('mcp-session-status')).toBe('expired');
+    // ...but nothing is reported as stranded on a server that never restarted.
+    const after = await readStaleSessions(port);
+    expect(after).toEqual(before);
+  });
 });
 
 import http from 'node:http';

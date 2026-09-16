@@ -140,8 +140,6 @@ temp/
 .tokensave/
 .agent-dealer-worktrees/
 
-# Stray SQLite files from tests that passed a non-':memory:' path
-:memory:*
 packages/backend/static-ui/
 *.swp
 *.swo
