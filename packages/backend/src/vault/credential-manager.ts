@@ -15,7 +15,11 @@ import {
 import { CredentialYamlSync } from './yaml-sync';
 import { SecretStore, VaultUnsupportedError } from './secret-store';
 import { buildCredentialAuthHeaders } from './credential-auth-headers';
-import { deleteCardFromStoreThenDb, flushDeckFile } from '../store/deck-file';
+import {
+  cleanUpAfterCardDelete,
+  deleteCardFromStoreThenDb,
+  flushDeckFile,
+} from '../store/deck-file';
 import { FileStoreWriter } from '../store/writer';
 
 export class CredentialManager {
@@ -257,14 +261,17 @@ export class CredentialManager {
     // cannot be put back, so a credential that survived a failed write must keep
     // it rather than come back unusable.
     if (deleted) {
-      try {
-        await this.secretStore.delete(existing.keychainAccount);
-      } catch (error) {
-        if (!(error instanceof VaultUnsupportedError)) {
-          throw error;
-        }
-      }
-      await removeCachedIcon(id);
+      await cleanUpAfterCardDelete(`secret ${existing.keychainAccount} in the vault`, () =>
+        this.secretStore.delete(existing.keychainAccount).catch((error: unknown) => {
+          // No vault on this machine is expected, not leftover worth logging.
+          if (!(error instanceof VaultUnsupportedError)) {
+            throw error;
+          }
+        }),
+      );
+      await cleanUpAfterCardDelete(`cached icon for credential ${id}`, () =>
+        removeCachedIcon(id),
+      );
     }
     return deleted;
   }

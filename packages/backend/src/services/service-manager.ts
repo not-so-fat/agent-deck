@@ -31,7 +31,11 @@ import {
   resolveMcpErrorMessage,
 } from '../lib/mcp-connection-error';
 import { normalizeServiceToolResult } from '../lib/normalize-service-tool-result';
-import { deleteCardFromStoreThenDb, flushDeckFile } from '../store/deck-file';
+import {
+  cleanUpAfterCardDelete,
+  deleteCardFromStoreThenDb,
+  flushDeckFile,
+} from '../store/deck-file';
 import { storeServiceFromDb } from '../store/service-codec';
 import { FileStoreWriter } from '../store/writer';
 import { ServiceHeaderVault } from '../vault/service-header-vault';
@@ -413,7 +417,9 @@ export class ServiceManager {
     if (deleted) {
       // After the delete commits — dropping the headers of a service that
       // survived a failed write would be the worse outcome.
-      await this.headerVault?.delete(id);
+      await cleanUpAfterCardDelete(`stored headers for service ${id}`, async () => {
+        await this.headerVault?.delete(id);
+      });
     }
     return deleted;
   }

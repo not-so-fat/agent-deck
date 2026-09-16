@@ -85,9 +85,15 @@ export async function flushDeckFile(
  * we already rewrote back and rethrow with the row still there. The delete then
  * simply did not happen, and a plain retry redoes it from a clean state.
  *
- * Auxiliary cleanup a card may need (header vault, cached icon) belongs *after*
- * this call: it can't be undone, and losing it while the card survives is a
- * worse trade than an orphan the next delete removes.
+ * Auxiliary cleanup a card may need (header vault, cached icon, keychain secret)
+ * belongs *after* this call, via {@link cleanUpAfterCardDelete}: it can't be
+ * undone, and losing it while the card survives is a worse trade than an orphan
+ * the next delete removes.
+ *
+ * `writer` gates only the deck rewrites. `deleteCardFile` runs either way —
+ * credential YAML, for one, is written through its own sync whether or not a
+ * writer was injected, so skipping it here would strand the file and let the
+ * next reindex resurrect the card.
  */
 export async function deleteCardFromStoreThenDb(
   db: DatabaseManager,
@@ -96,36 +102,56 @@ export async function deleteCardFromStoreThenDb(
   deleteCardFile: () => Promise<void>,
   deleteRow: () => Promise<boolean>,
 ): Promise<boolean> {
-  if (!writer) {
-    return deleteRow();
-  }
-
-  const deckIds = await listDeckIdsForCard(db, card.kind, card.id);
   const rewritten: StoreDeck[] = [];
 
   try {
-    for (const deckId of new Set(deckIds)) {
-      const deck = await db.getDeck(deckId);
-      if (!deck) {
-        throw new Error(`Deck not found while deleting ${card.kind} ${card.id}: ${deckId}`);
+    if (writer) {
+      for (const deckId of new Set(await listDeckIdsForCard(db, card.kind, card.id))) {
+        const deck = await db.getDeck(deckId);
+        if (!deck) {
+          throw new Error(`Deck not found while deleting ${card.kind} ${card.id}: ${deckId}`);
+        }
+        const before = storeDeckFromDb(deck);
+        await writer.writeDeck(withoutCard(before, card.kind, card.id));
+        // Only decks we actually changed — an atomic write that threw left the
+        // old file in place and must not be "restored" over.
+        rewritten.push(before);
       }
-      const before = storeDeckFromDb(deck);
-      await writer.writeDeck(withoutCard(before, card.kind, card.id));
-      // Only decks we actually changed — an atomic write that threw left the
-      // old file in place and must not be "restored" over.
-      rewritten.push(before);
     }
 
     // Last, so nothing fallible runs between the card file going away and the
     // deck files that point at it already being clean.
     await deleteCardFile();
   } catch (error) {
-    await restoreDeckFiles(writer, rewritten);
+    if (writer) {
+      await restoreDeckFiles(writer, rewritten);
+    }
     console.error(`Failed to remove ${card.kind} ${card.id} from the file store:`, error);
     throw error;
   }
 
   return deleteRow();
+}
+
+/**
+ * Run a deleted card's leftover cleanup, after the delete has already committed.
+ *
+ * The row and the store files are gone by this point, so the delete *succeeded*;
+ * what is left is the card's ancillary data — a keychain entry, a cached icon,
+ * stored headers. Throwing here would both misreport that outcome and strand the
+ * leftovers for good, because the retry it invites returns `false` on the missing
+ * row and never reaches this code again. So we log what was left behind and let
+ * the delete stand.
+ */
+export async function cleanUpAfterCardDelete(
+  leftover: string,
+  cleanUp: () => Promise<void>,
+): Promise<void> {
+  try {
+    await cleanUp();
+  } catch (error) {
+    console.error(`Card deleted, but ${leftover} could not be removed:`, error);
+  }
 }
 
 /**
