@@ -34,7 +34,7 @@ describe('MCP bound-deck containment (NOT-44)', () => {
   });
 
   async function buildListeningBackend() {
-    const db = new DatabaseManager(`:memory:${Math.random()}`);
+    const db = new DatabaseManager(':memory:');
     const boundDeck = await db.createDeck({ name: 'bound' });
     await db.createDeck({ name: 'other' });
 

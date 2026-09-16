@@ -21,7 +21,7 @@ describe('bound-deck containment verification (NOT-44)', () => {
   });
 
   async function buildApp() {
-    const db = new DatabaseManager(`:memory:${Math.random()}`);
+    const db = new DatabaseManager(':memory:');
     const boundDeck = await db.createDeck({ name: 'bound' });
     const otherDeck = await db.createDeck({ name: 'other' });
 

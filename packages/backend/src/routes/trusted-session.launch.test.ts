@@ -18,7 +18,7 @@ describe('trusted-session launch routes (NOT-105)', () => {
   });
 
   async function buildApp() {
-    const db = new DatabaseManager(`:memory:${Math.random()}`);
+    const db = new DatabaseManager(':memory:');
     const boundDeck = await db.createDeck({ name: 'bound' });
     const otherDeck = await db.createDeck({ name: 'other' });
     const store = new TrustedSessionStore(db.getSqliteDatabase());

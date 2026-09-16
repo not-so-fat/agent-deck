@@ -19,7 +19,7 @@ describe('launch routes (NOT-105)', () => {
   });
 
   async function buildApp() {
-    const db = new DatabaseManager(`:memory:${Math.random()}`);
+    const db = new DatabaseManager(':memory:');
     const deck = await db.createDeck({ name: 'launch-deck' });
     const playbook = await db.createPlaybook({
       id: generateId(),

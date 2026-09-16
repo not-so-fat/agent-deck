@@ -146,7 +146,7 @@ describe('TrustedSessionStore', () => {
   });
 
   it('migrates away grant columns and drops grant tables (NOT-108)', () => {
-    const manager = new DatabaseManager(`:memory:${Math.random()}`);
+    const manager = new DatabaseManager(':memory:');
     const db = manager.getSqliteDatabase();
 
     db.exec(`
