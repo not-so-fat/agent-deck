@@ -108,10 +108,10 @@ writing stray decks and services into the developer's (often git-synced) store �
 strays that then fail every `reindex` on duplicate display names (NOT-122).
 
 Every package except `@agent-deck/shared` loads that guard from
-`packages/shared/dist`, not from source, so a stale build used to delete it silently —
+`packages/shared/dist`, not from source, so a build predating the guard ran without it —
 and the only tests that failed were the guard's own, while writes went to the real store
 (NOT-138). `scripts/vitest/shared-build-guard.mjs`, called from the global setup, now
-refuses to start a run unless the build a package will actually load is newer than
+refuses to start a run unless the build a package will actually load is no older than
 `packages/shared/src` **and** still throws for the real store. Both failures name the
 rebuild; neither lets a suite be collected.
 
