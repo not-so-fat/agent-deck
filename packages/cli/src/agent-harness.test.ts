@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -27,6 +29,14 @@ describe('agent-harness templates', () => {
     expect(file).toContain('display_summary');
     expect(file).toContain('Session opener');
     expect(file).toContain('get_session_binding');
+    expect(file).toContain('Agent Deck hard gate');
+    expect(file).toContain('configured for the current session');
+    expect(file).toContain('indicates that it is expected');
+    expect(file).toContain('launch-selected sessions that deliberately have no assignment file');
+    expect(file).toContain('Before reading repo files');
+    expect(file).toContain('Checking for the optional assignment signal');
+    expect(file).toContain('do not improvise without the deck');
+    expect(file).toContain('for every match before taking task action');
     expect(file).toContain('Genesis case');
     expect(file).toContain('signal_only');
     expect(file).toContain('signal_ids');
@@ -56,11 +66,24 @@ describe('agent-harness templates', () => {
     }
   });
 
-  it('project cursor file adds repo bind line', () => {
-    const file = buildCursorHarnessFile('project');
-    expect(file).toContain('bind_workspace');
-    expect(file).toContain('agent-deck use');
-    expect(file).toContain('use.json');
+  it('project harness adds optional assignment guidance without the obsolete bind flow', () => {
+    const cursor = buildCursorHarnessFile('project');
+    const claude = buildClaudeHarnessBlock('project');
+    for (const text of [cursor, claude]) {
+      expect(text).not.toContain('bind_workspace');
+      expect(text).toContain('agent-deck use');
+      expect(text).toContain('optional persistent folder-assignment');
+      expect(text).toContain('launch-selected sessions can be bound without that file');
+    }
+  });
+
+  it('claude block carries the same fail-closed bootstrap contract', () => {
+    const block = buildClaudeHarnessBlock('global');
+    expect(block).toContain('Agent Deck hard gate');
+    expect(block).toContain('get_session_binding');
+    expect(block).toContain('get_bound_deck');
+    expect(block).toContain('Checking for the optional assignment signal');
+    expect(block).toContain('do not improvise without the deck');
   });
 
   it('claude block avoids project-specific examples', () => {
@@ -68,6 +91,16 @@ describe('agent-harness templates', () => {
     expect(block).toContain('## Agent Deck');
     expect(block).not.toContain('DocMost');
     expect(block).not.toContain('slip-risk');
+  });
+
+  it('keeps this repo dogfooding the exact generated project harness', () => {
+    const file = fs.readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8');
+    const start = file.indexOf(HARNESS_MARKER_START);
+    const end = file.indexOf(HARNESS_MARKER_END);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const checkedInBlock = file.slice(start + HARNESS_MARKER_START.length, end).trim();
+    expect(checkedInBlock).toBe(buildClaudeHarnessBlock('project'));
   });
 });
 

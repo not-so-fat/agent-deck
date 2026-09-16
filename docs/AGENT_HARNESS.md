@@ -25,7 +25,7 @@ npx @agent-deck/cli setup --client claude --no-statusline   # skip prompt footer
 npx @agent-deck/cli setup --client cursor --scope project   # project MCP + project harness
 ```
 
-**Order of operations:** MCP must be connected before deck tools work (`claude mcp list` → agent-deck **Connected**). On the **first turn** of a workspace conversation, the harness tells the agent to `get_decks`, then `bind_workspace({ workspaceRoot, deckId })`, call `get_session_binding`, and show `display_summary` to the user (IDE Agent chat has no status footer). Terminal **status line** shows the bound deck in the prompt footer after `bind_workspace` registers the live MCP display on the backend (unbound until bind).
+**Order of operations:** when Agent Deck MCP is configured for the current session, or `.agent-deck/use.json` indicates that it is expected, it is a hard gate. The optional file is only one signal; launch-selected sessions with no assignment file are covered too. On the **first turn**, the harness requires `get_session_binding` and `get_bound_deck` before repo inspection or task action, shows `display_summary`, then loads every playbook whose trigger matches the task. If bootstrap fails, the agent stops instead of improvising without the deck. Checking for the assignment signal, checking configuration, and other read-only connection diagnostics is allowed before the gate passes. Terminal **status line** shows the bound deck after the MCP session registers its live display.
 
 **Manual status line (merge into existing settings — do not paste terminal output):**
 
@@ -77,8 +77,8 @@ Add your own notes above/below the harness markers in `agent-deck.mdc`, or anywh
 
 Three behaviors in one rule block (templates stay generic — no project-specific examples):
 
-0. **Connect MCP first** — `agent-deck setup --client … --start`, restart host; verify `claude mcp list` (Claude) or MCP panel (Cursor). Call `get_decks`, then `bind_workspace({ workspaceRoot, deckId })` at the start of each workspace session.
-1. **Capability rescue** — use agent-deck before declining tool requests (`bind_workspace`, `get_bound_deck`, `call_service_tool`).
+0. **Fail-closed bootstrap** — when Agent Deck MCP is configured for the session or the optional assignment file indicates it is expected, require `get_session_binding` → `get_bound_deck` before any task work; load matching playbooks and stop on connection or deck-selection failure. This also covers launch-selected sessions without `.agent-deck/use.json`.
+1. **Capability rescue** — use agent-deck before declining tool requests (`get_bound_deck`, `call_service_tool`).
 2. **Playbooks as source of truth** — `get_bound_deck` playbook `triggers`, then `get_playbook`; don’t mirror into `.cursor/skills/`.
 3. **Self-improvement loop** — applies when the user gives feedback on output you produced **after** `get_playbook` + following that playbook this session (identify from session trace, not title or artifact type). Default actions:
    1. Fix the current output.
@@ -89,7 +89,7 @@ Three behaviors in one rule block (templates stay generic — no project-specifi
    - Restructure the playbook if the structure can’t absorb the lesson cleanly
    - Surface what changed so the user can audit drift
 
-**Project scope** adds: `get_decks`, then `bind_workspace({ workspaceRoot, deckId })` for this repo’s root; match playbook `triggers` on `get_bound_deck` before improvising.
+**Project scope** documents the optional persistent folder assignment via `agent-deck use <deck>`; launch-selected sessions need no assignment file. Match playbook `triggers` on `get_bound_deck` before improvising.
 
 **After upgrading** (repo-deck removal, MCP tool rename): re-run `setup` so the marked harness block in `~/.cursor/rules/agent-deck.mdc` or `CLAUDE.md` picks up current tool names (`get_bound_deck`, not `list_playbooks` / `list_bound_deck_services`). Editing the repo’s `packages/cli/src/agent-harness.ts` alone does not change already-installed global rules until `setup` runs again. Also **restart the host** so MCP tool cache drops removed names. Update any **deck playbooks** that still mention old tools — see [CHANGELOG](../CHANGELOG.md) migration table.
 
