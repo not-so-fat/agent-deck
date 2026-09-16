@@ -33,11 +33,23 @@ export type McpBridgeOptions = {
   log?: (message: string) => void;
   /** Backoff between failed server→client stream reconnects. */
   streamRetryDelayMs?: number;
+  /** How long `run()` waits for in-flight requests after the host closes stdin. */
+  drainTimeoutMs?: number;
   fetchImpl?: typeof fetch;
 };
 
 const SESSION_HEADER = 'mcp-session-id';
 const MCP_ACCEPT = 'application/json, text/event-stream';
+
+/**
+ * Tells the server which session we were holding when we re-initialized, so its
+ * stale-session tally can mark that one recovered instead of reporting the client
+ * as stranded forever (a wedged supergateway sends no such header and stays
+ * counted as unresolved, which is the case operators need to see).
+ */
+export const RECOVERED_SESSION_HEADER = 'x-agent-deck-recovered-session';
+
+const DEFAULT_DRAIN_TIMEOUT_MS = 2_000;
 
 /**
  * Pre-NOT-101 servers answered an unknown session with 400 + this JSON-RPC message
@@ -98,6 +110,10 @@ export class McpStdioHttpBridge {
   private streamAbort: AbortController | undefined;
   private closed = false;
   private recovering: Promise<boolean> | undefined;
+  /** The in-flight `initialize` exchange; later messages wait for it, not for each other. */
+  private handshake: Promise<void> | undefined;
+  /** Every dispatched client message, so stdin closing can drain instead of cutting them off. */
+  private readonly inFlight = new Set<Promise<void>>();
   /** Test/observability hook: how many times we re-initialized after a restart. */
   private recoveryCount = 0;
 
@@ -131,11 +147,46 @@ export class McpStdioHttpBridge {
           this.log('[agent-deck] bridge: dropping non-JSON line from client');
           continue;
         }
-        await this.forwardFromClient(message);
+        // Deliberately not awaited: a slow tool call must not hold back the
+        // cancellation, ping, or unrelated request the client sends next.
+        this.dispatch(message);
       }
     } finally {
       reader.close();
+      await this.drain();
       this.close();
+    }
+  }
+
+  /**
+   * Start one client message and keep it tracked. Nothing here may reject: an
+   * escaping error would tear down `run()` and, with it, the whole bridge process
+   * — the exact failure mode a restart is supposed to be recoverable from.
+   */
+  private dispatch(message: JsonRpcMessage): void {
+    const task = this.forwardFromClient(message).catch((error) => {
+      this.failRequest(message, `bridge error: ${describeError(error)}`);
+    });
+    this.inFlight.add(task);
+    void task.then(() => this.inFlight.delete(task));
+  }
+
+  /** Give in-flight exchanges a bounded chance to finish once stdin is gone. */
+  private async drain(): Promise<void> {
+    const timeoutMs = this.options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
+    while (this.inFlight.size > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        this.log(`[agent-deck] bridge: ${this.inFlight.size} request(s) still open at shutdown`);
+        return;
+      }
+      const timer = deadlineTimer(remaining);
+      try {
+        await Promise.race([Promise.all([...this.inFlight]), timer.expired]);
+      } finally {
+        timer.cancel();
+      }
     }
   }
 
@@ -161,10 +212,13 @@ export class McpStdioHttpBridge {
     return headers;
   }
 
-  private async post(message: JsonRpcMessage): Promise<Response> {
+  private async post(
+    message: JsonRpcMessage,
+    extraHeaders?: Record<string, string>,
+  ): Promise<Response> {
     return this.fetchImpl(this.options.url, {
       method: 'POST',
-      headers: this.requestHeaders(),
+      headers: { ...this.requestHeaders(), ...extraHeaders },
       body: JSON.stringify(message),
     });
   }
@@ -174,7 +228,17 @@ export class McpStdioHttpBridge {
       this.cachedInitialize = message;
       // A fresh handshake supersedes any session we were holding.
       this.sessionId = undefined;
-      await this.deliver(message, { allowRecovery: false });
+      // Assigned before the first await so a message read on the very next line
+      // already sees the gate and waits for the session id.
+      const handshake = this.deliver(message, { allowRecovery: false });
+      this.handshake = handshake;
+      try {
+        await handshake;
+      } finally {
+        if (this.handshake === handshake) {
+          this.handshake = undefined;
+        }
+      }
       return;
     }
 
@@ -182,7 +246,22 @@ export class McpStdioHttpBridge {
       this.cachedInitialized = message;
     }
 
+    await this.awaitSession();
     await this.deliver(message, { allowRecovery: true });
+  }
+
+  /**
+   * Hold a message only for the two exchanges that own the session id — the
+   * handshake and a restart recovery. Everything else goes out concurrently, so
+   * one long tool call cannot block the cancellation that would end it.
+   */
+  private async awaitSession(): Promise<void> {
+    // Waiting on one gate can admit the other (a recovery can start while the
+    // handshake is still running), so loop until neither is outstanding.
+    while (this.handshake || this.recovering) {
+      await settled(this.handshake);
+      await settled(this.recovering);
+    }
   }
 
   /** POST one client message, recovering once if the session went away. */
@@ -198,9 +277,11 @@ export class McpStdioHttpBridge {
       return;
     }
 
-    const bodyText = await response.text();
+    // `undefined` means the status line arrived but the body never finished —
+    // a restart that lands between the two. Status alone still classifies a 404.
+    const bodyText = await readBodyText(response);
 
-    if (allowRecovery && isSessionInvalidResponse(response.status, bodyText)) {
+    if (allowRecovery && isSessionInvalidResponse(response.status, bodyText ?? '')) {
       this.log(
         `[agent-deck] bridge: MCP session ${this.sessionId ?? '(none)'} is no longer valid ` +
           `(HTTP ${response.status}) — the server restarted. Re-initializing.`,
@@ -218,7 +299,22 @@ export class McpStdioHttpBridge {
     }
 
     if (!response.ok) {
-      this.failRequest(message, `MCP server returned HTTP ${response.status}: ${bodyText.trim()}`);
+      const detail = (bodyText ?? '').trim();
+      this.failRequest(message, `MCP server returned HTTP ${response.status}: ${detail}`);
+      return;
+    }
+
+    if (bodyText === undefined) {
+      // The server accepted the request before the connection died, so the call
+      // may well have run. Replaying it could double-apply a mutation, so report
+      // the gap to the client and let it decide; the bridge stays up and the next
+      // request re-initializes through the normal 404 path.
+      this.failRequest(
+        message,
+        'connection to the MCP server was interrupted while reading the response ' +
+          '(the server may have restarted mid-call) — the request was not retried ' +
+          'automatically because it may already have been applied',
+      );
       return;
     }
 
@@ -280,11 +376,15 @@ export class McpStdioHttpBridge {
 
     this.streamAbort?.abort();
     this.streamAbort = undefined;
+    const lostSessionId = this.sessionId;
     this.sessionId = undefined;
 
     let response: Response;
     try {
-      response = await this.post(initialize);
+      response = await this.post(
+        initialize,
+        lostSessionId ? { [RECOVERED_SESSION_HEADER]: lostSessionId } : undefined,
+      );
     } catch (error) {
       this.log(`[agent-deck] bridge: re-initialize failed: ${describeError(error)}`);
       return false;
@@ -296,7 +396,13 @@ export class McpStdioHttpBridge {
     }
 
     this.captureSessionId(response);
-    await response.text();
+    if ((await readBodyText(response)) === undefined) {
+      // A handshake we could not read to the end is not a session we can trust —
+      // drop it so the next request takes the 404 path and recovers cleanly.
+      this.sessionId = undefined;
+      this.log('[agent-deck] bridge: re-initialize response was cut off; will retry');
+      return false;
+    }
     if (!this.sessionId) {
       this.log('[agent-deck] bridge: re-initialize returned no session id');
       return false;
@@ -305,7 +411,7 @@ export class McpStdioHttpBridge {
     if (this.cachedInitialized) {
       try {
         const ack = await this.post(this.cachedInitialized);
-        await ack.text();
+        await readBodyText(ack);
       } catch (error) {
         this.log(`[agent-deck] bridge: initialized notification failed: ${describeError(error)}`);
       }
@@ -396,19 +502,54 @@ export class McpStdioHttpBridge {
   }
 }
 
+/**
+ * Read a response body, distinguishing "empty" from "the connection died before
+ * the body finished". `fetch` resolves as soon as the headers land, so a server
+ * that restarts mid-response rejects here — and an unhandled rejection at this
+ * point used to take the whole bridge process down with it.
+ */
+async function readBodyText(response: Response): Promise<string | undefined> {
+  try {
+    return await response.text();
+  } catch {
+    return undefined;
+  }
+}
+
 async function peekBody(response: Response): Promise<string> {
   if (response.ok) {
     return '';
   }
-  try {
-    return await response.text();
-  } catch {
-    return '';
-  }
+  return (await readBodyText(response)) ?? '';
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A timer we can cancel, so shutdown is not held open by its own deadline. */
+function deadlineTimer(ms: number): { expired: Promise<void>; cancel: () => void } {
+  let handle: NodeJS.Timeout | undefined;
+  const expired = new Promise<void>((resolve) => {
+    handle = setTimeout(resolve, ms);
+  });
+  return {
+    expired,
+    cancel: () => {
+      if (handle) {
+        clearTimeout(handle);
+      }
+    },
+  };
+}
+
+/** Await a gate without adopting its failure — the caller has its own error path. */
+function settled(promise: Promise<unknown> | undefined): Promise<void> {
+  return promise ? promise.then(noop, noop) : Promise.resolve();
+}
+
+function noop(): void {
+  // Intentionally empty.
 }
 
 function describeError(error: unknown): string {

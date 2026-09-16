@@ -90,7 +90,9 @@ function stubFetch(state: { sessionId: string; calls: Recorded[]; legacy400?: bo
   };
 }
 
-async function driveBridge(state: { sessionId: string; calls: Recorded[]; legacy400?: boolean }) {
+type BridgeState = { sessionId: string; calls: Recorded[]; legacy400?: boolean };
+
+async function driveBridge(state: BridgeState, fetchImpl?: typeof fetch) {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const out: any[] = [];
@@ -114,7 +116,7 @@ async function driveBridge(state: { sessionId: string; calls: Recorded[]; legacy
     stdin,
     stdout,
     log: () => {},
-    fetchImpl: stubFetch(state) as unknown as typeof fetch,
+    fetchImpl: fetchImpl ?? (stubFetch(state) as unknown as typeof fetch),
   });
   const running = bridge.run();
 
@@ -215,5 +217,173 @@ describe('McpStdioHttpBridge', () => {
     await finish();
 
     expect(response.error?.message).toContain('agent-deck bridge');
+  });
+
+  it('names the session it lost so the server stops counting it as stranded', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const seen: Array<string | undefined> = [];
+    const inner = stubFetch(state);
+    const recordingFetch = (async (url: any, init: any) => {
+      seen.push((init?.headers ?? {})['x-agent-deck-recovered-session']);
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { send, waitFor, finish } = await driveBridge(state, recordingFetch);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    await waitFor(2);
+    await finish();
+
+    expect(seen).toContain('session-a');
+  });
+});
+
+/** A body that starts arriving and then dies — a restart between headers and body. */
+function truncatedBody(): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0","id":2,"resu'));
+      controller.error(new Error('terminated'));
+    },
+  });
+}
+
+describe('McpStdioHttpBridge when a response body is cut off', () => {
+  it('reports the interrupted request without replaying it, and stays up', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const inner = stubFetch(state);
+    let cutOffNext = false;
+
+    const flakyFetch = (async (url: any, init: any): Promise<Response> => {
+      const response = await inner(url, init);
+      if (cutOffNext && init?.method === 'POST') {
+        cutOffNext = false;
+        return new Response(truncatedBody(), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return response;
+    }) as unknown as typeof fetch;
+
+    const { bridge, send, waitFor, finish } = await driveBridge(state, flakyFetch);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+
+    cutOffNext = true;
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'register_service' } });
+    const interrupted = await waitFor(2);
+
+    expect(interrupted.error?.message).toContain('interrupted');
+    // A tool call that may already have run must not be sent a second time.
+    expect(state.calls.filter((call) => call.body.id === 2)).toHaveLength(1);
+
+    // The bridge is still alive: the next request goes through, recovering if the
+    // server rotated its session in the meantime.
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+    const afterwards = await waitFor(3);
+    await finish();
+
+    expect(afterwards.result).toEqual({ pong: true });
+    expect(bridge.getRecoveryCount()).toBe(1);
+  });
+
+  it('does not resolve run() with a rejection when the body fails', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const alwaysTruncated = (async (_url: any, init: any): Promise<Response> => {
+      if (init?.method === 'GET') {
+        return new Response('', { status: 405 });
+      }
+      return new Response(truncatedBody(), {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'mcp-session-id': 'session-a' },
+      });
+    }) as unknown as typeof fetch;
+
+    const { send, waitFor, finish } = await driveBridge(state, alwaysTruncated);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    const initResponse = await waitFor(1);
+    expect(initResponse.error?.message).toContain('interrupted');
+
+    // `finish()` awaiting run() is the assertion: an escaping rejection here is
+    // what used to kill the bridge process.
+    await expect(finish()).resolves.toBeUndefined();
+  });
+});
+
+describe('McpStdioHttpBridge message pipelining', () => {
+  it('keeps forwarding messages while a slow tool call is outstanding', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    let releaseSlowCall: () => void = () => {};
+    const slowCallGate = new Promise<void>((resolve) => {
+      releaseSlowCall = resolve;
+    });
+
+    const inner = stubFetch(state);
+    const gatedFetch = (async (url: any, init: any): Promise<Response> => {
+      const body = init?.method === 'POST' ? JSON.parse(init.body as string) : undefined;
+      if (body?.method === 'tools/call') {
+        await slowCallGate;
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { send, waitFor, finish } = await driveBridge(state, gatedFetch);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'slow' } });
+    send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 2 } });
+    send({ jsonrpc: '2.0', id: 3, method: 'ping', params: {} });
+
+    // The point of the fix: both reach the server while id 2 is still hanging.
+    const ping = await waitFor(3);
+    expect(ping.result).toEqual({ pong: true });
+    expect(state.calls.some((call) => call.body.method === 'notifications/cancelled')).toBe(true);
+
+    releaseSlowCall();
+    await waitFor(2);
+    await finish();
+  });
+
+  it('still holds messages until the handshake has a session id', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    let releaseInit: (() => void) | undefined;
+    const initGate = new Promise<void>((resolve) => {
+      releaseInit = resolve;
+    });
+
+    const inner = stubFetch(state);
+    const gatedFetch = (async (url: any, init: any): Promise<Response> => {
+      const body = init?.method === 'POST' ? JSON.parse(init.body as string) : undefined;
+      if (body?.method === 'initialize') {
+        await initGate;
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { send, waitFor, finish } = await driveBridge(state, gatedFetch);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(state.calls).toHaveLength(0);
+
+    releaseInit!();
+    const response = await waitFor(2);
+    await finish();
+
+    // The follow-up carried the session id the handshake had just established.
+    expect(response.result).toEqual({ pong: true });
+    expect(state.calls[1].sessionId).toBe('session-a');
   });
 });

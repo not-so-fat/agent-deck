@@ -13,6 +13,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { AgentDeckMCPServer } from '../../backend/src/mcp-server';
 import { McpStdioHttpBridge } from './mcp-bridge';
+import { formatMcpSessionStatus } from './ports';
 
 type JsonRpcMessage = {
   id?: string | number | null;
@@ -161,5 +162,47 @@ describe('MCP bridge survives a server restart', () => {
     const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
     expect(health.staleSessions.count).toBeGreaterThan(0);
     expect(health.liveSessions).toBeGreaterThan(0);
+    // The client did come back, so the tally must not keep calling it stranded.
+    expect(health.staleSessions.recoveredSessions).toBe(1);
+    expect(health.staleSessions.unresolvedSessions).toBe(0);
+    expect(formatMcpSessionStatus(readHealth(health)).join('\n')).not.toContain('still using');
+  });
+
+  it('leaves a client that never reconnects counted as unresolved', async () => {
+    const wedgedPort = await findFreePort();
+    const server = await startServer(wedgedPort);
+    cleanups.push(async () => {
+      await server.stop();
+    });
+
+    // Exactly what a wedged supergateway does: keep POSTing a session id from a
+    // process that is gone, and never re-initialize.
+    const response = await fetch(`http://127.0.0.1:${wedgedPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-session-id': 'session-from-a-previous-process',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    expect(response.status).toBe(404);
+
+    const health = await (await fetch(`http://127.0.0.1:${wedgedPort}/health`)).json();
+    expect(health.staleSessions.unresolvedSessions).toBe(1);
+    expect(formatMcpSessionStatus(readHealth(health)).join('\n')).toContain('1 client still using');
   });
 });
+
+/** The shape `agent-deck status` reads out of `/health`, without a live probe. */
+function readHealth(health: any) {
+  return {
+    liveSessions: health.liveSessions,
+    staleSessionCount: health.staleSessions.count,
+    staleSessionClients: health.staleSessions.distinctSessions,
+    staleSessionLastAt: health.staleSessions.lastAt,
+    staleSessionsRecovered: health.staleSessions.recoveredSessions,
+    staleSessionsUnresolved: health.staleSessions.unresolvedSessions,
+    staleSessionLastUnresolvedAt: health.staleSessions.lastUnresolvedAt,
+  };
+}

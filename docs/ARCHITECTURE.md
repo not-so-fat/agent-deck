@@ -139,7 +139,17 @@ recoverable:
    **not** implement the reconnect half and stays wedged until its host restarts.
 3. MCP `/health` exposes `instanceId`, `startedAt`, `liveSessions`, and a
    `staleSessions` tally so `agent-deck status` can say "clients are stranded on a
-   pre-restart session" instead of a bare "running".
+   pre-restart session" instead of a bare "running". The tally is cumulative for the
+   life of the process, so it is split: a bridge names the session it lost on the
+   replayed handshake (`x-agent-deck-recovered-session`), which moves that session
+   from `unresolvedSessions` to `recoveredSessions`. Only `unresolvedSessions` —
+   supergateway and other clients that never re-initialize — earns a warning.
+
+The bridge dispatches client messages concurrently; only the handshake and an
+in-flight recovery gate them, so one hung tool call cannot starve the cancellation
+that would end it. A response body that dies mid-read is surfaced to the client as
+an interrupted request rather than retried, because the server may already have
+applied it.
 
 The bridge must send the launch headers (`x-agent-deck-deck-id`,
 `x-agent-deck-workspace`) on **every** request, not just `initialize` — the server

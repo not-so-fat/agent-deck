@@ -53,14 +53,29 @@ type McpSession = {
  * orphans them. We keep a bounded tally so `/health` (and `agent-deck status`) can
  * say "clients are talking to sessions this process never issued" instead of
  * reporting a clean "running" while every tool call fails.
+ *
+ * The tally separates two very different states. `recoveredSessions` counts stale
+ * sessions whose client came back and re-initialized (our bridge names the session
+ * it lost on the replayed handshake); `unresolvedSessions` is what is left — the
+ * clients that are still stranded, which is the only number worth warning about.
  */
 type StaleSessionStats = {
   count: number;
   distinctSessions: number;
+  recoveredSessions: number;
+  unresolvedSessions: number;
   lastSessionId?: string;
   firstAt?: string;
   lastAt?: string;
+  /** Last attempt from a session nobody has re-initialized away from. */
+  lastUnresolvedAt?: string;
 };
+
+/**
+ * Set by the first-party bridge on a replayed handshake, naming the session it
+ * lost to the restart. Lower-case: Node normalises request header names.
+ */
+const RECOVERED_SESSION_HEADER = 'x-agent-deck-recovered-session';
 
 export class AgentDeckMCPServer {
   /** Cap on remembered stale session ids — the tally is diagnostics, not a ledger. */
@@ -86,7 +101,8 @@ export class AgentDeckMCPServer {
   private readonly instanceId = randomUUID();
   private readonly startedAt = new Date().toISOString();
   private staleSessionCount = 0;
-  private staleSessionIds = new Set<string>();
+  /** Pre-restart session id → whether its client has since re-initialized. */
+  private staleSessionsById = new Map<string, { recovered: boolean; lastAt: string }>();
   private staleSessionFirstAt: string | undefined;
   private staleSessionLastAt: string | undefined;
   private staleSessionLastId: string | undefined;
@@ -663,13 +679,46 @@ export class AgentDeckMCPServer {
   }
 
   private getStaleSessionStats(): StaleSessionStats {
+    let recoveredSessions = 0;
+    let lastUnresolvedAt: string | undefined;
+    for (const entry of this.staleSessionsById.values()) {
+      if (entry.recovered) {
+        recoveredSessions += 1;
+        continue;
+      }
+      if (!lastUnresolvedAt || entry.lastAt > lastUnresolvedAt) {
+        lastUnresolvedAt = entry.lastAt;
+      }
+    }
+
     return {
       count: this.staleSessionCount,
-      distinctSessions: this.staleSessionIds.size,
+      distinctSessions: this.staleSessionsById.size,
+      recoveredSessions,
+      unresolvedSessions: this.staleSessionsById.size - recoveredSessions,
       lastSessionId: this.staleSessionLastId,
       firstAt: this.staleSessionFirstAt,
       lastAt: this.staleSessionLastAt,
+      lastUnresolvedAt,
     };
+  }
+
+  /**
+   * A client that re-initializes after a restart tells us which session it lost
+   * (`x-agent-deck-recovered-session`), so we can stop counting it as stranded.
+   * Without this the tally only ever grows and `agent-deck status` would warn
+   * about clients that recovered on their own seconds earlier.
+   */
+  private markStaleSessionRecovered(req: Request): void {
+    const header = req.headers[RECOVERED_SESSION_HEADER];
+    const recoveredId = Array.isArray(header) ? header[0] : header;
+    if (!recoveredId) {
+      return;
+    }
+    const entry = this.staleSessionsById.get(recoveredId);
+    if (entry) {
+      entry.recovered = true;
+    }
   }
 
   /**
@@ -682,18 +731,23 @@ export class AgentDeckMCPServer {
    */
   private sendSessionNotFound(sessionId: string, res: Response): void {
     const at = new Date().toISOString();
-    const firstSighting = !this.staleSessionIds.has(sessionId);
+    const known = this.staleSessionsById.get(sessionId);
 
     this.staleSessionCount += 1;
     this.staleSessionLastId = sessionId;
     this.staleSessionLastAt = at;
     this.staleSessionFirstAt ??= at;
-    if (this.staleSessionIds.size < AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT) {
-      this.staleSessionIds.add(sessionId);
+    if (known) {
+      known.lastAt = at;
+      // A client that reconnected and then presented the old id again is stranded
+      // once more, not recovered.
+      known.recovered = false;
+    } else if (this.staleSessionsById.size < AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT) {
+      this.staleSessionsById.set(sessionId, { recovered: false, lastAt: at });
     }
 
     // One line per session id, not per request — a wedged bridge retries forever.
-    if (firstSighting) {
+    if (!known) {
       console.warn(
         `[agent-deck] MCP session ${sessionId} is unknown to this process ` +
           `(instance ${this.instanceId}, started ${this.startedAt}). ` +
@@ -897,6 +951,8 @@ export class AgentDeckMCPServer {
       });
       return;
     }
+
+    this.markStaleSessionRecovered(req);
 
     const launchDeck = readLaunchDeckHeader(req);
     const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';

@@ -23,7 +23,9 @@
 - **The contract:** transport sessions do *not* survive a restart. Instead the server tells the client the session is gone, and the bridge re-initializes without anyone noticing.
 - Unknown `Mcp-Session-Id` now returns **404** with `mcp-session-status: expired` (was **400** `Bad Request: No valid session ID provided`, which bridges could not tell apart from a malformed request). An `initialize` carrying a stale session id is accepted and gets a fresh session.
 - `agent-deck mcp-launch` no longer shells out to `npx supergateway`. The built-in bridge caches the client handshake, replays it when the session goes missing, and retries the failed call — so an upgrade no longer strands every open IDE session. Set `AGENT_DECK_MCP_BRIDGE=supergateway` to fall back; note supergateway still does **not** reconnect and stays wedged until its host restarts.
-- MCP `/health` gained `instanceId`, `startedAt`, `liveSessions`, and a `staleSessions` tally. `agent-deck status` prints a **Sessions** line and warns when clients are still calling a pre-restart session, instead of reporting a clean "running" while every tool call 404s.
+- The bridge forwards client messages concurrently, so a slow or stuck tool call no longer holds back the cancellation, ping, or unrelated request behind it. Only the handshake and a restart recovery hold messages, because those own the session id.
+- A response whose body is cut off mid-flight (a restart between headers and body) is reported to the client as an interrupted request and is **not** replayed — a tool call that may already have been applied must not run twice. The bridge stays up and the next call recovers normally.
+- MCP `/health` gained `instanceId`, `startedAt`, `liveSessions`, and a `staleSessions` tally split into `recoveredSessions` and `unresolvedSessions`. `agent-deck status` prints a **Sessions** line and warns only about clients that never came back; ones that re-initialized on their own are reported as history, not as stranded.
 - `agent-deck stop` now releases the MCP port instead of leaving the listener up.
 
 ### After upgrade
