@@ -27,8 +27,12 @@ describe('agent-harness templates', () => {
     expect(file).toContain('display_summary');
     expect(file).toContain('Session opener');
     expect(file).toContain('get_session_binding');
-    expect(file).toContain('Deck-bound hard gate');
+    expect(file).toContain('Agent Deck hard gate');
+    expect(file).toContain('configured for the current session');
+    expect(file).toContain('indicates that it is expected');
+    expect(file).toContain('launch-selected sessions that deliberately have no assignment file');
     expect(file).toContain('Before reading repo files');
+    expect(file).toContain('Checking for the optional assignment signal');
     expect(file).toContain('do not improvise without the deck');
     expect(file).toContain('for every match before taking task action');
     expect(file).toContain('Genesis case');
@@ -60,11 +64,24 @@ describe('agent-harness templates', () => {
     }
   });
 
-  it('project cursor file adds repo bind line', () => {
-    const file = buildCursorHarnessFile('project');
-    expect(file).toContain('bind_workspace');
-    expect(file).toContain('agent-deck use');
-    expect(file).toContain('use.json');
+  it('project harness adds optional assignment guidance without the obsolete bind flow', () => {
+    const cursor = buildCursorHarnessFile('project');
+    const claude = buildClaudeHarnessBlock('project');
+    for (const text of [cursor, claude]) {
+      expect(text).not.toContain('bind_workspace');
+      expect(text).toContain('agent-deck use');
+      expect(text).toContain('optional persistent folder-assignment');
+      expect(text).toContain('launch-selected sessions can be bound without that file');
+    }
+  });
+
+  it('claude block carries the same fail-closed bootstrap contract', () => {
+    const block = buildClaudeHarnessBlock('global');
+    expect(block).toContain('Agent Deck hard gate');
+    expect(block).toContain('get_session_binding');
+    expect(block).toContain('get_bound_deck');
+    expect(block).toContain('Checking for the optional assignment signal');
+    expect(block).toContain('do not improvise without the deck');
   });
 
   it('claude block avoids project-specific examples', () => {

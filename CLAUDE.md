@@ -3,11 +3,11 @@
 
 **Connect first:** Ensure Agent Deck MCP is connected before using deck tools (`agent-deck setup --client cursor|claude --start`, then restart the host). Claude Code: `claude mcp list` should show agent-deck as Connected when the backend is running.
 
-**Session opener (first turn only):** When Agent Deck MCP is connected and this is a new conversation in a workspace, call `get_decks`, then `bind_workspace` with the project root and a `deckId`, then `get_session_binding`, and tell the user **exactly one line** using `display_summary` (e.g. `◆ dev · 2 MCP · 0 keys · 1 playbooks`). This is the deck-status line for IDE Agent chat — there is no host footer there. Do **not** repeat it every turn unless the user asks or the bind changes (`switch_bound_deck`, new repo).
+**Agent Deck hard gate:** When Agent Deck MCP is configured for the current session, or `.agent-deck/use.json` indicates that it is expected, bootstrap is mandatory. This includes launch-selected sessions that deliberately have no assignment file. Before reading repo files, running task commands, or answering the task, require `get_session_binding` and `get_bound_deck` to succeed. Checking for the optional assignment signal, checking whether Agent Deck is configured, and other read-only connection diagnostics are allowed before the gate passes.
 
-**Later turns:** Call `bind_workspace` before the first deck-scoped tool if not already bound. Terminal hosts may also show the deck in the prompt footer via `statusLine`; do not duplicate unless the user asks.
+**Session opener (first turn only):** Call `get_session_binding` then `get_bound_deck`, show exactly one `display_summary` line, and load every matching playbook before task action. Deck authority comes from the launch-selected connection; do not call `get_decks`, pick a deck, or improvise when bootstrap fails.
 
-Before declining for missing tools (Slack, Linear, GitHub, etc.), use agent-deck MCP: `bind_workspace`, `get_bound_deck`, `call_service_tool`. Don't hardcode deck IDs.
+Before declining for missing tools (Slack, Linear, GitHub, etc.), use agent-deck MCP: `get_bound_deck`, `call_service_tool`. Don't hardcode deck IDs.
 
 Deck playbooks are task recipes — check `triggers` on `get_bound_deck` playbooks, then `get_playbook` for the body. Don't mirror into `.cursor/skills/` — one source of truth on the deck.
 
@@ -25,5 +25,5 @@ Deck playbooks are task recipes — check `triggers` on `get_bound_deck` playboo
 - **Restructure** if the playbook can't absorb the lesson cleanly — don't bolt it on
 - **Surface the change** in your response so the user can audit drift
 
-In this repo: `get_decks`, then `bind_workspace` with the workspace root and `deckId`. When a task matches deck playbooks (check `triggers` on `get_bound_deck`), `get_playbook` before improvising.
+In this repo, `agent-deck use <deck>` is the optional persistent folder-assignment path; launch-selected sessions can be bound without `.agent-deck/use.json`. When a task matches deck playbooks (check `triggers` on `get_bound_deck`), `get_playbook` before improvising.
 <!-- agent-deck:harness:end -->

@@ -64,7 +64,7 @@ agent_deck/
 ├── .codexignore             # trims bundle to plugin files only (new)
 ├── skills/
 │   ├── agent-deck-setup/SKILL.md      # install/start/doctor (new)
-│   ├── agent-deck-session/SKILL.md    # bind workspace, deck status line (new)
+│   ├── agent-deck-session/SKILL.md    # bootstrap session, deck status line (new)
 │   └── agent-deck-playbooks/SKILL.md  # use playbooks + refine-from-outcomes (new)
 ├── SECURITY.md              # disclosure policy (new)
 └── LICENSE, README.md, package-lock.json   # exist ✔
@@ -112,7 +112,7 @@ Version: add `.codex-plugin/plugin.json` to `scripts/sync-versions.mjs` so it tr
 Playbook bodies live on the deck; the plugin ships only generic protocol stubs (same rule as `.cursor/skills/` stubs — pointers, never mirrored content). This also helps Skill Security scoring: no fat prompt bodies, no elevated steps.
 
 - **`agent-deck-setup`** — triggers: "set up agent deck", "agent deck not connected". Body: check `<mcp-url>/health`; if down, guide `npm i -g agent-deck && agent-deck setup --client codex --start`, then restart the host. Read-only checks only; the *user* runs install commands.
-- **`agent-deck-session`** — triggers: session start in a deck-bound workspace. Body: `.agent-deck/use.json` makes bootstrap fail-closed — require `get_session_binding` → `get_bound_deck`, print the one-line `display_summary`, load every matching playbook, and stop before task work if the tools or grant are unavailable. Once per session.
+- **`agent-deck-session`** — triggers: session start when Agent Deck MCP is configured. Body: bootstrap is fail-closed for both launch-selected sessions and optional `.agent-deck/use.json` assignments — require `get_session_binding` → `get_bound_deck`, print the one-line `display_summary`, load every matching playbook, and stop before task work if the tools or selected deck are unavailable. Once per session.
 - **`agent-deck-playbooks`** — triggers: task matches a bound-deck playbook / user corrects playbook-derived output. Body: check `triggers` on `get_bound_deck`, `get_playbook` before improvising; on correction, `propose_playbook_patch` (update case) or `kind: "create"` (genesis case) with `evidence.user_feedback_excerpt`.
 
 Skill format is the standard Agent Skills `SKILL.md` (name/description frontmatter) — identical for Codex and Claude Code, so one `skills/` tree serves both (§5).

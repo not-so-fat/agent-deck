@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fix: fail-closed Agent Deck session bootstrap
+
+- Generated Cursor and Claude harnesses now require `get_session_binding` → `get_bound_deck` before task work whenever Agent Deck MCP is configured, including launch-selected unattended sessions that intentionally have no `.agent-deck/use.json`.
+- Project-scoped harnesses no longer emit the obsolete `bind_workspace` flow. `agent-deck use <deck>` is documented as the optional persistent folder-assignment path, not the source of connection authority.
+- The session skill permits only Agent Deck configuration detection and read-only connection diagnostics before the bootstrap gate passes.
+
 ### Fix: deck membership outside the deck routes reaches the store files (NOT-121)
 
 - Accepting a `kind: create` playbook proposal now writes the new playbook id into `decks/<id>.json`. Previously the `.md` landed but the deck link lived only in SQLite, so `agent-deck reindex` (and every git-sync pull) dropped the playbook from the deck.

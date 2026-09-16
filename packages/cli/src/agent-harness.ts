@@ -14,11 +14,11 @@ export const HARNESS_RULE_DESCRIPTION =
 
 const GLOBAL_BODY = `**Connect first:** Ensure Agent Deck MCP is connected before using deck tools (\`agent-deck setup --client cursor|claude --start\`, then restart the host). Claude Code: \`claude mcp list\` should show agent-deck as Connected when the backend is running.
 
-**Deck-bound hard gate:** A workspace containing \`.agent-deck/use.json\` is explicitly deck-bound. Before reading repo files, running task commands, or answering the task, require \`get_session_binding\` and \`get_bound_deck\` to succeed. If the tools are unavailable, disconnected, return \`GRANT_REQUIRED\`, or otherwise fail, stop and report the connection problem — do not improvise without the deck. Only read-only connection diagnostics are allowed before the gate passes.
+**Agent Deck hard gate:** When Agent Deck MCP is configured for the current session, or \`.agent-deck/use.json\` indicates that it is expected, bootstrap is mandatory. This includes launch-selected sessions that deliberately have no assignment file. Before reading repo files, running task commands, or answering the task, require \`get_session_binding\` and \`get_bound_deck\` to succeed. If the tools are unavailable, disconnected, return \`GRANT_REQUIRED\`, or otherwise fail, stop and report the connection problem — do not improvise without the deck. Checking for the optional assignment signal, checking whether Agent Deck is configured, and other read-only connection diagnostics are allowed before the gate passes.
 
-**Session opener (first turn only):** In a deck-bound workspace, call \`get_session_binding\` then \`get_bound_deck\`, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Grant auth is automatic from \`agent-deck use\` — do **not** call \`get_decks\` or pick a deck. Match the task against the returned playbook triggers and call \`get_playbook\` for every match before taking task action. On \`GRANT_REQUIRED\`, tell the user to run \`agent-deck use <deck>\` and stop. Do **not** repeat the status line every turn unless the user asks or the bind changes.
+**Session opener (first turn only):** When Agent Deck MCP is configured for the session, call \`get_session_binding\` then \`get_bound_deck\`, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Deck authority comes from the launch-selected connection — do **not** call \`get_decks\` or pick a deck. Match the task against the returned playbook triggers and call \`get_playbook\` for every match before taking task action. On \`GRANT_REQUIRED\` or "No deck selected", report the launch/configuration problem and stop. Do **not** repeat the status line every turn unless the user asks or the bind changes.
 
-**Later turns:** Deck scope comes from the workspace grant. Do not re-bind unless the user asks for deck administration.
+**Later turns:** Deck scope comes from the launch-selected connection. Do not re-bind unless the user asks for deck administration.
 
 Before declining for missing tools (Slack, Linear, GitHub, etc.), use agent-deck MCP: \`get_bound_deck\`, \`call_service_tool\`. Don't hardcode deck IDs.
 
@@ -62,7 +62,7 @@ Tell the user in one line that a proposal was filed (or a signal was logged for 
 Wrong: \`amend_item\` with a prose sentence as anchor → **409** at propose. Right: \`rewrite_body\` for prose edits.`;
 
 const PROJECT_BODY_EXTRA =
-  'In this repo: run \`agent-deck use <deck>\` once (writes MCP + trigger stubs + \`.agent-deck/use.json\`). \`bind_workspace\` with the workspace root and that \`deckId\`. When a task matches a stub or deck \`triggers\`, \`get_playbook\` before improvising. After accepting playbook patches that change triggers, run \`agent-deck use --refresh\`.';
+  'In this repo: \`agent-deck use <deck>\` is the optional persistent folder-assignment path (writes MCP + trigger stubs + \`.agent-deck/use.json\`); launch-selected sessions can be bound without that file. When a task matches a stub or deck \`triggers\`, \`get_playbook\` before improvising. After accepting playbook patches that change triggers, run \`agent-deck use --refresh\`.';
 
 export function buildClaudeHarnessBlock(scope: SetupScope): string {
   const lines = ['## Agent Deck', '', GLOBAL_BODY];
