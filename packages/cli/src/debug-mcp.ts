@@ -2,8 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import {
+  AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_WORKSPACE_HEADER,
+} from '@agent-deck/shared';
+import { readAssignment } from './assignment';
 import { isTcpPortOpen, listListeningPids, probeAgentDeck } from './ports';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
+import { isLegacyBareHttpAgentDeckEntry, isMcpLaunchEntry } from './mcp-config';
 
 async function fetchText(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; body: string }> {
   try {
@@ -16,7 +22,10 @@ async function fetchText(url: string, init?: RequestInit): Promise<{ ok: boolean
   }
 }
 
-async function probeMcpInitialize(mcpUrl: string): Promise<{ ok: boolean; detail: string }> {
+export async function probeMcpInitialize(
+  mcpUrl: string,
+  launchHeaders: Record<string, string> = {},
+): Promise<{ ok: boolean; detail: string }> {
   const endpoint = `${mcpUrl}/mcp`;
   const payload = {
     jsonrpc: '2.0',
@@ -34,6 +43,7 @@ async function probeMcpInitialize(mcpUrl: string): Promise<{ ok: boolean; detail
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
+      ...launchHeaders,
     },
     body: JSON.stringify(payload),
   });
@@ -52,24 +62,108 @@ async function probeMcpInitialize(mcpUrl: string): Promise<{ ok: boolean; detail
   };
 }
 
-function readClaudeMcpEntry(): string | null {
-  const configPath = path.join(os.homedir(), '.claude.json');
+type ClaudeMcpEntryRead =
+  | { kind: 'missing' }
+  | { kind: 'entry'; entry: unknown }
+  | { kind: 'error'; message: string };
+
+export type ClaudeMcpConfigAssessment = {
+  ok: boolean;
+  lines: string[];
+};
+
+function readClaudeMcpEntry(configPath: string, displayPath: string): ClaudeMcpEntryRead {
   if (!fs.existsSync(configPath)) {
-    return null;
+    return { kind: 'missing' };
   }
 
   try {
     const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as {
-      mcpServers?: Record<string, { type?: string; url?: string }>;
+      mcpServers?: Record<string, unknown>;
     };
     const entry = parsed.mcpServers?.['agent-deck'];
     if (!entry) {
-      return 'agent-deck not in ~/.claude.json mcpServers';
+      return { kind: 'missing' };
     }
-    return JSON.stringify(entry);
+    return { kind: 'entry', entry };
   } catch (error) {
-    return `Could not parse ~/.claude.json: ${error instanceof Error ? error.message : error}`;
+    return {
+      kind: 'error',
+      message: `Could not parse ${displayPath}: ${error instanceof Error ? error.message : error}`,
+    };
   }
+}
+
+export function assessClaudeMcpConfig(
+  project: ClaudeMcpEntryRead,
+  user: ClaudeMcpEntryRead,
+): ClaudeMcpConfigAssessment {
+  const lines: string[] = [];
+  let ok = true;
+
+  const assess = (
+    label: 'project' | 'user',
+    displayPath: string,
+    result: ClaudeMcpEntryRead,
+    conflictingLauncher: 'project' | 'user' | null = null,
+  ): boolean => {
+    if (result.kind === 'missing') {
+      return false;
+    }
+    if (result.kind === 'error') {
+      lines.push(`WARN ${result.message}`);
+      ok = false;
+      return false;
+    }
+
+    const serialized = JSON.stringify(result.entry);
+    if (isMcpLaunchEntry(result.entry)) {
+      lines.push(`OK  Claude ${label} config (${displayPath}): ${serialized}`);
+      return true;
+    }
+
+    const shape = isLegacyBareHttpAgentDeckEntry(result.entry)
+      ? 'bare HTTP entry'
+      : 'custom entry';
+    const conflict = conflictingLauncher
+      ? ` conflicts with the ${conflictingLauncher} launcher and`
+      : '';
+    lines.push(`WARN Claude ${label} config (${displayPath}) has a ${shape} that${conflict} cannot select a deck: ${serialized}`);
+    lines.push(`     Expected the trusted \`agent-deck mcp-launch\` stdio entry.`);
+    const scope = label === 'project' ? 'project' : 'user';
+    const setupScope = label === 'project' ? ' --scope project' : '';
+    lines.push(`     Fix: claude mcp remove agent-deck -s ${scope} && agent-deck setup --client claude${setupScope}`);
+    ok = false;
+    return false;
+  };
+
+  const projectTrusted = project.kind === 'entry' && isMcpLaunchEntry(project.entry);
+  const userTrusted = user.kind === 'entry' && isMcpLaunchEntry(user.entry);
+  assess('project', './.mcp.json', project, userTrusted ? 'user' : null);
+  assess('user', '~/.claude.json', user, projectTrusted ? 'project' : null);
+
+  if (!projectTrusted && !userTrusted && project.kind === 'missing' && user.kind === 'missing') {
+    lines.push('Claude config: no agent-deck entry in ./.mcp.json or ~/.claude.json');
+    lines.push('  Fix: agent-deck setup --client claude');
+  }
+
+  return { ok, lines };
+}
+
+export function buildMcpProbePlan(
+  workspaceRoot: string,
+  assignment: { deckId: string } | null,
+): { shouldProbe: boolean; launchHeaders: Record<string, string> } {
+  if (!assignment) {
+    return { shouldProbe: false, launchHeaders: {} };
+  }
+  return {
+    shouldProbe: true,
+    launchHeaders: {
+      [AGENT_DECK_DECK_ID_HEADER]: assignment.deckId,
+      [AGENT_DECK_WORKSPACE_HEADER]: workspaceRoot,
+    },
+  };
 }
 
 export async function runDebugMcp(): Promise<number> {
@@ -77,6 +171,8 @@ export async function runDebugMcp(): Promise<number> {
   const backendPort = readCliBackendPort();
   const mcpPort = parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
   const mcpUrl = `http://${host}:${mcpPort}`;
+  const workspaceRoot = path.resolve(process.env.AGENT_DECK_WORKSPACE?.trim() || process.cwd());
+  const assignment = await readAssignment(workspaceRoot);
 
   console.log('Agent Deck MCP debug');
   console.log(`  host ${host}  API :${backendPort}  MCP :${mcpPort}`);
@@ -129,28 +225,39 @@ export async function runDebugMcp(): Promise<number> {
     ok = false;
   }
 
-  const init = await probeMcpInitialize(probe.mcpUrl);
-  if (init.ok) {
-    console.log(`OK  ${init.detail} (same handshake Claude uses)`);
+  const probePlan = buildMcpProbePlan(workspaceRoot, assignment);
+  if (assignment) {
+    console.log(`OK  Folder assignment ${assignment.deckName} (${assignment.source}) @ ${workspaceRoot}`);
   } else {
-    console.log(`FAIL ${init.detail}`);
-    ok = false;
+    console.log(`WARN No v2/v3 folder assignment @ ${workspaceRoot}`);
+    console.log('     Run `agent-deck use <deck>` for an IDE folder, or supply the deck header in an unattended launch.');
+    console.log('INFO Skipping authenticated MCP initialize probe; the deck must come from the launcher.');
+  }
+
+  if (probePlan.shouldProbe) {
+    const init = await probeMcpInitialize(probe.mcpUrl, probePlan.launchHeaders);
+    if (init.ok) {
+      console.log(`OK  ${init.detail} (same deck headers mcp-launch uses)`);
+    } else {
+      console.log(`FAIL ${init.detail}`);
+      ok = false;
+    }
   }
 
   console.log('');
-  const claudeEntry = readClaudeMcpEntry();
-  if (claudeEntry) {
-    console.log(`Claude config (~/.claude.json agent-deck): ${claudeEntry}`);
-    if (!claudeEntry.includes('"type":"http"') && !claudeEntry.includes('"type": "http"')) {
-      console.log('WARN expected "type": "http" for Claude Code streamable HTTP');
-    }
-    if (!claudeEntry.includes(`127.0.0.1:${mcpPort}`) && !claudeEntry.includes(`localhost:${mcpPort}`)) {
-      console.log(`WARN URL may not match running MCP (:${mcpPort})`);
-    }
-  } else {
-    console.log('Claude config: no agent-deck entry in ~/.claude.json');
-    console.log(`  Fix: claude mcp add --scope user --transport http agent-deck http://127.0.0.1:${mcpPort}/mcp`);
+  const projectClaudeEntry = readClaudeMcpEntry(
+    path.join(workspaceRoot, '.mcp.json'),
+    './.mcp.json',
+  );
+  const userClaudeEntry = readClaudeMcpEntry(
+    path.join(os.homedir(), '.claude.json'),
+    '~/.claude.json',
+  );
+  const claudeAssessment = assessClaudeMcpConfig(projectClaudeEntry, userClaudeEntry);
+  for (const line of claudeAssessment.lines) {
+    console.log(line);
   }
+  ok = ok && claudeAssessment.ok;
 
   console.log('');
   if (ok) {
@@ -165,7 +272,7 @@ export async function runDebugMcp(): Promise<number> {
     console.log('Diagnosis: Agent Deck not running.');
     console.log('  Fix: npx @agent-deck/cli start');
   } else {
-    console.log('Diagnosis: MCP reachable but handshake or API link failed — see FAIL lines above.');
+    console.log('Diagnosis: MCP reachable but launch selection, host config, or API link failed — see WARN/FAIL lines above.');
   }
 
   return ok ? 0 : 1;

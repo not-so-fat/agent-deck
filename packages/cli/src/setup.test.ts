@@ -2,7 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { resolveSetupMenubar, resolveSetupStatusline, runSetup } from './setup';
+import {
+  buildClaudeCliAddArgs,
+  resolveSetupMenubar,
+  resolveSetupStatusline,
+  runSetup,
+} from './setup';
 
 describe('setup statusline defaults', () => {
   it('enables status line for Claude Code by default', () => {
@@ -17,12 +22,48 @@ describe('setup statusline defaults', () => {
     expect(resolveSetupStatusline('claude-desktop')).toBe(false);
   });
 
+  it('skips status line for Codex by default', () => {
+    expect(resolveSetupStatusline('codex')).toBe(false);
+  });
+
   it('honors --no-statusline', () => {
     expect(resolveSetupStatusline('claude', false)).toBe(false);
   });
 
   it('honors explicit --statusline for claude-desktop', () => {
     expect(resolveSetupStatusline('claude-desktop', true)).toBe(true);
+  });
+
+  it('registers Claude Code with the trusted stdio launcher in the requested scope', () => {
+    const endpoint = { host: '127.0.0.2', mcpPort: 2110 };
+    expect(buildClaudeCliAddArgs('global', endpoint)).toEqual([
+      'mcp',
+      'add',
+      '--scope',
+      'user',
+      'agent-deck',
+      '-e',
+      'AGENT_DECK_MCP_PORT=2110',
+      '-e',
+      'AGENT_DECK_HOST=127.0.0.2',
+      '--',
+      'agent-deck',
+      'mcp-launch',
+    ]);
+    expect(buildClaudeCliAddArgs('project', endpoint)).toEqual([
+      'mcp',
+      'add',
+      '--scope',
+      'project',
+      'agent-deck',
+      '-e',
+      'AGENT_DECK_MCP_PORT=2110',
+      '-e',
+      'AGENT_DECK_HOST=127.0.0.2',
+      '--',
+      'agent-deck',
+      'mcp-launch',
+    ]);
   });
 
   it('enables menubar on macOS by default', () => {
@@ -77,6 +118,40 @@ describe('setup statusline defaults', () => {
         AGENT_DECK_WORKSPACE: workspace,
       });
     } finally {
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('merges Codex guidance into the global AGENTS.md without replacing existing instructions', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-codex-'));
+    const codexDir = path.join(tmpHome, '.codex');
+    const agentsPath = path.join(codexDir, 'AGENTS.md');
+    const previousCodexHome = process.env.CODEX_HOME;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    delete process.env.CODEX_HOME;
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(agentsPath, '# Personal instructions\n\nKeep this section.\n');
+
+    try {
+      const code = await runSetup([
+        '--client',
+        'codex',
+        '--scope',
+        'global',
+        '--no-statusline',
+        '--no-menubar',
+      ]);
+      expect(code).toBe(0);
+      const written = fs.readFileSync(agentsPath, 'utf8');
+      expect(written).toContain('# Personal instructions');
+      expect(written).toContain('Keep this section.');
+      expect(written).toContain('<!-- agent-deck:harness:start -->');
+      expect(written).toContain('agent-deck mcp-launch');
+      expect(written).toContain('<!-- agent-deck:harness:end -->');
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
       vi.restoreAllMocks();
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }

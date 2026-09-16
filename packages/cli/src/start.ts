@@ -44,6 +44,10 @@ export function formatStartVersionLine(version = getAgentDeckVersion()): string 
   return `  Version    ${version}`;
 }
 
+export function formatClaudeMcpAddCommand(host: string, mcpPort: number): string {
+  return `claude mcp add --scope user agent-deck -e AGENT_DECK_MCP_PORT=${mcpPort} -e AGENT_DECK_HOST=${host} -- agent-deck mcp-launch`;
+}
+
 type SpawnIoMode = 'inherit' | 'file';
 
 const children: ChildProcess[] = [];
@@ -154,7 +158,7 @@ async function printRunningEndpoints(
   console.log(`  API health ${backendUrl}/health`);
   console.log('');
   console.log('Claude Code:');
-  console.log(`  claude mcp add --scope user --transport http agent-deck http://${host}:${mcpPort}/mcp`);
+  console.log(`  ${formatClaudeMcpAddCommand(host, mcpPort)}`);
   console.log('');
 }
 
@@ -438,7 +442,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     `  API health ${backendUrl}/health`,
     '',
     'Claude Code:',
-    `  claude mcp add --scope user --transport http agent-deck http://${host}:${mcpPort}/mcp`,
+    `  ${formatClaudeMcpAddCommand(host, mcpPort)}`,
     '',
   ];
 

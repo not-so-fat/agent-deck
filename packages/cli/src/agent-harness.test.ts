@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildClaudeHarnessBlock,
+  buildCodexHarnessBlock,
   buildCursorHarnessFile,
   CURSOR_RULE_FILENAME,
   HARNESS_MARKER_END,
@@ -11,6 +12,7 @@ import {
   HARNESS_RULE_DESCRIPTION,
   mergeClaudeHarness,
   mergeCursorHarnessFile,
+  resolveHarnessPath,
 } from './agent-harness';
 
 describe('agent-harness templates', () => {
@@ -37,6 +39,11 @@ describe('agent-harness templates', () => {
     expect(file).toContain('Checking for the optional assignment signal');
     expect(file).toContain('do not improvise without the deck');
     expect(file).toContain('for every match before taking task action');
+    expect(file).toContain('host transport, folder assignment, then session bootstrap');
+    expect(file).toContain('agent-deck mcp-launch');
+    expect(file).toContain('agent-deck setup --client codex');
+    expect(file).toContain('does not install the plugin');
+    expect(file).toContain('These calls verify an existing connection; they do not create it');
     expect(file).toContain('Genesis case');
     expect(file).toContain('signal_only');
     expect(file).toContain('signal_ids');
@@ -84,6 +91,28 @@ describe('agent-harness templates', () => {
     expect(block).toContain('get_bound_deck');
     expect(block).toContain('Checking for the optional assignment signal');
     expect(block).toContain('do not improvise without the deck');
+    expect(block).toContain('agent-deck mcp-launch');
+    expect(block).toContain('agent-deck setup --client codex');
+    expect(block).toContain('does not install the plugin');
+  });
+
+  it('codex block carries the same contract for AGENTS.md', () => {
+    const block = buildCodexHarnessBlock('global');
+    expect(block).toContain('## Agent Deck');
+    expect(block).toContain('get_session_binding');
+    expect(block).toContain('agent-deck setup --client codex');
+    expect(block).toContain('does not install the plugin');
+  });
+
+  it('resolves Codex global guidance through CODEX_HOME', () => {
+    const previous = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = '/tmp/agent-deck-codex-home';
+    try {
+      expect(resolveHarnessPath('codex', 'global')).toBe('/tmp/agent-deck-codex-home/AGENTS.md');
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previous;
+    }
   });
 
   it('claude block avoids project-specific examples', () => {

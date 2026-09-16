@@ -34,10 +34,14 @@ describe('mergeMcpServerConfig', () => {
 
 describe('buildAgentDeckEntry', () => {
   it('uses stdio launcher for claude', () => {
-    expect(buildAgentDeckEntry('claude', { host: '127.0.0.1', mcpPort: 3001 })).toEqual({
+    expect(buildAgentDeckEntry('claude', { host: '127.0.0.2', mcpPort: 3001 })).toEqual({
       type: 'stdio',
       command: 'agent-deck',
       args: ['mcp-launch'],
+      env: {
+        AGENT_DECK_MCP_PORT: '3001',
+        AGENT_DECK_HOST: '127.0.0.2',
+      },
     });
   });
 
