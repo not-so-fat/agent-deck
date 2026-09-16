@@ -107,11 +107,21 @@ working — they just override an already-safe default.
 writing stray decks and services into the developer's (often git-synced) store —
 strays that then fail every `reindex` on duplicate display names (NOT-122).
 
+Every package except `@agent-deck/shared` loads that guard from
+`packages/shared/dist`, not from source, so a build predating the guard ran without it —
+and the only tests that failed were the guard's own, while writes went to the real store
+(NOT-138). `scripts/vitest/shared-build-guard.mjs`, called from the global setup, now
+refuses to start a run unless the build a package will actually load is no older than
+`packages/shared/src` **and** still throws for the real store. Both failures name the
+rebuild; neither lets a suite be collected.
+
 | Need | Do |
 |------|-----|
 | A test needs its own store | `fs.mkdtemp()` + set `AGENT_DECK_HOME`, restore after |
 | Assert default path resolution | `AGENT_DECK_ALLOW_REAL_HOME_IN_TESTS=1` — read-only assertions, never a write |
 | See what a run wrote | `AGENT_DECK_KEEP_TEST_HOME=1 npm test` — teardown prints and keeps the temp store |
+| Tests refuse to start on a stale build | `npm run build` (Turbo does this before `npm test`; running `vitest` inside a package does not) |
+| Knowingly test against an older build | `AGENT_DECK_SKIP_SHARED_BUILD_CHECK=1` — skips the mtime check only; the guard probe still runs |
 
 ---
 
