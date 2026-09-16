@@ -62,6 +62,13 @@ async function listTools(port: number, sessionId: string, id: number) {
   return body.result.tools as Array<{ name: string; inputSchema?: { required?: string[] } }>;
 }
 
+async function readStaleSessions(
+  port: number,
+): Promise<{ recoveredSessions: number; unresolvedSessions: number }> {
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  return health.staleSessions;
+}
+
 describe('AgentDeckMCPServer streamable HTTP', () => {
   let port: number;
   let mcpServer: AgentDeckMCPServer;
@@ -169,6 +176,203 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
     expect(names).not.toContain('delete_playbook');
     expect(names).not.toContain('add_service_to_bound_deck');
     expect(names).not.toContain('list_playbooks');
+  });
+
+  // NOT-101: a restart wipes in-memory sessions. Clients must be able to tell
+  // "your session is gone, re-initialize" apart from "your request was malformed".
+  it('answers an unknown session id with 404 so the client re-initializes', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': 'session-from-a-previous-process',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 60, method: 'tools/list', params: {} }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get('mcp-session-status')).toBe('expired');
+    const body = await response.json();
+    expect(body.error.code).toBe(-32001);
+    expect(body.error.message).toContain('Session not found');
+    expect(body.error.message).toContain('re-initialize');
+  });
+
+  it('answers GET /mcp for an unknown session with the same 404 signal', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'GET',
+      headers: { Accept: 'text/event-stream', 'mcp-session-id': 'gone-with-the-restart' },
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get('mcp-session-status')).toBe('expired');
+    const body = await response.json();
+    expect(body.error.code).toBe(-32001);
+  });
+
+  it('accepts an initialize that still carries a stale session id', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': 'stale-but-re-initializing',
+      },
+      body: JSON.stringify(initializePayload(61)),
+    });
+
+    expect(response.status).toBe(200);
+    const fresh = response.headers.get('mcp-session-id');
+    expect(fresh).toBeTruthy();
+    expect(fresh).not.toBe('stale-but-re-initializing');
+  });
+
+  it('reports instance identity and the stale-session tally on /health', async () => {
+    await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': 'another-orphan',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 70, method: 'tools/list', params: {} }),
+    });
+
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    expect(health.instanceId).toBeTruthy();
+    expect(typeof health.startedAt).toBe('string');
+    expect(typeof health.liveSessions).toBe('number');
+    expect(health.staleSessions.count).toBeGreaterThan(0);
+    expect(health.staleSessions.distinctSessions).toBeGreaterThan(0);
+    expect(typeof health.staleSessions.lastAt).toBe('string');
+  });
+
+  // A handshake that names the session it lost only counts as recovery once the
+  // replacement session exists — a rejected replay leaves the client stranded.
+  it('keeps a stale session unresolved when its replayed handshake is rejected', async () => {
+    const lost = 'session-whose-replay-gets-rejected';
+    await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': lost,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 80, method: 'tools/list', params: {} }),
+    });
+    const stranded = await readStaleSessions(port);
+
+    // The replay arrives with a launch deck the (unreachable) backend cannot
+    // confirm, so it is rejected before any session is established.
+    const rejected = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'x-agent-deck-deck-id': STUB_DECK_ID,
+        'x-agent-deck-recovered-session': lost,
+      },
+      body: JSON.stringify(initializePayload(81)),
+    });
+    expect(rejected.status).toBe(401);
+
+    const afterRejection = await readStaleSessions(port);
+    expect(afterRejection.unresolvedSessions).toBe(stranded.unresolvedSessions);
+    expect(afterRejection.recoveredSessions).toBe(stranded.recoveredSessions);
+
+    // The same client succeeding on a later attempt does clear the warning.
+    const accepted = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'x-agent-deck-recovered-session': lost,
+      },
+      body: JSON.stringify(initializePayload(82)),
+    });
+    expect(accepted.status).toBe(200);
+
+    const afterRecovery = await readStaleSessions(port);
+    expect(afterRecovery.unresolvedSessions).toBe(stranded.unresolvedSessions - 1);
+    expect(afterRecovery.recoveredSessions).toBe(stranded.recoveredSessions + 1);
+  });
+
+  // A request that was already on the wire when the restart hit lands on the old
+  // session id after its client has reconnected. The bridge answers it from the
+  // replacement session and never handshakes again, so re-stranding the id here
+  // would warn about a healthy client with nothing left to clear the warning.
+  it('keeps a recovered client recovered when a straggler arrives on the old id', async () => {
+    const lost = 'session-with-an-in-flight-request';
+    const stale = async (id: number) =>
+      fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: MCP_ACCEPT,
+          'mcp-session-id': lost,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list', params: {} }),
+      });
+
+    await stale(100);
+    const stranded = await readStaleSessions(port);
+
+    const recovered = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'x-agent-deck-recovered-session': lost,
+      },
+      body: JSON.stringify(initializePayload(101)),
+    });
+    expect(recovered.status).toBe(200);
+    const afterRecovery = await readStaleSessions(port);
+    expect(afterRecovery.unresolvedSessions).toBe(stranded.unresolvedSessions - 1);
+
+    // The straggler: still a 404 so any client that did not recover re-initializes…
+    expect((await stale(102)).status).toBe(404);
+
+    // …but the tally still shows this client as one that came back. Only the
+    // request counter moves, which is what it is: past activity.
+    const afterStraggler = await readStaleSessions(port);
+    expect(afterStraggler.unresolvedSessions).toBe(afterRecovery.unresolvedSessions);
+    expect(afterStraggler.recoveredSessions).toBe(afterRecovery.recoveredSessions);
+  });
+
+  // A session this process ended is not a client left behind by a restart, so a
+  // late request on it must not make `agent-deck status` warn about one.
+  it('does not count a session it closed itself as a stranded client', async () => {
+    const initialized = await postInitialize(port, 90);
+    const sessionId = initialized.headers.get('mcp-session-id')!;
+    expect(sessionId).toBeTruthy();
+    const before = await readStaleSessions(port);
+
+    const closed = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'DELETE',
+      headers: { Accept: MCP_ACCEPT, 'mcp-session-id': sessionId },
+    });
+    expect(closed.status).toBeLessThan(400);
+
+    // The straggler every client sends: an in-flight call, or the GET stream
+    // reconnecting, after the session was terminated.
+    const late = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 91, method: 'tools/list', params: {} }),
+    });
+
+    // Still the spec answer, so the client re-initializes...
+    expect(late.status).toBe(404);
+    expect(late.headers.get('mcp-session-status')).toBe('expired');
+    // ...but nothing is reported as stranded on a server that never restarted.
+    const after = await readStaleSessions(port);
+    expect(after).toEqual(before);
   });
 });
 

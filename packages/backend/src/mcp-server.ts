@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_RECOVERED_SESSION_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
   ensureGitExcluded,
@@ -47,7 +48,34 @@ type McpSession = {
   server: McpServer;
 };
 
+/**
+ * Clients that were connected to a previous process (NOT-101). Transport sessions
+ * live in memory only, so every restart — upgrade, crash, `agent-deck stop/start` —
+ * orphans them. We keep a bounded tally so `/health` (and `agent-deck status`) can
+ * say "clients are talking to sessions this process never issued" instead of
+ * reporting a clean "running" while every tool call fails.
+ *
+ * The tally separates two very different states. `recoveredSessions` counts stale
+ * sessions whose client came back and re-initialized (our bridge names the session
+ * it lost on the replayed handshake); `unresolvedSessions` is what is left — the
+ * clients that are still stranded, which is the only number worth warning about.
+ */
+type StaleSessionStats = {
+  count: number;
+  distinctSessions: number;
+  recoveredSessions: number;
+  unresolvedSessions: number;
+  lastSessionId?: string;
+  firstAt?: string;
+  lastAt?: string;
+  /** Last attempt from a session nobody has re-initialized away from. */
+  lastUnresolvedAt?: string;
+};
+
 export class AgentDeckMCPServer {
+  /** Cap on remembered stale session ids — the tally is diagnostics, not a ledger. */
+  private static readonly STALE_SESSION_SAMPLE_LIMIT = 200;
+
   private port: number;
   private host: string;
   private app: express.Application;
@@ -64,6 +92,22 @@ export class AgentDeckMCPServer {
   private lastTouchAtMs = new Map<string, number>();
   /** In-flight live-display unregisters so `stop()` can drain them before closing. */
   private unregisterTasks = new Map<string, Promise<void>>();
+  /** Changes on every process start — how a client detects it outlived the server. */
+  private readonly instanceId = randomUUID();
+  private readonly startedAt = new Date().toISOString();
+  private staleSessionCount = 0;
+  /** Pre-restart session id → whether its client has since re-initialized. */
+  private staleSessionsById = new Map<string, { recovered: boolean; lastAt: string }>();
+  /**
+   * Sessions this process issued and then closed. A late request on one of them is
+   * an ordinary end-of-session race, not a client left behind by a restart, and
+   * tallying it would make `agent-deck status` warn about a restart that never
+   * happened.
+   */
+  private closedSessionIds = new Set<string>();
+  private staleSessionFirstAt: string | undefined;
+  private staleSessionLastAt: string | undefined;
+  private staleSessionLastId: string | undefined;
 
   private get server(): McpServer {
     if (!this.mcpServerForRegistration) {
@@ -603,6 +647,10 @@ export class AgentDeckMCPServer {
         service: 'agent-deck-mcp-server',
         backendUrl: this.backendUrl,
         toolProfile: this.toolProfile,
+        instanceId: this.instanceId,
+        startedAt: this.startedAt,
+        liveSessions: this.sessions.size,
+        staleSessions: this.getStaleSessionStats(),
       });
     });
 
@@ -630,6 +678,127 @@ export class AgentDeckMCPServer {
   private getSessionIdHeader(req: Request): string | undefined {
     const value = req.headers['mcp-session-id'];
     return typeof value === 'string' ? value : undefined;
+  }
+
+  private getStaleSessionStats(): StaleSessionStats {
+    let recoveredSessions = 0;
+    let lastUnresolvedAt: string | undefined;
+    for (const entry of this.staleSessionsById.values()) {
+      if (entry.recovered) {
+        recoveredSessions += 1;
+        continue;
+      }
+      if (!lastUnresolvedAt || entry.lastAt > lastUnresolvedAt) {
+        lastUnresolvedAt = entry.lastAt;
+      }
+    }
+
+    return {
+      count: this.staleSessionCount,
+      distinctSessions: this.staleSessionsById.size,
+      recoveredSessions,
+      unresolvedSessions: this.staleSessionsById.size - recoveredSessions,
+      lastSessionId: this.staleSessionLastId,
+      firstAt: this.staleSessionFirstAt,
+      lastAt: this.staleSessionLastAt,
+      lastUnresolvedAt,
+    };
+  }
+
+  /**
+   * A client that re-initializes after a restart names the session it lost, so we
+   * can stop counting it as stranded. Without this the tally only ever grows and
+   * `agent-deck status` would warn about clients that recovered on their own
+   * seconds earlier.
+   *
+   * Call this only once the replacement session exists: a handshake that is then
+   * rejected (launch-deck auth, a transport that fails to initialize) leaves the
+   * client just as stranded as before, and clearing the warning for it would hide
+   * exactly the case operators need to see.
+   */
+  private markStaleSessionRecovered(req: Request): void {
+    // Node lower-cases request header names, which is how the constant is written.
+    const header = req.headers[AGENT_DECK_RECOVERED_SESSION_HEADER];
+    const recoveredId = Array.isArray(header) ? header[0] : header;
+    if (!recoveredId) {
+      return;
+    }
+    const entry = this.staleSessionsById.get(recoveredId);
+    if (entry) {
+      entry.recovered = true;
+    }
+  }
+
+  /**
+   * Answer a request carrying a session id this process never issued (NOT-101).
+   *
+   * The streamable-HTTP spec says a server MUST reply 404 to an unknown
+   * `Mcp-Session-Id`, and that a client seeing 404 MUST re-initialize. The old
+   * 400 "Bad Request: No valid session ID provided" was indistinguishable from a
+   * malformed request, so bridges parked on it forever instead of reconnecting.
+   */
+  private sendSessionNotFound(sessionId: string, res: Response): void {
+    if (this.closedSessionIds.has(sessionId)) {
+      // We issued this session and it ended here; the client is not stranded.
+      this.sendSessionExpired(sessionId, res);
+      return;
+    }
+
+    const at = new Date().toISOString();
+    const known = this.staleSessionsById.get(sessionId);
+
+    this.staleSessionCount += 1;
+    this.staleSessionLastId = sessionId;
+    this.staleSessionLastAt = at;
+    this.staleSessionFirstAt ??= at;
+    if (known) {
+      // Note the attempt, but never un-recover: once a client has re-initialized it
+      // holds a session of ours and keeps using it. What still arrives on the old id
+      // is a request that was already in flight when the restart hit, and the bridge
+      // will not handshake again for it — so flipping this back would strand a
+      // healthy client in `agent-deck status` with nothing left to clear it.
+      known.lastAt = at;
+    } else if (this.staleSessionsById.size < AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT) {
+      this.staleSessionsById.set(sessionId, { recovered: false, lastAt: at });
+    }
+
+    // One line per session id, not per request — a wedged bridge retries forever.
+    if (!known) {
+      console.warn(
+        `[agent-deck] MCP session ${sessionId} is unknown to this process ` +
+          `(instance ${this.instanceId}, started ${this.startedAt}). ` +
+          'The client connected before the last restart; replying 404 so it re-initializes.',
+      );
+    }
+
+    this.sendSessionExpired(sessionId, res);
+  }
+
+  /** The wire half of a 404: the same answer whether or not the session was tallied. */
+  private sendSessionExpired(sessionId: string, res: Response): void {
+    res.status(404)
+      .set('mcp-session-status', 'expired')
+      .json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32001,
+          message:
+            `Session not found: ${sessionId}. The Agent Deck MCP server restarted ` +
+            `(instance ${this.instanceId}, started ${this.startedAt}); re-initialize to get a new session.`,
+        },
+        id: null,
+      });
+  }
+
+  /** Remember a session we closed ourselves, keeping the set bounded like the tally. */
+  private rememberClosedSession(sessionId: string): void {
+    if (this.closedSessionIds.size >= AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT) {
+      const oldest = this.closedSessionIds.values().next().value;
+      if (oldest !== undefined) {
+        this.closedSessionIds.delete(oldest);
+      }
+    }
+    this.closedSessionIds.add(sessionId);
   }
 
   private async refreshRuntimeSession(sessionId: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
@@ -800,6 +969,13 @@ export class AgentDeckMCPServer {
         (Array.isArray(body) && body.some((message) => isInitializeRequest(message))));
 
     if (!isInit) {
+      // A session id we don't know is a restart, not a malformed request — 404 so
+      // the client re-initializes. An initialize carrying a stale id falls through
+      // and gets a fresh session, which is exactly the recovery we want.
+      if (sessionIdHeader) {
+        this.sendSessionNotFound(sessionIdHeader, res);
+        return;
+      }
       res.status(400).json({
         jsonrpc: '2.0',
         error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
@@ -849,6 +1025,7 @@ export class AgentDeckMCPServer {
       const closedSessionId = transport.sessionId;
       if (closedSessionId) {
         this.sessions.delete(closedSessionId);
+        this.rememberClosedSession(closedSessionId);
         // Unregister while session headers still resolve — clearSession would drop
         // the runtime session id and live-display DELETE would 401.
         const task = this.unregisterLiveDisplay(closedSessionId).finally(() => {
@@ -887,6 +1064,9 @@ export class AgentDeckMCPServer {
     }
 
     if (transport.sessionId) {
+      // The replacement session is live, so the session this client lost to the
+      // restart is genuinely recovered and no longer a stranded client.
+      this.markStaleSessionRecovered(req);
       void this.registerLiveDisplay(transport.sessionId).catch(() => {});
     }
   }
@@ -900,7 +1080,7 @@ export class AgentDeckMCPServer {
 
     const session = this.sessions.get(sessionId);
     if (!session) {
-      res.status(404).json({ error: 'Session not found' });
+      this.sendSessionNotFound(sessionId, res);
       return;
     }
 
@@ -975,23 +1155,26 @@ export class AgentDeckMCPServer {
       // otherwise tests close the stub backend and see ECONNRESET console.error noise.
       await Promise.all([...this.unregisterTasks.values()]);
 
-      if (this.httpServer) {
-        const httpServer = this.httpServer;
-        this.httpServer = null;
-        await new Promise<void>((resolve, reject) => {
-          httpServer.close((error) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-            resolve();
-          });
-        });
-      }
+      // Release the port too, otherwise a restart on the same port races the old
+      // listener and the "did it come back?" probe can't tell the two apart.
+      await this.closeHttpServer();
       console.log(`🛑 MCP server stopped`);
     } catch (error) {
       console.error(`❌ Error stopping MCP server:`, error);
       throw error;
     }
+  }
+
+  private async closeHttpServer(): Promise<void> {
+    const server = this.httpServer;
+    if (!server) {
+      return;
+    }
+    this.httpServer = null;
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      // Keep-alive sockets (the SSE stream in particular) never end on their own.
+      server.closeAllConnections?.();
+    });
   }
 }

@@ -18,6 +18,23 @@
 - A deck file that cannot be written during a card delete no longer strands the card's own file: the card is still removed from the store before the write error surfaces, so a failed delete can't be undone by the next reindex.
 - No change to reindex semantics: files still win.
 
+### Fix: MCP clients recover from a backend restart on their own (NOT-101)
+
+- **The contract:** transport sessions do *not* survive a restart. Instead the server tells the client the session is gone, and the bridge re-initializes without anyone noticing.
+- Unknown `Mcp-Session-Id` now returns **404** with `mcp-session-status: expired` (was **400** `Bad Request: No valid session ID provided`, which bridges could not tell apart from a malformed request). An `initialize` carrying a stale session id is accepted and gets a fresh session.
+- `agent-deck mcp-launch` no longer shells out to `npx supergateway`. The built-in bridge caches the client handshake, replays it when the session goes missing, and retries the failed call — so an upgrade no longer strands every open IDE session. Set `AGENT_DECK_MCP_BRIDGE=supergateway` to fall back; note supergateway still does **not** reconnect and stays wedged until its host restarts.
+- A restart that lands mid-call answers that one call with an error — never a hang, and never a silent retry of a tool call the server may already have applied. The bridge stays up and the next call goes through the new session. A stuck call no longer blocks the cancellation that would end it.
+- Reconnecting keeps the deck you are on: the bridge re-reads the folder assignment before it replays the handshake, and checks which deck the new session is bound to. If a `bind_workspace` override or an elevated `switch_bound_deck` means the reconnected session would act on a different deck, the pending call is reported instead of retried there. When you had bound a deck yourself, further deck-scoped calls are refused the same way until you re-bind, so retrying the call cannot quietly apply it to the other deck; a session that just follows the folder assignment simply continues on the deck that assignment names now.
+- A `bind_workspace` / `switch_bound_deck` whose answer arrives after the restart is reported as a lost binding instead of being taken at face value — it applied to a session that no longer exists, so the deck it names is not the one the reconnected session acts on.
+- MCP `/health` gained `instanceId`, `startedAt`, `liveSessions`, and a `staleSessions` tally split into `recoveredSessions` and `unresolvedSessions`. `agent-deck status` prints a **Sessions** line and warns only about clients that never came back; ones that re-initialized on their own are reported as history, not as stranded.
+- `agent-deck stop` now releases the MCP port instead of leaving the listener up.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Reload IDE MCP hosts **once** so they pick up the new bridge. After that, restarts and upgrades recover on their own.
+- Kill any long-lived `npx supergateway … 127.0.0.1:1110/mcp` processes left over from before the upgrade — they never reconnect.
+
 ## 1.8.2 — 2026-09-15
 
 ### Add: launch-selected deck + folder assignment (NOT-105, NOT-108)
