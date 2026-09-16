@@ -2,22 +2,6 @@
 
 ## Unreleased
 
-### Fix: fail-closed Agent Deck session bootstrap
-
-- Generated Cursor and Claude harnesses now require `get_session_binding` → `get_bound_deck` before task work whenever Agent Deck MCP is configured, including launch-selected unattended sessions that intentionally have no `.agent-deck/use.json`.
-- Project-scoped harnesses no longer emit the obsolete `bind_workspace` flow. `agent-deck use <deck>` is documented as the optional persistent folder-assignment path, not the source of connection authority.
-- The session skill permits only Agent Deck configuration detection and read-only connection diagnostics before the bootstrap gate passes.
-- Connection recovery now distinguishes host transport, folder assignment, instruction discovery, and session bootstrap. Codex transport uses the plugin's `agent-deck mcp-launch`; `agent-deck setup --client codex` now marker-merges the bootstrap harness into global or project `AGENTS.md` without replacing unrelated instructions.
-- `agent-deck debug-mcp` now probes with the folder's deck/workspace headers, flags stale bare-HTTP Claude configuration, and reports a missing assignment explicitly instead of misdiagnosing the expected `GRANT_REQUIRED` response as a daemon failure.
-- Claude Code setup now registers the trusted stdio `agent-deck mcp-launch` bridge and preserves custom host/port values in its environment. Migrate an older user-scope HTTP entry with `claude mcp remove agent-deck -s user && agent-deck setup --client claude`.
-
-### Fix: deck membership outside the deck routes reaches the store files (NOT-121)
-
-- Accepting a `kind: create` playbook proposal now writes the new playbook id into `decks/<id>.json`. Previously the `.md` landed but the deck link lived only in SQLite, so `agent-deck reindex` (and every git-sync pull) dropped the playbook from the deck.
-- Same flush for every other non-route caller: credential/service/playbook deck links, bundle import, and CLI service delete. Deleting a card now also removes it from the deck files it was on — a deck naming a missing card used to abort the next reindex.
-- A deck file that cannot be written during a card delete no longer strands the card's own file: the card is still removed from the store before the write error surfaces, so a failed delete can't be undone by the next reindex.
-- No change to reindex semantics: files still win.
-
 ### Fix: MCP clients recover from a backend restart on their own (NOT-101)
 
 - **The contract:** transport sessions do *not* survive a restart. Instead the server tells the client the session is gone, and the bridge re-initializes without anyone noticing.
@@ -34,6 +18,41 @@
 - Upgrade the CLI, then `agent-deck stop && agent-deck start`.
 - Reload IDE MCP hosts **once** so they pick up the new bridge. After that, restarts and upgrades recover on their own.
 - Kill any long-lived `npx supergateway … 127.0.0.1:1110/mcp` processes left over from before the upgrade — they never reconnect.
+
+## 1.9.0 — 2026-09-16
+
+### Add: Codex host setup (`--client codex`)
+
+- `agent-deck setup --client codex` installs or refreshes Agent Deck bootstrap guidance in global or project `AGENTS.md`, marker-merging it without replacing unrelated instructions. Codex MCP transport still comes from the separately installed Agent Deck plugin (`agent-deck mcp-launch`) — Codex setup merges `AGENTS.md` only.
+- `--scope project` is now accepted for `codex` alongside `cursor` and `claude`.
+
+### Changed: Claude Code registers the trusted stdio bridge
+
+- Claude Code setup now registers `agent-deck mcp-launch` over stdio instead of a bare HTTP URL, carrying custom host/port values in the entry's environment. A bare HTTP entry cannot select a deck.
+- `agent-deck debug-mcp` probes with the folder's deck/workspace headers, reports a missing folder assignment explicitly (and skips the authenticated probe) instead of misdiagnosing the expected `GRANT_REQUIRED` response as a daemon failure, and reports project/user launcher conflicts symmetrically.
+- `debug-mcp` now **exits 1** when a Claude entry is still a bare HTTP URL instead of the `mcp-launch` stdio bridge. Recheck anything scripted on its exit code.
+
+### Fix: fail-closed Agent Deck session bootstrap
+
+- Generated Cursor and Claude harnesses now require `get_session_binding` → `get_bound_deck` before task work whenever Agent Deck MCP is configured, including launch-selected unattended sessions that intentionally have no `.agent-deck/use.json`.
+- Project-scoped harnesses no longer emit the obsolete `bind_workspace` flow. `agent-deck use <deck>` is documented as the optional persistent folder-assignment path, not the source of connection authority.
+- The session skill permits only Agent Deck configuration detection and read-only connection diagnostics before the bootstrap gate passes.
+- Connection recovery now distinguishes host transport, folder assignment, instruction discovery, and session bootstrap.
+
+### Fix: deck membership outside the deck routes reaches the store files (NOT-121)
+
+- Accepting a `kind: create` playbook proposal now writes the new playbook id into `decks/<id>.json`. Previously the `.md` landed but the deck link lived only in SQLite, so `agent-deck reindex` (and every git-sync pull) dropped the playbook from the deck.
+- Same flush for every other non-route caller: credential/service/playbook deck links, bundle import, and CLI service delete. Deleting a card now also removes it from the deck files it was on — a deck naming a missing card used to abort the next reindex.
+- A deck file that cannot be written during a card delete no longer strands the card's own file: the card is still removed from the store before the write error surfaces, so a failed delete can't be undone by the next reindex.
+- No change to reindex semantics: files still win.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Re-run `agent-deck setup --client <host>` for each host so the regenerated harness carries the fail-closed bootstrap gate.
+- Claude Code: migrate an older user-scope HTTP entry — `claude mcp remove agent-deck -s user && agent-deck setup --client claude`.
+- Codex: verify the Agent Deck plugin is installed and enabled, run `agent-deck setup --client codex`, then start a new Codex task so MCP + `AGENTS.md` guidance reload.
+- Reload IDE MCP hosts so connections send the deck header.
 
 ## 1.8.2 — 2026-09-15
 

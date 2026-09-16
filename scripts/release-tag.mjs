@@ -28,6 +28,9 @@ const force = flags.has('--force');
 /** Commits without an explicit semver in the Ship subject. */
 const BACKFILL_OVERRIDES = {
   '1.0.0': '58f47a8',
+  // 1.9.0 shipped from release/1.9.0; PR #76's squash-merge dropped the Ship
+  // commit, so main carries the release as the squash itself.
+  '1.9.0': '4e223a3',
 };
 
 function readRootVersion() {
