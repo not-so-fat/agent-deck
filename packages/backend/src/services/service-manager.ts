@@ -31,7 +31,7 @@ import {
   resolveMcpErrorMessage,
 } from '../lib/mcp-connection-error';
 import { normalizeServiceToolResult } from '../lib/normalize-service-tool-result';
-import { flushDeckFile, flushDeckFiles } from '../store/deck-file';
+import { flushDeckFile, flushDeckFilesThenDeleteCard } from '../store/deck-file';
 import { storeServiceFromDb } from '../store/service-codec';
 import { FileStoreWriter } from '../store/writer';
 import { ServiceHeaderVault } from '../vault/service-header-vault';
@@ -406,11 +406,10 @@ export class ServiceManager {
     const deckIds = await this.db.listDeckIdsForService(id);
     const deleted = await this.db.deleteService(id);
     if (deleted) {
-      // Decks before the card file: a deck naming a missing card breaks reindex,
-      // while an orphan card file no deck points at is harmless.
-      await flushDeckFiles(this.db, deckIds, this.storeWriter);
-      await this.deleteFromStore(id);
-      await this.headerVault?.delete(id);
+      await flushDeckFilesThenDeleteCard(this.db, deckIds, this.storeWriter, async () => {
+        await this.deleteFromStore(id);
+        await this.headerVault?.delete(id);
+      });
     }
     return deleted;
   }

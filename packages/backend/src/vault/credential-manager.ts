@@ -15,7 +15,7 @@ import {
 import { CredentialYamlSync } from './yaml-sync';
 import { SecretStore, VaultUnsupportedError } from './secret-store';
 import { buildCredentialAuthHeaders } from './credential-auth-headers';
-import { flushDeckFile, flushDeckFiles } from '../store/deck-file';
+import { flushDeckFile, flushDeckFilesThenDeleteCard } from '../store/deck-file';
 import { FileStoreWriter } from '../store/writer';
 
 export class CredentialManager {
@@ -256,11 +256,10 @@ export class CredentialManager {
     const deckIds = await this.db.listDeckIdsForCredential(id);
     const deleted = await this.db.deleteCredential(id);
     if (deleted) {
-      // Decks before the card file: a deck naming a missing card breaks reindex,
-      // while an orphan card file no deck points at is harmless.
-      await flushDeckFiles(this.db, deckIds, this.storeWriter);
-      await this.deleteFromStore(id);
-      await removeCachedIcon(id);
+      await flushDeckFilesThenDeleteCard(this.db, deckIds, this.storeWriter, async () => {
+        await this.deleteFromStore(id);
+        await removeCachedIcon(id);
+      });
     }
     return deleted;
   }

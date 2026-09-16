@@ -12,7 +12,11 @@ import {
   ImportBundleError,
   parseBundleJson,
 } from './export-import';
-import { flushDeckFiles, migrateSqliteToStore, reindexStoreToSqlite } from './store';
+import {
+  flushDeckFilesThenDeleteCard,
+  migrateSqliteToStore,
+  reindexStoreToSqlite,
+} from './store';
 import { FileStoreWriter } from './store/writer';
 
 /** Shared credential manager for the agent-deck CLI (vault + exec). */
@@ -54,8 +58,9 @@ export function createCliCollectionAdmin() {
       if (!deleted) {
         return { ok: false, error: `Service not found: ${id}` };
       }
-      await flushDeckFiles(db, deckIds, storeWriter);
-      await storeWriter.deleteService(id);
+      await flushDeckFilesThenDeleteCard(db, deckIds, storeWriter, () =>
+        storeWriter.deleteService(id),
+      );
       return { ok: true };
     },
 

@@ -45,7 +45,7 @@ export async function flushDeckFile(
 }
 
 /** Flush several decks — e.g. every deck that held a card being deleted. */
-export async function flushDeckFiles(
+async function flushDeckFiles(
   db: DatabaseManager,
   deckIds: Iterable<string>,
   writer?: FileStoreWriter,
@@ -56,6 +56,36 @@ export async function flushDeckFiles(
 
   for (const deckId of new Set(deckIds)) {
     await flushDeckFile(db, deckId, writer);
+  }
+}
+
+/**
+ * Deck flush for a card delete, paired with the card's own cleanup.
+ *
+ * Decks go first because a deck naming a missing card aborts the *whole* reindex,
+ * while an orphan card file no deck points at only resurrects that one card. But
+ * the DB row is already gone by now, so `deleteCard` has to run even when a deck
+ * file won't write — otherwise one EACCES leaves `<card>.json` behind with no row
+ * and the next reindex, where files win, undoes the delete. The write error is
+ * re-thrown once the cleanup is done.
+ */
+export async function flushDeckFilesThenDeleteCard(
+  db: DatabaseManager,
+  deckIds: Iterable<string>,
+  writer: FileStoreWriter | undefined,
+  deleteCard: () => Promise<void>,
+): Promise<void> {
+  let flushError: unknown;
+  try {
+    await flushDeckFiles(db, deckIds, writer);
+  } catch (error) {
+    flushError = error;
+  }
+
+  await deleteCard();
+
+  if (flushError) {
+    throw flushError;
   }
 }
 

@@ -233,6 +233,29 @@ describe('deck membership dual-write', () => {
     await expectStoreInSyncWithDb();
   });
 
+  it('still removes the card file when a deck file cannot be written', async () => {
+    const playbook = await playbookManager.create({
+      title: 'Doomed',
+      body: 'Gone soon.\n',
+      triggers: ['doomed'],
+    });
+    await playbookManager.addToDeck({ deckId, playbookId: playbook.id });
+
+    // The row is deleted before the flush, so a deck file that refuses to write
+    // must not strand `playbooks/<id>.md` — files win the next reindex, and the
+    // orphan would resurrect the card we just deleted.
+    const writeDeck = vi
+      .spyOn(writer, 'writeDeck')
+      .mockRejectedValueOnce(new Error('EACCES: deck file is read-only'));
+
+    await expect(playbookManager.delete(playbook.id)).rejects.toThrow('EACCES');
+    expect(writeDeck).toHaveBeenCalled();
+
+    await expect(
+      fs.access(path.join(storePaths(home).playbooksDir, `${playbook.id}.md`)),
+    ).rejects.toThrow();
+  });
+
   it('writes imported deck membership to the store', async () => {
     const sourcePath = path.join(home, 'source.db');
     const source = new DatabaseManager(sourcePath);
