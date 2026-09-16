@@ -632,6 +632,73 @@ describe('McpStdioHttpBridge across a deck change', () => {
     expect(bridge.getBoundDeckId()).toBe('deck-1');
   });
 
+  // The binding call was answered by a session the restart then took away. Its deck
+  // never applied to the replacement, so believing it would send every later call to
+  // the wrong deck — the exact way a mutation lands somewhere the client never chose.
+  it('does not let a binding answer from a lost session describe the new one', async () => {
+    const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
+    let releaseBind: () => void = () => {};
+    const bindGate = new Promise<void>((resolve) => {
+      releaseBind = resolve;
+    });
+
+    const deckAware = deckAwareFetch(state);
+    const gatedFetch = (async (url: any, init: any): Promise<Response> => {
+      const body = init?.method === 'POST' ? JSON.parse(init.body as string) : undefined;
+      const response = await deckAware(url, init);
+      if (body?.params?.name === 'bind_workspace') {
+        // The server bound deck-2 and then restarted before the answer got out.
+        await bindGate;
+      }
+      return response;
+    }) as unknown as typeof fetch;
+
+    const { bridge, send, waitFor, finish } = await driveBridge(state, gatedFetch);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'bind_workspace', arguments: { deckId: 'deck-2' } },
+    });
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (state.calls.some((call) => call.body.params?.name === 'bind_workspace')) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // The restart, while the bind answer is still on the wire.
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_session_binding' } });
+    await waitFor(3);
+    expect(bridge.getRecoveryCount()).toBe(1);
+
+    releaseBind();
+    const lostBind = await waitFor(2);
+    // The client hears that its binding is gone instead of being told it holds deck-2.
+    expect(lostBind.error?.message).toContain('no longer exists');
+    expect(lostBind.error?.message).toContain('deck-2');
+    expect(bridge.getBoundDeckId()).toBe('deck-1');
+
+    send({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: 'register_service', arguments: { name: 'svc' } },
+    });
+    const refused = await waitFor(4);
+    await finish();
+
+    // …and the mutation it sends next is held back rather than applied to deck-1.
+    expect(refused.error?.message).toContain('not deck-2');
+    expect(state.calls.filter((call) => call.body.params?.name === 'register_service')).toHaveLength(
+      0,
+    );
+  });
+
   it('replays the handshake to the endpoint the assignment names now', async () => {
     const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
     const urls: string[] = [];

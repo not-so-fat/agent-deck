@@ -752,10 +752,12 @@ export class AgentDeckMCPServer {
     this.staleSessionLastAt = at;
     this.staleSessionFirstAt ??= at;
     if (known) {
+      // Note the attempt, but never un-recover: once a client has re-initialized it
+      // holds a session of ours and keeps using it. What still arrives on the old id
+      // is a request that was already in flight when the restart hit, and the bridge
+      // will not handshake again for it — so flipping this back would strand a
+      // healthy client in `agent-deck status` with nothing left to clear it.
       known.lastAt = at;
-      // A client that reconnected and then presented the old id again is stranded
-      // once more, not recovered.
-      known.recovered = false;
     } else if (this.staleSessionsById.size < AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT) {
       this.staleSessionsById.set(sessionId, { recovered: false, lastAt: at });
     }

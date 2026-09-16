@@ -109,6 +109,12 @@ function isBindingCall(message: JsonRpcMessage): boolean {
   return tool !== undefined && (DECK_REBINDING_TOOLS.has(tool) || tool === SESSION_BINDING_TOOL);
 }
 
+/** A call that moves the session to another deck, as opposed to just reporting it. */
+function isDeckRebindingCall(message: JsonRpcMessage): boolean {
+  const tool = readToolCallName(message);
+  return tool !== undefined && DECK_REBINDING_TOOLS.has(tool);
+}
+
 function readToolCallName(message: JsonRpcMessage): string | undefined {
   if (message.method !== 'tools/call') {
     return undefined;
@@ -182,14 +188,25 @@ export class McpStdioHttpBridge {
   private readonly log: (message: string) => void;
 
   private sessionId: string | undefined;
+  /**
+   * Bumped every time the session id changes — including to `undefined`. A reply
+   * is only about the session it was sent on, and after a recovery the id alone
+   * cannot say that (the replacement may reuse a value we once held).
+   */
+  private sessionGeneration = 0;
   /** MCP endpoint as it stands now — re-read from the assignment on recovery. */
   private url: string;
   /** Launch headers as they stand now — re-read from the assignment on recovery. */
   private launchHeaders: Record<string, string>;
   /** The deck the client is working against: launch deck, or whatever it bound to. */
   private boundDeckId: string | undefined;
-  /** Ids of in-flight `bind_workspace` / `switch_bound_deck` calls, awaiting their deck. */
-  private readonly pendingDeckRebinds = new Set<string>();
+  /**
+   * In-flight `bind_workspace` / `switch_bound_deck` calls: request id → the session
+   * generation the call went out on. A binding result only describes the session that
+   * answered it, so one that arrives after a restart must not be read as the deck the
+   * replacement session is on.
+   */
+  private readonly pendingDeckRebinds = new Map<string, number>();
   /**
    * The deck the *client* asked for, if it ever did. Only a client that bound a deck
    * itself can be surprised by a reconnect landing somewhere else — a client that
@@ -310,31 +327,77 @@ export class McpStdioHttpBridge {
     this.streamAbort = undefined;
   }
 
-  private writeToClient(message: JsonRpcMessage): void {
-    this.noteDeckRebinding(message);
-    this.options.stdout.write(`${JSON.stringify(message)}\n`);
+  /**
+   * Hand a message to the client. `sentOnGeneration` is the session generation the
+   * response came back on — absent for anything the bridge writes itself.
+   */
+  private writeToClient(message: JsonRpcMessage, sentOnGeneration?: number): void {
+    const outgoing = this.noteDeckRebinding(message, sentOnGeneration) ?? message;
+    this.options.stdout.write(`${JSON.stringify(outgoing)}\n`);
   }
 
   /**
    * Follow the client's own binding calls. `bind_workspace` moves the session to a
    * deck the launch headers know nothing about, so this is the only place the
    * bridge can learn which deck a later request expects to act on.
+   *
+   * Returns a replacement message when the binding answer belongs to a session a
+   * restart has since taken away: the deck it names is not where the bridge is now,
+   * and letting the success through would leave the client acting on the wrong deck
+   * believing it had bound.
    */
-  private noteDeckRebinding(message: JsonRpcMessage): void {
+  private noteDeckRebinding(
+    message: JsonRpcMessage,
+    sentOnGeneration: number | undefined,
+  ): JsonRpcMessage | undefined {
     if (message.id === undefined || message.id === null) {
-      return;
+      return undefined;
     }
-    if (!this.pendingDeckRebinds.delete(String(message.id))) {
-      return;
+    const id = String(message.id);
+    const sentAt = this.pendingDeckRebinds.get(id);
+    if (sentAt === undefined || sentAt !== sentOnGeneration) {
+      // Not a binding call of ours, or a reply superseded by a later attempt on
+      // the same id — the attempt that is still outstanding owns the answer.
+      return undefined;
     }
+    this.pendingDeckRebinds.delete(id);
     const deckId = readDeckIdFromToolResult(message.result);
-    if (deckId) {
+    if (!deckId) {
+      // An error or a payload naming no deck: nothing to record either way.
+      return undefined;
+    }
+
+    // Whichever session answered, the client has told us which deck it wants — so
+    // a later recovery landing elsewhere is a change it needs to hear about.
+    this.clientChosenDeckId = deckId;
+
+    if (sentOnGeneration === this.sessionGeneration) {
       this.boundDeckId = deckId;
       // The client has chosen a deck on the current session, so whatever the last
       // recovery moved it away from is settled.
-      this.clientChosenDeckId = deckId;
       this.deckAwaitingRebind = undefined;
+      return undefined;
     }
+
+    if (this.boundDeckId === deckId) {
+      // The replacement session happens to sit on the deck it asked for; the
+      // binding stands even though the session that granted it is gone.
+      this.deckAwaitingRebind = undefined;
+      return undefined;
+    }
+
+    // Latched, not merely reported: the client believes it is on `deckId`, so every
+    // deck-scoped call it sends next would land on the replacement's deck unnoticed.
+    this.deckAwaitingRebind = { chosen: deckId };
+    const reason =
+      `${deckChangeNotice(this.boundDeckId, deckId)} — the binding was applied to a session ` +
+      `that no longer exists; ${rebindInstruction(deckId)} again`;
+    this.log(`[agent-deck] bridge: ${reason}`);
+    return {
+      jsonrpc: '2.0',
+      id: message.id,
+      error: { code: -32001, message: `agent-deck bridge: ${reason}` },
+    };
   }
 
   private requestHeaders(): Record<string, string> {
@@ -367,7 +430,7 @@ export class McpStdioHttpBridge {
       // deck that session had landed on. The new one binds from the launch headers,
       // and the client makes its own binding choices on top of that, so a refusal
       // latched against the old session must not outlive it.
-      this.sessionId = undefined;
+      this.setSessionId(undefined);
       this.boundDeckId = readHeader(this.launchHeaders, AGENT_DECK_DECK_ID_HEADER);
       this.clientChosenDeckId = undefined;
       this.deckAwaitingRebind = undefined;
@@ -387,11 +450,6 @@ export class McpStdioHttpBridge {
 
     if (isInitializedNotification(message)) {
       this.cachedInitialized = message;
-    }
-
-    const toolName = readToolCallName(message);
-    if (toolName && DECK_REBINDING_TOOLS.has(toolName) && isRequest(message)) {
-      this.pendingDeckRebinds.add(String(message.id));
     }
 
     await this.awaitSession();
@@ -447,10 +505,16 @@ export class McpStdioHttpBridge {
     // come back stale one after another; without this we would re-initialize once
     // per response and throw away the session the first recovery just won.
     const sentWithSession = this.sessionId;
+    const sentWithGeneration = this.sessionGeneration;
     // ...and the deck it was meant for. A replayed handshake re-binds from the
     // launch headers, which can land on a different deck than the one the client
     // bound this session to; a retry then applies the call to the wrong deck.
     const sentWithDeck = this.boundDeckId;
+    // Recorded per attempt, not per request: a retry after recovery goes out on
+    // the new session, and its answer is the one that describes where we are.
+    if (isRequest(message) && isDeckRebindingCall(message)) {
+      this.pendingDeckRebinds.set(String(message.id), sentWithGeneration);
+    }
     let response: Response;
     try {
       response = await this.post(message);
@@ -514,28 +578,41 @@ export class McpStdioHttpBridge {
     }
 
     this.captureSessionId(response);
-    this.emitResponseBody(response, bodyText);
+    this.emitResponseBody(response, bodyText, sentWithGeneration);
 
     if (isInitializeRequest(message)) {
       this.startServerStream();
     }
   }
 
+  /** Every session change goes through here, so the generation cannot drift. */
+  private setSessionId(sessionId: string | undefined): void {
+    if (this.sessionId === sessionId) {
+      return;
+    }
+    this.sessionId = sessionId;
+    this.sessionGeneration += 1;
+  }
+
   private captureSessionId(response: Response): void {
     const sessionId = response.headers.get(SESSION_HEADER);
     if (sessionId) {
-      this.sessionId = sessionId;
+      this.setSessionId(sessionId);
     }
   }
 
-  private emitResponseBody(response: Response, bodyText: string): void {
+  private emitResponseBody(
+    response: Response,
+    bodyText: string,
+    sentOnGeneration: number | undefined,
+  ): void {
     const messages = decodeJsonRpcMessages(response, bodyText);
     if (!messages) {
       this.log('[agent-deck] bridge: dropping non-JSON response from MCP server');
       return;
     }
     for (const message of messages) {
-      this.writeToClient(message);
+      this.writeToClient(message, sentOnGeneration);
     }
   }
 
@@ -585,7 +662,7 @@ export class McpStdioHttpBridge {
       this.unresolvedSessionId = this.sessionId;
     }
     const lostSessionId = this.unresolvedSessionId;
-    this.sessionId = undefined;
+    this.setSessionId(undefined);
 
     // The folder assignment may have moved to another deck while we were up; the
     // handshake has to go out with the binding that is current now.
@@ -614,7 +691,7 @@ export class McpStdioHttpBridge {
     if ((await readBodyText(response)) === undefined) {
       // A handshake we could not read to the end is not a session we can trust —
       // drop it so the next request takes the 404 path and recovers cleanly.
-      this.sessionId = undefined;
+      this.setSessionId(undefined);
       this.log('[agent-deck] bridge: re-initialize response was cut off; will retry');
       return false;
     }
@@ -749,6 +826,9 @@ export class McpStdioHttpBridge {
 
   private async consumeServerStream(abort: AbortController): Promise<void> {
     const sessionId = this.sessionId;
+    // A response that arrives over this stream belongs to the session that opened
+    // it, the same way a POST reply belongs to the session it was sent on.
+    const generation = this.sessionGeneration;
     try {
       const response = await this.fetchImpl(this.url, {
         method: 'GET',
@@ -784,7 +864,7 @@ export class McpStdioHttpBridge {
         const complete = buffer.slice(0, lastBreak + 1);
         buffer = buffer.slice(lastBreak + 1);
         for (const message of parseSseMessages(complete)) {
-          this.writeToClient(message);
+          this.writeToClient(message, generation);
         }
       }
     } catch {
@@ -801,12 +881,6 @@ export class McpStdioHttpBridge {
   }
 }
 
-/**
- * Read a response body, distinguishing "empty" from "the connection died before
- * the body finished". `fetch` resolves as soon as the headers land, so a server
- * that restarts mid-response rejects here — and an unhandled rejection at this
- * point used to take the whole bridge process down with it.
- */
 /**
  * JSON-RPC messages out of a response body, whichever framing the server chose.
  * `undefined` means the body was not JSON at all — the caller logs that; an empty
@@ -827,6 +901,12 @@ function decodeJsonRpcMessages(response: Response, bodyText: string): JsonRpcMes
   }
 }
 
+/**
+ * Read a response body, distinguishing "empty" from "the connection died before
+ * the body finished". `fetch` resolves as soon as the headers land, so a server
+ * that restarts mid-response rejects here — and an unhandled rejection at this
+ * point used to take the whole bridge process down with it.
+ */
 async function readBodyText(response: Response): Promise<string | undefined> {
   try {
     return await response.text();

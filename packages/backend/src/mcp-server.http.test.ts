@@ -298,6 +298,49 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
     expect(afterRecovery.recoveredSessions).toBe(stranded.recoveredSessions + 1);
   });
 
+  // A request that was already on the wire when the restart hit lands on the old
+  // session id after its client has reconnected. The bridge answers it from the
+  // replacement session and never handshakes again, so re-stranding the id here
+  // would warn about a healthy client with nothing left to clear the warning.
+  it('keeps a recovered client recovered when a straggler arrives on the old id', async () => {
+    const lost = 'session-with-an-in-flight-request';
+    const stale = async (id: number) =>
+      fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: MCP_ACCEPT,
+          'mcp-session-id': lost,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list', params: {} }),
+      });
+
+    await stale(100);
+    const stranded = await readStaleSessions(port);
+
+    const recovered = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'x-agent-deck-recovered-session': lost,
+      },
+      body: JSON.stringify(initializePayload(101)),
+    });
+    expect(recovered.status).toBe(200);
+    const afterRecovery = await readStaleSessions(port);
+    expect(afterRecovery.unresolvedSessions).toBe(stranded.unresolvedSessions - 1);
+
+    // The straggler: still a 404 so any client that did not recover re-initializes…
+    expect((await stale(102)).status).toBe(404);
+
+    // …but the tally still shows this client as one that came back. Only the
+    // request counter moves, which is what it is: past activity.
+    const afterStraggler = await readStaleSessions(port);
+    expect(afterStraggler.unresolvedSessions).toBe(afterRecovery.unresolvedSessions);
+    expect(afterStraggler.recoveredSessions).toBe(afterRecovery.recoveredSessions);
+  });
+
   // A session this process ended is not a client left behind by a restart, so a
   // late request on it must not make `agent-deck status` warn about one.
   it('does not count a session it closed itself as a stranded client', async () => {

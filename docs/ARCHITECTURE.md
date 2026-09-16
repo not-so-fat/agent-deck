@@ -147,8 +147,12 @@ recoverable:
    establishes a replacement session the lost one moves from `unresolvedSessions`
    to `recoveredSessions`. A handshake rejected on the way (launch-deck auth, a
    transport that fails to initialize) leaves it unresolved, because the client is.
-   Only `unresolvedSessions` — supergateway and other clients that never
-   re-initialize — earns a warning.
+   Recovery is not undone by a straggler: a request that was already on the wire
+   when the restart hit arrives on the old id after its client reconnected, and the
+   bridge answers it from the replacement session rather than handshaking again, so
+   counting that id as stranded again would never be cleared. Only
+   `unresolvedSessions` — supergateway and other clients that never re-initialize —
+   earns a warning.
 
 The bridge dispatches client messages concurrently; only the handshake and an
 in-flight recovery gate them, so one hung tool call cannot starve the cancellation
@@ -183,6 +187,14 @@ applied to the new deck without ever being told. The binding tools are never hel
 back, so they are also what discovers a *second* restart while the latch is up.
 A client that never bound anything is not latched: it takes whatever deck the
 folder assignment names now, which is the reconnect working as intended.
+
+A binding answer only describes the session that produced it. A `bind_workspace`
+whose reply crosses the restart — the server bound the deck, then the process went
+away — says nothing about the replacement session, so the bridge tags every request
+with the session generation it went out on and ignores binding results from an older
+one. The client is told its binding was lost instead of being handed a success for a
+deck it is not on, and the latch goes up so the call it sends next is held rather
+than applied to the deck the reconnect landed on.
 
 ---
 
