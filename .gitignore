@@ -162,6 +162,11 @@ Thumbs.db
 *.sqlite3
 !agent-deck.db
 
+# SQLite treats any path other than the exact string ":memory:" as a file, so a
+# test that suffixes it leaves a real database in the repo root. Tests use the
+# bare ":memory:" (private per connection); this is the backstop.
+:memory:*
+
 # Test files (keep them but ignore test outputs)
 test-results/
 coverage/

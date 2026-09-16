@@ -62,6 +62,13 @@ async function listTools(port: number, sessionId: string, id: number) {
   return body.result.tools as Array<{ name: string; inputSchema?: { required?: string[] } }>;
 }
 
+async function readStaleSessions(
+  port: number,
+): Promise<{ recoveredSessions: number; unresolvedSessions: number }> {
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  return health.staleSessions;
+}
+
 describe('AgentDeckMCPServer streamable HTTP', () => {
   let port: number;
   let mcpServer: AgentDeckMCPServer;
@@ -239,6 +246,56 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
     expect(health.staleSessions.count).toBeGreaterThan(0);
     expect(health.staleSessions.distinctSessions).toBeGreaterThan(0);
     expect(typeof health.staleSessions.lastAt).toBe('string');
+  });
+
+  // A handshake that names the session it lost only counts as recovery once the
+  // replacement session exists — a rejected replay leaves the client stranded.
+  it('keeps a stale session unresolved when its replayed handshake is rejected', async () => {
+    const lost = 'session-whose-replay-gets-rejected';
+    await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': lost,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 80, method: 'tools/list', params: {} }),
+    });
+    const stranded = await readStaleSessions(port);
+
+    // The replay arrives with a launch deck the (unreachable) backend cannot
+    // confirm, so it is rejected before any session is established.
+    const rejected = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'x-agent-deck-deck-id': STUB_DECK_ID,
+        'x-agent-deck-recovered-session': lost,
+      },
+      body: JSON.stringify(initializePayload(81)),
+    });
+    expect(rejected.status).toBe(401);
+
+    const afterRejection = await readStaleSessions(port);
+    expect(afterRejection.unresolvedSessions).toBe(stranded.unresolvedSessions);
+    expect(afterRejection.recoveredSessions).toBe(stranded.recoveredSessions);
+
+    // The same client succeeding on a later attempt does clear the warning.
+    const accepted = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'x-agent-deck-recovered-session': lost,
+      },
+      body: JSON.stringify(initializePayload(82)),
+    });
+    expect(accepted.status).toBe(200);
+
+    const afterRecovery = await readStaleSessions(port);
+    expect(afterRecovery.unresolvedSessions).toBe(stranded.unresolvedSessions - 1);
+    expect(afterRecovery.recoveredSessions).toBe(stranded.recoveredSessions + 1);
   });
 });
 

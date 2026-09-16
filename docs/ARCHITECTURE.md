@@ -141,13 +141,19 @@ recoverable:
    `staleSessions` tally so `agent-deck status` can say "clients are stranded on a
    pre-restart session" instead of a bare "running". The tally is cumulative for the
    life of the process, so it is split: a bridge names the session it lost on the
-   replayed handshake (`x-agent-deck-recovered-session`), which moves that session
-   from `unresolvedSessions` to `recoveredSessions`. Only `unresolvedSessions` —
-   supergateway and other clients that never re-initialize — earns a warning.
+   replayed handshake (`x-agent-deck-recovered-session`), and once that handshake
+   establishes a replacement session the lost one moves from `unresolvedSessions`
+   to `recoveredSessions`. A handshake rejected on the way (launch-deck auth, a
+   transport that fails to initialize) leaves it unresolved, because the client is.
+   Only `unresolvedSessions` — supergateway and other clients that never
+   re-initialize — earns a warning.
 
 The bridge dispatches client messages concurrently; only the handshake and an
 in-flight recovery gate them, so one hung tool call cannot starve the cancellation
-that would end it. A response body that dies mid-read is surfaced to the client as
+that would end it. Because requests are concurrent, several can come back 404 for
+the same invalidation: each one recovers the session *it* was sent on, so a late
+404 reuses the session an earlier recovery already established instead of
+handshaking again. A response body that dies mid-read is surfaced to the client as
 an interrupted request rather than retried, because the server may already have
 applied it.
 

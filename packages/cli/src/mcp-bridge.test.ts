@@ -354,6 +354,50 @@ describe('McpStdioHttpBridge message pipelining', () => {
     await finish();
   });
 
+  it('re-initializes once when several in-flight requests come back stale', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    let releaseSecondStale: () => void = () => {};
+    const secondStaleGate = new Promise<void>((resolve) => {
+      releaseSecondStale = resolve;
+    });
+
+    const inner = stubFetch(state);
+    let heldFirstAttempt = false;
+    const staggeredFetch = (async (url: any, init: any): Promise<Response> => {
+      const response = await inner(url, init);
+      const body = init?.method === 'POST' ? JSON.parse(init.body as string) : undefined;
+      // Hold the 404 for id 3 until id 2 has finished recovering, so the two
+      // stale responses land one after the other rather than together.
+      if (body?.id === 3 && response.status === 404 && !heldFirstAttempt) {
+        heldFirstAttempt = true;
+        await secondStaleGate;
+      }
+      return response;
+    }) as unknown as typeof fetch;
+
+    const { bridge, send, waitFor, finish } = await driveBridge(state, staggeredFetch);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+
+    expect((await waitFor(2)).result).toEqual({ pong: true });
+    releaseSecondStale();
+
+    // The late 404 must reuse the session the first recovery established rather
+    // than handshaking again and orphaning it on the server.
+    expect((await waitFor(3)).result).toEqual({ pong: true });
+    await finish();
+
+    expect(bridge.getRecoveryCount()).toBe(1);
+    expect(bridge.getSessionId()).toBe('session-b');
+    expect(state.calls.filter((call) => call.body.method === 'initialize')).toHaveLength(2);
+  });
+
   it('still holds messages until the handshake has a session id', async () => {
     const state = { sessionId: 'session-a', calls: [] as Recorded[] };
     let releaseInit: (() => void) | undefined;

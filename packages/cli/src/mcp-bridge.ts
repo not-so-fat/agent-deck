@@ -262,6 +262,10 @@ export class McpStdioHttpBridge {
     message: JsonRpcMessage,
     { allowRecovery }: { allowRecovery: boolean },
   ): Promise<void> {
+    // The session this particular request went out on. Concurrent requests can
+    // come back stale one after another; without this we would re-initialize once
+    // per response and throw away the session the first recovery just won.
+    const sentWithSession = this.sessionId;
     let response: Response;
     try {
       response = await this.post(message);
@@ -276,10 +280,10 @@ export class McpStdioHttpBridge {
 
     if (allowRecovery && isSessionInvalidResponse(response.status, bodyText ?? '')) {
       this.log(
-        `[agent-deck] bridge: MCP session ${this.sessionId ?? '(none)'} is no longer valid ` +
+        `[agent-deck] bridge: MCP session ${sentWithSession ?? '(none)'} is no longer valid ` +
           `(HTTP ${response.status}) — the server restarted. Re-initializing.`,
       );
-      if (!(await this.recover())) {
+      if (!(await this.ensureRecovered(sentWithSession))) {
         this.failRequest(message, 'MCP server restarted and re-initialization failed');
         return;
       }
@@ -346,6 +350,24 @@ export class McpStdioHttpBridge {
     } catch {
       this.log('[agent-deck] bridge: dropping non-JSON response from MCP server');
     }
+  }
+
+  /**
+   * Recover the session a request was sent on — once, no matter how many of its
+   * siblings come back stale. A second handshake for the same invalidation would
+   * discard a session that is already working and leave the first one orphaned on
+   * the server, where it shows up as another stranded client.
+   */
+  private async ensureRecovered(sentWithSession: string | undefined): Promise<boolean> {
+    if (this.recovering) {
+      // Someone is already re-initializing; that handshake is this one's answer.
+      return this.recovering;
+    }
+    if (this.sessionId && this.sessionId !== sentWithSession) {
+      // A recovery finished while this request was in flight. Retry on its session.
+      return true;
+    }
+    return this.recover();
   }
 
   /**
@@ -456,8 +478,10 @@ export class McpStdioHttpBridge {
       });
 
       if (isSessionInvalidResponse(response.status, await peekBody(response))) {
-        if (!abort.signal.aborted && this.sessionId === sessionId) {
-          await this.recover();
+        if (!abort.signal.aborted) {
+          // Same rule as on POST: only re-initialize if this stream's session is
+          // still the current one, otherwise a POST already recovered it.
+          await this.ensureRecovered(sessionId);
         }
         return;
       }

@@ -703,6 +703,11 @@ export class AgentDeckMCPServer {
    * can stop counting it as stranded. Without this the tally only ever grows and
    * `agent-deck status` would warn about clients that recovered on their own
    * seconds earlier.
+   *
+   * Call this only once the replacement session exists: a handshake that is then
+   * rejected (launch-deck auth, a transport that fails to initialize) leaves the
+   * client just as stranded as before, and clearing the warning for it would hide
+   * exactly the case operators need to see.
    */
   private markStaleSessionRecovered(req: Request): void {
     // Node lower-cases request header names, which is how the constant is written.
@@ -948,8 +953,6 @@ export class AgentDeckMCPServer {
       return;
     }
 
-    this.markStaleSessionRecovered(req);
-
     const launchDeck = readLaunchDeckHeader(req);
     const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
     if (!launchDeck && !skipGrantAuth) {
@@ -1029,6 +1032,9 @@ export class AgentDeckMCPServer {
     }
 
     if (transport.sessionId) {
+      // The replacement session is live, so the session this client lost to the
+      // restart is genuinely recovered and no longer a stranded client.
+      this.markStaleSessionRecovered(req);
       void this.registerLiveDisplay(transport.sessionId).catch(() => {});
     }
   }
