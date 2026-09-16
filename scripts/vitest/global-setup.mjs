@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { assertSharedBuildGuardsRealStore } from './shared-build-guard.mjs';
 import { TEST_HOME_PREFIX } from './test-home.mjs';
 
 /** Only a tmpdir path this repo minted is safe to create and rm -rf. */
@@ -24,7 +25,14 @@ function isolatedHome() {
   return home;
 }
 
-export async function setup() {
+export async function setup(ctx) {
+  // Before anything can write: the guard that keeps writes out of the real store
+  // ships in a build, and a stale build drops it silently (NOT-138).
+  const guard = await assertSharedBuildGuardsRealStore(ctx?.config?.root ?? process.cwd());
+  if (!guard.checked) {
+    // Say so out loud: a check that quietly decided not to run is how NOT-138 happened.
+    console.log(`[agent-deck] shared build check skipped — ${guard.reason}`);
+  }
   await fs.mkdir(isolatedHome(), { recursive: true });
 }
 
