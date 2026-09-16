@@ -122,6 +122,29 @@ High level:
 - Dashboard: `x-agent-deck-client: dashboard` for vault CRUD and OAuth browser flows
 - Deprecated MCP aliases: `*_active_deck_*` → use `*_bound_deck_*`
 
+### Session lifetime across restarts (NOT-101)
+
+Transport sessions live in memory, so an upgrade, a crash, or `agent-deck stop && start`
+invalidates every one of them. We do **not** persist sessions — we make the loss
+recoverable:
+
+1. The server answers an unknown `Mcp-Session-Id` with **404** and
+   `mcp-session-status: expired`, the signal the streamable-HTTP spec tells clients
+   to re-initialize on. An `initialize` carrying a stale id is accepted and issued a
+   fresh session.
+2. `agent-deck mcp-launch` runs a first-party stdio↔HTTP bridge
+   (`packages/cli/src/mcp-bridge.ts`) that caches the client handshake, replays it on
+   404, and retries the failed call. The stdio client above it never sees the gap.
+   `AGENT_DECK_MCP_BRIDGE=supergateway` restores the old external bridge, which does
+   **not** implement the reconnect half and stays wedged until its host restarts.
+3. MCP `/health` exposes `instanceId`, `startedAt`, `liveSessions`, and a
+   `staleSessions` tally so `agent-deck status` can say "clients are stranded on a
+   pre-restart session" instead of a bare "running".
+
+The bridge must send the launch headers (`x-agent-deck-deck-id`,
+`x-agent-deck-workspace`) on **every** request, not just `initialize` — the server
+re-validates the launch deck per call.
+
 ---
 
 ## Key patterns

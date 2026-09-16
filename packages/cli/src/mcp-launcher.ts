@@ -12,6 +12,7 @@ import {
 } from '@agent-deck/shared';
 import { buildMcpUrl, type McpEndpoint } from './mcp-config';
 import { clearKeychainAssignment, readAssignment, writeAssignment } from './assignment';
+import { McpStdioHttpBridge } from './mcp-bridge';
 
 export type McpLaunchPlan = {
   workspaceRoot: string;
@@ -20,6 +21,34 @@ export type McpLaunchPlan = {
   deckName: string;
   headers: string[];
 };
+
+export type McpBridgeKind = 'builtin' | 'supergateway';
+
+/**
+ * The built-in bridge re-initializes when the MCP server restarts (NOT-101);
+ * supergateway does not, and stays wedged until it is killed by hand. Keep it
+ * reachable as an escape hatch, but never as the default.
+ */
+export function resolveBridgeKind(value = process.env.AGENT_DECK_MCP_BRIDGE): McpBridgeKind {
+  return value?.trim().toLowerCase() === 'supergateway' ? 'supergateway' : 'builtin';
+}
+
+/** `Name: value` launch headers → the header map the bridge sends on every request. */
+export function parseLaunchHeaders(headers: string[]): Record<string, string> {
+  const parsed: Record<string, string> = {};
+  for (const header of headers) {
+    const separator = header.indexOf(':');
+    if (separator === -1) {
+      continue;
+    }
+    const name = header.slice(0, separator).trim();
+    const value = header.slice(separator + 1).trim();
+    if (name && value) {
+      parsed[name] = value;
+    }
+  }
+  return parsed;
+}
 
 export const NO_ASSIGNMENT_MESSAGE =
   '[agent-deck] No deck assigned — run `agent-deck use <deck>` in this folder.';
@@ -71,6 +100,17 @@ export async function runMcpLaunch(): Promise<number> {
   if ('error' in plan) {
     console.error(plan.error);
     return 1;
+  }
+
+  if (resolveBridgeKind() === 'builtin') {
+    const bridge = new McpStdioHttpBridge({
+      url: plan.mcpUrl,
+      headers: parseLaunchHeaders(plan.headers),
+      stdin: process.stdin,
+      stdout: process.stdout,
+    });
+    await bridge.run();
+    return 0;
   }
 
   const supergatewayArgs = [

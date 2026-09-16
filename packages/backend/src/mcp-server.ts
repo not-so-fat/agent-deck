@@ -47,7 +47,25 @@ type McpSession = {
   server: McpServer;
 };
 
+/**
+ * Clients that were connected to a previous process (NOT-101). Transport sessions
+ * live in memory only, so every restart — upgrade, crash, `agent-deck stop/start` —
+ * orphans them. We keep a bounded tally so `/health` (and `agent-deck status`) can
+ * say "clients are talking to sessions this process never issued" instead of
+ * reporting a clean "running" while every tool call fails.
+ */
+type StaleSessionStats = {
+  count: number;
+  distinctSessions: number;
+  lastSessionId?: string;
+  firstAt?: string;
+  lastAt?: string;
+};
+
 export class AgentDeckMCPServer {
+  /** Cap on remembered stale session ids — the tally is diagnostics, not a ledger. */
+  private static readonly STALE_SESSION_SAMPLE_LIMIT = 200;
+
   private port: number;
   private host: string;
   private app: express.Application;
@@ -64,6 +82,14 @@ export class AgentDeckMCPServer {
   private lastTouchAtMs = new Map<string, number>();
   /** In-flight live-display unregisters so `stop()` can drain them before closing. */
   private unregisterTasks = new Map<string, Promise<void>>();
+  /** Changes on every process start — how a client detects it outlived the server. */
+  private readonly instanceId = randomUUID();
+  private readonly startedAt = new Date().toISOString();
+  private staleSessionCount = 0;
+  private staleSessionIds = new Set<string>();
+  private staleSessionFirstAt: string | undefined;
+  private staleSessionLastAt: string | undefined;
+  private staleSessionLastId: string | undefined;
 
   private get server(): McpServer {
     if (!this.mcpServerForRegistration) {
@@ -603,6 +629,10 @@ export class AgentDeckMCPServer {
         service: 'agent-deck-mcp-server',
         backendUrl: this.backendUrl,
         toolProfile: this.toolProfile,
+        instanceId: this.instanceId,
+        startedAt: this.startedAt,
+        liveSessions: this.sessions.size,
+        staleSessions: this.getStaleSessionStats(),
       });
     });
 
@@ -630,6 +660,59 @@ export class AgentDeckMCPServer {
   private getSessionIdHeader(req: Request): string | undefined {
     const value = req.headers['mcp-session-id'];
     return typeof value === 'string' ? value : undefined;
+  }
+
+  private getStaleSessionStats(): StaleSessionStats {
+    return {
+      count: this.staleSessionCount,
+      distinctSessions: this.staleSessionIds.size,
+      lastSessionId: this.staleSessionLastId,
+      firstAt: this.staleSessionFirstAt,
+      lastAt: this.staleSessionLastAt,
+    };
+  }
+
+  /**
+   * Answer a request carrying a session id this process never issued (NOT-101).
+   *
+   * The streamable-HTTP spec says a server MUST reply 404 to an unknown
+   * `Mcp-Session-Id`, and that a client seeing 404 MUST re-initialize. The old
+   * 400 "Bad Request: No valid session ID provided" was indistinguishable from a
+   * malformed request, so bridges parked on it forever instead of reconnecting.
+   */
+  private sendSessionNotFound(sessionId: string, res: Response): void {
+    const at = new Date().toISOString();
+    const firstSighting = !this.staleSessionIds.has(sessionId);
+
+    this.staleSessionCount += 1;
+    this.staleSessionLastId = sessionId;
+    this.staleSessionLastAt = at;
+    this.staleSessionFirstAt ??= at;
+    if (this.staleSessionIds.size < AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT) {
+      this.staleSessionIds.add(sessionId);
+    }
+
+    // One line per session id, not per request — a wedged bridge retries forever.
+    if (firstSighting) {
+      console.warn(
+        `[agent-deck] MCP session ${sessionId} is unknown to this process ` +
+          `(instance ${this.instanceId}, started ${this.startedAt}). ` +
+          'The client connected before the last restart; replying 404 so it re-initializes.',
+      );
+    }
+
+    res.status(404)
+      .set('mcp-session-status', 'expired')
+      .json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32001,
+          message:
+            `Session not found: ${sessionId}. The Agent Deck MCP server restarted ` +
+            `(instance ${this.instanceId}, started ${this.startedAt}); re-initialize to get a new session.`,
+        },
+        id: null,
+      });
   }
 
   private async refreshRuntimeSession(sessionId: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
@@ -800,6 +883,13 @@ export class AgentDeckMCPServer {
         (Array.isArray(body) && body.some((message) => isInitializeRequest(message))));
 
     if (!isInit) {
+      // A session id we don't know is a restart, not a malformed request — 404 so
+      // the client re-initializes. An initialize carrying a stale id falls through
+      // and gets a fresh session, which is exactly the recovery we want.
+      if (sessionIdHeader) {
+        this.sendSessionNotFound(sessionIdHeader, res);
+        return;
+      }
       res.status(400).json({
         jsonrpc: '2.0',
         error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
@@ -900,7 +990,7 @@ export class AgentDeckMCPServer {
 
     const session = this.sessions.get(sessionId);
     if (!session) {
-      res.status(404).json({ error: 'Session not found' });
+      this.sendSessionNotFound(sessionId, res);
       return;
     }
 
@@ -975,23 +1065,26 @@ export class AgentDeckMCPServer {
       // otherwise tests close the stub backend and see ECONNRESET console.error noise.
       await Promise.all([...this.unregisterTasks.values()]);
 
-      if (this.httpServer) {
-        const httpServer = this.httpServer;
-        this.httpServer = null;
-        await new Promise<void>((resolve, reject) => {
-          httpServer.close((error) => {
-            if (error) {
-              reject(error);
-              return;
-            }
-            resolve();
-          });
-        });
-      }
+      // Release the port too, otherwise a restart on the same port races the old
+      // listener and the "did it come back?" probe can't tell the two apart.
+      await this.closeHttpServer();
       console.log(`🛑 MCP server stopped`);
     } catch (error) {
       console.error(`❌ Error stopping MCP server:`, error);
       throw error;
     }
+  }
+
+  private async closeHttpServer(): Promise<void> {
+    const server = this.httpServer;
+    if (!server) {
+      return;
+    }
+    this.httpServer = null;
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      // Keep-alive sockets (the SSE stream in particular) never end on their own.
+      server.closeAllConnections?.();
+    });
   }
 }

@@ -18,6 +18,20 @@
 - A deck file that cannot be written during a card delete no longer strands the card's own file: the card is still removed from the store before the write error surfaces, so a failed delete can't be undone by the next reindex.
 - No change to reindex semantics: files still win.
 
+### Fix: MCP clients recover from a backend restart on their own (NOT-101)
+
+- **The contract:** transport sessions do *not* survive a restart. Instead the server tells the client the session is gone, and the bridge re-initializes without anyone noticing.
+- Unknown `Mcp-Session-Id` now returns **404** with `mcp-session-status: expired` (was **400** `Bad Request: No valid session ID provided`, which bridges could not tell apart from a malformed request). An `initialize` carrying a stale session id is accepted and gets a fresh session.
+- `agent-deck mcp-launch` no longer shells out to `npx supergateway`. The built-in bridge caches the client handshake, replays it when the session goes missing, and retries the failed call — so an upgrade no longer strands every open IDE session. Set `AGENT_DECK_MCP_BRIDGE=supergateway` to fall back; note supergateway still does **not** reconnect and stays wedged until its host restarts.
+- MCP `/health` gained `instanceId`, `startedAt`, `liveSessions`, and a `staleSessions` tally. `agent-deck status` prints a **Sessions** line and warns when clients are still calling a pre-restart session, instead of reporting a clean "running" while every tool call 404s.
+- `agent-deck stop` now releases the MCP port instead of leaving the listener up.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Reload IDE MCP hosts **once** so they pick up the new bridge. After that, restarts and upgrades recover on their own.
+- Kill any long-lived `npx supergateway … 127.0.0.1:1110/mcp` processes left over from before the upgrade — they never reconnect.
+
 ## 1.8.2 — 2026-09-15
 
 ### Add: launch-selected deck + folder assignment (NOT-105, NOT-108)

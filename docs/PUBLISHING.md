@@ -173,7 +173,7 @@ claude mcp add --scope user agent-deck -- agent-deck mcp-launch
 | Cursor (project) | `agent-deck setup --client cursor --scope project` |
 | Claude Code | `agent-deck setup --client claude` (uses `claude mcp add` with the stdio `mcp-launch` bridge → `~/.claude.json`; fallback writes the same entry — **not** `settings.json`) |
 | Claude Code (project) | `agent-deck setup --client claude --scope project` → `.mcp.json` |
-| Claude Desktop | `agent-deck setup --client claude-desktop` (stdio bridge via supergateway) |
+| Claude Desktop | `agent-deck setup --client claude-desktop` (Agent Deck's built-in stdio bridge) |
 
 Add `--start` to launch Agent Deck after writing config.
 

@@ -8,7 +8,12 @@ import {
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
 
-import { NO_ASSIGNMENT_MESSAGE, resolveMcpLaunchPlan } from './mcp-launcher';
+import {
+  NO_ASSIGNMENT_MESSAGE,
+  parseLaunchHeaders,
+  resolveBridgeKind,
+  resolveMcpLaunchPlan,
+} from './mcp-launcher';
 import { writeAssignment } from './assignment';
 
 const clearKeychainAssignment = vi.hoisted(() => vi.fn(async () => {}));
@@ -120,5 +125,36 @@ describe('mcp-launch assignment headers', () => {
     const workspace = makeWorkspace();
     const plan = await resolveMcpLaunchPlan(workspace, endpoint);
     expect(plan).toEqual({ error: NO_ASSIGNMENT_MESSAGE });
+  });
+});
+
+describe('bridge selection (NOT-101)', () => {
+  it('defaults to the built-in bridge, which reconnects after a server restart', () => {
+    expect(resolveBridgeKind(undefined)).toBe('builtin');
+    expect(resolveBridgeKind('')).toBe('builtin');
+    expect(resolveBridgeKind('anything-else')).toBe('builtin');
+  });
+
+  it('keeps supergateway reachable as an explicit escape hatch', () => {
+    expect(resolveBridgeKind('supergateway')).toBe('supergateway');
+    expect(resolveBridgeKind(' SuperGateway ')).toBe('supergateway');
+  });
+});
+
+describe('parseLaunchHeaders', () => {
+  it('turns launch header strings into the map the bridge replays on every call', () => {
+    expect(
+      parseLaunchHeaders([
+        `${AGENT_DECK_DECK_ID_HEADER}: deck-123`,
+        `${AGENT_DECK_WORKSPACE_HEADER}: /tmp/work: space`,
+      ]),
+    ).toEqual({
+      [AGENT_DECK_DECK_ID_HEADER]: 'deck-123',
+      [AGENT_DECK_WORKSPACE_HEADER]: '/tmp/work: space',
+    });
+  });
+
+  it('drops malformed entries instead of sending empty headers', () => {
+    expect(parseLaunchHeaders(['no-colon', 'empty:', ': novalue'])).toEqual({});
   });
 });

@@ -1,0 +1,219 @@
+import { PassThrough } from 'node:stream';
+import { describe, expect, it } from 'vitest';
+
+import { McpStdioHttpBridge, isSessionInvalidResponse, parseSseMessages } from './mcp-bridge';
+
+describe('isSessionInvalidResponse', () => {
+  it('treats 404 as the spec session-expired signal', () => {
+    expect(isSessionInvalidResponse(404, '')).toBe(true);
+  });
+
+  it('treats the pre-1.8.3 400 body as session-expired too', () => {
+    // Older servers answered an unknown session with 400; a new bridge still has
+    // to recover against a backend the user has not upgraded yet.
+    const legacy = JSON.stringify({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+      id: null,
+    });
+    expect(isSessionInvalidResponse(400, legacy)).toBe(true);
+  });
+
+  it('leaves other failures alone', () => {
+    expect(isSessionInvalidResponse(400, '{"error":"malformed json-rpc"}')).toBe(false);
+    expect(isSessionInvalidResponse(401, 'GRANT_REQUIRED')).toBe(false);
+    expect(isSessionInvalidResponse(500, '')).toBe(false);
+  });
+});
+
+describe('parseSseMessages', () => {
+  it('extracts JSON-RPC payloads from data frames', () => {
+    const chunk = 'event: message\ndata: {"jsonrpc":"2.0","id":1}\n\ndata: {"jsonrpc":"2.0","id":2}\n\n';
+    expect(parseSseMessages(chunk)).toEqual([
+      { jsonrpc: '2.0', id: 1 },
+      { jsonrpc: '2.0', id: 2 },
+    ]);
+  });
+
+  it('ignores comments, blank frames, and partial JSON', () => {
+    expect(parseSseMessages(': keep-alive\ndata:\ndata: {"jsonrpc"')).toEqual([]);
+  });
+});
+
+type Recorded = { sessionId?: string; body: any };
+
+/** Minimal streamable-HTTP stand-in whose session id we can invalidate at will. */
+function stubFetch(state: { sessionId: string; calls: Recorded[]; legacy400?: boolean }) {
+  return async (_url: any, init: any): Promise<Response> => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const sessionId = headers['mcp-session-id'];
+
+    if (init?.method === 'GET') {
+      // No server→client stream in this stub.
+      return new Response('', { status: 405 });
+    }
+
+    const body = JSON.parse(init.body as string);
+    state.calls.push({ sessionId, body });
+
+    if (body.method === 'initialize') {
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { ok: true } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'mcp-session-id': state.sessionId },
+      });
+    }
+
+    if (sessionId !== state.sessionId) {
+      return state.legacy400
+        ? new Response(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+              id: null,
+            }),
+            { status: 400, headers: { 'content-type': 'application/json' } },
+          )
+        : new Response(JSON.stringify({ jsonrpc: '2.0', error: { code: -32001 }, id: null }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          });
+    }
+
+    if (body.id === undefined) {
+      return new Response('', { status: 202 });
+    }
+
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { pong: true } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+}
+
+async function driveBridge(state: { sessionId: string; calls: Recorded[]; legacy400?: boolean }) {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const out: any[] = [];
+  let buffer = '';
+  stdout.on('data', (chunk) => {
+    buffer += chunk.toString();
+    let index = buffer.indexOf('\n');
+    while (index !== -1) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (line) {
+        out.push(JSON.parse(line));
+      }
+      index = buffer.indexOf('\n');
+    }
+  });
+
+  const bridge = new McpStdioHttpBridge({
+    url: 'http://stub/mcp',
+    headers: { 'x-agent-deck-deck-id': 'deck-1' },
+    stdin,
+    stdout,
+    log: () => {},
+    fetchImpl: stubFetch(state) as unknown as typeof fetch,
+  });
+  const running = bridge.run();
+
+  const send = (message: Record<string, unknown>) => stdin.write(`${JSON.stringify(message)}\n`);
+  const waitFor = async (id: number) => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const match = out.find((message) => message.id === id);
+      if (match) {
+        return match;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(`no response for id ${id}`);
+  };
+
+  return { bridge, send, waitFor, out, finish: async () => (stdin.end(), running) };
+}
+
+describe('McpStdioHttpBridge', () => {
+  it('sends the launch headers on every request, not just initialize', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const { send, waitFor, finish } = await driveBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    await waitFor(2);
+    await finish();
+
+    expect(state.calls).toHaveLength(2);
+    expect(state.calls[1].sessionId).toBe('session-a');
+  });
+
+  it('re-initializes and retries once the server rotates its session', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const { bridge, send, waitFor, finish } = await driveBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    // Round-trip a request so the handshake has landed before the session rotates.
+    send({ jsonrpc: '2.0', id: 99, method: 'ping', params: {} });
+    await waitFor(99);
+
+    state.sessionId = 'session-b';
+
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    const response = await waitFor(2);
+    await finish();
+
+    expect(response.result).toEqual({ pong: true });
+    expect(bridge.getRecoveryCount()).toBe(1);
+    expect(bridge.getSessionId()).toBe('session-b');
+    // The cached handshake is replayed, including the initialized notification.
+    expect(state.calls.filter((call) => call.body.method === 'initialize')).toHaveLength(2);
+    expect(
+      state.calls.filter((call) => call.body.method === 'notifications/initialized'),
+    ).toHaveLength(2);
+  });
+
+  it('does not forward the replayed initialize result to the client', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const { send, waitFor, out, finish } = await driveBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    await waitFor(2);
+    await finish();
+
+    // A second `initialize` result for id 1 would be an unsolicited response upstream.
+    expect(out.filter((message) => message.id === 1)).toHaveLength(1);
+  });
+
+  it('recovers from the legacy 400 session-invalid body as well', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[], legacy400: true };
+    const { bridge, send, waitFor, finish } = await driveBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    const response = await waitFor(2);
+    await finish();
+
+    expect(response.result).toEqual({ pong: true });
+    expect(bridge.getRecoveryCount()).toBe(1);
+  });
+
+  it('answers the client with an error instead of hanging when recovery fails', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const { send, waitFor, finish } = await driveBridge(state);
+
+    // No initialize was ever seen, so there is no handshake to replay.
+    send({ jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} });
+    const response = await waitFor(9);
+    await finish();
+
+    expect(response.error?.message).toContain('agent-deck bridge');
+  });
+});

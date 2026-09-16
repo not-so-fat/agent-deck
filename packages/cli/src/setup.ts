@@ -312,7 +312,7 @@ export async function runSetup(args: string[]): Promise<number> {
 
   console.log(`Wrote agent-deck MCP config → ${configPath}`);
   if (client === 'claude-desktop') {
-    console.log('Claude Desktop uses a stdio bridge (supergateway) because JSON config is stdio-only.');
+    console.log("Claude Desktop uses Agent Deck's stdio bridge because JSON config is stdio-only.");
     console.log('Start Agent Deck before opening Claude Desktop.');
   }
 

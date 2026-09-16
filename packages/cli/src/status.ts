@@ -1,4 +1,4 @@
-import { formatPortConflict, isTcpPortOpen, probeAgentDeck } from './ports';
+import { formatMcpSessionStatus, formatPortConflict, isTcpPortOpen, probeAgentDeck } from './ports';
 import { isProcessAlive, readRunState } from './runtime-state';
 import { getAgentDeckVersion } from './version';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
@@ -23,6 +23,9 @@ export async function runStatus(): Promise<number> {
     console.log(`  MCP        ${probe.mcpUrl}/mcp`);
     if (probe.backendVersion) {
       console.log(`  Backend    v${probe.backendVersion}`);
+    }
+    for (const line of formatMcpSessionStatus(probe.mcpSessions)) {
+      console.log(line);
     }
   } else if (probe.backendUp || probe.mcpUp) {
     console.log('Status: partial (one service up, one down — try agent-deck stop && agent-deck start)');

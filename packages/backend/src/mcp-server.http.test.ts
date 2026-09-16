@@ -170,6 +170,76 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
     expect(names).not.toContain('add_service_to_bound_deck');
     expect(names).not.toContain('list_playbooks');
   });
+
+  // NOT-101: a restart wipes in-memory sessions. Clients must be able to tell
+  // "your session is gone, re-initialize" apart from "your request was malformed".
+  it('answers an unknown session id with 404 so the client re-initializes', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': 'session-from-a-previous-process',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 60, method: 'tools/list', params: {} }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get('mcp-session-status')).toBe('expired');
+    const body = await response.json();
+    expect(body.error.code).toBe(-32001);
+    expect(body.error.message).toContain('Session not found');
+    expect(body.error.message).toContain('re-initialize');
+  });
+
+  it('answers GET /mcp for an unknown session with the same 404 signal', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'GET',
+      headers: { Accept: 'text/event-stream', 'mcp-session-id': 'gone-with-the-restart' },
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get('mcp-session-status')).toBe('expired');
+    const body = await response.json();
+    expect(body.error.code).toBe(-32001);
+  });
+
+  it('accepts an initialize that still carries a stale session id', async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': 'stale-but-re-initializing',
+      },
+      body: JSON.stringify(initializePayload(61)),
+    });
+
+    expect(response.status).toBe(200);
+    const fresh = response.headers.get('mcp-session-id');
+    expect(fresh).toBeTruthy();
+    expect(fresh).not.toBe('stale-but-re-initializing');
+  });
+
+  it('reports instance identity and the stale-session tally on /health', async () => {
+    await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': 'another-orphan',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 70, method: 'tools/list', params: {} }),
+    });
+
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    expect(health.instanceId).toBeTruthy();
+    expect(typeof health.startedAt).toBe('string');
+    expect(typeof health.liveSessions).toBe('number');
+    expect(health.staleSessions.count).toBeGreaterThan(0);
+    expect(health.staleSessions.distinctSessions).toBeGreaterThan(0);
+    expect(typeof health.staleSessions.lastAt).toBe('string');
+  });
 });
 
 import http from 'node:http';
