@@ -167,6 +167,8 @@ claude mcp add --scope user --transport http agent-deck http://127.0.0.1:1110/mc
 
 | Client | Command |
 |--------|---------|
+| Codex (global instructions) | `agent-deck setup --client codex` → `~/.codex/AGENTS.md`; plugin owns MCP transport |
+| Codex (project instructions) | `agent-deck setup --client codex --scope project` → `./AGENTS.md` |
 | Cursor (global) | `agent-deck setup --client cursor` |
 | Cursor (project) | `agent-deck setup --client cursor --scope project` |
 | Claude Code | `agent-deck setup --client claude` (uses `claude mcp add` → `~/.claude.json`; fallback writes same file — **not** `settings.json`) |

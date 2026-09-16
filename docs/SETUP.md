@@ -94,6 +94,7 @@ npm link -w @agent-deck/cli   # optional: `agent-deck` on PATH → local build
 # With dev:all running (backend :8000, MCP :3001):
 npm run setup:dev -- --client cursor --start
 npm run setup:dev -- --client claude
+npm run setup:dev -- --client codex
 ```
 
 On **macOS**, `setup` now **defaults to menubar** (SwiftBar plugin + status line + MCP + harness):
@@ -112,6 +113,7 @@ Menubar-only refresh: `npm run setup:dev -- --menubar`
 curl -fsSL https://raw.githubusercontent.com/not-so-fat/agent_deck/main/scripts/install.sh | bash
 export PATH="$HOME/.local/bin:$PATH"
 agent-deck setup --client cursor --start
+agent-deck setup --client codex
 
 # One-shot without curl:
 # npx @agent-deck/cli@latest install && npx @agent-deck/cli@latest setup --client cursor --start

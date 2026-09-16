@@ -17,6 +17,10 @@ describe('setup statusline defaults', () => {
     expect(resolveSetupStatusline('claude-desktop')).toBe(false);
   });
 
+  it('skips status line for Codex by default', () => {
+    expect(resolveSetupStatusline('codex')).toBe(false);
+  });
+
   it('honors --no-statusline', () => {
     expect(resolveSetupStatusline('claude', false)).toBe(false);
   });
@@ -77,6 +81,40 @@ describe('setup statusline defaults', () => {
         AGENT_DECK_WORKSPACE: workspace,
       });
     } finally {
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('merges Codex guidance into the global AGENTS.md without replacing existing instructions', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-codex-'));
+    const codexDir = path.join(tmpHome, '.codex');
+    const agentsPath = path.join(codexDir, 'AGENTS.md');
+    const previousCodexHome = process.env.CODEX_HOME;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    delete process.env.CODEX_HOME;
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(agentsPath, '# Personal instructions\n\nKeep this section.\n');
+
+    try {
+      const code = await runSetup([
+        '--client',
+        'codex',
+        '--scope',
+        'global',
+        '--no-statusline',
+        '--no-menubar',
+      ]);
+      expect(code).toBe(0);
+      const written = fs.readFileSync(agentsPath, 'utf8');
+      expect(written).toContain('# Personal instructions');
+      expect(written).toContain('Keep this section.');
+      expect(written).toContain('<!-- agent-deck:harness:start -->');
+      expect(written).toContain('agent-deck mcp-launch');
+      expect(written).toContain('<!-- agent-deck:harness:end -->');
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
       vi.restoreAllMocks();
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }

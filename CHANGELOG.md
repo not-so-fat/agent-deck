@@ -7,6 +7,8 @@
 - Generated Cursor and Claude harnesses now require `get_session_binding` → `get_bound_deck` before task work whenever Agent Deck MCP is configured, including launch-selected unattended sessions that intentionally have no `.agent-deck/use.json`.
 - Project-scoped harnesses no longer emit the obsolete `bind_workspace` flow. `agent-deck use <deck>` is documented as the optional persistent folder-assignment path, not the source of connection authority.
 - The session skill permits only Agent Deck configuration detection and read-only connection diagnostics before the bootstrap gate passes.
+- Connection recovery now distinguishes host transport, folder assignment, instruction discovery, and session bootstrap. Codex transport uses the plugin's `agent-deck mcp-launch`; `agent-deck setup --client codex` now marker-merges the bootstrap harness into global or project `AGENTS.md` without replacing unrelated instructions.
+- `agent-deck debug-mcp` now probes with the folder's deck/workspace headers, flags stale bare-HTTP Claude configuration, and reports a missing assignment explicitly instead of misdiagnosing the expected `GRANT_REQUIRED` response as a daemon failure.
 
 ### Fix: deck membership outside the deck routes reaches the store files (NOT-121)
 

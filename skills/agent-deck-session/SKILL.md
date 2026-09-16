@@ -5,6 +5,10 @@ description: Use at session start when Agent Deck MCP is configured or expected,
 
 # Agent Deck session opener
 
+This skill verifies an MCP connection; it does not create one. In Codex, the Agent Deck
+plugin's `.mcp.json` must already have launched `agent-deck mcp-launch`. The launcher reads
+the folder's v3 assignment and sends the deck/workspace headers before these tools exist.
+
 When Agent Deck MCP is configured for the current session, or `.agent-deck/use.json` indicates
 that it is expected, this opener is a hard gate. The file is only one optional signal; the
 gate also includes launch-selected sessions that deliberately have no assignment file.
@@ -23,8 +27,14 @@ improvise from memory, or silently fall back to another route. Before the gate p
 checking for the optional assignment signal, checking whether Agent Deck is configured, and
 other read-only diagnostics needed to restore the connection are allowed.
 
-Give the operator a concrete recovery: use `agent-deck use <deck>` for an IDE folder
-assignment, or fix `x-agent-deck-deck-id` / the launch configuration for an unattended
-session.
+Give the operator recovery for the failed layer:
+
+- **Transport unavailable:** run `agent-deck status`. In Codex, verify the Agent Deck plugin
+  is installed, enabled, and current, then reload or start a new task so its `.mcp.json`
+  launches `agent-deck mcp-launch`. `agent-deck setup --client codex` installs or refreshes
+  the AGENTS.md guidance only; it does not install or repair the plugin transport.
+- **Assignment missing or legacy:** run `agent-deck use <deck>` in the IDE folder, then reload
+  or retry the MCP connection.
+- **Unattended launch:** fix `x-agent-deck-deck-id` / the launch configuration.
 
 Do not repeat the status line every turn unless the user asks or the bind changes.

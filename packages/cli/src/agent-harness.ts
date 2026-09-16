@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import type { McpClient, SetupScope } from './mcp-config';
 
+export type HarnessClient = McpClient | 'codex';
+
 export const HARNESS_MARKER_START = '<!-- agent-deck:harness:start -->';
 export const HARNESS_MARKER_END = '<!-- agent-deck:harness:end -->';
 export const CURSOR_RULE_FILENAME = 'agent-deck.mdc';
@@ -12,11 +14,11 @@ export const CURSOR_RULE_FILENAME = 'agent-deck.mdc';
 export const HARNESS_RULE_DESCRIPTION =
   'Use when user mentions decks, playbooks, deck MCP tools, or corrects playbook output — Agent Deck harness';
 
-const GLOBAL_BODY = `**Connect first:** Ensure Agent Deck MCP is connected before using deck tools (\`agent-deck setup --client cursor|claude --start\`, then restart the host). Claude Code: \`claude mcp list\` should show agent-deck as Connected when the backend is running.
+const GLOBAL_BODY = `**Connect first:** Connection has three layers: host transport, folder assignment, then session bootstrap. Cursor / Claude users configure transport with \`agent-deck setup --client cursor|claude --start\`, then restart the host. Codex transport comes from the enabled Agent Deck plugin's bundled \`.mcp.json\`, which launches \`agent-deck mcp-launch\`; \`agent-deck setup --client codex\` installs or refreshes this AGENTS.md guidance but does not install the plugin. Run \`agent-deck use <deck>\` in an IDE folder when its assignment is missing or legacy, then reload or retry MCP. Claude Code: \`claude mcp list\` should show agent-deck as Connected when the backend is running.
 
 **Agent Deck hard gate:** When Agent Deck MCP is configured for the current session, or \`.agent-deck/use.json\` indicates that it is expected, bootstrap is mandatory. This includes launch-selected sessions that deliberately have no assignment file. Before reading repo files, running task commands, or answering the task, require \`get_session_binding\` and \`get_bound_deck\` to succeed. If the tools are unavailable, disconnected, return \`GRANT_REQUIRED\`, or otherwise fail, stop and report the connection problem — do not improvise without the deck. Checking for the optional assignment signal, checking whether Agent Deck is configured, and other read-only connection diagnostics are allowed before the gate passes.
 
-**Session opener (first turn only):** When Agent Deck MCP is configured for the session, call \`get_session_binding\` then \`get_bound_deck\`, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Deck authority comes from the launch-selected connection — do **not** call \`get_decks\` or pick a deck. Match the task against the returned playbook triggers and call \`get_playbook\` for every match before taking task action. On \`GRANT_REQUIRED\` or "No deck selected", stop and give the matching recovery: run \`agent-deck use <deck>\` for an IDE folder assignment, or fix \`x-agent-deck-deck-id\` / the launch config for an unattended session. Do **not** repeat the status line every turn unless the user asks or the bind changes.
+**Session opener (first turn only):** These calls verify an existing connection; they do not create it. When Agent Deck MCP is configured for the session, call \`get_session_binding\` then \`get_bound_deck\`, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Deck authority comes from the launch-selected connection — do **not** call \`get_decks\` or pick a deck. Match the task against the returned playbook triggers and call \`get_playbook\` for every match before taking task action. If tools are unavailable, repair the host transport first. On \`GRANT_REQUIRED\` or "No deck selected", run \`agent-deck use <deck>\` for a missing/legacy IDE folder assignment, or fix \`x-agent-deck-deck-id\` / the launch config for an unattended session. Then reload or retry MCP. Do **not** repeat the status line every turn unless the user asks or the bind changes.
 
 **Later turns:** Deck scope comes from the launch-selected connection. Do not re-bind unless the user asks for deck administration.
 
@@ -70,6 +72,11 @@ export function buildClaudeHarnessBlock(scope: SetupScope): string {
     lines.push('', PROJECT_BODY_EXTRA);
   }
   return lines.join('\n');
+}
+
+/** Codex uses the same protocol guidance, merged into AGENTS.md. */
+export function buildCodexHarnessBlock(scope: SetupScope): string {
+  return buildClaudeHarnessBlock(scope);
 }
 
 function buildCursorHarnessInner(scope: SetupScope): string {
@@ -134,7 +141,7 @@ export function mergeClaudeHarness(
   return { content, changed: true };
 }
 
-export function resolveHarnessPath(client: McpClient, scope: SetupScope): string | null {
+export function resolveHarnessPath(client: HarnessClient, scope: SetupScope): string | null {
   const home = os.homedir();
   const cwd = process.cwd();
 
@@ -146,6 +153,11 @@ export function resolveHarnessPath(client: McpClient, scope: SetupScope): string
 
   if (client === 'claude') {
     return scope === 'project' ? path.join(cwd, 'CLAUDE.md') : path.join(home, '.claude', 'CLAUDE.md');
+  }
+
+  if (client === 'codex') {
+    const codexHome = process.env.CODEX_HOME?.trim() || path.join(home, '.codex');
+    return scope === 'project' ? path.join(cwd, 'AGENTS.md') : path.join(codexHome, 'AGENTS.md');
   }
 
   return null;
@@ -170,13 +182,13 @@ function writeTextFile(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content.endsWith('\n') ? content : `${content}\n`, 'utf8');
 }
 
-export function installAgentHarness(client: McpClient, scope: SetupScope): HarnessInstallResult {
+export function installAgentHarness(client: HarnessClient, scope: SetupScope): HarnessInstallResult {
   const harnessPath = resolveHarnessPath(client, scope);
   if (!harnessPath) {
     return {
       installed: false,
       message:
-        'Agent harness applies to Cursor and Claude Code. For Claude Desktop, add the same snippets from docs/AGENT_HARNESS.md to your Claude Code global CLAUDE.md if you use both.',
+        'Agent harness applies to Cursor, Claude Code, and Codex. For Claude Desktop, add the same snippets from docs/AGENT_HARNESS.md to your Claude Code global CLAUDE.md if you use both.',
     };
   }
 
@@ -198,7 +210,7 @@ export function installAgentHarness(client: McpClient, scope: SetupScope): Harne
     };
   }
 
-  const block = buildClaudeHarnessBlock(scope);
+  const block = client === 'codex' ? buildCodexHarnessBlock(scope) : buildClaudeHarnessBlock(scope);
   const existing = readTextFile(harnessPath);
   const { content, changed } = mergeClaudeHarness(existing, block);
   const action = !existing.trim() ? 'created' : changed ? 'updated' : 'unchanged';
@@ -213,6 +225,6 @@ export function installAgentHarness(client: McpClient, scope: SetupScope): Harne
     message:
       action === 'unchanged'
         ? `Agent harness already current → ${harnessPath}`
-        : `Installed agent harness → ${harnessPath} (rest of CLAUDE.md untouched)`,
+        : `Installed agent harness → ${harnessPath} (rest of ${client === 'codex' ? 'AGENTS.md' : 'CLAUDE.md'} untouched)`,
   };
 }

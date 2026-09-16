@@ -51,7 +51,7 @@ function printUsage() {
   agent-deck open [--path /...]
   agent-deck statusline [--workspace <path>]
   agent-deck menubar
-  agent-deck setup --client cursor|claude|claude-desktop [--scope global|project] [--start]
+  agent-deck setup --client codex|cursor|claude|claude-desktop [--scope global|project] [--start]
   agent-deck use <deck> [--client cursor|claude|both] [--refresh] [--mcp-port PORT]
   agent-deck install [--to VERSION] [--migrate-cli] [--purge-global]
   agent-deck upgrade [--check] [--to VERSION]
