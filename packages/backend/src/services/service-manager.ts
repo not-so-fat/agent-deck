@@ -1,6 +1,9 @@
-import { 
-  Service, 
-  CreateServiceInput, 
+import {
+  AddServiceToDeckInput,
+  RemoveServiceFromDeckInput,
+  ReorderDeckServicesInput,
+  Service,
+  CreateServiceInput,
   UpdateServiceInput,
   ServiceTool,
   ServiceCallInput,
@@ -28,6 +31,11 @@ import {
   resolveMcpErrorMessage,
 } from '../lib/mcp-connection-error';
 import { normalizeServiceToolResult } from '../lib/normalize-service-tool-result';
+import {
+  cleanUpAfterCardDelete,
+  deleteCardFromStoreThenDb,
+  flushDeckFile,
+} from '../store/deck-file';
 import { storeServiceFromDb } from '../store/service-codec';
 import { FileStoreWriter } from '../store/writer';
 import { ServiceHeaderVault } from '../vault/service-header-vault';
@@ -397,12 +405,45 @@ export class ServiceManager {
       );
     }
     
-    const deleted = await this.db.deleteService(id);
+    // Store first, row last: the deck links are still readable here, and a deck
+    // file left naming a deleted service fails every later reindex.
+    const deleted = await deleteCardFromStoreThenDb(
+      this.db,
+      { kind: 'service', id },
+      this.storeWriter,
+      () => this.deleteFromStore(id),
+      () => this.db.deleteService(id),
+    );
     if (deleted) {
-      await this.deleteFromStore(id);
-      await this.headerVault?.delete(id);
+      // After the delete commits — dropping the headers of a service that
+      // survived a failed write would be the worse outcome.
+      await cleanUpAfterCardDelete(`stored headers for service ${id}`, async () => {
+        await this.headerVault?.delete(id);
+      });
     }
     return deleted;
+  }
+
+  // Deck membership — these own the deck file flush so every caller (routes,
+  // agents, imports) leaves `decks/<id>.json` matching the DB.
+  async addToDeck(input: AddServiceToDeckInput): Promise<void> {
+    await this.db.addServiceToDeck(input);
+    await flushDeckFile(this.db, input.deckId, this.storeWriter);
+  }
+
+  async removeFromDeck(input: RemoveServiceFromDeckInput): Promise<void> {
+    await this.db.removeServiceFromDeck(input);
+    await flushDeckFile(this.db, input.deckId, this.storeWriter);
+  }
+
+  async reorderOnDeck(input: ReorderDeckServicesInput): Promise<void> {
+    await this.db.reorderDeckServices(input);
+    await flushDeckFile(this.db, input.deckId, this.storeWriter);
+  }
+
+  async clearFromDeck(deckId: string): Promise<void> {
+    await this.db.clearDeckServices(deckId);
+    await flushDeckFile(this.db, deckId, this.storeWriter);
   }
 
   private async prepareServiceForRemoteCall(service: Service): Promise<Service> {

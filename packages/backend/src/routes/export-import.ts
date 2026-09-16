@@ -15,7 +15,6 @@ import {
   importBundle,
   ImportBundleError,
 } from '../export-import';
-import { migrateSqliteToStore } from '../store/migrate';
 
 function clientErrorResponse(error: unknown): { status: number; body: ApiResponse } {
   if (error instanceof DashboardOnlyError) {
@@ -51,10 +50,9 @@ export async function registerExportImportRoutes(fastify: FastifyInstance) {
   fastify.post('/import', async (request, reply) => {
     try {
       requireDashboardClient(request);
-      const report = await importBundle(fastify.db, request.body);
-      if (report.status !== 'failed') {
-        await migrateSqliteToStore(fastify.db, { force: true });
-      }
+      // importBundle owns the store flush: the bundle lands in SQLite only, and
+      // files are the source of truth a reindex rebuilds from.
+      const report = await importBundle(fastify.db, request.body, { syncStore: true });
       return reply.send({
         success: true,
         data: report,

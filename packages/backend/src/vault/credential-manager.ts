@@ -15,6 +15,11 @@ import {
 import { CredentialYamlSync } from './yaml-sync';
 import { SecretStore, VaultUnsupportedError } from './secret-store';
 import { buildCredentialAuthHeaders } from './credential-auth-headers';
+import {
+  cleanUpAfterCardDelete,
+  deleteCardFromStoreThenDb,
+  flushDeckFile,
+} from '../store/deck-file';
 import { FileStoreWriter } from '../store/writer';
 
 export class CredentialManager {
@@ -22,11 +27,10 @@ export class CredentialManager {
     private db: DatabaseManager,
     private secretStore: SecretStore,
     private yamlSync: CredentialYamlSync = new CredentialYamlSync(),
-    /** Kept for call-site compatibility; credential YAML is always written. */
-    _storeWriter?: FileStoreWriter,
-  ) {
-    void _storeWriter;
-  }
+    /** Credential YAML always goes through {@link CredentialYamlSync}; the writer
+     * is only for the deck files this manager's membership changes touch. */
+    private storeWriter?: FileStoreWriter,
+  ) {}
 
   private async writeToStore(credential: Credential): Promise<void> {
     try {
@@ -243,18 +247,31 @@ export class CredentialManager {
       );
     }
 
-    try {
-      await this.secretStore.delete(existing.keychainAccount);
-    } catch (error) {
-      if (!(error instanceof VaultUnsupportedError)) {
-        throw error;
-      }
-    }
+    // Store first, row last: the deck links are still readable here, and a deck
+    // file left naming a deleted credential fails every later reindex.
+    const deleted = await deleteCardFromStoreThenDb(
+      this.db,
+      { kind: 'credential', id },
+      this.storeWriter,
+      () => this.deleteFromStore(id),
+      () => this.db.deleteCredential(id),
+    );
 
-    const deleted = await this.db.deleteCredential(id);
+    // Only once the delete has committed: the secret is the one thing here that
+    // cannot be put back, so a credential that survived a failed write must keep
+    // it rather than come back unusable.
     if (deleted) {
-      await this.deleteFromStore(id);
-      await removeCachedIcon(id);
+      await cleanUpAfterCardDelete(`secret ${existing.keychainAccount} in the vault`, () =>
+        this.secretStore.delete(existing.keychainAccount).catch((error: unknown) => {
+          // No vault on this machine is expected, not leftover worth logging.
+          if (!(error instanceof VaultUnsupportedError)) {
+            throw error;
+          }
+        }),
+      );
+      await cleanUpAfterCardDelete(`cached icon for credential ${id}`, () =>
+        removeCachedIcon(id),
+      );
     }
     return deleted;
   }
@@ -286,10 +303,12 @@ export class CredentialManager {
     }
 
     await this.db.addCredentialToDeck(input);
+    await flushDeckFile(this.db, input.deckId, this.storeWriter);
   }
 
   async removeFromDeck(input: RemoveCredentialFromDeckInput): Promise<void> {
     await this.db.removeCredentialFromDeck(input);
+    await flushDeckFile(this.db, input.deckId, this.storeWriter);
   }
 
   async recordExecRun(input: {

@@ -12,7 +12,11 @@ import {
   ImportBundleError,
   parseBundleJson,
 } from './export-import';
-import { migrateSqliteToStore, reindexStoreToSqlite } from './store';
+import {
+  deleteCardFromStoreThenDb,
+  migrateSqliteToStore,
+  reindexStoreToSqlite,
+} from './store';
 import { FileStoreWriter } from './store/writer';
 
 /** Shared credential manager for the agent-deck CLI (vault + exec). */
@@ -47,11 +51,18 @@ export function createCliCollectionAdmin() {
         };
       }
 
-      const deleted = await db.deleteService(id);
+      // Store first, row last: a deck still naming a removed service fails every
+      // later reindex, and a write that fails here leaves the service intact.
+      const deleted = await deleteCardFromStoreThenDb(
+        db,
+        { kind: 'service', id },
+        storeWriter,
+        () => storeWriter.deleteService(id),
+        () => db.deleteService(id),
+      );
       if (!deleted) {
         return { ok: false, error: `Service not found: ${id}` };
       }
-      await storeWriter.deleteService(id);
       return { ok: true };
     },
 
@@ -157,12 +168,11 @@ export function createCliExportImport() {
       try {
         const text = await fs.readFile(path.resolve(inputPath), 'utf8');
         const raw = parseBundleJson(text);
-        const report = await importBundle(db, raw);
+        // syncStore overwrites the store files so reindex cannot wipe imported cards.
+        const report = await importBundle(db, raw, { syncStore: true });
         if (report.status === 'failed') {
           return { ok: false, error: report.warnings.join('; ') || 'Import failed' };
         }
-        // Overwrite store files so reindex cannot wipe imported cards.
-        await migrateSqliteToStore(db, { force: true });
         return { ok: true, report };
       } catch (error) {
         const message =

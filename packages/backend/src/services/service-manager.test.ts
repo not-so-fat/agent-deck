@@ -31,6 +31,7 @@ describe('ServiceManager', () => {
       deleteService: vi.fn(),
       updateServiceStatus: vi.fn().mockResolvedValue(undefined),
       getPlaybooksDependingOnService: vi.fn().mockResolvedValue([]),
+      listDeckIdsForService: vi.fn().mockResolvedValue([]),
     };
 
     mockMCPClientManager = {

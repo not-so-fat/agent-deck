@@ -1686,6 +1686,24 @@ export class DatabaseManager {
     return rows.map((row) => row.deck_id);
   }
 
+  async listDeckIdsForService(serviceId: string): Promise<string[]> {
+    const rows = this.db.prepare(`
+      SELECT deck_id
+      FROM deck_services
+      WHERE service_id = ?
+    `).all(serviceId) as Array<{ deck_id: string }>;
+    return rows.map((row) => row.deck_id);
+  }
+
+  async listDeckIdsForCredential(credentialId: string): Promise<string[]> {
+    const rows = this.db.prepare(`
+      SELECT deck_id
+      FROM deck_credentials
+      WHERE credential_id = ?
+    `).all(credentialId) as Array<{ deck_id: string }>;
+    return rows.map((row) => row.deck_id);
+  }
+
   private mapPlaybookPatchRow(row: any): PlaybookPatch {
     return {
       id: row.id,
