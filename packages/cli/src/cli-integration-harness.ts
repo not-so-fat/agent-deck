@@ -244,6 +244,19 @@ export function readLastStopFile(deck: IsolatedDeck): { at: string; reason: stri
   }
 }
 
+/** The failed-start record, which lives beside last-stop.json and never replaces it. */
+export function readLastStartFailureFile(
+  deck: IsolatedDeck,
+): { at: string; reason: string } | null {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(deck.home, 'last-start-failure.json'), 'utf8'),
+    ) as { at: string; reason: string };
+  } catch {
+    return null;
+  }
+}
+
 export interface RunStateFile {
   backendPid: number;
   mcpPid: number;

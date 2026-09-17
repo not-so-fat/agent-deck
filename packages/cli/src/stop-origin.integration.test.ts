@@ -7,6 +7,7 @@ import {
   isAlive,
   killLeftovers,
   occupyPort,
+  readLastStartFailureFile,
   readLastStopFile,
   removeIsolatedDeck,
   reserveFreePort,
@@ -98,10 +99,15 @@ describe('NOT-135 — a real stop outlives an unrelated failed start', () => {
       ]);
       foreground.stdout?.resume();
       foreground.stderr?.resume();
-      // A signal delivered while node is still loading the CLI takes the
-      // runtime's default path, before any handler of ours can exist — give the
-      // process long enough to be the thing under test.
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Wait for the observable, never a fixed delay. A sleep long enough on
+      // this laptop lands while node is still loading the CLI on a slower CI
+      // runner: the signal then takes the runtime's default path, no handler
+      // records anything, and the assertion below fails for a reason that has
+      // nothing to do with the behaviour under test (ubuntu-latest, 2026-09-17).
+      // The held port guarantees this start fails on its own, so the record
+      // appearing is the signal that the failure path ran.
+      const failed = await waitUntil(() => readLastStartFailureFile(deck) !== null);
+      expect(failed, 'the start never recorded a failure').toBe(true);
       foreground.kill('SIGINT');
       const exited = await waitUntil(
         () => foreground?.exitCode !== null || foreground?.signalCode !== null,
