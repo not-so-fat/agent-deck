@@ -350,7 +350,16 @@ export async function reindexStoreToSqlite(
   db: DatabaseManager,
   opts: { home?: string; force?: boolean } = {},
 ): Promise<StoreReindexResult> {
-  const result = await runReindex(db, opts);
+  let result: StoreReindexResult;
+  try {
+    result = await runReindex(db, opts);
+  } catch (error: unknown) {
+    // An unexpected throw (e.g. the store tree becoming unreadable mid-hash) is
+    // still a failed reindex: record it so `status`/`doctor` don't keep reporting
+    // the previous, stale outcome.
+    const detail = error instanceof Error ? error.message : String(error);
+    result = { ok: false, error: `Store reindex failed: ${detail}` };
+  }
   recordReindexOutcome(db, result);
   return result;
 }

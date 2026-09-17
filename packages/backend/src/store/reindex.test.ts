@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,23 @@ import { migrateSqliteToStore } from './migrate';
 import { storePaths } from './paths';
 import { readLastReindex, reindexStoreToSqlite } from './reindex';
 import { FileStoreWriter } from './writer';
+
+// Hashing the store tree walks nested directories that the card readers skip, so
+// it can reject on its own (an unreadable directory, a file removed mid-walk).
+// The failure is injected because it is a race in the real filesystem.
+const hashFailure = vi.hoisted(() => ({ error: null as Error | null }));
+vi.mock('./content-hash', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./content-hash')>();
+  return {
+    ...actual,
+    hashStoreTree: async (home?: string) => {
+      if (hashFailure.error) {
+        throw hashFailure.error;
+      }
+      return actual.hashStoreTree(home);
+    },
+  };
+});
 
 const homes: string[] = [];
 const databases = new Set<DatabaseManager>();
@@ -83,6 +100,7 @@ function closeDatabase(database: DatabaseManager): void {
 }
 
 afterEach(async () => {
+  hashFailure.error = null;
   for (const database of databases) {
     database.close();
   }
@@ -352,6 +370,35 @@ describe('reindexStoreToSqlite', () => {
     const record = readLastReindex(fixture.database);
     expect(record?.ok).toBe(false);
     expect(record?.error).toContain('manifest');
+    expect(Date.parse(record?.at ?? '')).not.toBeNaN();
+  });
+
+  it('records an outcome when the reindex throws instead of returning a result', async () => {
+    const fixture = await createFixture();
+    const success = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+    expect(success.ok).toBe(true);
+
+    hashFailure.error = Object.assign(
+      new Error(`EACCES: permission denied, scandir '${fixture.home}'`),
+      { code: 'EACCES' },
+    );
+    const failure = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+
+    // A throw is still a failed reindex: it must not escape as an exception that
+    // leaves status/doctor reporting the previous, stale success.
+    expect(failure).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('EACCES'),
+    });
+    const record = readLastReindex(fixture.database);
+    expect(record?.ok).toBe(false);
+    expect(record?.error).toContain('EACCES');
     expect(Date.parse(record?.at ?? '')).not.toBeNaN();
   });
 
