@@ -13,19 +13,18 @@ import {
   runCli,
   shutdownLines,
   spawnCli,
-  waitForHealthy,
   waitForRunState,
   waitUntil,
   type IsolatedDeck,
 } from './cli-integration-harness';
 
 /**
- * NOT-135 acceptance, step 2 of Reproduce: stop a real deck four different ways
- * and require four distinguishable lines. This drives the shipped CLI end to
- * end — a real supervisor, a real backend, a real SIGTERM — because the defect
- * being fixed was precisely that the supervisor could not tell these apart.
+ * NOT-135: the one claim that genuinely needs two real decks — a stop recorded
+ * by the process that ran the deck must survive an unrelated start that dies
+ * before it supervises anything. Everything provable from the formatting and the
+ * record files alone lives in `shutdown-reason.test.ts`, without processes.
  */
-describe('NOT-135 — every stop names its origin', () => {
+describe('NOT-135 — a real stop outlives an unrelated failed start', () => {
   let deck: IsolatedDeck;
   let foreground: ChildProcess | null = null;
 
@@ -64,72 +63,13 @@ describe('NOT-135 — every stop names its origin', () => {
     expect(gone, 'backend/MCP survived the stop').toBe(true);
   }
 
-  it('distinguishes agent-deck stop, a bare SIGTERM, a named caller and Ctrl-C', async () => {
-    const reasons: string[] = [];
-
-    // 1. `agent-deck stop` — the note the CLI leaves names the caller.
-    //    Replays 2026-09-16 10:43:18, logged then as a bare `(exit 0)`.
-    await startDaemon();
-    let state = await waitForRunState(deck);
-    let count = shutdownLines(deck).length;
-    expect(runCli(deck, ['stop']).status).toBe(0);
-    reasons.push(await nextShutdownReason(count));
-    await expectChildrenGone(state);
-
-    // 2. `kill -TERM <supervisor pid>` — no note, so only the signal is known.
-    //    Replays 2026-09-16 12:00:00: a stop nobody claimed, now visibly
-    //    unclaimed rather than indistinguishable from `agent-deck stop`.
-    await startDaemon();
-    state = await waitForRunState(deck);
-    count = shutdownLines(deck).length;
-    process.kill(state.cliPid, 'SIGTERM');
-    reasons.push(await nextShutdownReason(count));
-    await expectChildrenGone(state);
-
-    // 3. A named caller (what the menubar or a wrapper script passes).
-    await startDaemon();
-    state = await waitForRunState(deck);
-    count = shutdownLines(deck).length;
-    expect(runCli(deck, ['stop', '--source', 'menubar', '--detail', 'Quit Agent Deck']).status).toBe(
-      0,
-    );
-    reasons.push(await nextShutdownReason(count));
-    await expectChildrenGone(state);
-
-    // 4. Ctrl-C on a foreground (inherit-mode) run: the one stop that never
-    //    went through supervisor.log before this ticket.
-    foreground = spawnCli(deck, ['start', '--no-ui', '--no-open']);
-    // Inherit mode pipes the children's output through this process — drain it
-    // so a full pipe cannot stall the backend we are waiting on.
-    foreground.stdout?.resume();
-    foreground.stderr?.resume();
-    expect(await waitForHealthy(deck.backendPort), 'foreground deck never became healthy').toBe(
-      true,
-    );
-    state = await waitForRunState(deck);
-    count = shutdownLines(deck).length;
-    foreground.kill('SIGINT');
-    reasons.push(await nextShutdownReason(count));
-    await expectChildrenGone(state);
-
-    expect(reasons[0]).toContain('requested by agent-deck stop');
-    expect(reasons[1]).toBe('signal SIGTERM');
-    expect(reasons[2]).toContain('requested by menubar — Quit Agent Deck');
-    expect(reasons[3]).toContain('signal SIGINT');
-    // The point of the ticket: four stops, four different answers.
-    expect(new Set(reasons).size).toBe(4);
-
-    // And the last of them is what `agent-deck status` reports.
-    const status = runCli(deck, ['status']);
-    expect(status.stdout).toContain('Last stop:');
-    expect(status.stdout).toContain('signal SIGINT');
-    expect(status.stdout).not.toContain('Last failed start:');
-  }, 240_000);
-
   /**
    * The answer to "why did the deck stop?" belongs to the process that ran the
    * deck. A `start` interrupted before it supervises anything has its own
    * question ("why won't it start?") and must not overwrite the other one.
+   *
+   * The four origins themselves are proved in `shutdown-reason.test.ts`, which
+   * needs no processes at all; only this one needs two real decks to be wrong.
    */
   it('keeps the real stop when an unrelated start is interrupted before it supervises anything', async () => {
     await startDaemon();

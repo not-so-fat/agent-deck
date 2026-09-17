@@ -68,6 +68,29 @@ export function buildOpenDashboardMenubarLine(): string {
   return 'Open dashboard | bash=agent-deck param1=open terminal=false';
 }
 
+/** How the menu bar names itself when it stops the deck. */
+export const MENUBAR_STOP_SOURCE = 'menubar';
+
+/**
+ * The menu bar's own stop, routed through `agent-deck stop --source` so the
+ * SIGTERM it causes is distinguishable in supervisor.log from a bare
+ * `kill -TERM` and from an operator's own `agent-deck stop` (NOT-135).
+ *
+ * The argv is deliberately space-free: SwiftBar splits `paramN=` values on
+ * whitespace, so a quoted `--detail "Quit Agent Deck"` would arrive as two
+ * arguments and lose the attribution this line exists to carry.
+ */
+export function buildStopDeckMenubarArgs(): string[] {
+  return ['stop', '--source', MENUBAR_STOP_SOURCE, '--detail', 'menu-bar-stop-item'];
+}
+
+export function buildStopDeckMenubarLine(): string {
+  const params = buildStopDeckMenubarArgs()
+    .map((arg, i) => `param${i + 1}=${arg}`)
+    .join(' ');
+  return `Stop Agent Deck | bash=agent-deck ${params} terminal=false refresh=true`;
+}
+
 /** SwiftBar/xbar output. `null` bindings = backend offline (accuracy first: dim, never guess). */
 export function renderMenubar(
   bindings: LiveBinding[] | null,
@@ -89,7 +112,15 @@ export function renderMenubar(
           ? '◆ —'
           : `◆ ${bindings.length}`;
 
-  const lines = [title, '---', buildOpenDashboardMenubarLine(), '---'];
+  // The deck is up (bindings answered), so stopping it is an offer worth making
+  // — and it is the one stop path that has to name itself, since SIGTERM won't.
+  const lines = [
+    title,
+    '---',
+    buildOpenDashboardMenubarLine(),
+    buildStopDeckMenubarLine(),
+    '---',
+  ];
 
   if (pendingCount > 0) {
     lines.push('Admin approval pending | size=11 color=orange');

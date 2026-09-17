@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { LiveBinding, PendingAdminChallenge } from '@agent-deck/shared';
-import { buildApprovalHref, formatAge, formatTimeUntil, renderMenubar, truncateName } from './menubar';
+import {
+  MENUBAR_STOP_SOURCE,
+  buildApprovalHref,
+  buildStopDeckMenubarArgs,
+  buildStopDeckMenubarLine,
+  formatAge,
+  formatTimeUntil,
+  renderMenubar,
+  truncateName,
+} from './menubar';
+import { parseStopOptions } from './stop';
 
 const NOW = new Date('2026-07-03T12:00:00.000Z');
 
@@ -135,5 +145,52 @@ describe('buildApprovalHref', () => {
     expect(href).toBe(
       `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent('/admin/approve?challenge=adm_x&session=ses_x')}`,
     );
+  });
+});
+
+/**
+ * NOT-135 finding 1: the menu bar's stop must be identifiable in supervisor.log,
+ * which is only true if the argv it emits is the argv `stop` actually parses.
+ * Verified as a round trip over the real functions — no daemon, no SIGTERM.
+ */
+describe('menu bar stop names its origin', () => {
+  it('emits the attributed stop argv', () => {
+    expect(buildStopDeckMenubarArgs()).toEqual([
+      'stop',
+      '--source',
+      MENUBAR_STOP_SOURCE,
+      '--detail',
+      'menu-bar-stop-item',
+    ]);
+  });
+
+  it('is understood by the stop command it invokes', () => {
+    // The round trip is the point: a label the menu bar emits but `stop` drops
+    // would leave the SIGTERM anonymous, which is the whole defect.
+    const [, ...args] = buildStopDeckMenubarArgs();
+    expect(parseStopOptions(args)).toEqual({
+      source: MENUBAR_STOP_SOURCE,
+      detail: 'menu-bar-stop-item',
+    });
+  });
+
+  it('keeps every SwiftBar param value whitespace-free', () => {
+    // SwiftBar splits paramN= on whitespace, so a spaced value silently becomes
+    // two arguments and the attribution is lost.
+    for (const arg of buildStopDeckMenubarArgs()) {
+      expect(arg).not.toMatch(/\s/);
+    }
+  });
+
+  it('renders a stop item wired to agent-deck, not a bare kill', () => {
+    const line = buildStopDeckMenubarLine();
+    expect(line).toContain('bash=agent-deck');
+    expect(line).toContain('param1=stop');
+    expect(line).toContain(`param3=${MENUBAR_STOP_SOURCE}`);
+    expect(line).not.toContain('kill');
+  });
+
+  it('offers the stop item in the rendered menu', () => {
+    expect(renderMenubar([], new Date())).toContain(buildStopDeckMenubarLine());
   });
 });

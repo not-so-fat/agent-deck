@@ -54,17 +54,19 @@ banner "6d. agent-deck status after the failed start (stop vs failed start)"
 $CLI status 2>/dev/null | sed -n '/Last stop/,+9p'
 
 banner "7. stop that lands mid-startup (before run.json exists)"
-# run.json is only written once the deck is up, so find the supervisor by its
-# argv — matched on this smoke run's own ports, never a real daemon elsewhere.
-$CLI start --daemon --no-open --port "$AGENT_DECK_BACKEND_PORT" --mcp-port "$AGENT_DECK_MCP_PORT" >/dev/null 2>&1 &
-LAUNCHER=$!
+# run.json only exists once the deck is up, so a daemon start gives this script
+# no pid it can trust. Start in the foreground instead: that process *is* the
+# supervisor, so $! is exactly the pid to signal and nothing else can match.
+#
+# Never discover the target by argv. `pgrep -f -- "--_supervisor"` scans every
+# process on the host, and on 2026-09-17 that sweep stopped the developer's own
+# Agent Deck three times, parking every other issue on the machine. A port
+# filter layered on top is not a fix: it fails open the moment it is wrong.
+$CLI start --no-open --port "$AGENT_DECK_BACKEND_PORT" --mcp-port "$AGENT_DECK_MCP_PORT" >/dev/null 2>&1 &
+SUPERVISOR=$!
 sleep 0.2
-for PID in $(pgrep -f -- "--_supervisor"); do
-  if ps -o command= -p "$PID" | grep -q -- "--port $AGENT_DECK_BACKEND_PORT"; then
-    kill -TERM "$PID"
-  fi
-done
-wait $LAUNCHER 2>/dev/null
+kill -TERM "$SUPERVISOR" 2>/dev/null
+wait "$SUPERVISOR" 2>/dev/null
 sleep 1
 grep -E "shutting down|start failed" "$LOG" | tail -2
 $CLI stop >/dev/null 2>&1

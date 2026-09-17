@@ -10,6 +10,19 @@ export interface StopOptions {
   detail?: string;
 }
 
+/** `agent-deck stop --source menubar --detail menu-bar-stop-item`. */
+export function parseStopOptions(args: string[]): StopOptions {
+  const options: StopOptions = {};
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--source') {
+      options.source = args[++i];
+    } else if (args[i] === '--detail') {
+      options.detail = args[++i];
+    }
+  }
+  return options;
+}
+
 /** SIGTERM has no sender, so the caller identifies itself. */
 export function resolveStopSource(options: StopOptions = {}): { source: string; detail?: string } {
   const envSource = process.env.AGENT_DECK_STOP_SOURCE?.trim();
