@@ -4,7 +4,7 @@ import { DatabaseManager, STORE_CONTENT_HASH } from '../models/database';
 import { hashStoreTree } from './content-hash';
 import { migrateSqliteToStore } from './migrate';
 import { storePaths } from './paths';
-import { reindexStoreToSqlite } from './reindex';
+import { recordReindexOutcome, reindexStoreToSqlite } from './reindex';
 
 async function fileExists(filePath: string): Promise<boolean> {
   try {
@@ -60,14 +60,16 @@ export async function ensureStoreReady(
         if (!result.ok) {
           console.error('Store reindex failed:', result.error, result.conflicts);
         } else {
+          for (const warning of result.warnings) {
+            console.warn('Store reindex warning:', warning);
+          }
           reindexed = true;
         }
       }
     } catch (error: unknown) {
-      console.error(
-        'Store reindex failed:',
-        error instanceof Error ? error.message : String(error),
-      );
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error('Store reindex failed:', detail);
+      recordReindexOutcome(db, { ok: false, error: detail });
     }
   }
 

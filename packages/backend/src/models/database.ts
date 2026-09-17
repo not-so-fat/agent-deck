@@ -39,6 +39,7 @@ import {
 } from '@agent-deck/shared';
 
 export const STORE_CONTENT_HASH = 'store_content_hash';
+export const STORE_LAST_REINDEX = 'store_last_reindex';
 
 export type StoreSnapshot = {
   services: StoreService[];
