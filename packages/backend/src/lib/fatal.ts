@@ -12,7 +12,9 @@ export function describeFatalError(error: unknown): string {
   if (error instanceof Error) {
     const code = (error as NodeJS.ErrnoException).code;
     const head = code ? `${error.name} [${code}]: ${error.message}` : `${error.name}: ${error.message}`;
-    return error.stack ? `${head}\n${error.stack}` : head;
+    // error.stack repeats the message on its first line; keep only the frames.
+    const frames = error.stack?.split('\n').slice(1) ?? [];
+    return frames.length > 0 ? [head, ...frames].join('\n') : head;
   }
   return String(error);
 }
@@ -62,14 +64,19 @@ export function formatFatalLines(label: FatalLabel, phase: string, error: unknow
  * Synchronous write to fd 2 — process.exit() must not be able to drop it.
  * `fd` is a seam for tests; production always writes to stderr.
  */
-export function writeLogSync(text: string, fd = 2): void {
+export function writeLogSync(text: string, fd = 2, maxRetries = 1000): void {
   const buffer = Buffer.from(text.endsWith('\n') ? text : `${text}\n`, 'utf8');
   let offset = 0;
+  let retries = 0;
   while (offset < buffer.length) {
     try {
       offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EAGAIN') {
+      // A non-blocking stderr (a TTY, or a pipe whose reader stalled) answers
+      // EAGAIN. Retry, but bounded: spinning forever would hang the exit path
+      // this diagnostic exists to keep alive.
+      if ((error as NodeJS.ErrnoException).code === 'EAGAIN' && retries < maxRetries) {
+        retries += 1;
         continue;
       }
       // Nothing left to try — never let logging mask the original failure.

@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess, type StdioOptions } from 'node:child_process';
 import { resolveBackendEntry, resolveBackendRoot, resolveUiDist } from './paths';
-import { assertSqliteNative, assertSupportedNodeVersion, getNodeMajor, verifySqliteNative } from './node-runtime';
+import { checkStartPreflight, getNodeMajor, isSupportedNodeMajor, verifySqliteNative } from './node-runtime';
 import { formatPortConflict, isTcpPortOpen, listListeningPids, probeAgentDeck } from './ports';
-import { clearRunState, writeRunState } from './runtime-state';
+import { clearRunState, isProcessAlive, readRunState, writeRunState } from './runtime-state';
 import { runStop } from './stop';
 import { maybeAutoUpgradeOnStart, notifyIfUpdateAvailable } from './upgrade';
 import { getAgentDeckVersion } from './version';
@@ -26,10 +26,13 @@ import {
   type DaemonLogName,
 } from './daemon-logs';
 import {
+  clearLastStartFailure,
   composeShutdownReason,
   consumeStopRequest,
   describeSignalOrigin,
   formatSupervisorShutdownLine,
+  readLastStartFailure,
+  recordStartFailure,
   writeLastStop,
 } from './shutdown-reason';
 import {
@@ -60,15 +63,34 @@ export function formatClaudeMcpAddCommand(host: string, mcpPort: number): string
 
 type SpawnIoMode = 'inherit' | 'file';
 
+/** A start that fails before the supervisor loop: one-line cause plus what to show. */
+interface StartFailure {
+  reason: string;
+  lines: string[];
+}
+
+const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+
 const children: ChildProcess[] = [];
 let shuttingDown = false;
+/** Only the process that wrote run.json may clear it — an aborted start must not. */
+let ownsRunState = false;
+/** Non-null until the deck is up: names the phase a stop interrupted. */
+let startupPhase: string | null = null;
 
 function isSupervisorMode(options: StartOptions): boolean {
   return options.supervisor === true || process.env.AGENT_DECK_SUPERVISOR === '1';
 }
 
-async function waitForHealth(url: string, attempts = 60): Promise<boolean> {
+async function waitForHealth(
+  url: string,
+  attempts = 60,
+  giveUp?: () => boolean,
+): Promise<boolean> {
   for (let i = 0; i < attempts; i += 1) {
+    if (giveUp?.()) {
+      return false;
+    }
     try {
       const response = await fetch(url);
       if (response.ok) {
@@ -162,9 +184,14 @@ async function shutdown(exitCode = 0, origin = 'origin not recorded'): Promise<v
   const reason = composeShutdownReason(origin, request);
   const line = formatSupervisorShutdownLine(exitCode, reason);
 
-  if (isSupervisorMode({})) {
+  // supervisor.log answers "why did the deck stop?" for every run, daemon or
+  // not — a Ctrl-C in inherit mode must not be the one stop with no record.
+  try {
     appendDaemonLogLine('supervisor', `${new Date().toISOString()} ${line}`);
-  } else {
+  } catch {
+    // A shutdown never fails on its own bookkeeping.
+  }
+  if (!isSupervisorMode({})) {
     console.error(line);
   }
 
@@ -175,7 +202,7 @@ async function shutdown(exitCode = 0, origin = 'origin not recorded'): Promise<v
     supervisorPid: process.pid,
   });
 
-  clearRunState();
+  clearOwnRunState();
 
   for (const child of children) {
     if (!child.killed) {
@@ -185,6 +212,79 @@ async function shutdown(exitCode = 0, origin = 'origin not recorded'): Promise<v
 
   await new Promise((resolve) => setTimeout(resolve, 300));
   process.exit(exitCode);
+}
+
+/**
+ * A start aborted before `writeRunState` never owned run.json, and deleting the
+ * running instance's state would leave `status` and `stop` blind. A record whose
+ * supervisor is gone is nobody's, though — that one is ours to clean up.
+ */
+function clearOwnRunState(): void {
+  if (ownsRunState) {
+    clearRunState();
+    return;
+  }
+  const state = readRunState();
+  if (state && (state.cliPid === process.pid || !isProcessAlive(state.cliPid))) {
+    clearRunState();
+  }
+}
+
+/** A signal that lands mid-startup names the phase it interrupted. */
+function signalShutdownOrigin(signal: (typeof SHUTDOWN_SIGNALS)[number]): string {
+  const origin = describeSignalOrigin(signal);
+  return startupPhase ? `${origin} while starting (phase: ${startupPhase})` : origin;
+}
+
+/**
+ * Installed before any startup work — preflight, upgrade checks and port probes
+ * all await, and a stop arriving during them used to take Node's default exit
+ * path: no shutdown line, no last-stop record, no origin.
+ */
+function installSupervisorSignalHandlers(): void {
+  for (const signal of SHUTDOWN_SIGNALS) {
+    process.on(signal, () => void shutdown(0, signalShutdownOrigin(signal)));
+  }
+}
+
+/**
+ * `start --daemon` launcher: it owns no run state and no children, so it records
+ * the interrupted start and leaves any supervisor it already spawned running.
+ * Once the deck is up (`startupPhase === null`) this process is only printing —
+ * interrupting it is not a failed start and must not be recorded as one.
+ */
+function installLauncherSignalHandlers(getSupervisorPid: () => number): void {
+  for (const signal of SHUTDOWN_SIGNALS) {
+    process.on(signal, () => {
+      if (startupPhase === null) {
+        process.exit(0);
+      }
+      const supervisorPid = getSupervisorPid();
+      recordStartFailure({
+        reason: `${describeSignalOrigin(signal)} while starting in background (phase: ${startupPhase})`,
+        detail:
+          supervisorPid > 0
+            ? [
+                `[agent-deck] background supervisor (pid ${supervisorPid}) was already spawned and keeps running — check agent-deck status`,
+              ]
+            : [],
+      });
+      process.exit(1);
+    });
+  }
+}
+
+/**
+ * Print (unless stderr already *is* supervisor.log) and persist, so the reason
+ * survives in supervisor.log and `agent-deck status`.
+ */
+function failStart(failure: StartFailure, supervisor: boolean): number {
+  if (!supervisor) {
+    for (const line of failure.lines) {
+      console.error(line);
+    }
+  }
+  return recordStartFailure({ reason: failure.reason, detail: failure.lines });
 }
 
 async function printRunningEndpoints(
@@ -233,7 +333,10 @@ function buildSupervisorArgs(options: StartOptions): string[] {
   return args;
 }
 
-async function runDaemonLauncher(options: StartOptions): Promise<number> {
+async function runDaemonLauncher(
+  options: StartOptions,
+  onSupervisorSpawned: (pid: number) => void,
+): Promise<number> {
   const backendPort = options.backendPort ?? readCliBackendPort();
   const mcpPort = options.mcpPort ?? parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -241,6 +344,7 @@ async function runDaemonLauncher(options: StartOptions): Promise<number> {
 
   const supervisorLogFd = openDaemonLogFd('supervisor');
   const cliEntry = resolveCliEntry();
+  const launchedAt = Date.now();
 
   const child = spawn(process.execPath, [cliEntry, ...buildSupervisorArgs(options)], {
     detached: true,
@@ -248,19 +352,41 @@ async function runDaemonLauncher(options: StartOptions): Promise<number> {
     env: { ...process.env, AGENT_DECK_SUPERVISOR: '1' },
   });
 
+  onSupervisorSpawned(child.pid ?? 0);
+
+  // Object, not a `let`: the exit arrives from a callback, and the reads below
+  // are all after an await.
+  const supervisor = { exit: null as string | null };
+  child.on('exit', (code, signal) => {
+    supervisor.exit = signal ? `signal ${signal}` : `code ${code ?? 1}`;
+  });
+
   child.unref();
 
-  const healthy = await waitForHealth(`${backendUrl}/health`);
+  // Waiting out the full health budget after the supervisor is already gone
+  // only delays the diagnostic it just wrote.
+  const healthy = await waitForHealth(`${backendUrl}/health`, 60, () => supervisor.exit !== null);
   if (!healthy) {
-    console.error('[agent-deck] Daemon supervisor failed health check.');
+    const reason = supervisor.exit
+      ? `daemon supervisor exited (${supervisor.exit}) before the API became healthy`
+      : 'daemon supervisor never passed its API health check';
+    console.error(`[agent-deck] ${reason}`);
     // The supervisor log already holds the reason (and the child log tail it
     // copied in) — show it here rather than sending the operator hunting.
     for (const line of formatChildLogTail('supervisor', readDaemonLogTail('supervisor', 20))) {
       console.error(line);
     }
     console.error(`[agent-deck] See ${resolveDaemonLogPath('supervisor')}`);
-    return 1;
+
+    // The supervisor child knows more than "it exited"; keep its record if it
+    // got far enough to write one for this launch.
+    const recorded = readLastStartFailure();
+    const supervisorRecorded = recorded !== null && Date.parse(recorded.at) >= launchedAt;
+    return recordStartFailure({ reason, keepExistingRecord: supervisorRecorded });
   }
+
+  // The deck is up; everything past here is reporting, not starting.
+  startupPhase = null;
 
   const mcpHealthy = await waitForHealth(`http://${host}:${mcpPort}/health`, 20);
   if (!mcpHealthy) {
@@ -287,45 +413,63 @@ async function runDaemonLauncher(options: StartOptions): Promise<number> {
   return 0;
 }
 
+function portConflictFailure(port: number, label: string, host: string): StartFailure {
+  return {
+    reason: `port ${port} (${label}) is held by another program on ${host}`,
+    lines: formatPortConflict(port, label, host, false)
+      .split('\n')
+      .map((line) => `[agent-deck] ${line}`),
+  };
+}
+
 async function ensurePortsAvailable(
   host: string,
   backendPort: number,
   mcpPort: number,
   probe: Awaited<ReturnType<typeof probeAgentDeck>>,
-): Promise<number | null> {
+): Promise<StartFailure | null> {
   const [backendBusy, mcpBusy] = await Promise.all([
     isTcpPortOpen(host, backendPort),
     isTcpPortOpen(host, mcpPort),
   ]);
 
   if (backendBusy && !probe.backendUp) {
-    console.error(`[agent-deck] ${formatPortConflict(backendPort, 'API/dashboard', host, false)}`);
-    return 1;
+    return portConflictFailure(backendPort, 'API/dashboard', host);
   }
 
   if (mcpBusy && !probe.mcpUp) {
-    console.error(`[agent-deck] ${formatPortConflict(mcpPort, 'MCP', host, false)}`);
-    return 1;
+    return portConflictFailure(mcpPort, 'MCP', host);
   }
 
   return null;
 }
 
 export async function runStart(options: StartOptions = {}): Promise<number> {
-  const nodeError = assertSupportedNodeVersion();
-  if (nodeError !== null) {
-    return nodeError;
-  }
-  const sqliteError = assertSqliteNative();
-  if (sqliteError !== null) {
-    return sqliteError;
+  const supervisor = isSupervisorMode(options);
+  const launcher = options.daemon === true && !supervisor;
+
+  // Before the first await: preflight, upgrade checks and port probes all take
+  // time, and a stop landing in that window used to kill this process through
+  // Node's default signal path — no shutdown line, no origin, no record.
+  startupPhase = 'preflight';
+  let daemonSupervisorPid = 0;
+  if (launcher) {
+    installLauncherSignalHandlers(() => daemonSupervisorPid);
+  } else {
+    installSupervisorSignalHandlers();
   }
 
+  const preflight = checkStartPreflight();
+  if (preflight !== null) {
+    return failStart({ reason: preflight.reason, lines: preflight.message.split('\n') }, supervisor);
+  }
+
+  startupPhase = 'update check';
   await maybeAutoUpgradeOnStart();
   await notifyIfUpdateAvailable();
 
-  const supervisor = isSupervisorMode(options);
-  if (options.daemon && !supervisor) {
+  if (launcher) {
+    startupPhase = 'probing for a running instance';
     const backendPort = options.backendPort ?? readCliBackendPort();
     const mcpPort = options.mcpPort ?? parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
     const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -344,13 +488,17 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
       }
     }
 
+    startupPhase = 'checking ports';
     const refreshedProbe = options.force ? await probeAgentDeck(host, backendPort, mcpPort) : probe;
     const portError = await ensurePortsAvailable(host, backendPort, mcpPort, refreshedProbe);
     if (portError !== null) {
-      return portError;
+      return failStart(portError, supervisor);
     }
 
-    return runDaemonLauncher(options);
+    startupPhase = 'launching background supervisor';
+    return runDaemonLauncher(options, (pid) => {
+      daemonSupervisorPid = pid;
+    });
   }
 
   const ioMode: SpawnIoMode = supervisor ? 'file' : 'inherit';
@@ -360,6 +508,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   const backendUrl = `http://${host}:${backendPort}`;
   const uiDist = options.skipUi ? undefined : resolveUiDist();
 
+  startupPhase = 'probing for a running instance';
   const probe = await probeAgentDeck(host, backendPort, mcpPort);
 
   if (probe.backendUp && probe.mcpUp) {
@@ -375,10 +524,11 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     }
   }
 
+  startupPhase = 'checking ports';
   const refreshedProbe = options.force ? await probeAgentDeck(host, backendPort, mcpPort) : probe;
   const portError = await ensurePortsAvailable(host, backendPort, mcpPort, refreshedProbe);
   if (portError !== null) {
-    return portError;
+    return failStart(portError, supervisor);
   }
 
   if (!options.skipUi && !uiDist) {
@@ -394,8 +544,16 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     }
   }
 
-  const backendEntry = resolveBackendEntry('index');
-  const mcpEntry = resolveBackendEntry('mcp-index');
+  startupPhase = 'resolving the backend build';
+  let backendEntry: string;
+  let mcpEntry: string;
+  try {
+    backendEntry = resolveBackendEntry('index');
+    mcpEntry = resolveBackendEntry('mcp-index');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return failStart({ reason: message, lines: [`[agent-deck] ${message}`] }, supervisor);
+  }
 
   const logStart = (line: string) => {
     if (ioMode === 'file') {
@@ -405,12 +563,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     }
   };
 
-  // Registered before the children exist: a stop that arrives mid-startup must
-  // still be attributed rather than killing the supervisor silently.
-  process.on('SIGINT', () => void shutdown(0, describeSignalOrigin('SIGINT')));
-  process.on('SIGTERM', () => void shutdown(0, describeSignalOrigin('SIGTERM')));
-  process.on('SIGHUP', () => void shutdown(0, describeSignalOrigin('SIGHUP')));
-
+  startupPhase = 'starting backend';
   logStart('[agent-deck] Starting backend ...');
   const backendChild = spawnNodeService(
     'backend',
@@ -426,8 +579,19 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     ioMode,
   );
 
-  const healthy = await waitForHealth(`${backendUrl}/health`);
+  // A backend that exits takes the shutdown path immediately; polling out the
+  // remaining health budget would only postpone this process's own exit.
+  const healthy = await waitForHealth(`${backendUrl}/health`, 60, () => shuttingDown);
   if (!healthy) {
+    if (shuttingDown) {
+      // Something else (the backend's own exit, or a stop) already logged the
+      // cause and is shutting down with its own exit code. Returning here would
+      // race that exit and could report a failure for a requested stop; repeating
+      // the tail would only double it in supervisor.log.
+      await new Promise<void>(() => {
+        // shutdown() exits this process.
+      });
+    }
     const failMsg = '[agent-deck] Backend failed health check (port conflict or crash).';
     if (ioMode === 'file') {
       appendDaemonLogLine('supervisor', `${new Date().toISOString()} ${failMsg}`);
@@ -441,6 +605,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     return 1;
   }
 
+  startupPhase = 'starting MCP server';
   logStart('[agent-deck] Starting MCP server ...');
   let mcpPid = 0;
 
@@ -487,6 +652,9 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     cliPid: process.pid,
     startedAt: new Date().toISOString(),
   });
+  ownsRunState = true;
+  startupPhase = null;
+  clearLastStartFailure();
 
   const dashboardLine = uiDist
     ? formatDashboardStatusLine()
@@ -543,7 +711,7 @@ export async function runDoctor(): Promise<number> {
   if (nodeMajor < 20) {
     console.error('FAIL: Node.js 20+ required (24 recommended — current OS default)');
     ok = false;
-  } else if (!( [20, 22, 23, 24, 25, 26] as number[]).includes(nodeMajor)) {
+  } else if (!isSupportedNodeMajor(nodeMajor)) {
     console.error('FAIL: Unsupported Node.js major for better-sqlite3 prebuilds');
     console.error('     Use Node 20+; Node 24 is the default target');
     ok = false;

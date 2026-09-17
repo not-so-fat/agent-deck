@@ -52,7 +52,13 @@ export function readDaemonLogTail(name: DaemonLogName, maxLines = 20): string[] 
       .filter((line) => line.length > 0);
     // Each spawn writes a `--- <name> <iso> ---` banner; report the current
     // run only, so a previous run's output cannot look like this failure.
-    const lastBanner = lines.findLastIndex((line) => /^--- \w+ \d{4}-\d{2}-\d{2}T/.test(line));
+    let lastBanner = -1;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (/^--- \w+ \d{4}-\d{2}-\d{2}T/.test(lines[i])) {
+        lastBanner = i;
+        break;
+      }
+    }
     return (lastBanner >= 0 ? lines.slice(lastBanner + 1) : lines).slice(-maxLines);
   } catch {
     return [];

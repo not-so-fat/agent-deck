@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveAgentDeckHome } from '@agent-deck/shared';
+import { appendDaemonLogLine } from './daemon-logs';
 
 /**
  * A SIGTERM carries no sender, so `agent-deck stop`, the menubar, an API call
@@ -26,6 +27,18 @@ export interface LastStopRecord {
   supervisorPid: number;
 }
 
+/**
+ * A start that never reached the supervisor loop answers a different question
+ * ("why won't it start?") and lives in its own file, so it cannot overwrite the
+ * answer to "why did the deck stop?".
+ */
+export interface LastStartFailureRecord {
+  at: string;
+  exitCode: number;
+  reason: string;
+  pid: number;
+}
+
 /** A stop note older than this is stale — a previous run left it behind. */
 export const STOP_REQUEST_MAX_AGE_MS = 60_000;
 
@@ -35,6 +48,10 @@ export function stopRequestPath(): string {
 
 export function lastStopPath(): string {
   return path.join(resolveAgentDeckHome(), 'last-stop.json');
+}
+
+export function lastStartFailurePath(): string {
+  return path.join(resolveAgentDeckHome(), 'last-start-failure.json');
 }
 
 export function recordStopRequest(input: {
@@ -137,25 +154,88 @@ export function formatSupervisorShutdownLine(exitCode: number, reason: string): 
   return `[agent-deck] supervisor shutting down (exit ${exitCode}, reason: ${reason})`;
 }
 
-export function writeLastStop(record: LastStopRecord): void {
+export function formatStartFailureLine(reason: string): string {
+  return `[agent-deck] start failed: ${reason}`;
+}
+
+/**
+ * A start that dies before the supervisor loop still has to leave a trail. The
+ * operator's next move is supervisor.log or `agent-deck status`, and neither can
+ * show a message that only ever reached the invoking terminal.
+ */
+export function recordStartFailure(input: {
+  reason: string;
+  /** Extra operator-facing lines, copied into supervisor.log under the reason. */
+  detail?: string[];
+  exitCode?: number;
+  /** Something closer to the failure already wrote a record — do not clobber it. */
+  keepExistingRecord?: boolean;
+  pid?: number;
+  now?: Date;
+}): number {
+  const exitCode = input.exitCode ?? 1;
+  const at = (input.now ?? new Date()).toISOString();
+
   try {
-    const target = lastStopPath();
+    appendDaemonLogLine('supervisor', `${at} ${formatStartFailureLine(input.reason)}`);
+    for (const line of input.detail ?? []) {
+      appendDaemonLogLine('supervisor', `${at} [agent-deck] start failed| ${line}`);
+    }
+  } catch {
+    // A start already failing must not fail again on its own diagnostic.
+  }
+
+  if (!input.keepExistingRecord) {
+    writeJsonRecord(lastStartFailurePath(), {
+      at,
+      exitCode,
+      reason: input.reason,
+      pid: input.pid ?? process.pid,
+    });
+  }
+
+  return exitCode;
+}
+
+function writeJsonRecord(target: string, record: unknown): void {
+  try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
   } catch {
-    // Never block a shutdown on a bookkeeping write.
+    // Never block a shutdown (or a failing start) on a bookkeeping write.
   }
 }
 
-export function readLastStop(): LastStopRecord | null {
+function readJsonRecord<T extends { at?: unknown; reason?: unknown }>(source: string): T | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(lastStopPath(), 'utf8')) as LastStopRecord;
+    const parsed = JSON.parse(fs.readFileSync(source, 'utf8')) as T;
     if (typeof parsed?.at !== 'string' || typeof parsed?.reason !== 'string') {
       return null;
     }
     return parsed;
   } catch {
     return null;
+  }
+}
+
+export function writeLastStop(record: LastStopRecord): void {
+  writeJsonRecord(lastStopPath(), record);
+}
+
+export function readLastStop(): LastStopRecord | null {
+  return readJsonRecord<LastStopRecord>(lastStopPath());
+}
+
+export function readLastStartFailure(): LastStartFailureRecord | null {
+  return readJsonRecord<LastStartFailureRecord>(lastStartFailurePath());
+}
+
+/** A start that got the deck running answers the previous failure — drop it. */
+export function clearLastStartFailure(): void {
+  try {
+    fs.unlinkSync(lastStartFailurePath());
+  } catch {
+    // Nothing to clear.
   }
 }
 
@@ -167,6 +247,19 @@ export function formatLastStopLines(record: LastStopRecord | null): string[] {
   }
   return [
     'Last stop:',
+    `  at      ${record.at}`,
+    `  exit    ${record.exitCode}`,
+    `  reason  ${record.reason}`,
+  ];
+}
+
+/** Printed under the last stop, so "won't start" and "stopped" stay distinct. */
+export function formatLastStartFailureLines(record: LastStartFailureRecord | null): string[] {
+  if (!record) {
+    return [];
+  }
+  return [
+    'Last failed start:',
     `  at      ${record.at}`,
     `  exit    ${record.exitCode}`,
     `  reason  ${record.reason}`,

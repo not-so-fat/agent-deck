@@ -49,6 +49,22 @@ async function waitForSupervisorExit(pid: number | undefined): Promise<void> {
   }
 }
 
+/**
+ * The supervisor takes the note at the top of its shutdown, which can be a few
+ * ms behind its ports closing — and with no run.json there is no pid to wait on
+ * at all. Concluding "nobody recorded this stop" too early would throw away the
+ * attribution and overwrite the supervisor's own record.
+ */
+async function waitForStopRequestConsumed(attempts = 20): Promise<boolean> {
+  for (let i = 0; i < attempts; i += 1) {
+    if (!readStopRequest()) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return !readStopRequest();
+}
+
 async function waitForShutdown(host: string, backendPort: number, mcpPort: number): Promise<void> {
   for (let i = 0; i < 20; i += 1) {
     const probe = await probeAgentDeck(host, backendPort, mcpPort);
@@ -105,7 +121,8 @@ export async function runStop(options: StopOptions = {}): Promise<number> {
 
   // Note still there ⇒ no supervisor recorded this stop (killed listeners
   // directly, or nothing was running). Record it so `status` still answers why.
-  if (readStopRequest()) {
+  const supervisorTookTheNote = stopped > 0 && (await waitForStopRequestConsumed());
+  if (!supervisorTookTheNote) {
     clearStopRequest();
     if (stopped > 0) {
       writeLastStop({

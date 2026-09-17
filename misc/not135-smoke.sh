@@ -1,7 +1,7 @@
 #!/bin/bash
 # NOT-135 manual smoke: four stop methods + a failed start, in an isolated home.
 set -u
-REPO=/Users/not_so_fat/workspace/codes/personal/agent-deck/.agent-dealer-worktrees/ff9d6072-48df-4f8f-ab51-fa9db16f370f-developer
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 CLI="node $REPO/packages/cli/dist/bin.js"
 export AGENT_DECK_HOME=/tmp/not135-home
 export AGENT_DECK_BACKEND_PORT=18111
@@ -50,6 +50,24 @@ banner "6b. supervisor.log tail after the failed start"
 tail -20 "$LOG"
 banner "6c. backend.log tail after the failed start"
 tail -8 "$AGENT_DECK_HOME/logs/backend.log"
+banner "6d. agent-deck status after the failed start (stop vs failed start)"
+$CLI status 2>/dev/null | sed -n '/Last stop/,+9p'
+
+banner "7. stop that lands mid-startup (before run.json exists)"
+# run.json is only written once the deck is up, so find the supervisor by its
+# argv — matched on this smoke run's own ports, never a real daemon elsewhere.
+$CLI start --daemon --no-open --port "$AGENT_DECK_BACKEND_PORT" --mcp-port "$AGENT_DECK_MCP_PORT" >/dev/null 2>&1 &
+LAUNCHER=$!
+sleep 0.2
+for PID in $(pgrep -f -- "--_supervisor"); do
+  if ps -o command= -p "$PID" | grep -q -- "--port $AGENT_DECK_BACKEND_PORT"; then
+    kill -TERM "$PID"
+  fi
+done
+wait $LAUNCHER 2>/dev/null
+sleep 1
+grep -E "shutting down|start failed" "$LOG" | tail -2
+$CLI stop >/dev/null 2>&1
 
 banner "cleanup"
 $CLI stop >/dev/null 2>&1

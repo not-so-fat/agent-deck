@@ -4,15 +4,19 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  clearLastStartFailure,
   clearStopRequest,
   composeShutdownReason,
   consumeStopRequest,
   describeSignalOrigin,
+  formatLastStartFailureLines,
   formatLastStopLines,
   formatSupervisorShutdownLine,
   lastStopPath,
+  readLastStartFailure,
   readLastStop,
   readStopRequest,
+  recordStartFailure,
   recordStopRequest,
   stopRequestPath,
   writeLastStop,
@@ -113,6 +117,44 @@ describe('shutdown reason', () => {
 
   it('says so plainly when no stop was ever recorded', () => {
     expect(formatLastStopLines(null)[0]).toContain('no record');
+  });
+
+  /**
+   * "Why won't it start?" and "why did it stop?" are different questions, and
+   * a failed start must not overwrite the answer to the second one.
+   */
+  it('keeps a failed start in its own record, next to the last stop', () => {
+    writeLastStop({
+      at: '2026-09-16T12:00:00.474Z',
+      exitCode: 0,
+      reason: 'signal SIGTERM; requested by agent-deck stop (pid 1234)',
+      supervisorPid: 42,
+    });
+
+    const exitCode = recordStartFailure({
+      reason: 'port 1111 (API/dashboard) is held by another program on 127.0.0.1',
+      detail: ['[agent-deck] Free the port, or start on different ports'],
+      pid: 4242,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(readLastStop()?.reason).toContain('agent-deck stop');
+    expect(readLastStartFailure()?.reason).toContain('port 1111');
+    expect(formatLastStartFailureLines(readLastStartFailure())[0]).toBe('Last failed start:');
+
+    // The supervisor.log copy is what an operator reading the log sees.
+    const supervisorLog = fs.readFileSync(path.join(tempHome, 'logs', 'supervisor.log'), 'utf8');
+    expect(supervisorLog).toContain('[agent-deck] start failed: port 1111 (API/dashboard) is held');
+    expect(supervisorLog).toContain('start failed| [agent-deck] Free the port');
+  });
+
+  it('drops the failed-start record once a start succeeds', () => {
+    recordStartFailure({ reason: 'port 1111 is taken' });
+    expect(readLastStartFailure()).not.toBeNull();
+    clearLastStartFailure();
+    expect(readLastStartFailure()).toBeNull();
+    // Nothing to print when no start has failed.
+    expect(formatLastStartFailureLines(null)).toEqual([]);
   });
 
   it('survives a corrupt note instead of blocking shutdown', () => {

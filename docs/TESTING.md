@@ -78,6 +78,7 @@ Release / user path (packaged artifact)
 | Setup / harness / statusline / menubar | `*.test.ts` | Strong for install contracts |
 | Release user path | `release-integration.test.ts` + `scripts/release-smoke.sh` | Strong for statusline |
 | Collection admin (`service|playbook|deck delete`) | — | **Missing** (logic in backend `cli-runtime.test.ts` only) |
+| **Supervisor stop/start diagnostics (NOT-135)** | `shutdown-reason.test.ts`, `start-preflight.test.ts`, `start-failure.integration.test.ts`, `misc/not135-smoke.sh` | **Auto** — the integration file spawns the built CLI and the real backend, so it needs `npm run build` first (Turbo does this; a bare `vitest` does not) |
 
 ### Frontend (`apps/agent-deck`)
 
