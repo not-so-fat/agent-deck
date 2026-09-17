@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.10.1 — 2026-09-17
+
+### Fix: one duplicate display name no longer stops store sync for everyone (NOT-123)
+
+- A single display-name collision anywhere in the file store aborted the whole store→sqlite reindex, so multi-laptop sync stopped dead and stayed dead — three playbooks sat unindexed for five days while `status` and `doctor` reported OK and the only trace was a `console.error` in `backend.log`.
+- Display names are cosmetic; ids are what the snapshot keys on. **Duplicates are now warnings** that name every colliding path, and the import proceeds. SQLite still holds a UNIQUE index per display name, so later files are indexed as `<name> (imported)` — the same policy as the existing dedupe migration — and no card is dropped. **Genuine id collisions still fail closed:** that is real ambiguity, and one file would silently overwrite the other.
+- The reindex outcome (timestamp, ok/error, warnings) is persisted in store meta. `agent-deck status` and `agent-deck doctor` report `Last reindex FAILED <when>: <error>`, and **doctor exits non-zero** — a failed import is visible on day one instead of after five days.
+- `agent-deck reindex` prints its warnings instead of burying them in the result JSON.
+- The status reader opens SQLite **read-only**: `DatabaseManager`'s constructor migrates, and a diagnostic must not mutate the database it is reporting on.
+- A throw from outside the apply-snapshot path (an unreadable nested store directory, a file removed mid-walk) is caught, converted to a failed result, and persisted — previously it escaped and left the *previous*, stale outcome on display after a reindex that in fact failed.
+
+### Fix: the supervisor now names the origin of every stop, and a failed start leaves a diagnostic (NOT-135)
+
+- A failed preflight bypassed every persistent diagnostic. `runStart` returned as soon as the native probe failed, so an ABI mismatch reached only the invoking terminal: nothing in `supervisor.log`, nothing for `agent-deck status`. Every pre-supervisor exit — preflight, port conflict, missing backend build, a dead daemon supervisor — is now persisted to `supervisor.log` and to a record `status` reads.
+- Signal handlers were installed only after startup finished, so a stop landing during preflight, upgrade checks, port probes or entry resolution took Node's default exit path — the exact missing-origin failure this ticket is about. They are now installed **before the first startup step**, once supervisor mode is known, and name the phase they interrupted.
+- The daemon launcher gets its own handler: it owns no run state and no children, so it records the interrupted start and leaves an already-spawned supervisor alone.
+- `verifySqliteNative` matched `ERR_DLOPEN_FAILED` in the error *message*, where Node never puts it, so an arch mismatch got no rebuild hint. It now matches on `code`.
+
+### Internal
+
+- The test run fails to start when `packages/shared/dist` predates its source or no longer throws for the real store (NOT-138). The real-store guard reaches every package through that build, so a lagging build removed it silently and store writes landed in `~/.agent-deck` again.
+- Every test process now starts from ports that cannot reach a deck (`AGENT_DECK_BACKEND_PORT` / `AGENT_DECK_MCP_PORT` = 0 in all four vitest configs); `global-setup` fails before the first test if a config drops the pins. An isolated `AGENT_DECK_HOME` does not scope ports, so a test outside the harness could previously `stop` the developer's own daemon.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- **`agent-deck doctor` now exits non-zero when the last reindex failed.** If you gate CI or a shell prompt on doctor's exit code, expect a new failure mode. Run `agent-deck reindex` to see the warnings and clear the record.
+
 ## 1.10.0 — 2026-09-16
 
 ### Fix: MCP clients recover from a backend restart on their own (NOT-101)
