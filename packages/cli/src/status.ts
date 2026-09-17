@@ -4,6 +4,13 @@ import { getAgentDeckVersion } from './version';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
 import { formatDashboardStatusLine } from './dashboard-open';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
+import {
+  formatLastStartFailureLines,
+  formatLastStopLines,
+  readLastStartFailure,
+  readLastStop,
+} from './shutdown-reason';
+import { resolveDaemonLogPath } from './daemon-logs';
 import { readLastReindex } from './backend-runtime';
 import { formatLastReindex } from './store';
 
@@ -61,6 +68,17 @@ export async function runStatus(): Promise<number> {
         `cli=${state.cliPid}${isProcessAlive(state.cliPid) ? '' : ' (dead)'}`,
     );
   }
+
+  // "Why did the deck stop?" — answered here instead of only in supervisor.log.
+  // A failed start is a separate question and keeps its own record.
+  console.log('');
+  for (const line of formatLastStopLines(readLastStop())) {
+    console.log(line);
+  }
+  for (const line of formatLastStartFailureLines(readLastStartFailure())) {
+    console.log(line);
+  }
+  console.log(`  log     ${resolveDaemonLogPath('supervisor')}`);
 
   const [backendBusy, mcpBusy] = await Promise.all([
     isTcpPortOpen(host, backendPort),

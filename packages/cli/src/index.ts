@@ -21,7 +21,7 @@ import { shouldOpenDashboardByDefault } from './dashboard-open';
 import { runStatus } from './status';
 import { runStatusline } from './statusline';
 import { runMenubar } from './menubar';
-import { runStop } from './stop';
+import { parseStopOptions, runStop } from './stop';
 import { runReindexCommand, runStoreCommand } from './store';
 import { runUpgrade } from './upgrade';
 import { runInstall } from './install';
@@ -46,7 +46,7 @@ function getVaultManager(): VaultManager {
 function printUsage() {
   console.log(`Usage:
   agent-deck start [--daemon] [--open|--no-open] [--no-ui] [--force] [--port PORT] [--mcp-port PORT]
-  agent-deck stop
+  agent-deck stop [--source NAME] [--detail TEXT]
   agent-deck status
   agent-deck open [--path /...]
   agent-deck statusline [--workspace <path>]
@@ -305,7 +305,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return runStart({ openBrowser, skipUi, force, daemon, supervisor, backendPort, mcpPort });
     }
     case 'stop':
-      return runStop();
+      // --source lets the menubar/dashboard/scripts name themselves in the log.
+      return runStop(parseStopOptions(rest));
     case 'status':
       return runStatus();
     case 'open':

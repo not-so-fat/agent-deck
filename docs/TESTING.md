@@ -78,6 +78,7 @@ Release / user path (packaged artifact)
 | Setup / harness / statusline / menubar | `*.test.ts` | Strong for install contracts |
 | Release user path | `release-integration.test.ts` + `scripts/release-smoke.sh` | Strong for statusline |
 | Collection admin (`service|playbook|deck delete`) | — | **Missing** (logic in backend `cli-runtime.test.ts` only) |
+| **Supervisor stop/start diagnostics (NOT-135)** | `shutdown-reason.test.ts`, `start-preflight.test.ts`, `stop-origin.integration.test.ts`, `start-failure.integration.test.ts`, `misc/not135-smoke.sh` | **Auto** — the `*.integration.test.ts` files spawn the built CLI, a real supervisor and a real backend (shared rig: `cli-integration-harness.ts`), so they need `npm run build` first (Turbo does this; a bare `vitest` does not) |
 
 ### Frontend (`apps/agent-deck`)
 
@@ -122,6 +123,17 @@ rebuild; neither lets a suite be collected.
 | See what a run wrote | `AGENT_DECK_KEEP_TEST_HOME=1 npm test` — teardown prints and keeps the temp store |
 | Tests refuse to start on a stale build | `npm run build` (Turbo does this before `npm test`; running `vitest` inside a package does not) |
 | Knowingly test against an older build | `AGENT_DECK_SKIP_SHARED_BUILD_CHECK=1` — skips the mtime check only; the guard probe still runs |
+
+### Port isolation (the same hazard, one layer down)
+
+An isolated `AGENT_DECK_HOME` is not enough for a suite that spawns the CLI:
+`agent-deck stop` and `agent-deck status` read their ports from the environment,
+not from `run.json`, and `stop` kills **whatever holds the configured ports**. On
+the defaults (`1111` / `1110`) that is the developer's own running deck — which
+is exactly what a first run of the NOT-135 integration suite did. So
+`cli-integration-harness.ts` hands out an `IsolatedDeck` (a temp home *plus* two
+reserved ports), pins `AGENT_DECK_BACKEND_PORT` / `AGENT_DECK_MCP_PORT` on every
+CLI invocation, and refuses outright to run the CLI on the shipped defaults.
 
 ---
 

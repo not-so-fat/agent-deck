@@ -24,29 +24,35 @@ export function formatNodeVersionError(): string {
   ].join('\n');
 }
 
-export function assertSupportedNodeVersion(): number | null {
-  const major = getNodeMajor();
-  if ((SUPPORTED_NODE_MAJORS as readonly number[]).includes(major)) {
-    return null;
-  }
-  console.error(formatNodeVersionError());
-  return 1;
+export function isSupportedNodeMajor(major = getNodeMajor()): boolean {
+  return (SUPPORTED_NODE_MAJORS as readonly number[]).includes(major);
 }
 
 /** Load better-sqlite3 from the CLI's backend dependency tree (catches ABI / cache mismatches). */
-export function verifySqliteNative(): { ok: true } | { ok: false; message: string } {
+export function verifySqliteNative(): { ok: true } | { ok: false; reason: string; message: string } {
   try {
     const sqlitePath = require.resolve('better-sqlite3', {
       paths: [resolveBackendRoot(), getCliPackageRoot()],
     });
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require(sqlitePath);
+    const Database = require(sqlitePath);
+    // `require` alone proves nothing: better-sqlite3 dlopens its .node binding
+    // lazily, on first Database construction. Without this probe an ABI
+    // mismatch passes preflight and only surfaces as the backend exiting 1.
+    const probe = new Database(':memory:');
+    probe.close();
     return { ok: true };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    if (detail.includes('NODE_MODULE_VERSION')) {
+    // Node reports a failed dlopen as `code`, not in the message, and an
+    // arch mismatch ("incompatible architecture") never says NODE_MODULE_VERSION.
+    const code = (error as NodeJS.ErrnoException)?.code ?? '';
+    if (detail.includes('NODE_MODULE_VERSION') || code === 'ERR_DLOPEN_FAILED') {
       return {
         ok: false,
+        reason:
+          `better-sqlite3 native module does not match node ${process.version} ` +
+          `(NODE_MODULE_VERSION ${process.versions.modules}): ${firstLine(detail)}`,
         message: [
           'better-sqlite3 native module does not match this Node.js version.',
           '',
@@ -58,15 +64,39 @@ export function verifySqliteNative(): { ok: true } | { ok: false; message: strin
         ].join('\n'),
       };
     }
-    return { ok: false, message: detail };
+    return { ok: false, reason: `better-sqlite3 could not be loaded: ${firstLine(detail)}`, message: detail };
   }
 }
 
-export function assertSqliteNative(): number | null {
-  const result = verifySqliteNative();
-  if (result.ok) {
-    return null;
+function firstLine(text: string): string {
+  return text.split('\n')[0].trim();
+}
+
+export interface PreflightFailure {
+  /** One line, for supervisor.log and `agent-deck status`. */
+  reason: string;
+  /** The full operator-facing explanation, already formatted for a terminal. */
+  message: string;
+}
+
+/**
+ * Runtime checks that must pass before anything is spawned. Returns the failure
+ * rather than printing it: a start that dies here has to end up in supervisor.log
+ * and `agent-deck status` too, not only on the terminal that invoked it.
+ */
+export function checkStartPreflight(): PreflightFailure | null {
+  const major = getNodeMajor();
+  if (!isSupportedNodeMajor(major)) {
+    return {
+      reason: `unsupported Node.js major ${major} (${process.version})`,
+      message: formatNodeVersionError(),
+    };
   }
-  console.error(result.message);
-  return 1;
+
+  const sqlite = verifySqliteNative();
+  if (!sqlite.ok) {
+    return { reason: sqlite.reason, message: sqlite.message };
+  }
+
+  return null;
 }
