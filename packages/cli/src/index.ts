@@ -21,7 +21,7 @@ import { shouldOpenDashboardByDefault } from './dashboard-open';
 import { runStatus } from './status';
 import { runStatusline } from './statusline';
 import { runMenubar } from './menubar';
-import { runStop } from './stop';
+import { runStop, type StopOptions } from './stop';
 import { runReindexCommand, runStoreCommand } from './store';
 import { runUpgrade } from './upgrade';
 import { runInstall } from './install';
@@ -46,7 +46,7 @@ function getVaultManager(): VaultManager {
 function printUsage() {
   console.log(`Usage:
   agent-deck start [--daemon] [--open|--no-open] [--no-ui] [--force] [--port PORT] [--mcp-port PORT]
-  agent-deck stop
+  agent-deck stop [--source NAME] [--detail TEXT]
   agent-deck status
   agent-deck open [--path /...]
   agent-deck statusline [--workspace <path>]
@@ -73,6 +73,19 @@ function printUsage() {
   agent-deck bootstrap [--host claude|cursor|all] [--workspace <path>] [--since <date>] [--limit <n>] [--out <dir>]
     Mine local Claude Code session history into playbook-proposal digests (offline).
   agent-deck exec [--deck DECK_ID] [--connections cred_a,cred_b] [--dry-run] -- <command...>`);
+}
+
+/** `agent-deck stop --source menubar --detail "tray quit"` — the origin of the SIGTERM. */
+export function parseStopOptions(args: string[]): StopOptions {
+  const options: StopOptions = {};
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--source') {
+      options.source = args[++i];
+    } else if (args[i] === '--detail') {
+      options.detail = args[++i];
+    }
+  }
+  return options;
 }
 
 export async function runCredentialAdd(args: string[]): Promise<number> {
@@ -305,7 +318,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return runStart({ openBrowser, skipUi, force, daemon, supervisor, backendPort, mcpPort });
     }
     case 'stop':
-      return runStop();
+      // --source lets the menubar/dashboard/scripts name themselves in the log.
+      return runStop(parseStopOptions(rest));
     case 'status':
       return runStatus();
     case 'open':

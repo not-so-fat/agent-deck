@@ -17,11 +17,21 @@ import {
 } from './managed';
 import {
   appendDaemonLogLine,
+  formatChildLogTail,
   openDaemonLogFd,
+  readDaemonLogTail,
   resolveCliEntry,
   resolveDaemonLogPath,
   resolveDaemonLogsDir,
+  type DaemonLogName,
 } from './daemon-logs';
+import {
+  composeShutdownReason,
+  consumeStopRequest,
+  describeSignalOrigin,
+  formatSupervisorShutdownLine,
+  writeLastStop,
+} from './shutdown-reason';
 import {
   formatDashboardStatusLine,
   openDashboardInBrowser,
@@ -80,6 +90,21 @@ function resolveServiceStdio(label: 'backend' | 'mcp', ioMode: SpawnIoMode): Std
   return ['ignore', fd, fd];
 }
 
+/**
+ * Copy the child's own last words into supervisor.log. The child already logs
+ * why it died, but the operator reading "backend exited (code 1)" is looking at
+ * a different file — so bring the reason to them.
+ */
+function surfaceChildLogTail(label: DaemonLogName, ioMode: SpawnIoMode): void {
+  if (ioMode !== 'file') {
+    // Inherit mode already printed the child's output to this terminal.
+    return;
+  }
+  for (const line of formatChildLogTail(label, readDaemonLogTail(label, 20))) {
+    appendDaemonLogLine('supervisor', `${new Date().toISOString()} ${line}`);
+  }
+}
+
 function spawnNodeService(
   label: 'backend' | 'mcp',
   entry: string,
@@ -102,8 +127,11 @@ function spawnNodeService(
     } else {
       console.error(message);
     }
+    if (signal || (code ?? 1) !== 0) {
+      surfaceChildLogTail(label, ioMode);
+    }
     if (label === 'backend') {
-      void shutdown(code ?? 1);
+      void shutdown(code ?? 1, `backend exited (${detail})`);
       return;
     }
     const mcpWarn =
@@ -119,18 +147,33 @@ function spawnNodeService(
   return child;
 }
 
-async function shutdown(exitCode = 0): Promise<void> {
+/**
+ * @param origin what this supervisor observed (a signal, a child exit, a failed
+ *   start). Enriched with the requester's note when one was left behind, so the
+ *   log names *who* stopped the deck and not just that it stopped.
+ */
+async function shutdown(exitCode = 0, origin = 'origin not recorded'): Promise<void> {
   if (shuttingDown) {
     return;
   }
   shuttingDown = true;
 
+  const request = consumeStopRequest({ supervisorPid: process.pid });
+  const reason = composeShutdownReason(origin, request);
+  const line = formatSupervisorShutdownLine(exitCode, reason);
+
   if (isSupervisorMode({})) {
-    appendDaemonLogLine(
-      'supervisor',
-      `${new Date().toISOString()} [agent-deck] supervisor shutting down (exit ${exitCode})`,
-    );
+    appendDaemonLogLine('supervisor', `${new Date().toISOString()} ${line}`);
+  } else {
+    console.error(line);
   }
+
+  writeLastStop({
+    at: new Date().toISOString(),
+    exitCode,
+    reason,
+    supervisorPid: process.pid,
+  });
 
   clearRunState();
 
@@ -210,6 +253,11 @@ async function runDaemonLauncher(options: StartOptions): Promise<number> {
   const healthy = await waitForHealth(`${backendUrl}/health`);
   if (!healthy) {
     console.error('[agent-deck] Daemon supervisor failed health check.');
+    // The supervisor log already holds the reason (and the child log tail it
+    // copied in) — show it here rather than sending the operator hunting.
+    for (const line of formatChildLogTail('supervisor', readDaemonLogTail('supervisor', 20))) {
+      console.error(line);
+    }
     console.error(`[agent-deck] See ${resolveDaemonLogPath('supervisor')}`);
     return 1;
   }
@@ -286,7 +334,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     if (probe.backendUp && probe.mcpUp) {
       if (options.force) {
         console.log('[agent-deck] Restarting existing instance (--force) ...');
-        await runStop();
+        await runStop({ source: 'agent-deck start --force', detail: 'restarting existing instance' });
         await new Promise((resolve) => setTimeout(resolve, 500));
       } else {
         await printRunningEndpoints(host, backendPort, mcpPort, `http://${host}:${backendPort}`);
@@ -317,7 +365,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   if (probe.backendUp && probe.mcpUp) {
     if (options.force) {
       console.log('[agent-deck] Restarting existing instance (--force) ...');
-      await runStop();
+      await runStop({ source: 'agent-deck start --force', detail: 'restarting existing instance' });
       await new Promise((resolve) => setTimeout(resolve, 500));
     } else {
       await printRunningEndpoints(host, backendPort, mcpPort, backendUrl);
@@ -357,6 +405,12 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
     }
   };
 
+  // Registered before the children exist: a stop that arrives mid-startup must
+  // still be attributed rather than killing the supervisor silently.
+  process.on('SIGINT', () => void shutdown(0, describeSignalOrigin('SIGINT')));
+  process.on('SIGTERM', () => void shutdown(0, describeSignalOrigin('SIGTERM')));
+  process.on('SIGHUP', () => void shutdown(0, describeSignalOrigin('SIGHUP')));
+
   logStart('[agent-deck] Starting backend ...');
   const backendChild = spawnNodeService(
     'backend',
@@ -376,12 +430,14 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   if (!healthy) {
     const failMsg = '[agent-deck] Backend failed health check (port conflict or crash).';
     if (ioMode === 'file') {
-      appendDaemonLogLine('supervisor', failMsg);
+      appendDaemonLogLine('supervisor', `${new Date().toISOString()} ${failMsg}`);
     } else {
       console.error(failMsg);
+      console.error(`[agent-deck] See ${resolveDaemonLogPath('backend')}`);
       console.error('[agent-deck] Run: agent-deck status');
     }
-    await shutdown(1);
+    surfaceChildLogTail('backend', ioMode);
+    await shutdown(1, 'backend failed health check during start');
     return 1;
   }
 
@@ -410,11 +466,13 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
       const mcpFail =
         '[agent-deck] MCP server failed to start (port conflict or crash). Dashboard API is still running.';
       if (ioMode === 'file') {
-        appendDaemonLogLine('supervisor', mcpFail);
+        appendDaemonLogLine('supervisor', `${new Date().toISOString()} ${mcpFail}`);
       } else {
         console.error(mcpFail);
+        console.error(`[agent-deck] See ${resolveDaemonLogPath('mcp')}`);
         console.error('[agent-deck] Run: agent-deck stop && agent-deck start');
       }
+      surfaceChildLogTail('mcp', ioMode);
     } else {
       mcpPid = mcpChild.pid ?? 0;
     }
@@ -465,9 +523,6 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
       console.warn(`[agent-deck] ${result.message ?? 'Failed to open dashboard'}`);
     }
   }
-
-  process.on('SIGINT', () => void shutdown(0));
-  process.on('SIGTERM', () => void shutdown(0));
 
   await new Promise<void>(() => {
     // keep alive until signal

@@ -4,6 +4,8 @@ import { getAgentDeckVersion } from './version';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
 import { formatDashboardStatusLine } from './dashboard-open';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
+import { formatLastStopLines, readLastStop } from './shutdown-reason';
+import { resolveDaemonLogPath } from './daemon-logs';
 
 export async function runStatus(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -45,6 +47,13 @@ export async function runStatus(): Promise<number> {
         `cli=${state.cliPid}${isProcessAlive(state.cliPid) ? '' : ' (dead)'}`,
     );
   }
+
+  // "Why did the deck stop?" — answered here instead of only in supervisor.log.
+  console.log('');
+  for (const line of formatLastStopLines(readLastStop())) {
+    console.log(line);
+  }
+  console.log(`  log     ${resolveDaemonLogPath('supervisor')}`);
 
   const [backendBusy, mcpBusy] = await Promise.all([
     isTcpPortOpen(host, backendPort),

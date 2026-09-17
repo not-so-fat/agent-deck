@@ -40,7 +40,12 @@ export function verifySqliteNative(): { ok: true } | { ok: false; message: strin
       paths: [resolveBackendRoot(), getCliPackageRoot()],
     });
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require(sqlitePath);
+    const Database = require(sqlitePath);
+    // `require` alone proves nothing: better-sqlite3 dlopens its .node binding
+    // lazily, on first Database construction. Without this probe an ABI
+    // mismatch passes preflight and only surfaces as the backend exiting 1.
+    const probe = new Database(':memory:');
+    probe.close();
     return { ok: true };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
