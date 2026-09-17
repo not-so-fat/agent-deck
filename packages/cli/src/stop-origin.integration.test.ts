@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   assertFreshCliAndBackendBuild,
-  createIsolatedHome,
+  createIsolatedDeck,
   isAlive,
   killLeftovers,
   occupyPort,
   readLastStopFile,
-  removeIsolatedHome,
+  removeIsolatedDeck,
   reserveFreePort,
   runCli,
   shutdownLines,
@@ -16,6 +16,7 @@ import {
   waitForHealthy,
   waitForRunState,
   waitUntil,
+  type IsolatedDeck,
 } from './cli-integration-harness';
 
 /**
@@ -25,42 +26,33 @@ import {
  * being fixed was precisely that the supervisor could not tell these apart.
  */
 describe('NOT-135 — every stop names its origin', () => {
-  let home: string;
+  let deck: IsolatedDeck;
   let foreground: ChildProcess | null = null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     assertFreshCliAndBackendBuild();
-    home = createIsolatedHome('agent-deck-stop-origin-');
+    // Its own store *and* its own ports: `agent-deck stop` kills whatever holds
+    // the configured ports, and on the defaults that is the developer's deck.
+    deck = await createIsolatedDeck('agent-deck-stop-origin-');
     foreground = null;
   });
 
   afterEach(() => {
-    killLeftovers(home, [foreground]);
-    removeIsolatedHome(home);
+    killLeftovers(deck, [foreground]);
+    removeIsolatedDeck(deck);
   });
 
-  /** Start a background deck on ports nothing else holds, and wait for it. */
+  /** Start a background deck on this suite's own ports, and wait for it. */
   async function startDaemon(): Promise<void> {
-    const backendPort = await reserveFreePort();
-    const mcpPort = await reserveFreePort();
-    const started = runCli(home, [
-      'start',
-      '--daemon',
-      '--no-ui',
-      '--no-open',
-      '--port',
-      String(backendPort),
-      '--mcp-port',
-      String(mcpPort),
-    ]);
+    const started = runCli(deck, ['start', '--daemon', '--no-ui', '--no-open']);
     expect(started.status, `start --daemon failed: ${started.stderr}`).toBe(0);
   }
 
   /** The reason text of the next shutdown line, with the requester pid removed. */
   async function nextShutdownReason(previousCount: number): Promise<string> {
-    const appeared = await waitUntil(() => shutdownLines(home).length > previousCount);
+    const appeared = await waitUntil(() => shutdownLines(deck).length > previousCount);
     expect(appeared, 'supervisor.log gained no shutdown line').toBe(true);
-    const line = shutdownLines(home).at(-1) ?? '';
+    const line = shutdownLines(deck).at(-1) ?? '';
     const reason = /reason: (.*)\)\s*$/.exec(line)?.[1];
     expect(reason, `no reason in: ${line}`).toBeTruthy();
     return (reason as string).replace(/ \(pid \d+\)/g, '');
@@ -78,9 +70,9 @@ describe('NOT-135 — every stop names its origin', () => {
     // 1. `agent-deck stop` — the note the CLI leaves names the caller.
     //    Replays 2026-09-16 10:43:18, logged then as a bare `(exit 0)`.
     await startDaemon();
-    let state = await waitForRunState(home);
-    let count = shutdownLines(home).length;
-    expect(runCli(home, ['stop']).status).toBe(0);
+    let state = await waitForRunState(deck);
+    let count = shutdownLines(deck).length;
+    expect(runCli(deck, ['stop']).status).toBe(0);
     reasons.push(await nextShutdownReason(count));
     await expectChildrenGone(state);
 
@@ -88,42 +80,34 @@ describe('NOT-135 — every stop names its origin', () => {
     //    Replays 2026-09-16 12:00:00: a stop nobody claimed, now visibly
     //    unclaimed rather than indistinguishable from `agent-deck stop`.
     await startDaemon();
-    state = await waitForRunState(home);
-    count = shutdownLines(home).length;
+    state = await waitForRunState(deck);
+    count = shutdownLines(deck).length;
     process.kill(state.cliPid, 'SIGTERM');
     reasons.push(await nextShutdownReason(count));
     await expectChildrenGone(state);
 
     // 3. A named caller (what the menubar or a wrapper script passes).
     await startDaemon();
-    state = await waitForRunState(home);
-    count = shutdownLines(home).length;
-    expect(
-      runCli(home, ['stop', '--source', 'menubar', '--detail', 'Quit Agent Deck']).status,
-    ).toBe(0);
+    state = await waitForRunState(deck);
+    count = shutdownLines(deck).length;
+    expect(runCli(deck, ['stop', '--source', 'menubar', '--detail', 'Quit Agent Deck']).status).toBe(
+      0,
+    );
     reasons.push(await nextShutdownReason(count));
     await expectChildrenGone(state);
 
     // 4. Ctrl-C on a foreground (inherit-mode) run: the one stop that never
     //    went through supervisor.log before this ticket.
-    const backendPort = await reserveFreePort();
-    const mcpPort = await reserveFreePort();
-    foreground = spawnCli(home, [
-      'start',
-      '--no-ui',
-      '--no-open',
-      '--port',
-      String(backendPort),
-      '--mcp-port',
-      String(mcpPort),
-    ]);
+    foreground = spawnCli(deck, ['start', '--no-ui', '--no-open']);
     // Inherit mode pipes the children's output through this process — drain it
     // so a full pipe cannot stall the backend we are waiting on.
     foreground.stdout?.resume();
     foreground.stderr?.resume();
-    expect(await waitForHealthy(backendPort), 'foreground deck never became healthy').toBe(true);
-    state = await waitForRunState(home);
-    count = shutdownLines(home).length;
+    expect(await waitForHealthy(deck.backendPort), 'foreground deck never became healthy').toBe(
+      true,
+    );
+    state = await waitForRunState(deck);
+    count = shutdownLines(deck).length;
     foreground.kill('SIGINT');
     reasons.push(await nextShutdownReason(count));
     await expectChildrenGone(state);
@@ -136,7 +120,7 @@ describe('NOT-135 — every stop names its origin', () => {
     expect(new Set(reasons).size).toBe(4);
 
     // And the last of them is what `agent-deck status` reports.
-    const status = runCli(home, ['status']);
+    const status = runCli(deck, ['status']);
     expect(status.stdout).toContain('Last stop:');
     expect(status.stdout).toContain('signal SIGINT');
     expect(status.stdout).not.toContain('Last failed start:');
@@ -149,13 +133,13 @@ describe('NOT-135 — every stop names its origin', () => {
    */
   it('keeps the real stop when an unrelated start is interrupted before it supervises anything', async () => {
     await startDaemon();
-    const state = await waitForRunState(home);
-    const count = shutdownLines(home).length;
-    expect(runCli(home, ['stop']).status).toBe(0);
+    const state = await waitForRunState(deck);
+    const count = shutdownLines(deck).length;
+    expect(runCli(deck, ['stop']).status).toBe(0);
     await nextShutdownReason(count);
     await expectChildrenGone(state);
 
-    const recorded = readLastStopFile(home);
+    const recorded = readLastStopFile(deck);
     expect(recorded?.reason).toContain('requested by agent-deck stop');
 
     // A fresh start on a port something else holds, interrupted on top of that:
@@ -163,7 +147,7 @@ describe('NOT-135 — every stop names its origin', () => {
     // deck — whichever of the two ends it first is the path under test.
     const taken = await occupyPort();
     try {
-      foreground = spawnCli(home, [
+      foreground = spawnCli(deck, [
         'start',
         '--no-ui',
         '--no-open',
@@ -188,8 +172,8 @@ describe('NOT-135 — every stop names its origin', () => {
     }
 
     // Unchanged, down to the timestamp: that stop is still the last one.
-    expect(readLastStopFile(home)).toEqual(recorded);
-    const status = runCli(home, ['status']).stdout;
+    expect(readLastStopFile(deck)).toEqual(recorded);
+    const status = runCli(deck, ['status']).stdout;
     expect(status).toContain(recorded?.reason as string);
     // The interrupted start is answerable too — just under its own heading.
     expect(status).toContain('Last failed start:');

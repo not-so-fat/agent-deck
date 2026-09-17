@@ -4,6 +4,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
+import { CLI_DEFAULT_BACKEND_PORT, CLI_DEFAULT_MCP_PORT } from './defaults';
 import type { DaemonLogName } from './daemon-logs';
 
 /**
@@ -69,17 +70,36 @@ export function assertFreshCliAndBackendBuild(): void {
   assertFreshBuild(BACKEND_PACKAGE);
 }
 
-export function createIsolatedHome(prefix: string): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+/**
+ * A store *and* a pair of ports, because `agent-deck stop` and `agent-deck
+ * status` take their ports from the environment, not from run.json: a suite that
+ * isolated only the home would send `stop` at whatever is listening on the
+ * defaults — i.e. the developer's own deck. Every CLI call here goes through
+ * this object so that cannot happen.
+ */
+export interface IsolatedDeck {
+  home: string;
+  backendPort: number;
+  mcpPort: number;
+}
+
+export async function createIsolatedDeck(prefix: string): Promise<IsolatedDeck> {
+  const backendPort = await reserveFreePort();
+  let mcpPort = await reserveFreePort();
+  // Both come from the ephemeral range; the second must not repeat the first.
+  while (mcpPort === backendPort) {
+    mcpPort = await reserveFreePort();
+  }
+  return { home: fs.mkdtempSync(path.join(os.tmpdir(), prefix)), backendPort, mcpPort };
 }
 
 /**
  * Teardown runs even when setup threw, and `fs.rmSync(undefined)` there would
  * replace the real failure (a stale dist, say) with an ERR_INVALID_ARG_TYPE.
  */
-export function removeIsolatedHome(home: string | undefined): void {
-  if (home) {
-    fs.rmSync(home, { recursive: true, force: true });
+export function removeIsolatedDeck(deck: IsolatedDeck | undefined): void {
+  if (deck) {
+    fs.rmSync(deck.home, { recursive: true, force: true });
   }
 }
 
@@ -95,26 +115,69 @@ export function reserveFreePort(): Promise<number> {
   });
 }
 
-/** A port held open for the length of the test, to trip a port-conflict check. */
+/**
+ * A port held open for the length of the test, to trip a port-conflict check.
+ *
+ * The accepted sockets are tracked and destroyed on release: the CLI's port
+ * probe connects here, and a socket nothing ever reads stays paused — so it
+ * never emits 'end', is never destroyed, and `server.close()` would wait on it
+ * for the rest of the test.
+ */
 export function occupyPort(): Promise<{ port: number; release: () => Promise<void> }> {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
+    const sockets = new Set<net.Socket>();
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      // Nothing here speaks a protocol; a probe only needs the accept.
+      socket.on('error', () => socket.destroy());
+    });
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address() as net.AddressInfo;
       resolve({
         port,
-        release: () => new Promise<void>((done) => server.close(() => done())),
+        release: () =>
+          new Promise<void>((done) => {
+            for (const socket of sockets) {
+              socket.destroy();
+            }
+            server.close(() => done());
+          }),
       });
     });
   });
 }
 
-function cliEnv(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+/**
+ * `agent-deck stop` kills whatever holds the configured ports, so a test that
+ * ran on the defaults would stop the developer's deck — and a `status` on them
+ * would report it. Nothing in these suites may use the shipped defaults.
+ */
+function assertIsolatedPorts(deck: IsolatedDeck): void {
+  for (const [port, label] of [
+    [deck.backendPort, 'backend'],
+    [deck.mcpPort, 'MCP'],
+  ] as const) {
+    if (port === CLI_DEFAULT_BACKEND_PORT || port === CLI_DEFAULT_MCP_PORT) {
+      throw new Error(
+        `refusing to run the CLI with the default ${label} port ${port}: that is the developer's own deck`,
+      );
+    }
+  }
+}
+
+function cliEnv(deck: IsolatedDeck, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  assertIsolatedPorts(deck);
   return {
     ...process.env,
-    AGENT_DECK_HOME: home,
+    AGENT_DECK_HOME: deck.home,
     AGENT_DECK_HOST: '127.0.0.1',
+    // `stop` and `status` read the ports from here — pin them, or they act on
+    // whatever is listening on 1111/1110.
+    AGENT_DECK_BACKEND_PORT: String(deck.backendPort),
+    AGENT_DECK_MCP_PORT: String(deck.mcpPort),
     // Keep the run off the network; an update check is not under test.
     AGENT_DECK_NO_UPDATE_CHECK: '1',
     ...extra,
@@ -127,42 +190,46 @@ export interface CliResult {
   stderr: string;
 }
 
-export function runCli(home: string, args: string[], env: NodeJS.ProcessEnv = {}): CliResult {
+export function runCli(deck: IsolatedDeck, args: string[], env: NodeJS.ProcessEnv = {}): CliResult {
   const result = spawnSync(process.execPath, [CLI_ENTRY, ...args], {
     encoding: 'utf8',
     timeout: 90_000,
-    env: cliEnv(home, env),
+    env: cliEnv(deck, env),
   });
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
 /** Foreground `agent-deck start`: the inherit-mode run a Ctrl-C interrupts. */
-export function spawnCli(home: string, args: string[], env: NodeJS.ProcessEnv = {}): ChildProcess {
+export function spawnCli(
+  deck: IsolatedDeck,
+  args: string[],
+  env: NodeJS.ProcessEnv = {},
+): ChildProcess {
   return spawn(process.execPath, [CLI_ENTRY, ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: cliEnv(home, env),
+    env: cliEnv(deck, env),
   });
 }
 
-export function readDaemonLog(home: string, name: DaemonLogName): string {
+export function readDaemonLog(deck: IsolatedDeck, name: DaemonLogName): string {
   try {
-    return fs.readFileSync(path.join(home, 'logs', `${name}.log`), 'utf8');
+    return fs.readFileSync(path.join(deck.home, 'logs', `${name}.log`), 'utf8');
   } catch {
     return '';
   }
 }
 
-/** Every `supervisor shutting down` line this home has recorded, oldest first. */
-export function shutdownLines(home: string): string[] {
-  return readDaemonLog(home, 'supervisor')
+/** Every `supervisor shutting down` line this deck has recorded, oldest first. */
+export function shutdownLines(deck: IsolatedDeck): string[] {
+  return readDaemonLog(deck, 'supervisor')
     .split('\n')
     .filter((line) => line.includes('supervisor shutting down'));
 }
 
 /** The record `agent-deck status` reads for "why did the deck stop?". */
-export function readLastStopFile(home: string): { at: string; reason: string } | null {
+export function readLastStopFile(deck: IsolatedDeck): { at: string; reason: string } | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(home, 'last-stop.json'), 'utf8')) as {
+    return JSON.parse(fs.readFileSync(path.join(deck.home, 'last-stop.json'), 'utf8')) as {
       at: string;
       reason: string;
     };
@@ -177,9 +244,9 @@ export interface RunStateFile {
   cliPid: number;
 }
 
-export function readRunStateFile(home: string): RunStateFile | null {
+export function readRunStateFile(deck: IsolatedDeck): RunStateFile | null {
   try {
-    return JSON.parse(fs.readFileSync(path.join(home, 'run.json'), 'utf8')) as RunStateFile;
+    return JSON.parse(fs.readFileSync(path.join(deck.home, 'run.json'), 'utf8')) as RunStateFile;
   } catch {
     return null;
   }
@@ -190,11 +257,14 @@ export function readRunStateFile(home: string): RunStateFile | null {
  * and after MCP comes up — so a caller that waited only for health can still
  * find no pids to work with.
  */
-export async function waitForRunState(home: string, timeoutMs = 30_000): Promise<RunStateFile> {
-  await waitUntil(() => readRunStateFile(home) !== null, timeoutMs);
-  const state = readRunStateFile(home);
+export async function waitForRunState(
+  deck: IsolatedDeck,
+  timeoutMs = 30_000,
+): Promise<RunStateFile> {
+  await waitUntil(() => readRunStateFile(deck) !== null, timeoutMs);
+  const state = readRunStateFile(deck);
   if (state === null) {
-    throw new Error(`${home}/run.json was never written`);
+    throw new Error(`${deck.home}/run.json was never written`);
   }
   return state;
 }
@@ -242,8 +312,11 @@ export async function waitForHealthy(port: number, timeoutMs = 30_000): Promise<
  * Last resort between tests: a supervisor that survived its scenario would hold
  * the ports (and keep writing to a home the next test is about to delete).
  */
-export function killLeftovers(home: string | undefined, extra: (ChildProcess | null)[] = []): void {
-  const state = home ? readRunStateFile(home) : null;
+export function killLeftovers(
+  deck: IsolatedDeck | undefined,
+  extra: (ChildProcess | null)[] = [],
+): void {
+  const state = deck ? readRunStateFile(deck) : null;
   const pids = [state?.mcpPid, state?.backendPid, state?.cliPid, ...extra.map((child) => child?.pid)];
   for (const pid of pids) {
     if (pid && isAlive(pid)) {
