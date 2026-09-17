@@ -180,6 +180,12 @@ function cliEnv(deck: IsolatedDeck, extra: NodeJS.ProcessEnv = {}): NodeJS.Proce
     AGENT_DECK_MCP_PORT: String(deck.mcpPort),
     // Keep the run off the network; an update check is not under test.
     AGENT_DECK_NO_UPDATE_CHECK: '1',
+    // The spawned backend opens the secret store on startup, and the real one
+    // is macOS-only — on Linux CI it throws VaultUnsupportedError and the deck
+    // never becomes healthy. These tests are about stop origins, not secrets,
+    // so use the in-memory store the rest of the suite already uses. It also
+    // keeps the run out of the developer's keychain on macOS.
+    AGENT_DECK_SECRET_STORE: 'memory',
     ...extra,
   };
 }
