@@ -116,6 +116,34 @@ export function createStore(): CliStore {
   return createCliStore();
 }
 
+export type LastReindexRecord = {
+  at: string;
+  ok: boolean;
+  error?: string;
+  warnings: string[];
+};
+
+/**
+ * Last reindex outcome for status/doctor, or null when nothing was recorded (or
+ * the backend/database cannot be read). Callers print nothing for null: the rest
+ * of the diagnostic — including doctor's own backend and sqlite checks — has to
+ * keep running when the store cannot be reached.
+ */
+export function readLastReindex(): LastReindexRecord | null {
+  try {
+    const cliRuntime = require.resolve('@agent-deck/backend/cli-runtime', {
+      paths: [getCliPackageRoot()],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { readLastStoreReindex } = require(cliRuntime) as {
+      readLastStoreReindex: () => LastReindexRecord | null;
+    };
+    return readLastStoreReindex();
+  } catch {
+    return null;
+  }
+}
+
 export function parseConnections(value: string | undefined): string[] {
   if (!value?.trim()) {
     return [];

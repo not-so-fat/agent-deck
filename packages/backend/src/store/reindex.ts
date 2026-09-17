@@ -4,6 +4,7 @@ import path from 'node:path';
 import { StoreManifestSchema } from '@agent-deck/shared';
 import {
   DatabaseManager,
+  STORE_LAST_REINDEX,
   type StoreSnapshot,
 } from '../models/database';
 import { hashStoreTree } from './content-hash';
@@ -36,6 +37,14 @@ export type StoreReindexResult =
       error: string;
       conflicts?: StoreConflict[];
     };
+
+/** Last reindex outcome, persisted in store meta so `status`/`doctor` can surface a silent failure. */
+export type StoreReindexRecord = {
+  at: string;
+  ok: boolean;
+  error?: string;
+  warnings: string[];
+};
 
 type ParsedFile<T> = {
   path: string;
@@ -80,23 +89,82 @@ async function readStoreFiles<T>(
   return { entries, errors };
 }
 
-function displayNameConflicts<T>(
+function collisions<T>(
   kind: string,
   entries: ParsedFile<T>[],
-  displayName: (value: T) => string,
+  select: (value: T) => string,
 ): StoreConflict[] {
-  const pathsByName = new Map<string, string[]>();
+  const pathsByValue = new Map<string, string[]>();
   for (const entry of entries) {
-    const value = displayName(entry.value);
-    pathsByName.set(value, [...(pathsByName.get(value) ?? []), entry.path]);
+    const value = select(entry.value);
+    pathsByValue.set(value, [...(pathsByValue.get(value) ?? []), entry.path]);
   }
-  return [...pathsByName.entries()]
+  return [...pathsByValue.entries()]
     .filter(([, paths]) => paths.length > 1)
     .map(([value, paths]) => ({
       kind,
       value,
       paths: paths.sort(),
     }));
+}
+
+/**
+ * Display names are cosmetic — ids are what the store keys on — so a collision
+ * must not drop the whole store→sqlite import (NOT-123). SQLite still holds a
+ * UNIQUE index per display name, so later files are imported under a suffixed
+ * name (same policy as the dedupe migration) and every card survives.
+ */
+function dedupeDisplayNames<T>(
+  kind: string,
+  entries: ParsedFile<T>[],
+  read: (value: T) => string,
+  rename: (value: T, name: string) => T,
+): { values: T[]; warnings: string[] } {
+  const duplicated = new Set(
+    collisions(kind, entries, read).map(({ value }) => value),
+  );
+  if (duplicated.size === 0) {
+    return { values: entries.map(({ value }) => value), warnings: [] };
+  }
+
+  const used = new Set(entries.map(({ value }) => read(value)));
+  const renamedByName = new Map<string, string[]>();
+  const pathsByName = new Map<string, string[]>();
+  const values: T[] = [];
+
+  for (const entry of entries) {
+    const name = read(entry.value);
+    if (!duplicated.has(name)) {
+      values.push(entry.value);
+      continue;
+    }
+
+    pathsByName.set(name, [...(pathsByName.get(name) ?? []), entry.path]);
+    // First file (store files are read in sorted order) keeps the name as written.
+    if (pathsByName.get(name)?.length === 1) {
+      values.push(entry.value);
+      continue;
+    }
+
+    let candidate = `${name} (imported)`;
+    for (let n = 2; used.has(candidate); n += 1) {
+      candidate = `${name} (imported ${n})`;
+    }
+    used.add(candidate);
+    renamedByName.set(name, [
+      ...(renamedByName.get(name) ?? []),
+      `${entry.path} -> "${candidate}"`,
+    ]);
+    values.push(rename(entry.value, candidate));
+  }
+
+  const warnings = [...pathsByName.entries()].map(
+    ([name, paths]) =>
+      `Duplicate ${kind} name "${name}" in ${paths.length} store files: ${paths.join(', ')}` +
+      ` — ids are unique, so all were imported; renamed in SQLite: ` +
+      `${(renamedByName.get(name) ?? []).join(', ')}`,
+  );
+  return { values, warnings };
 }
 
 function missingDeckReferences(snapshot: StoreSnapshot): string[] {
@@ -138,9 +206,9 @@ function missingDeckReferences(snapshot: StoreSnapshot): string[] {
   return errors;
 }
 
-export async function reindexStoreToSqlite(
+async function runReindex(
   db: DatabaseManager,
-  opts: { home?: string; force?: boolean } = {},
+  opts: { home?: string; force?: boolean },
 ): Promise<StoreReindexResult> {
   const paths = storePaths(opts.home);
   let manifestRaw: string;
@@ -192,29 +260,58 @@ export async function reindexStoreToSqlite(
     };
   }
 
-  const conflicts = [
-    ...displayNameConflicts('service', services.entries, ({ name }) => name),
-    ...displayNameConflicts(
-      'credential',
-      credentials.entries,
-      ({ label }) => label,
-    ),
-    ...displayNameConflicts('playbook', playbooks.entries, ({ title }) => title),
-    ...displayNameConflicts('deck', decks.entries, ({ name }) => name),
+  // Two files claiming one id are genuinely ambiguous — one would silently
+  // overwrite the other in the snapshot — so those still fail closed.
+  const idConflicts = [
+    ...collisions('service', services.entries, ({ id }) => id),
+    ...collisions('credential', credentials.entries, ({ id }) => id),
+    ...collisions('playbook', playbooks.entries, ({ id }) => id),
+    ...collisions('deck', decks.entries, ({ id }) => id),
   ];
-  if (conflicts.length > 0) {
+  if (idConflicts.length > 0) {
     return {
       ok: false,
-      error: 'Duplicate display names found in store files',
-      conflicts,
+      error: 'Duplicate ids found in store files',
+      conflicts: idConflicts,
     };
   }
 
+  const namedServices = dedupeDisplayNames(
+    'service',
+    services.entries,
+    ({ name }) => name,
+    (value, name) => ({ ...value, name }),
+  );
+  const namedCredentials = dedupeDisplayNames(
+    'credential',
+    credentials.entries,
+    ({ label }) => label,
+    (value, label) => ({ ...value, label }),
+  );
+  const namedPlaybooks = dedupeDisplayNames(
+    'playbook',
+    playbooks.entries,
+    ({ title }) => title,
+    (value, title) => ({ ...value, title }),
+  );
+  const namedDecks = dedupeDisplayNames(
+    'deck',
+    decks.entries,
+    ({ name }) => name,
+    (value, name) => ({ ...value, name }),
+  );
+  const warnings = [
+    ...namedServices.warnings,
+    ...namedCredentials.warnings,
+    ...namedPlaybooks.warnings,
+    ...namedDecks.warnings,
+  ];
+
   const snapshot: StoreSnapshot = {
-    services: services.entries.map(({ value }) => value),
-    credentials: credentials.entries.map(({ value }) => value),
-    playbooks: playbooks.entries.map(({ value }) => value),
-    decks: decks.entries.map(({ value }) => value),
+    services: namedServices.values,
+    credentials: namedCredentials.values,
+    playbooks: namedPlaybooks.values,
+    decks: namedDecks.values,
   };
   const referenceErrors = missingDeckReferences(snapshot);
   if (referenceErrors.length > 0) {
@@ -240,7 +337,68 @@ export async function reindexStoreToSqlite(
       credentials: snapshot.credentials.length,
       decks: snapshot.decks.length,
     },
-    warnings: [],
+    warnings,
     contentHash,
   };
+}
+
+/**
+ * Store→sqlite import. Records the outcome in store meta on every path so a
+ * failure that only ever reached `backend.log` still shows up in `status`/`doctor`.
+ */
+export async function reindexStoreToSqlite(
+  db: DatabaseManager,
+  opts: { home?: string; force?: boolean } = {},
+): Promise<StoreReindexResult> {
+  let result: StoreReindexResult;
+  try {
+    result = await runReindex(db, opts);
+  } catch (error: unknown) {
+    // An unexpected throw (e.g. the store tree becoming unreadable mid-hash) is
+    // still a failed reindex: record it so `status`/`doctor` don't keep reporting
+    // the previous, stale outcome.
+    const detail = error instanceof Error ? error.message : String(error);
+    result = { ok: false, error: `Store reindex failed: ${detail}` };
+  }
+  recordReindexOutcome(db, result);
+  return result;
+}
+
+export function recordReindexOutcome(
+  db: DatabaseManager,
+  result: StoreReindexResult | { ok: false; error: string },
+): void {
+  const record: StoreReindexRecord = result.ok
+    ? { at: new Date().toISOString(), ok: true, warnings: result.warnings }
+    : { at: new Date().toISOString(), ok: false, error: result.error, warnings: [] };
+  try {
+    db.setStoreMeta(STORE_LAST_REINDEX, JSON.stringify(record));
+  } catch {
+    // Never let bookkeeping mask the reindex result itself.
+  }
+}
+
+export function readLastReindex(db: DatabaseManager): StoreReindexRecord | null {
+  return parseReindexRecord(db.getStoreMeta(STORE_LAST_REINDEX));
+}
+
+/** Split out so a read-only reader can parse the meta row without a DatabaseManager. */
+export function parseReindexRecord(raw: string | null): StoreReindexRecord | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoreReindexRecord>;
+    if (typeof parsed?.at !== 'string' || typeof parsed?.ok !== 'boolean') {
+      return null;
+    }
+    return {
+      at: parsed.at,
+      ok: parsed.ok,
+      ...(typeof parsed.error === 'string' ? { error: parsed.error } : {}),
+      warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+    };
+  } catch {
+    return null;
+  }
 }

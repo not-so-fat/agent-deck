@@ -145,7 +145,8 @@ Dashboard “Reload from files” is optional follow-up; CLI is required for v1.
 ### Conflict / validation on rebuild
 
 - Unknown `manifest.version` → fail closed with clear error.
-- Duplicate display names (title/name/label) across files → **abort reindex**, leave previous DB intact, print conflicting paths (no partial apply).
+- Duplicate **ids** across files → **abort reindex**, leave previous DB intact, print conflicting paths (no partial apply).
+- Duplicate display names (title/name/label) across files → **warn and import everything** (revised by NOT-123; originally an abort). Ids are what the snapshot keys on, and one cosmetic collision must not stop multi-laptop sync. Later files are indexed under `<name> (imported)` because SQLite keeps a UNIQUE index per display name; the warning names every colliding path.
 - Missing dependency ids → warn; playbook still loads with `missingServiceIds` / `missingCredentialIds` as today.
 - Files deleted → corresponding DB rows removed on successful full rebuild (files win).
 

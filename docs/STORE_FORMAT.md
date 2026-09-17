@@ -123,6 +123,23 @@ Decks reference card ids only; they do not embed full card payloads.
 
 After a git pull, the merged file tree wins. Resolve merge conflicts in `.md` / `.json` / `.yaml` in git, then reindex.
 
+### What stops a reindex, and what only warns
+
+| Store state | Reindex |
+|-------------|---------|
+| Two files carrying the same **id** (e.g. a leftover `pb_x.conflict.md`) | **Fails closed** — nothing is imported; delete the stray file, then reindex |
+| Two files sharing a **display name** (two decks named `Work`) | **Imports everything** and warns, naming both files; SQLite holds a UNIQUE index per display name, so the later file is indexed as `<name> (imported)` until you rename one |
+
+Rename one of the colliding cards when you see that warning. The suffix is applied to
+the SQLite row, and dual-write serializes from that row — so the next edit to the
+suffixed card writes `<name> (imported)` back into its store file. Which file keeps the
+original name is deterministic (store files are read in filename order), so two laptops
+sharing the store agree.
+
+The last reindex outcome is recorded in the SQLite store meta. `agent-deck status` and
+`agent-deck doctor` report `Last reindex FAILED <when>: <error>` so a store that has
+silently stopped reaching SQLite is visible without reading `backend.log`.
+
 ---
 
 ## Related mechanisms

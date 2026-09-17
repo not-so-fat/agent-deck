@@ -1,7 +1,9 @@
 import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import type { BundleV1, ExportRequest, ImportReport } from '@agent-deck/shared';
-import { DatabaseManager } from './models/database';
+import { DatabaseManager, STORE_LAST_REINDEX } from './models/database';
 import { resolveDatabasePath } from './lib/paths';
 import { createSecretStore, CredentialManager } from './vault';
 import { PlaybookDependencyError, PlaybookManager } from './playbooks/playbook-manager';
@@ -15,7 +17,9 @@ import {
 import {
   deleteCardFromStoreThenDb,
   migrateSqliteToStore,
+  parseReindexRecord,
   reindexStoreToSqlite,
+  type StoreReindexRecord,
 } from './store';
 import { FileStoreWriter } from './store/writer';
 
@@ -204,6 +208,32 @@ export function createCliStore() {
 }
 
 export type CliStore = ReturnType<typeof createCliStore>;
+
+/**
+ * Last reindex outcome for `status`/`doctor`.
+ *
+ * Deliberately not a DatabaseManager: its constructor migrates the schema — which
+ * includes renaming duplicate deck/credential names — and a diagnostic must neither
+ * create a database nor write to one the running backend holds open.
+ */
+export function readLastStoreReindex(): StoreReindexRecord | null {
+  const dbPath = resolveDatabasePath();
+  if (!existsSync(dbPath)) {
+    return null;
+  }
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const row = db
+      .prepare('SELECT value FROM store_meta WHERE key = ?')
+      .get(STORE_LAST_REINDEX) as { value: string } | undefined;
+    return parseReindexRecord(row?.value ?? null);
+  } catch {
+    // Pre-store_meta database — nothing recorded yet.
+    return null;
+  } finally {
+    db.close();
+  }
+}
 
 export { PlaybookDependencyError, ExportBundleError, ImportBundleError };
 
