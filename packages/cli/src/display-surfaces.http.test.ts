@@ -118,13 +118,20 @@ function captureStdout(run: () => Promise<number>): Promise<{ code: number; outp
 describe('statusline + menubar display surfaces (HTTP stub)', () => {
   let stub: DisplayStub;
   let previousPort: string | undefined;
+  let previousBackendPort: string | undefined;
   let previousTimeout: string | undefined;
 
   beforeEach(async () => {
     stub = await startDisplayStub();
     previousPort = process.env.AGENT_DECK_PORT;
+    previousBackendPort = process.env.AGENT_DECK_BACKEND_PORT;
     previousTimeout = process.env.AGENT_DECK_STATUSLINE_TIMEOUT_MS;
+    // AGENT_DECK_BACKEND_PORT wins over AGENT_DECK_PORT, and the suite now pins
+    // it to an unreachable port so no test can reach the developer's own deck.
+    // Point the authoritative variable at this stub, or the CLI reads the pin
+    // and reports offline.
     process.env.AGENT_DECK_PORT = String(stub.port);
+    process.env.AGENT_DECK_BACKEND_PORT = String(stub.port);
     process.env.AGENT_DECK_STATUSLINE_TIMEOUT_MS = '500';
   });
 
@@ -133,6 +140,11 @@ describe('statusline + menubar display surfaces (HTTP stub)', () => {
       delete process.env.AGENT_DECK_PORT;
     } else {
       process.env.AGENT_DECK_PORT = previousPort;
+    }
+    if (previousBackendPort === undefined) {
+      delete process.env.AGENT_DECK_BACKEND_PORT;
+    } else {
+      process.env.AGENT_DECK_BACKEND_PORT = previousBackendPort;
     }
     if (previousTimeout === undefined) {
       delete process.env.AGENT_DECK_STATUSLINE_TIMEOUT_MS;
@@ -159,6 +171,7 @@ describe('statusline + menubar display surfaces (HTTP stub)', () => {
   it('statusline falls back to offline when backend is down', async () => {
     await stub.close();
     process.env.AGENT_DECK_PORT = '1';
+    process.env.AGENT_DECK_BACKEND_PORT = '1';
     process.env.AGENT_DECK_STATUSLINE_TIMEOUT_MS = '50';
 
     const { code, output } = await captureStdout(() =>
@@ -183,6 +196,7 @@ describe('statusline + menubar display surfaces (HTTP stub)', () => {
   it('menubar shows offline title when backend is down', async () => {
     await stub.close();
     process.env.AGENT_DECK_PORT = '1';
+    process.env.AGENT_DECK_BACKEND_PORT = '1';
     process.env.AGENT_DECK_STATUSLINE_TIMEOUT_MS = '50';
 
     const { code, output } = await captureStdout(() => runMenubar());

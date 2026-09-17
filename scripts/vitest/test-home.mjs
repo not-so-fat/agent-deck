@@ -15,3 +15,24 @@ export function useIsolatedAgentDeckHome(pkg) {
   process.env.AGENT_DECK_HOME = home;
   return home;
 }
+
+/**
+ * Ports every test process starts with. `stop`/`status` resolve ports from the
+ * environment, and `runStop` kills whatever listens on them — so an isolated
+ * AGENT_DECK_HOME alone never protected the developer's deck: with no port pin
+ * the CLI falls back to 1111/1110 and acts on the real daemon (NOT-135).
+ *
+ * Port 0 is not a listening port, so a probe can never find a deck here and
+ * `stop` can never match a pid. A test that genuinely needs a running deck
+ * reserves free ports through the integration harness, which overrides these.
+ */
+export const UNREACHABLE_DECK_PORTS = Object.freeze({
+  AGENT_DECK_BACKEND_PORT: '0',
+  AGENT_DECK_MCP_PORT: '0',
+});
+
+/** Set the unreachable defaults on this process and return them for `test.env`. */
+export function useUnreachableDeckPorts() {
+  Object.assign(process.env, UNREACHABLE_DECK_PORTS);
+  return { ...UNREACHABLE_DECK_PORTS };
+}
