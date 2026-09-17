@@ -27,6 +27,8 @@ import {
   openDashboardInBrowser,
   shouldOpenDashboardByDefault,
 } from './dashboard-open';
+import { readLastReindex } from './backend-runtime';
+import { formatLastReindex } from './store';
 
 export interface StartOptions {
   backendPort?: number;
@@ -546,6 +548,21 @@ export async function runDoctor(): Promise<number> {
     console.log(`OK: Agent Deck reachable on :${backendPort} / :${mcpPort}`);
   } else {
     console.warn('WARN: Agent Deck is not running (agent-deck start)');
+  }
+
+  // A store→sqlite import that failed leaves a healthy-looking backend serving a
+  // stale snapshot, so doctor has to fail on it (NOT-123).
+  const lastReindex = readLastReindex();
+  const [reindexHeadline, ...reindexDetail] = formatLastReindex(lastReindex);
+  if (reindexHeadline) {
+    if (lastReindex?.ok) {
+      console.log(`OK: ${reindexHeadline}`);
+      reindexDetail.forEach((line) => console.log(`    ${line}`));
+    } else {
+      console.error(`FAIL: ${reindexHeadline}`);
+      reindexDetail.forEach((line) => console.error(`      ${line}`));
+      ok = false;
+    }
   }
 
   return ok ? 0 : 1;

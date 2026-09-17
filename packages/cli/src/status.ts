@@ -4,6 +4,8 @@ import { getAgentDeckVersion } from './version';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
 import { formatDashboardStatusLine } from './dashboard-open';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
+import { readLastReindex } from './backend-runtime';
+import { formatLastReindex } from './store';
 
 export async function runStatus(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -33,6 +35,20 @@ export async function runStatus(): Promise<number> {
     console.log(`  MCP        ${probe.mcpUp ? 'up' : 'down'}  ${probe.mcpUrl}`);
   } else {
     console.log('Status: not running');
+  }
+
+  // A failed store→sqlite import is otherwise invisible: the backend serves the
+  // stale snapshot and looks healthy while store pushes stop landing (NOT-123).
+  const lastReindex = readLastReindex();
+  const reindexLines = formatLastReindex(lastReindex);
+  if (reindexLines.length > 0) {
+    console.log('');
+    const [headline, ...detail] = reindexLines;
+    const write = lastReindex?.ok ? console.log : console.warn;
+    write(headline);
+    for (const line of detail) {
+      write(`  ${line}`);
+    }
   }
 
   if (state) {

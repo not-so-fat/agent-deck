@@ -1,4 +1,4 @@
-import { createStore } from './backend-runtime';
+import { createStore, type LastReindexRecord } from './backend-runtime';
 
 type StoreArgs =
   | { ok: true; command: 'migrate'; dryRun: boolean; force: boolean }
@@ -51,6 +51,45 @@ export function parseReindexArgs(args: string[]): ReindexArgs {
   return { ok: false, error: `Unknown argument: ${args[0]}` };
 }
 
+function plural(count: number): string {
+  return count === 1 ? '' : 's';
+}
+
+/** Reindex warnings are the duplicate-name signal — never let them scroll past as JSON. */
+export function formatReindexWarnings(warnings: string[]): string[] {
+  if (warnings.length === 0) {
+    return [];
+  }
+  return [
+    `WARN: reindex imported the store with ${warnings.length} warning${plural(warnings.length)}:`,
+    ...warnings.map((warning) => `  - ${warning}`),
+  ];
+}
+
+/**
+ * Reindex health for `status` / `doctor`: a headline plus its detail lines, empty
+ * when nothing was ever recorded. Warnings are spelled out here rather than
+ * counted — the duplicated name and its files are the whole point of the warning.
+ */
+export function formatLastReindex(record: LastReindexRecord | null): string[] {
+  if (!record) {
+    return [];
+  }
+  if (!record.ok) {
+    return [
+      `Last reindex FAILED ${record.at}: ${record.error ?? 'unknown error'}`,
+      'Store changes are not reaching SQLite — fix the store, then run agent-deck reindex',
+    ];
+  }
+  if (record.warnings.length > 0) {
+    return [
+      `Last reindex OK ${record.at} — ${record.warnings.length} warning${plural(record.warnings.length)}:`,
+      ...record.warnings.map((warning) => `- ${warning}`),
+    ];
+  }
+  return [`Last reindex OK ${record.at}`];
+}
+
 export async function runStoreCommand(args: string[]): Promise<number> {
   const parsed = parseStoreArgs(args);
   if (!parsed.ok) {
@@ -94,6 +133,9 @@ export async function runReindexCommand(args: string[]): Promise<number> {
       return 1;
     }
     console.log(JSON.stringify(result, null, 2));
+    for (const line of formatReindexWarnings(result.warnings)) {
+      console.warn(line);
+    }
     return 0;
   } catch (error: unknown) {
     console.error(error instanceof Error ? error.message : String(error));

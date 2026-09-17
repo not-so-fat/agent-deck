@@ -7,7 +7,7 @@ import { DatabaseManager, STORE_CONTENT_HASH } from '../models/database';
 import { hashStoreTree } from './content-hash';
 import { migrateSqliteToStore } from './migrate';
 import { storePaths } from './paths';
-import { reindexStoreToSqlite } from './reindex';
+import { readLastReindex, reindexStoreToSqlite } from './reindex';
 import { FileStoreWriter } from './writer';
 
 const homes: string[] = [];
@@ -215,15 +215,8 @@ describe('reindexStoreToSqlite', () => {
     raw.close();
   });
 
-  it('aborts duplicate display titles without changing SQLite', async () => {
+  it('imports duplicate display titles with a warning naming both files', async () => {
     const fixture = await createFixture();
-    const before = {
-      services: await fixture.database.getAllServices(),
-      credentials: await fixture.database.getAllCredentials(),
-      playbooks: await fixture.database.getAllPlaybooks(),
-      decks: await fixture.database.getAllDecks(),
-      hash: fixture.database.getStoreMeta(STORE_CONTENT_HASH),
-    };
     await new FileStoreWriter(fixture.home).writePlaybook({
       ...fixture.playbook,
       id: 'pb_duplicate',
@@ -234,15 +227,97 @@ describe('reindexStoreToSqlite', () => {
       force: true,
     });
 
+    expect(result).toMatchObject({ ok: true, counts: { playbooks: 2 } });
+    const { warnings } = result as Extract<typeof result, { ok: true }>;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(fixture.playbook.title);
+    expect(warnings[0]).toContain(
+      path.join(storePaths(fixture.home).playbooksDir, 'pb_remote.md'),
+    );
+    expect(warnings[0]).toContain(
+      path.join(storePaths(fixture.home).playbooksDir, 'pb_duplicate.md'),
+    );
+    expect((await fixture.database.getAllPlaybooks()).map(({ id }) => id).sort()).toEqual([
+      'pb_duplicate',
+      'pb_remote',
+    ]);
+  });
+
+  it('imports two decks sharing a name and warns about both files', async () => {
+    const fixture = await createFixture();
+    const twinId = '11111111-2222-4333-8444-555555555555';
+    await new FileStoreWriter(fixture.home).writeDeck({
+      id: twinId,
+      name: fixture.deck.name,
+      serviceIds: [fixture.service.id],
+      credentialIds: [fixture.credential.id],
+      playbookIds: [fixture.playbook.id],
+      createdAt: fixture.deck.createdAt,
+      updatedAt: fixture.deck.updatedAt,
+    });
+
+    const result = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      counts: { playbooks: 1, services: 1, credentials: 1, decks: 2 },
+    });
+    const { warnings } = result as Extract<typeof result, { ok: true }>;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(fixture.deck.name);
+    expect(warnings[0]).toContain(
+      path.join(storePaths(fixture.home).decksDir, `${fixture.deck.id}.json`),
+    );
+    expect(warnings[0]).toContain(
+      path.join(storePaths(fixture.home).decksDir, `${twinId}.json`),
+    );
+
+    const decks = await fixture.database.getAllDecks();
+    expect(decks.map(({ id }) => id).sort()).toEqual([fixture.deck.id, twinId].sort());
+    for (const deck of decks) {
+      expect(deck.services.map(({ id }) => id)).toEqual([fixture.service.id]);
+      expect(deck.playbooks.map(({ id }) => id)).toEqual([fixture.playbook.id]);
+      expect(deck.credentials.map(({ id }) => id)).toEqual([fixture.credential.id]);
+    }
+    expect(fixture.database.getStoreMeta(STORE_CONTENT_HASH)).toBe(
+      await hashStoreTree(fixture.home),
+    );
+  });
+
+  it('aborts duplicate ids without changing SQLite', async () => {
+    const fixture = await createFixture();
+    const before = {
+      services: await fixture.database.getAllServices(),
+      credentials: await fixture.database.getAllCredentials(),
+      playbooks: await fixture.database.getAllPlaybooks(),
+      decks: await fixture.database.getAllDecks(),
+      hash: fixture.database.getStoreMeta(STORE_CONTENT_HASH),
+    };
+    const playbooksDir = storePaths(fixture.home).playbooksDir;
+    // Same id, different file name — exactly what a store merge conflict leaves behind.
+    await fs.copyFile(
+      path.join(playbooksDir, 'pb_remote.md'),
+      path.join(playbooksDir, 'pb_remote.conflicted.md'),
+    );
+
+    const result = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+
     expect(result).toMatchObject({
       ok: false,
+      error: expect.stringContaining('Duplicate ids'),
       conflicts: [
         {
           kind: 'playbook',
-          value: fixture.playbook.title,
+          value: 'pb_remote',
           paths: expect.arrayContaining([
-            path.join(storePaths(fixture.home).playbooksDir, 'pb_remote.md'),
-            path.join(storePaths(fixture.home).playbooksDir, 'pb_duplicate.md'),
+            path.join(playbooksDir, 'pb_remote.md'),
+            path.join(playbooksDir, 'pb_remote.conflicted.md'),
           ]),
         },
       ],
@@ -252,6 +327,32 @@ describe('reindexStoreToSqlite', () => {
     expect(await fixture.database.getAllPlaybooks()).toEqual(before.playbooks);
     expect(await fixture.database.getAllDecks()).toEqual(before.decks);
     expect(fixture.database.getStoreMeta(STORE_CONTENT_HASH)).toBe(before.hash);
+  });
+
+  it('records the last reindex outcome in store meta', async () => {
+    const fixture = await createFixture();
+
+    const success = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+    expect(success.ok).toBe(true);
+    expect(readLastReindex(fixture.database)).toMatchObject({ ok: true, warnings: [] });
+
+    await fs.writeFile(
+      storePaths(fixture.home).manifest,
+      '{"format":"agent-deck-store","version":2}\n',
+    );
+    const failure = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+    expect(failure.ok).toBe(false);
+
+    const record = readLastReindex(fixture.database);
+    expect(record?.ok).toBe(false);
+    expect(record?.error).toContain('manifest');
+    expect(Date.parse(record?.at ?? '')).not.toBeNaN();
   });
 
   it('rejects a deck referencing a missing playbook without changing SQLite', async () => {
