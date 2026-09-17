@@ -8,6 +8,7 @@ import {
   clearStopRequest,
   composeShutdownReason,
   consumeStopRequest,
+  describeCrash,
   describeSignalOrigin,
   formatLastStartFailureLines,
   formatLastStopLines,
@@ -60,9 +61,16 @@ describe('shutdown reason', () => {
     expect(consumeStopRequest({ supervisorPid: 99 })?.source).toBe('agent-deck stop');
   });
 
-  it('ignores a request aimed at a different supervisor', () => {
+  /**
+   * Two decks can share a home on different ports. Eating a note addressed to
+   * the other one costs that supervisor its attribution, and convinces
+   * `agent-deck stop` that someone recorded a stop nobody recorded.
+   */
+  it('leaves a request aimed at a different supervisor where its target can find it', () => {
     recordStopRequest({ source: 'agent-deck stop', targetPid: 7 });
     expect(consumeStopRequest({ supervisorPid: 42 })).toBeNull();
+    expect(readStopRequest()?.targetPid).toBe(7);
+    expect(consumeStopRequest({ supervisorPid: 7 })?.source).toBe('agent-deck stop');
   });
 
   it('ignores a stale request left behind by an earlier run', () => {
@@ -89,6 +97,30 @@ describe('shutdown reason', () => {
     expect(composeShutdownReason(describeSignalOrigin('SIGINT'), null)).toBe(
       'signal SIGINT (Ctrl-C or terminal interrupt)',
     );
+  });
+
+  it('turns a throw into a one-line origin plus the frames that locate it', () => {
+    const error = Object.assign(new Error('spawn node ENOENT'), { code: 'ENOENT' });
+    const { reason, detail } = describeCrash(error);
+
+    expect(reason).toBe('Error [ENOENT]: spawn node ENOENT');
+    // The message itself is the reason; repeating it in the body adds nothing.
+    expect(detail[0]).toMatch(/^at /);
+    expect(formatSupervisorShutdownLine(1, `supervisor uncaught exception: ${reason}`)).toContain(
+      'reason: supervisor uncaught exception: Error [ENOENT]: spawn node ENOENT',
+    );
+  });
+
+  it('describes a non-Error throw rather than logging [object Object]', () => {
+    expect(describeCrash('backend url missing')).toEqual({
+      reason: 'backend url missing',
+      detail: [],
+    });
+    // `Promise.reject({ code: 'X' })` is the throw with no message to fall back
+    // on, so the value itself has to survive into the log.
+    const { reason } = describeCrash({ code: 'ECONNREFUSED', port: 1111 });
+    expect(reason).toContain('ECONNREFUSED');
+    expect(reason).toContain('1111');
   });
 
   it('puts the reason on the shutdown line next to the exit code', () => {

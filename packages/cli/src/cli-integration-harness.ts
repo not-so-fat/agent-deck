@@ -73,6 +73,16 @@ export function createIsolatedHome(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+/**
+ * Teardown runs even when setup threw, and `fs.rmSync(undefined)` there would
+ * replace the real failure (a stale dist, say) with an ERR_INVALID_ARG_TYPE.
+ */
+export function removeIsolatedHome(home: string | undefined): void {
+  if (home) {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
 /** A port nothing is listening on — released before it is handed back. */
 export function reserveFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -149,6 +159,18 @@ export function shutdownLines(home: string): string[] {
     .filter((line) => line.includes('supervisor shutting down'));
 }
 
+/** The record `agent-deck status` reads for "why did the deck stop?". */
+export function readLastStopFile(home: string): { at: string; reason: string } | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(home, 'last-stop.json'), 'utf8')) as {
+      at: string;
+      reason: string;
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface RunStateFile {
   backendPid: number;
   mcpPid: number;
@@ -220,8 +242,8 @@ export async function waitForHealthy(port: number, timeoutMs = 30_000): Promise<
  * Last resort between tests: a supervisor that survived its scenario would hold
  * the ports (and keep writing to a home the next test is about to delete).
  */
-export function killLeftovers(home: string, extra: (ChildProcess | null)[] = []): void {
-  const state = readRunStateFile(home);
+export function killLeftovers(home: string | undefined, extra: (ChildProcess | null)[] = []): void {
+  const state = home ? readRunStateFile(home) : null;
   const pids = [state?.mcpPid, state?.backendPid, state?.cliPid, ...extra.map((child) => child?.pid)];
   for (const pid of pids) {
     if (pid && isAlive(pid)) {

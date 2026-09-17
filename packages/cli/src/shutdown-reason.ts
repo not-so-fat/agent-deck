@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { inspect } from 'node:util';
 import { resolveAgentDeckHome } from '@agent-deck/shared';
 import { appendDaemonLogLine } from './daemon-logs';
 
@@ -104,22 +105,24 @@ export function consumeStopRequest(options: {
   maxAgeMs?: number;
 }): StopRequest | null {
   const request = readStopRequest();
-  clearStopRequest();
   if (!request) {
+    clearStopRequest();
     return null;
   }
-  if (request.targetPid !== 0 && request.targetPid !== options.supervisorPid) {
-    return null;
-  }
+
   const requestedAt = new Date(request.requestedAt).getTime();
-  if (Number.isNaN(requestedAt)) {
-    return null;
-  }
   const age = (options.now ?? new Date()).getTime() - requestedAt;
-  if (age < 0 || age > (options.maxAgeMs ?? STOP_REQUEST_MAX_AGE_MS)) {
-    return null;
+  const stale =
+    Number.isNaN(requestedAt) || age < 0 || age > (options.maxAgeMs ?? STOP_REQUEST_MAX_AGE_MS);
+  const forThisSupervisor = request.targetPid === 0 || request.targetPid === options.supervisorPid;
+
+  // Someone else's note is left where its target can still find it: eating it
+  // would cost that supervisor its attribution *and* convince `agent-deck stop`
+  // that the origin was recorded when nobody recorded it.
+  if (forThisSupervisor || stale) {
+    clearStopRequest();
   }
-  return request;
+  return forThisSupervisor && !stale ? request : null;
 }
 
 export function describeStopRequest(request: StopRequest): string {
@@ -138,6 +141,25 @@ export function composeShutdownReason(origin: string, request: StopRequest | nul
   return request ? `${origin}; requested by ${describeStopRequest(request)}` : origin;
 }
 
+/**
+ * A supervisor that throws is a stop too, and the least explained one: Node's
+ * default handler prints a trace and exits without any of our bookkeeping. Split
+ * into a one-line reason (the log line, `status`) and the frames (the log body).
+ */
+export function describeCrash(error: unknown): { reason: string; detail: string[] } {
+  if (error instanceof Error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return {
+      reason: code ? `${error.name} [${code}]: ${error.message}` : `${error.name}: ${error.message}`,
+      // error.stack repeats the message on its first line; keep only the frames.
+      detail: (error.stack?.split('\n').slice(1) ?? []).map((line) => line.trim()).filter(Boolean),
+    };
+  }
+  // `String({})` is "[object Object]" — a rejected plain object is exactly the
+  // throw an operator has no other way to identify.
+  return { reason: typeof error === 'string' ? error : inspect(error, { depth: 2 }), detail: [] };
+}
+
 /** Origin string for a signal with no matching stop note. */
 export function describeSignalOrigin(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP'): string {
   switch (signal) {
@@ -152,6 +174,15 @@ export function describeSignalOrigin(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP'): s
 
 export function formatSupervisorShutdownLine(exitCode: number, reason: string): string {
   return `[agent-deck] supervisor shutting down (exit ${exitCode}, reason: ${reason})`;
+}
+
+/**
+ * A `start` that never supervised anything — it found a deck already running,
+ * or died before spawning one — is not the deck stopping, and must not claim a
+ * `supervisor shutting down` line that an operator reads as exactly that.
+ */
+export function formatCommandExitLine(exitCode: number, reason: string): string {
+  return `[agent-deck] agent-deck start exiting (exit ${exitCode}, reason: ${reason})`;
 }
 
 export function formatStartFailureLine(reason: string): string {

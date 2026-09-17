@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -7,6 +6,9 @@ import {
   createIsolatedHome,
   isAlive,
   killLeftovers,
+  occupyPort,
+  readLastStopFile,
+  removeIsolatedHome,
   reserveFreePort,
   runCli,
   shutdownLines,
@@ -34,7 +36,7 @@ describe('NOT-135 — every stop names its origin', () => {
 
   afterEach(() => {
     killLeftovers(home, [foreground]);
-    fs.rmSync(home, { recursive: true, force: true });
+    removeIsolatedHome(home);
   });
 
   /** Start a background deck on ports nothing else holds, and wait for it. */
@@ -138,5 +140,58 @@ describe('NOT-135 — every stop names its origin', () => {
     expect(status.stdout).toContain('Last stop:');
     expect(status.stdout).toContain('signal SIGINT');
     expect(status.stdout).not.toContain('Last failed start:');
+  }, 240_000);
+
+  /**
+   * The answer to "why did the deck stop?" belongs to the process that ran the
+   * deck. A `start` interrupted before it supervises anything has its own
+   * question ("why won't it start?") and must not overwrite the other one.
+   */
+  it('keeps the real stop when an unrelated start is interrupted before it supervises anything', async () => {
+    await startDaemon();
+    const state = await waitForRunState(home);
+    const count = shutdownLines(home).length;
+    expect(runCli(home, ['stop']).status).toBe(0);
+    await nextShutdownReason(count);
+    await expectChildrenGone(state);
+
+    const recorded = readLastStopFile(home);
+    expect(recorded?.reason).toContain('requested by agent-deck stop');
+
+    // A fresh start on a port something else holds, interrupted on top of that:
+    // it cannot reach a spawn either way, so nothing here ever supervised the
+    // deck — whichever of the two ends it first is the path under test.
+    const taken = await occupyPort();
+    try {
+      foreground = spawnCli(home, [
+        'start',
+        '--no-ui',
+        '--no-open',
+        '--port',
+        String(taken.port),
+        '--mcp-port',
+        String(await reserveFreePort()),
+      ]);
+      foreground.stdout?.resume();
+      foreground.stderr?.resume();
+      // A signal delivered while node is still loading the CLI takes the
+      // runtime's default path, before any handler of ours can exist — give the
+      // process long enough to be the thing under test.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      foreground.kill('SIGINT');
+      const exited = await waitUntil(
+        () => foreground?.exitCode !== null || foreground?.signalCode !== null,
+      );
+      expect(exited, 'the interrupted start never exited').toBe(true);
+    } finally {
+      await taken.release();
+    }
+
+    // Unchanged, down to the timestamp: that stop is still the last one.
+    expect(readLastStopFile(home)).toEqual(recorded);
+    const status = runCli(home, ['status']).stdout;
+    expect(status).toContain(recorded?.reason as string);
+    // The interrupted start is answerable too — just under its own heading.
+    expect(status).toContain('Last failed start:');
   }, 240_000);
 });

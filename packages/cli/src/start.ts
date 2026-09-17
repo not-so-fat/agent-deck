@@ -29,7 +29,10 @@ import {
   clearLastStartFailure,
   composeShutdownReason,
   consumeStopRequest,
+  describeCrash,
   describeSignalOrigin,
+  formatCommandExitLine,
+  formatStartFailureLine,
   formatSupervisorShutdownLine,
   readLastStartFailure,
   recordStartFailure,
@@ -82,6 +85,17 @@ function isSupervisorMode(options: StartOptions): boolean {
   return options.supervisor === true || process.env.AGENT_DECK_SUPERVISOR === '1';
 }
 
+/**
+ * Set once `runStart` knows what it is. The `--_supervisor` flag alone (no env
+ * var) still means stderr *is* supervisor.log, and printing there would write
+ * every line twice.
+ */
+let supervisorProcess = false;
+
+function isSupervisorProcess(): boolean {
+  return supervisorProcess || isSupervisorMode({});
+}
+
 async function waitForHealth(
   url: string,
   attempts = 60,
@@ -127,6 +141,24 @@ function surfaceChildLogTail(label: DaemonLogName, ioMode: SpawnIoMode): void {
   }
 }
 
+/**
+ * supervisor.log always, the terminal as well unless stderr already *is* that
+ * log. Used by the paths that run outside the ioMode-aware body of `runStart`.
+ */
+function reportSupervisor(lines: string[]): void {
+  const stamp = new Date().toISOString();
+  for (const line of lines) {
+    try {
+      appendDaemonLogLine('supervisor', `${stamp} ${line}`);
+    } catch {
+      // A diagnostic never fails on its own bookkeeping.
+    }
+    if (!isSupervisorProcess()) {
+      console.error(line);
+    }
+  }
+}
+
 function spawnNodeService(
   label: 'backend' | 'mcp',
   entry: string,
@@ -136,6 +168,23 @@ function spawnNodeService(
   const child = spawn(process.execPath, [entry], {
     env: { ...process.env, ...env },
     stdio: resolveServiceStdio(label, ioMode),
+  });
+
+  // A spawn that never starts emits 'error', not 'exit' — and an unhandled
+  // 'error' event would take the supervisor down with Node's default trace and
+  // no record at all, which is the failure mode this ticket is about.
+  child.on('error', (error) => {
+    if (shuttingDown) {
+      return;
+    }
+    const { reason, detail } = describeCrash(error);
+    reportSupervisor([
+      `[agent-deck] ${label} failed to spawn: ${reason}`,
+      ...detail.map((frame) => `[agent-deck] ${label} spawn| ${frame}`),
+    ]);
+    if (label === 'backend') {
+      void shutdown(1, `backend failed to spawn: ${reason}`);
+    }
   });
 
   child.on('exit', (code, signal) => {
@@ -182,25 +231,31 @@ async function shutdown(exitCode = 0, origin = 'origin not recorded'): Promise<v
 
   const request = consumeStopRequest({ supervisorPid: process.pid });
   const reason = composeShutdownReason(origin, request);
-  const line = formatSupervisorShutdownLine(exitCode, reason);
+  // Only a process that actually ran the deck may answer "why did it stop?".
+  // A `start` that found one already running, or died in preflight, would
+  // otherwise record a stop for a deck that is still up and serving.
+  const supervised = ownsRunState || children.length > 0;
 
-  // supervisor.log answers "why did the deck stop?" for every run, daemon or
-  // not — a Ctrl-C in inherit mode must not be the one stop with no record.
-  try {
-    appendDaemonLogLine('supervisor', `${new Date().toISOString()} ${line}`);
-  } catch {
-    // A shutdown never fails on its own bookkeeping.
+  if (supervised) {
+    // supervisor.log answers "why did the deck stop?" for every run, daemon or
+    // not — a Ctrl-C in inherit mode must not be the one stop with no record.
+    reportSupervisor([formatSupervisorShutdownLine(exitCode, reason)]);
+    writeLastStop({
+      at: new Date().toISOString(),
+      exitCode,
+      reason,
+      supervisorPid: process.pid,
+    });
+  } else if (startupPhase !== null) {
+    // Nothing was ever supervised, so this is a start that did not finish —
+    // "why won't it start?", which keeps its own record.
+    recordStartFailure({ reason, exitCode });
+    if (!isSupervisorProcess()) {
+      console.error(formatStartFailureLine(reason));
+    }
+  } else {
+    reportSupervisor([formatCommandExitLine(exitCode, reason)]);
   }
-  if (!isSupervisorMode({})) {
-    console.error(line);
-  }
-
-  writeLastStop({
-    at: new Date().toISOString(),
-    exitCode,
-    reason,
-    supervisorPid: process.pid,
-  });
 
   clearOwnRunState();
 
@@ -237,13 +292,28 @@ function signalShutdownOrigin(signal: (typeof SHUTDOWN_SIGNALS)[number]): string
 }
 
 /**
- * Installed before any startup work — preflight, upgrade checks and port probes
- * all await, and a stop arriving during them used to take Node's default exit
- * path: no shutdown line, no last-stop record, no origin.
+ * Every way this process can end, routed through one reporting path. Installed
+ * before any startup work — preflight, upgrade checks and port probes all await,
+ * and a stop arriving during them used to take Node's default exit path: no
+ * shutdown line, no last-stop record, no origin.
  */
-function installSupervisorSignalHandlers(): void {
+function installSupervisorExitHandlers(): void {
   for (const signal of SHUTDOWN_SIGNALS) {
     process.on(signal, () => void shutdown(0, signalShutdownOrigin(signal)));
+  }
+
+  // The stop with the worst record of all: Node's default handler prints a
+  // trace to wherever stderr points and exits, leaving no shutdown line and no
+  // last-stop record. Route it through the same reporting as every other stop.
+  for (const [event, kind] of [
+    ['uncaughtException', 'uncaught exception'],
+    ['unhandledRejection', 'unhandled promise rejection'],
+  ] as const) {
+    process.on(event, (error: unknown) => {
+      const { reason, detail } = describeCrash(error);
+      reportSupervisor(detail.map((frame) => `[agent-deck] supervisor stack| ${frame}`));
+      void shutdown(1, `supervisor ${kind}: ${reason}`);
+    });
   }
 }
 
@@ -253,7 +323,7 @@ function installSupervisorSignalHandlers(): void {
  * Once the deck is up (`startupPhase === null`) this process is only printing —
  * interrupting it is not a failed start and must not be recorded as one.
  */
-function installLauncherSignalHandlers(getSupervisorPid: () => number): void {
+function installLauncherExitHandlers(getSupervisorPid: () => number): void {
   for (const signal of SHUTDOWN_SIGNALS) {
     process.on(signal, () => {
       if (startupPhase === null) {
@@ -262,16 +332,47 @@ function installLauncherSignalHandlers(getSupervisorPid: () => number): void {
       const supervisorPid = getSupervisorPid();
       recordStartFailure({
         reason: `${describeSignalOrigin(signal)} while starting in background (phase: ${startupPhase})`,
-        detail:
-          supervisorPid > 0
-            ? [
-                `[agent-deck] background supervisor (pid ${supervisorPid}) was already spawned and keeps running — check agent-deck status`,
-              ]
-            : [],
+        detail: survivingSupervisorNote(supervisorPid),
       });
       process.exit(1);
     });
   }
+
+  // Same reasoning as the supervisor's crash handlers: the launcher is the only
+  // process watching a background start, so its own throw has to be recorded.
+  for (const [event, kind] of [
+    ['uncaughtException', 'uncaught exception'],
+    ['unhandledRejection', 'unhandled promise rejection'],
+  ] as const) {
+    process.on(event, (error: unknown) => {
+      const { reason, detail } = describeCrash(error);
+      const frames = detail.map((frame) => `[agent-deck] launcher stack| ${frame}`);
+      if (startupPhase === null) {
+        // The deck is up and this process was only printing — not a failed
+        // start, so it must not be recorded as one.
+        reportSupervisor([
+          `[agent-deck] start --daemon ${kind} after the deck was up: ${reason}`,
+          ...frames,
+        ]);
+        process.exit(1);
+      }
+      console.error(`[agent-deck] start --daemon ${kind}: ${reason}`);
+      recordStartFailure({
+        reason: `agent-deck start --daemon ${kind} (phase: ${startupPhase}): ${reason}`,
+        detail: [...frames, ...survivingSupervisorNote(getSupervisorPid())],
+      });
+      process.exit(1);
+    });
+  }
+}
+
+/** A launcher that gives up has usually left a working supervisor behind. */
+function survivingSupervisorNote(supervisorPid: number): string[] {
+  return supervisorPid > 0
+    ? [
+        `[agent-deck] background supervisor (pid ${supervisorPid}) was already spawned and keeps running — check agent-deck status`,
+      ]
+    : [];
 }
 
 /**
@@ -354,21 +455,27 @@ async function runDaemonLauncher(
 
   onSupervisorSpawned(child.pid ?? 0);
 
-  // Object, not a `let`: the exit arrives from a callback, and the reads below
-  // are all after an await.
-  const supervisor = { exit: null as string | null };
+  // Object, not a `let`: the end arrives from a callback, and the reads below
+  // are all after an await. Holds a phrase, not a code, so a supervisor that
+  // never started reads as plainly as one that exited.
+  const supervisor = { ended: null as string | null };
   child.on('exit', (code, signal) => {
-    supervisor.exit = signal ? `signal ${signal}` : `code ${code ?? 1}`;
+    supervisor.ended = signal ? `exited (signal ${signal})` : `exited (code ${code ?? 1})`;
+  });
+  // Without this handler a failed spawn throws an unhandled 'error' event and
+  // kills the launcher before it can write any diagnostic.
+  child.on('error', (error) => {
+    supervisor.ended = `failed to spawn (${describeCrash(error).reason})`;
   });
 
   child.unref();
 
   // Waiting out the full health budget after the supervisor is already gone
   // only delays the diagnostic it just wrote.
-  const healthy = await waitForHealth(`${backendUrl}/health`, 60, () => supervisor.exit !== null);
+  const healthy = await waitForHealth(`${backendUrl}/health`, 60, () => supervisor.ended !== null);
   if (!healthy) {
-    const reason = supervisor.exit
-      ? `daemon supervisor exited (${supervisor.exit}) before the API became healthy`
+    const reason = supervisor.ended
+      ? `daemon supervisor ${supervisor.ended} before the API became healthy`
       : 'daemon supervisor never passed its API health check';
     console.error(`[agent-deck] ${reason}`);
     // The supervisor log already holds the reason (and the child log tail it
@@ -378,11 +485,23 @@ async function runDaemonLauncher(
     }
     console.error(`[agent-deck] See ${resolveDaemonLogPath('supervisor')}`);
 
+    // A supervisor that is merely slow is still running and still holding the
+    // ports; saying only "start failed" sends the operator into a port conflict
+    // on their next attempt.
+    const stillRunning = supervisor.ended === null ? survivingSupervisorNote(child.pid ?? 0) : [];
+    for (const line of stillRunning) {
+      console.error(line);
+    }
+
     // The supervisor child knows more than "it exited"; keep its record if it
     // got far enough to write one for this launch.
     const recorded = readLastStartFailure();
     const supervisorRecorded = recorded !== null && Date.parse(recorded.at) >= launchedAt;
-    return recordStartFailure({ reason, keepExistingRecord: supervisorRecorded });
+    return recordStartFailure({
+      reason,
+      detail: stillRunning,
+      keepExistingRecord: supervisorRecorded,
+    });
   }
 
   // The deck is up; everything past here is reporting, not starting.
@@ -447,6 +566,7 @@ async function ensurePortsAvailable(
 export async function runStart(options: StartOptions = {}): Promise<number> {
   const supervisor = isSupervisorMode(options);
   const launcher = options.daemon === true && !supervisor;
+  supervisorProcess = supervisor;
 
   // Before the first await: preflight, upgrade checks and port probes all take
   // time, and a stop landing in that window used to kill this process through
@@ -454,9 +574,9 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   startupPhase = 'preflight';
   let daemonSupervisorPid = 0;
   if (launcher) {
-    installLauncherSignalHandlers(() => daemonSupervisorPid);
+    installLauncherExitHandlers(() => daemonSupervisorPid);
   } else {
-    installSupervisorSignalHandlers();
+    installSupervisorExitHandlers();
   }
 
   const preflight = checkStartPreflight();
@@ -481,6 +601,9 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
         await runStop({ source: 'agent-deck start --force', detail: 'restarting existing instance' });
         await new Promise((resolve) => setTimeout(resolve, 500));
       } else {
+        // Nothing is starting any more — an interrupt from here on is a stopped
+        // printout, not a failed start, and must not be recorded as one.
+        startupPhase = null;
         await printRunningEndpoints(host, backendPort, mcpPort, `http://${host}:${backendPort}`);
         console.log('Already running. Use `agent-deck stop` or `agent-deck start --daemon --force` to restart.');
         await maybeOpenDashboard(`http://${host}:${backendPort}`, options.openBrowser);
@@ -517,6 +640,9 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
       await runStop({ source: 'agent-deck start --force', detail: 'restarting existing instance' });
       await new Promise((resolve) => setTimeout(resolve, 500));
     } else {
+      // As above: past this point this process is only reporting on a deck it
+      // did not start, so it owns neither a stop nor a failed start.
+      startupPhase = null;
       await printRunningEndpoints(host, backendPort, mcpPort, backendUrl);
       console.log('Already running. Use `agent-deck stop` or `agent-deck start --force` to restart.');
       await maybeOpenDashboard(backendUrl, options.openBrowser);

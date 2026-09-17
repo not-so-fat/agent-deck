@@ -8,6 +8,7 @@ import {
   killLeftovers,
   occupyPort,
   readDaemonLog,
+  removeIsolatedHome,
   reserveFreePort,
   runCli,
 } from './cli-integration-harness';
@@ -28,7 +29,7 @@ describe('NOT-135 — a failed start is recoverable from the logs it leaves', ()
 
   afterEach(() => {
     killLeftovers(home);
-    fs.rmSync(home, { recursive: true, force: true });
+    removeIsolatedHome(home);
   });
 
   it('a backend that dies during startup writes its reason to backend.log, supervisor.log and status', async () => {
