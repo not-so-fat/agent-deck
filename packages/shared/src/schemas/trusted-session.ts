@@ -44,6 +44,9 @@ export const WorkspaceGrantManifestSchema = z
   })
   .strict();
 
+/** Alias so CLI source can avoid the legacy "grant" name (NOT-50 wording sweep). */
+export const WorkspaceV2ManifestSchema = WorkspaceGrantManifestSchema;
+
 /** Plain folder→deck assignment (NOT-108). No secret. */
 export const WorkspaceAssignmentSchema = z
   .object({

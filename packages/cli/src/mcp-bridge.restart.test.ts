@@ -133,7 +133,7 @@ describe('MCP bridge survives a server restart', () => {
   const cleanups: Array<() => Promise<void>> = [];
 
   beforeAll(() => {
-    // The bridge sends no launch-deck header; the deck grant path is tested elsewhere.
+    // The bridge sends no launch-deck header; the deck launch path is tested elsewhere.
     process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '1';
   });
 

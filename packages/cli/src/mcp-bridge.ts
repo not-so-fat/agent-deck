@@ -381,7 +381,7 @@ export class McpStdioHttpBridge {
 
     if (this.boundDeckId === deckId) {
       // The replacement session happens to sit on the deck it asked for; the
-      // binding stands even though the session that granted it is gone.
+      // binding stands even though the session that set it is gone.
       this.deckAwaitingRebind = undefined;
       return undefined;
     }
