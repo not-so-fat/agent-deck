@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.10.2 — 2026-09-18
+
+### Fix: no-deck MCP connections explain recovery instead of trapping Cursor in `mcp_auth` (NOT-50)
+
+- An MCP connect with no folder assignment (or no `x-agent-deck-deck-id`) used to answer **401**. Cursor treated that as OAuth and dead-ended on `mcp_auth` — the wrong recovery path for “pick a deck.”
+- Those connects now become an **unassigned, explain-only session**: `get_session_binding` returns `GRANT_REQUIRED` with assignment recovery text; deck-scoped tools stay unavailable. A late deck header cannot promote that session into a trusted launch runtime.
+- `mcp-launch` still starts without a deck header so the session can explain what to do; missing assignment prints a stderr hint. Diagnostics and the Cursor ADR speak in assignment terms and share the same “don’t use `mcp_auth`” recovery line.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Reload IDE MCP hosts once. If Agent Deck tools look missing or Cursor offers `mcp_auth`, run `agent-deck use <deck> --client cursor` in the project folder, then reload MCP — do not complete OAuth.
+
 ## 1.10.1 — 2026-09-17
 
 ### Fix: one duplicate display name no longer stops store sync for everyone (NOT-123)
