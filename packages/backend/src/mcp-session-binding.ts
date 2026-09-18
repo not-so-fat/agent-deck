@@ -65,6 +65,7 @@ export class McpSessionBindingStore {
       mode?: 'normal' | 'agent-admin';
     },
   ): void {
+    this.unassignedByMcp.delete(mcpSessionId);
     this.setTrustedSession(mcpSessionId, input);
     this.launchByMcp.add(mcpSessionId);
   }
@@ -74,6 +75,10 @@ export class McpSessionBindingStore {
   }
 
   markUnassigned(mcpSessionId: string): void {
+    this.launchByMcp.delete(mcpSessionId);
+    this.runtimeSessionByMcp.delete(mcpSessionId);
+    this.deckIdBySession.delete(mcpSessionId);
+    this.modeByMcp.delete(mcpSessionId);
     this.unassignedByMcp.add(mcpSessionId);
   }
 

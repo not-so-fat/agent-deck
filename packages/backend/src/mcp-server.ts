@@ -922,6 +922,12 @@ export class AgentDeckMCPServer {
   private async requireFollowUpGrant(sessionId: string, req: Request, res: Response): Promise<boolean> {
     const skipDeckHeader = skipDeckHeaderAuth();
 
+    // Unassigned sessions stay explain-only for their lifetime. A late deck header
+    // must not promote them into a trusted launch session mid-flight (NOT-50).
+    if (this.sessionBinding.isUnassigned(sessionId)) {
+      return true;
+    }
+
     const launchDeck = readLaunchDeckHeader(req);
     if (launchDeck) {
       try {
@@ -938,10 +944,6 @@ export class AgentDeckMCPServer {
         );
         return false;
       }
-    }
-
-    if (this.sessionBinding.isUnassigned(sessionId)) {
-      return true;
     }
 
     if (this.sessionBinding.isLaunchSession(sessionId)) {

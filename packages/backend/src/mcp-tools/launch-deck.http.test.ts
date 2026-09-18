@@ -267,7 +267,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
   });
 
   it('initialize without deck header → unassigned session (NOT-50)', async () => {
-    const { backendUrl } = await buildListeningBackend();
+    const { backendUrl, deckAlpha, store } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
 
@@ -297,6 +297,50 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       error_code: 'GRANT_REQUIRED',
       message: UNASSIGNED_DECK_MESSAGE,
     });
+
+    // Deck-scoped tools are absent — tools/call surfaces a protocol error, not deck data.
+    const missingTool = await fetch(`http://127.0.0.1:${started.port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId!,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'get_bound_deck', arguments: {} },
+      }),
+    });
+    expect(missingTool.status).toBe(200);
+    const missingBody = (await missingTool.json()) as {
+      error?: unknown;
+      result?: { isError?: boolean; content?: Array<{ text?: string }> };
+    };
+    const missingText = missingBody.result?.content?.[0]?.text ?? JSON.stringify(missingBody.error ?? {});
+    expect(missingText).not.toContain(deckAlpha.id);
+    expect(missingText).not.toContain('alpha');
+
+    // No trusted runtime / connect-deck for an unassigned session.
+    expect(store.findActiveRuntimeSessionByMcpSessionId(sessionId!)).toBeFalsy();
+
+    // A late deck header must not expand the session into a trusted launch session.
+    const withHeader = await callToolMcpResult(
+      started.port,
+      sessionId!,
+      'get_session_binding',
+      {},
+      5,
+      { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id },
+    );
+    expect(withHeader.isError).toBe(true);
+    expect(withHeader.data).toEqual({
+      deck: null,
+      error_code: 'GRANT_REQUIRED',
+      message: UNASSIGNED_DECK_MESSAGE,
+    });
+    expect(store.findActiveRuntimeSessionByMcpSessionId(sessionId!)).toBeFalsy();
   });
 
   it('elevated launch session with use.json can switch decks', async () => {
