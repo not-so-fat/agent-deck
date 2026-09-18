@@ -9,6 +9,7 @@ import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
 import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard } from './policy';
 import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
+import { unassignedDeckBinding } from '../mcp-unassigned';
 
 type RegisterToolFn = (
   name: string,
@@ -19,6 +20,8 @@ type RegisterToolFn = (
 export type McpToolHost = {
   registerTool: RegisterToolFn;
   profile: McpToolProfile;
+  /** NOT-50: explain-only session with no deck access. */
+  unassigned?: boolean;
   getSessionId(): string;
   getMode(): 'normal' | 'agent-admin';
   refreshRuntimeSession(): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }>;
@@ -52,6 +55,7 @@ export type McpToolHost = {
       },
     ): void;
     isLaunchSession(sessionId: string): boolean;
+    isUnassigned?(sessionId: string): boolean;
     hasSessionDeckOverride(sessionId: string): boolean;
   };
   badgeBySession: Map<string, string>;
@@ -119,6 +123,10 @@ async function resolveDeckForBind(
 }
 
 export function registerMcpTools(host: McpToolHost): void {
+  if (host.unassigned) {
+    registerUnassignedTools(host);
+    return;
+  }
   registerRuntimeTools(host);
   if (profileIncludes(host.profile, 'editing')) {
     registerEditingTools(host);
@@ -126,6 +134,23 @@ export function registerMcpTools(host: McpToolHost): void {
   if (profileIncludes(host.profile, 'legacy')) {
     registerLegacyTools(host);
   }
+}
+
+/** NOT-50: only get_session_binding, with the fix-it GRANT_REQUIRED body. */
+function registerUnassignedTools(host: McpToolHost): void {
+  const { registerTool: r } = host;
+  r('get_session_binding', {
+    title: 'Get Session Binding',
+    description:
+      'Show workspace and effective deck for this MCP session (session override or env default).',
+    inputSchema: {},
+  }, async () => ({
+    content: [{
+      type: 'text',
+      text: JSON.stringify(unassignedDeckBinding(), null, 2),
+    }],
+    isError: true,
+  }));
 }
 
 function registerRuntimeTools(host: McpToolHost): void {

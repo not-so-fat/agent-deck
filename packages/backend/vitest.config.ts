@@ -21,7 +21,7 @@ export default defineConfig({
     env: {
       AGENT_DECK_HOME: agentDeckHome,
       ...deckPorts,
-      AGENT_DECK_MCP_SKIP_GRANT_AUTH: '1',
+      AGENT_DECK_MCP_SKIP_DECK_HEADER: '1',
       AGENT_DECK_MCP_SKIP_ADMIN_CHECK: '1',
     },
     coverage: {

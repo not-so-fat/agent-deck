@@ -134,7 +134,7 @@ describe('MCP bridge survives a server restart', () => {
 
   beforeAll(() => {
     // The bridge sends no launch-deck header; the deck grant path is tested elsewhere.
-    process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = '1';
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '1';
   });
 
   afterEach(async () => {
