@@ -27,9 +27,12 @@ import type { ServiceManager } from '../services/service-manager';
 import {
   MCP_ACCEPT,
   callToolMcpResult,
+  listTools,
   openSession,
+  postInitialize,
   startMcpServer,
 } from './test-harness';
+import { UNASSIGNED_DECK_MESSAGE } from '../mcp-unassigned';
 
 describe('MCP launch-selected deck (NOT-105)', () => {
   const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
@@ -39,10 +42,11 @@ describe('MCP launch-selected deck (NOT-105)', () => {
   let previousStubSync: string | undefined;
 
   beforeEach(() => {
-    previousSkipGrant = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
+    previousSkipGrant = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER ?? process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
-    process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = '0';
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
+    delete process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
     process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     // Stub sync enabled — launch bind must still leave worktree empty.
     delete process.env.AGENT_DECK_STUB_SYNC;
@@ -57,9 +61,10 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       await servers.pop()?.close();
     }
     if (previousSkipGrant === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
       delete process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
     } else {
-      process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = previousSkipGrant;
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipGrant;
     }
     if (previousSkipAdmin === undefined) {
       delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
@@ -259,6 +264,83 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     expect(response.status).toBe(401);
     const body = (await response.json()) as { error?: { message?: string } };
     expect(body.error?.message).toBe('GRANT_REQUIRED');
+  });
+
+  it('initialize without deck header → unassigned session (NOT-50)', async () => {
+    const { backendUrl, deckAlpha, store } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const init = await postInitialize(started.port, 1);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const initBody = (await init.json()) as {
+      result?: { instructions?: string; serverInfo?: unknown };
+    };
+    expect(initBody.result?.instructions).toBe(UNASSIGNED_DECK_MESSAGE);
+
+    const tools = await listTools(started.port, sessionId!, 2);
+    expect(tools.map((t) => t.name)).toEqual(['get_session_binding']);
+
+    const binding = await callToolMcpResult(
+      started.port,
+      sessionId!,
+      'get_session_binding',
+      {},
+      3,
+    );
+    expect(binding.isError).toBe(true);
+    expect(binding.data).toEqual({
+      deck: null,
+      error_code: 'GRANT_REQUIRED',
+      message: UNASSIGNED_DECK_MESSAGE,
+    });
+
+    // Deck-scoped tools are absent — tools/call surfaces a protocol error, not deck data.
+    const missingTool = await fetch(`http://127.0.0.1:${started.port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId!,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: { name: 'get_bound_deck', arguments: {} },
+      }),
+    });
+    expect(missingTool.status).toBe(200);
+    const missingBody = (await missingTool.json()) as {
+      error?: unknown;
+      result?: { isError?: boolean; content?: Array<{ text?: string }> };
+    };
+    const missingText = missingBody.result?.content?.[0]?.text ?? JSON.stringify(missingBody.error ?? {});
+    expect(missingText).not.toContain(deckAlpha.id);
+    expect(missingText).not.toContain('alpha');
+
+    // No trusted runtime / connect-deck for an unassigned session.
+    expect(store.findActiveRuntimeSessionByMcpSessionId(sessionId!)).toBeFalsy();
+
+    // A late deck header must not expand the session into a trusted launch session.
+    const withHeader = await callToolMcpResult(
+      started.port,
+      sessionId!,
+      'get_session_binding',
+      {},
+      5,
+      { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id },
+    );
+    expect(withHeader.isError).toBe(true);
+    expect(withHeader.data).toEqual({
+      deck: null,
+      error_code: 'GRANT_REQUIRED',
+      message: UNASSIGNED_DECK_MESSAGE,
+    });
+    expect(store.findActiveRuntimeSessionByMcpSessionId(sessionId!)).toBeFalsy();
   });
 
   it('elevated launch session with use.json can switch decks', async () => {

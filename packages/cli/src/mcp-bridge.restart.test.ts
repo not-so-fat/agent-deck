@@ -133,8 +133,8 @@ describe('MCP bridge survives a server restart', () => {
   const cleanups: Array<() => Promise<void>> = [];
 
   beforeAll(() => {
-    // The bridge sends no launch-deck header; the deck grant path is tested elsewhere.
-    process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = '1';
+    // The bridge sends no launch-deck header; the deck launch path is tested elsewhere.
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '1';
   });
 
   afterEach(async () => {
@@ -183,6 +183,19 @@ describe('MCP bridge survives a server restart', () => {
     // The restart: same port, brand new process state — exactly what an upgrade does.
     await server.stop();
     server = await startServer(port);
+    // Wait until the replacement accepts HTTP. A tools/list that races the listen
+    // surfaces as a transport error instead of the 404→re-init path under test.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      try {
+        const health = await fetch(`http://127.0.0.1:${port}/health`);
+        if (health.ok) {
+          break;
+        }
+      } catch {
+        // not listening yet
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
 
     channel.send({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
     const afterRestart = await channel.waitFor(3);

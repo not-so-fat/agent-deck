@@ -54,10 +54,7 @@ describe('mcp-launch assignment headers', () => {
     });
 
     const plan = await resolveMcpLaunchPlan(workspace, endpoint);
-    expect('error' in plan).toBe(false);
-    if ('error' in plan) {
-      return;
-    }
+    expect(plan.unassigned).toBeUndefined();
     expect(plan.headers).toEqual([
       `${AGENT_DECK_DECK_ID_HEADER}: deck-v3`,
       `${AGENT_DECK_WORKSPACE_HEADER}: ${workspace}`,
@@ -77,10 +74,10 @@ describe('mcp-launch assignment headers', () => {
     await writeAssignment(workspace, { deckId: 'deck-b', deckName: 'b' });
     const afterSwitch = await resolveMcpLaunchPlan(workspace, endpoint);
 
-    expect(parseLaunchHeaders(('headers' in launch && launch.headers) || [])).toMatchObject({
+    expect(parseLaunchHeaders(launch.headers)).toMatchObject({
       [AGENT_DECK_DECK_ID_HEADER]: 'deck-a',
     });
-    expect(parseLaunchHeaders(('headers' in afterSwitch && afterSwitch.headers) || [])).toMatchObject({
+    expect(parseLaunchHeaders(afterSwitch.headers)).toMatchObject({
       [AGENT_DECK_DECK_ID_HEADER]: 'deck-b',
     });
   });
@@ -103,10 +100,6 @@ describe('mcp-launch assignment headers', () => {
     );
 
     const plan = await resolveMcpLaunchPlan(workspace, endpoint);
-    expect('error' in plan).toBe(false);
-    if ('error' in plan) {
-      return;
-    }
     expect(plan.deckId).toBe('deck-v2');
     expect(plan.headers[0]).toBe(`${AGENT_DECK_DECK_ID_HEADER}: deck-v2`);
 
@@ -131,19 +124,22 @@ describe('mcp-launch assignment headers', () => {
     });
 
     const plan = await resolveMcpLaunchPlan(workspace, endpoint);
-    expect('error' in plan).toBe(false);
-    if ('error' in plan) {
-      return;
-    }
     expect(plan.deckId).toBe('deck-kc');
     expect(clearKeychainAssignment).toHaveBeenCalledWith(workspace);
     expect(fs.existsSync(path.join(workspace, '.agent-deck', 'use.json'))).toBe(true);
   });
 
-  it('exits with the ticket message when no assignment exists', async () => {
+  it('connects without a deck header when no assignment exists (NOT-50)', async () => {
     const workspace = makeWorkspace();
     const plan = await resolveMcpLaunchPlan(workspace, endpoint);
-    expect(plan).toEqual({ error: NO_ASSIGNMENT_MESSAGE });
+    expect(plan).toEqual({
+      workspaceRoot: workspace,
+      mcpUrl: 'http://127.0.0.1:1110/mcp',
+      headers: [`${AGENT_DECK_WORKSPACE_HEADER}: ${workspace}`],
+      unassigned: true,
+    });
+    expect(plan.headers.join('\n')).not.toMatch(AGENT_DECK_DECK_ID_HEADER);
+    expect(NO_ASSIGNMENT_MESSAGE).toContain('agent-deck use');
   });
 });
 

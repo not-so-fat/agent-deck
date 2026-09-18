@@ -17,9 +17,11 @@ import { McpStdioHttpBridge } from './mcp-bridge';
 export type McpLaunchPlan = {
   workspaceRoot: string;
   mcpUrl: string;
-  deckId: string;
-  deckName: string;
+  deckId?: string;
+  deckName?: string;
   headers: string[];
+  /** True when the folder has no assignment — connect without a deck header (NOT-50). */
+  unassigned?: boolean;
 };
 
 export type McpBridgeKind = 'builtin' | 'supergateway';
@@ -60,10 +62,15 @@ export async function resolveMcpLaunchPlan(
     host: process.env.AGENT_DECK_HOST ?? '127.0.0.1',
     mcpPort: Number(process.env.AGENT_DECK_MCP_PORT ?? '1110'),
   },
-): Promise<McpLaunchPlan | { error: string }> {
+): Promise<McpLaunchPlan> {
   const assignment = await readAssignment(workspaceRoot);
   if (!assignment) {
-    return { error: NO_ASSIGNMENT_MESSAGE };
+    return {
+      workspaceRoot,
+      mcpUrl: buildMcpUrl(endpoint),
+      headers: [`${AGENT_DECK_WORKSPACE_HEADER}: ${workspaceRoot}`],
+      unassigned: true,
+    };
   }
 
   if (assignment.needsMigration) {
@@ -97,9 +104,8 @@ export async function runMcpLaunch(): Promise<number> {
   const endpoint: McpEndpoint = { host, mcpPort };
 
   const plan = await resolveMcpLaunchPlan(workspaceRoot, endpoint);
-  if ('error' in plan) {
-    console.error(plan.error);
-    return 1;
+  if (plan.unassigned) {
+    console.error(NO_ASSIGNMENT_MESSAGE);
   }
 
   if (resolveBridgeKind() === 'builtin') {
@@ -112,9 +118,7 @@ export async function runMcpLaunch(): Promise<number> {
       // reconnecting to the deck and server this process started on.
       resolveTarget: async () => {
         const current = await resolveMcpLaunchPlan(workspaceRoot, endpoint);
-        return 'error' in current
-          ? undefined
-          : { url: current.mcpUrl, headers: parseLaunchHeaders(current.headers) };
+        return { url: current.mcpUrl, headers: parseLaunchHeaders(current.headers) };
       },
       stdin: process.stdin,
       stdout: process.stdout,
@@ -123,15 +127,13 @@ export async function runMcpLaunch(): Promise<number> {
     return 0;
   }
 
+  const headerArgs = plan.headers.flatMap((header) => ['--header', header]);
   const supergatewayArgs = [
     '-y',
     'supergateway',
     '--streamableHttp',
     plan.mcpUrl,
-    '--header',
-    plan.headers[0],
-    '--header',
-    plan.headers[1],
+    ...headerArgs,
   ];
 
   return await new Promise<number>((resolve) => {

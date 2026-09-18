@@ -23,6 +23,10 @@ import {
 import { registerMcpTools } from './mcp-tools/register';
 import { McpToolProfile, resolveMcpToolProfile } from './mcp-tools/profile';
 import {
+  skipDeckHeaderAuth,
+  UNASSIGNED_DECK_MESSAGE,
+} from './mcp-unassigned';
+import {
   healUseManifest,
   isStubSyncEnabled,
   stubSyncChanged,
@@ -147,12 +151,18 @@ export class AgentDeckMCPServer {
    * so concurrent requests cannot steal another session's backend authority.
    */
   private createMcpServer(sessionId: string): McpServer {
-    this.mcpServerForRegistration = new McpServer({
-      name: "agent-deck-server",
-      version: getAgentDeckVersion(),
-    });
+    const unassigned = this.sessionBinding.isUnassigned(sessionId);
+    this.mcpServerForRegistration = new McpServer(
+      {
+        name: "agent-deck-server",
+        version: getAgentDeckVersion(),
+      },
+      unassigned ? { instructions: UNASSIGNED_DECK_MESSAGE } : undefined,
+    );
     this.setupTools(sessionId);
-    this.setupResources(sessionId);
+    if (!unassigned) {
+      this.setupResources(sessionId);
+    }
     const server = this.mcpServerForRegistration;
     this.mcpServerForRegistration = undefined;
     return server;
@@ -401,6 +411,7 @@ export class AgentDeckMCPServer {
     registerMcpTools({
       registerTool: (name, config, handler) => this.registerTool(name, config, handler),
       profile: this.toolProfile,
+      unassigned: this.sessionBinding.isUnassigned(sessionId),
       getSessionId: () => sessionId,
       getMode: () => this.sessionBinding.getMode(sessionId) ?? 'normal',
       refreshRuntimeSession: () => this.refreshRuntimeSession(sessionId),
@@ -903,12 +914,19 @@ export class AgentDeckMCPServer {
 
   /**
    * Re-validate launch deck on every follow-up MCP HTTP request.
-   * Fail closed with 401 — do not destroy the transport session so a
-   * correct credential on the next attempt can succeed.
-   * AGENT_DECK_MCP_SKIP_GRANT_AUTH=1 only relaxes *missing* deck header (unit tests).
+   * Fail closed with 401 for launch sessions that drop the deck header — do not
+   * destroy the transport session so a correct credential on the next attempt
+   * can succeed. Unassigned sessions (NOT-50) have no deck and stay open.
+   * AGENT_DECK_MCP_SKIP_DECK_HEADER=1 only relaxes *missing* deck header (unit tests).
    */
   private async requireFollowUpGrant(sessionId: string, req: Request, res: Response): Promise<boolean> {
-    const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
+    const skipDeckHeader = skipDeckHeaderAuth();
+
+    // Unassigned sessions stay explain-only for their lifetime. A late deck header
+    // must not promote them into a trusted launch session mid-flight (NOT-50).
+    if (this.sessionBinding.isUnassigned(sessionId)) {
+      return true;
+    }
 
     const launchDeck = readLaunchDeckHeader(req);
     if (launchDeck) {
@@ -933,7 +951,7 @@ export class AgentDeckMCPServer {
       return false;
     }
 
-    if (skipGrantAuth) {
+    if (skipDeckHeader) {
       return true;
     }
     this.sendGrantRequired(res);
@@ -985,11 +1003,8 @@ export class AgentDeckMCPServer {
     }
 
     const launchDeck = readLaunchDeckHeader(req);
-    const skipGrantAuth = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1';
-    if (!launchDeck && !skipGrantAuth) {
-      this.sendGrantRequired(res);
-      return;
-    }
+    const skipDeckHeader = skipDeckHeaderAuth();
+    const unassigned = !launchDeck && !skipDeckHeader;
 
     // Authenticate before advertising mcp-session-id.
     const sessionId = randomUUID();
@@ -1006,6 +1021,12 @@ export class AgentDeckMCPServer {
           error instanceof Error ? error.message : 'LAUNCH_DECK_INVALID',
         );
         return;
+      }
+    } else if (unassigned) {
+      this.sessionBinding.markUnassigned(sessionId);
+      const workspaceRoot = readWorkspaceRootHeader(req);
+      if (workspaceRoot) {
+        this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
       }
     }
 
@@ -1067,7 +1088,9 @@ export class AgentDeckMCPServer {
       // The replacement session is live, so the session this client lost to the
       // restart is genuinely recovered and no longer a stranded client.
       this.markStaleSessionRecovered(req);
-      void this.registerLiveDisplay(transport.sessionId).catch(() => {});
+      if (!this.sessionBinding.isUnassigned(transport.sessionId)) {
+        void this.registerLiveDisplay(transport.sessionId).catch(() => {});
+      }
     }
   }
 

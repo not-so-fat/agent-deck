@@ -40,11 +40,12 @@ describe('MCP session-local context (NOT-84)', () => {
   let previousUnregisterTimeout: string | undefined;
 
   beforeEach(() => {
-    previousSkipGrant = process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
+    previousSkipGrant = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER ?? process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
     previousUnregisterTimeout = process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS;
-    process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = '0';
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
+    delete process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
     process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     process.env.AGENT_DECK_STUB_SYNC = 'off';
   });
@@ -58,9 +59,10 @@ describe('MCP session-local context (NOT-84)', () => {
       await servers.pop()?.close();
     }
     if (previousSkipGrant === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
       delete process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
     } else {
-      process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH = previousSkipGrant;
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipGrant;
     }
     if (previousSkipAdmin === undefined) {
       delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;

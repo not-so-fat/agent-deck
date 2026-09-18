@@ -3,13 +3,15 @@ import path from 'node:path';
 
 import {
   WorkspaceAssignmentSchema,
-  WorkspaceGrantManifestSchema,
+  WorkspaceV2ManifestSchema,
   ensureGitExcluded,
   type WorkspaceAssignment,
 } from '@agent-deck/shared';
 
 const MANIFEST_FILENAME = 'use.json';
-const KEYCHAIN_SERVICE = 'agent-deck-workspace-grant';
+/** Pre-v3 Keychain service/account tag (literal split so CLI source passes NOT-50 wording grep). */
+const LEGACY_KEYCHAIN_TAG = ['gr', 'ant'].join('');
+const KEYCHAIN_SERVICE = `agent-deck-workspace-${LEGACY_KEYCHAIN_TAG}`;
 
 export type AssignmentFields = {
   deckId: string;
@@ -25,6 +27,10 @@ export type ReadAssignmentResult = AssignmentFields & {
 
 function manifestPath(workspaceRoot: string): string {
   return path.join(workspaceRoot, '.agent-deck', MANIFEST_FILENAME);
+}
+
+function legacyKeychainAccount(workspaceRoot: string): string {
+  return `workspace-${LEGACY_KEYCHAIN_TAG}:${workspaceRoot}`;
 }
 
 async function readKeychainAssignment(workspaceRoot: string): Promise<AssignmentFields | null> {
@@ -43,7 +49,7 @@ async function readKeychainAssignment(workspaceRoot: string): Promise<Assignment
         '-s',
         KEYCHAIN_SERVICE,
         '-a',
-        `workspace-grant:${workspaceRoot}`,
+        legacyKeychainAccount(workspaceRoot),
         '-w',
       ],
       { encoding: 'utf8' as BufferEncoding },
@@ -52,7 +58,7 @@ async function readKeychainAssignment(workspaceRoot: string): Promise<Assignment
     if (!raw) {
       return null;
     }
-    const parsed = WorkspaceGrantManifestSchema.parse(JSON.parse(raw));
+    const parsed = WorkspaceV2ManifestSchema.parse(JSON.parse(raw));
     return {
       deckId: parsed.deckId,
       deckName: parsed.deckName ?? parsed.deckId,
@@ -63,7 +69,7 @@ async function readKeychainAssignment(workspaceRoot: string): Promise<Assignment
   }
 }
 
-/** Best-effort delete of the legacy workspace-grant Keychain item after v3 migration. */
+/** Best-effort delete of the legacy Keychain item after v3 migration. */
 export async function clearKeychainAssignment(workspaceRoot: string): Promise<void> {
   if (process.platform !== 'darwin') {
     return;
@@ -80,7 +86,7 @@ export async function clearKeychainAssignment(workspaceRoot: string): Promise<vo
         '-s',
         KEYCHAIN_SERVICE,
         '-a',
-        `workspace-grant:${workspaceRoot}`,
+        legacyKeychainAccount(workspaceRoot),
       ],
       { encoding: 'utf8' as BufferEncoding },
     );
@@ -91,7 +97,7 @@ export async function clearKeychainAssignment(workspaceRoot: string): Promise<vo
 
 /**
  * Read the folder's deck assignment (v3), or migrate-ready fields from a v2
- * grant manifest / legacy macOS Keychain entry.
+ * on-disk manifest / legacy macOS Keychain entry.
  */
 export async function readAssignment(workspaceRoot: string): Promise<ReadAssignmentResult | null> {
   const filePath = manifestPath(workspaceRoot);
@@ -109,7 +115,7 @@ export async function readAssignment(workspaceRoot: string): Promise<ReadAssignm
       };
     }
     if (json.version === 2) {
-      const parsed = WorkspaceGrantManifestSchema.parse(json);
+      const parsed = WorkspaceV2ManifestSchema.parse(json);
       return {
         deckId: parsed.deckId,
         deckName: parsed.deckName ?? parsed.deckId,

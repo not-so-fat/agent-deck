@@ -28,6 +28,8 @@ export class McpSessionBindingStore {
   private modeByMcp = new Map<string, 'normal' | 'agent-admin'>();
   /** MCP session ids authenticated via launch-selected deck (NOT-105). */
   private launchByMcp = new Set<string>();
+  /** MCP sessions with no deck header — explain-only, no deck access (NOT-50). */
+  private unassignedByMcp = new Set<string>();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -63,12 +65,25 @@ export class McpSessionBindingStore {
       mode?: 'normal' | 'agent-admin';
     },
   ): void {
+    this.unassignedByMcp.delete(mcpSessionId);
     this.setTrustedSession(mcpSessionId, input);
     this.launchByMcp.add(mcpSessionId);
   }
 
   isLaunchSession(mcpSessionId: string): boolean {
     return this.launchByMcp.has(mcpSessionId);
+  }
+
+  markUnassigned(mcpSessionId: string): void {
+    this.launchByMcp.delete(mcpSessionId);
+    this.runtimeSessionByMcp.delete(mcpSessionId);
+    this.deckIdBySession.delete(mcpSessionId);
+    this.modeByMcp.delete(mcpSessionId);
+    this.unassignedByMcp.add(mcpSessionId);
+  }
+
+  isUnassigned(mcpSessionId: string): boolean {
+    return this.unassignedByMcp.has(mcpSessionId);
   }
 
   setWorkspace(sessionId: string, workspaceRoot: string): void {
@@ -89,6 +104,7 @@ export class McpSessionBindingStore {
     this.runtimeSessionByMcp.delete(sessionId);
     this.modeByMcp.delete(sessionId);
     this.launchByMcp.delete(sessionId);
+    this.unassignedByMcp.delete(sessionId);
   }
 
   getWorkspace(sessionId: string): string | undefined {

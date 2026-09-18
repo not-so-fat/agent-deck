@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  CURSOR_MCP_RECOVERY_HINT,
   isLegacyBareHttpAgentDeckEntry,
   isMcpLaunchEntry,
   readJsonFile,
@@ -23,7 +24,7 @@ export type CursorMcpIssueCode =
   | 'unresolved-workspace-pin'
   | 'stale-endpoint'
   | 'custom-entry'
-  | 'grant-missing';
+  | 'assignment-missing';
 
 export interface CursorMcpIssue {
   code: CursorMcpIssueCode;
@@ -47,12 +48,11 @@ export interface CursorMcpEntryReport {
   issues: CursorMcpIssue[];
 }
 
-export interface CursorMcpGrantSummary {
+export interface CursorMcpAssignmentSummary {
   checkedRoot: string;
   present: boolean;
   deckId?: string;
   deckName?: string;
-  grantId?: string;
 }
 
 export interface CursorMcpInspection {
@@ -62,7 +62,7 @@ export interface CursorMcpInspection {
   preferredSource: 'project' | 'global' | 'none';
   global: CursorMcpEntryReport;
   project: CursorMcpEntryReport;
-  grant: CursorMcpGrantSummary;
+  assignment: CursorMcpAssignmentSummary;
   issues: CursorMcpIssue[];
 }
 
@@ -181,12 +181,11 @@ function classifyEntry(
       issues: [
         {
           code: 'bare-url',
-          message: `Legacy bare URL in ${configPath} has no workspace-grant launcher.`,
+          message: `Legacy bare URL in ${configPath} has no deck-assignment launcher.`,
         },
         {
           code: 'mcp_auth_dead_end',
-          message:
-            'Bare HTTP MCP entries fail discovery/auth in Cursor and surface mcp_auth — that is not the Agent Deck workspace-grant flow. Run `agent-deck use <deck> --client cursor`.',
+          message: `${CURSOR_MCP_RECOVERY_HINT} Bare HTTP entries are missing a folder assignment.`,
         },
       ],
     };
@@ -224,7 +223,7 @@ function classifyEntry(
   } else if (unresolved) {
     issues.push({
       code: 'unresolved-workspace-pin',
-      message: `AGENT_DECK_WORKSPACE in ${configPath} contains unresolved interpolation (${rawPin}); cannot locate the grant root.`,
+      message: `AGENT_DECK_WORKSPACE in ${configPath} contains unresolved interpolation (${rawPin}); cannot locate the assignment root.`,
     });
   }
   if (
@@ -251,10 +250,10 @@ function classifyEntry(
 
 /**
  * Read usable assignment metadata from `.agent-deck/use.json` without returning secrets.
- * Accepts v3 assignments and legacy v2 grant manifests (deckId only for display).
+ * Accepts v3 assignments and legacy v2 manifests (deckId only for display).
  * Legacy v1 manifests are not assignments — `mcp-launch` still requires `agent-deck use`.
  */
-export function readGrantSummarySync(workspaceRoot: string): CursorMcpGrantSummary {
+export function readAssignmentSummarySync(workspaceRoot: string): CursorMcpAssignmentSummary {
   const checkedRoot = path.resolve(workspaceRoot);
   const manifestPath = path.join(checkedRoot, '.agent-deck', 'use.json');
   if (!fs.existsSync(manifestPath)) {
@@ -264,7 +263,6 @@ export function readGrantSummarySync(workspaceRoot: string): CursorMcpGrantSumma
     const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
     const deckId = typeof raw.deckId === 'string' ? raw.deckId : undefined;
     const deckName = typeof raw.deckName === 'string' ? raw.deckName : undefined;
-    const grantId = typeof raw.grantId === 'string' ? raw.grantId : undefined;
     const version = raw.version;
     const present =
       (version === 3 && typeof deckId === 'string' && deckId.length > 0) ||
@@ -274,7 +272,6 @@ export function readGrantSummarySync(workspaceRoot: string): CursorMcpGrantSumma
       present,
       ...(deckId ? { deckId } : {}),
       ...(deckName ? { deckName } : {}),
-      ...(grantId ? { grantId } : {}),
     };
   } catch {
     return { checkedRoot, present: false };
@@ -285,7 +282,7 @@ function collectOverallIssues(
   preferredSource: CursorMcpInspection['preferredSource'],
   global: CursorMcpEntryReport,
   project: CursorMcpEntryReport,
-  grant: CursorMcpGrantSummary,
+  assignment: CursorMcpAssignmentSummary,
 ): CursorMcpIssue[] {
   const issues: CursorMcpIssue[] = [];
   for (const report of [global, project]) {
@@ -298,10 +295,10 @@ function collectOverallIssues(
       issues.push(issue);
     }
   }
-  if (!grant.present) {
+  if (!assignment.present) {
     issues.push({
-      code: 'grant-missing',
-      message: `No deck assignment at ${grant.checkedRoot} — run \`agent-deck use <deck>\`.`,
+      code: 'assignment-missing',
+      message: `No deck assignment at ${assignment.checkedRoot} — run \`agent-deck use <deck>\`.`,
     });
   }
   return issues;
@@ -322,9 +319,9 @@ export function inspectCursorMcpConfig(options: {
     project.shape !== 'missing' ? 'project' : global.shape !== 'missing' ? 'global' : 'none';
 
   const preferred = preferredSource === 'project' ? project : preferredSource === 'global' ? global : null;
-  const grantRoot = preferred?.workspacePin ?? cwd;
-  const grant = readGrantSummarySync(grantRoot);
-  const issues = collectOverallIssues(preferredSource, global, project, grant);
+  const assignmentRoot = preferred?.workspacePin ?? cwd;
+  const assignment = readAssignmentSummarySync(assignmentRoot);
+  const issues = collectOverallIssues(preferredSource, global, project, assignment);
 
   return {
     cwd,
@@ -332,7 +329,7 @@ export function inspectCursorMcpConfig(options: {
     preferredSource,
     global,
     project,
-    grant,
+    assignment,
     issues,
   };
 }
@@ -348,9 +345,9 @@ export function formatCursorMcpInspection(report: CursorMcpInspection): string {
     `  Project ${report.project.path}`,
     `    shape=${report.project.shape} transport=${report.project.transport}` +
       (report.project.workspacePin ? ` pin=${report.project.workspacePin}` : ''),
-    `  Assignment ${report.grant.present ? 'present' : 'missing'} @ ${report.grant.checkedRoot}` +
-      (report.grant.deckName || report.grant.deckId
-        ? ` (${report.grant.deckName ?? report.grant.deckId})`
+    `  Assignment ${report.assignment.present ? 'present' : 'missing'} @ ${report.assignment.checkedRoot}` +
+      (report.assignment.deckName || report.assignment.deckId
+        ? ` (${report.assignment.deckName ?? report.assignment.deckId})`
         : ''),
   ];
 
@@ -366,6 +363,8 @@ export function formatCursorMcpInspection(report: CursorMcpInspection): string {
   } else {
     lines.push('  Issues: none');
   }
+
+  lines.push(`  Recovery: ${CURSOR_MCP_RECOVERY_HINT}`);
 
   return lines.join('\n');
 }

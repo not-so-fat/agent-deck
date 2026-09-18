@@ -6,7 +6,7 @@ import path from 'node:path';
 import {
   formatCursorMcpInspection,
   inspectCursorMcpConfig,
-  readGrantSummarySync,
+  readAssignmentSummarySync,
   resolveWorkspacePinValue,
 } from './cursor-mcp-inspect';
 
@@ -58,7 +58,7 @@ describe('inspectCursorMcpConfig', () => {
     expect(report.global.shape).toBe('missing');
     expect(report.project.shape).toBe('missing');
     expect(report.issues.map((i) => i.code)).toEqual(
-      expect.arrayContaining(['missing', 'grant-missing']),
+      expect.arrayContaining(['missing', 'assignment-missing']),
     );
     expect(fs.existsSync(path.join(home, '.cursor', 'mcp.json'))).toBe(false);
   });
@@ -87,7 +87,7 @@ describe('inspectCursorMcpConfig', () => {
     expect(formatCursorMcpInspection(report)).toContain('mcp_auth');
   });
 
-  it('accepts a valid mcp-launch pin with grant metadata (no secrets in output)', () => {
+  it('accepts a valid mcp-launch pin with assignment metadata (no secrets in output)', () => {
     const { home, workspace } = makeHomeAndWorkspace();
     fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
     fs.writeFileSync(
@@ -115,9 +115,9 @@ describe('inspectCursorMcpConfig', () => {
 
     expect(report.global.shape).toBe('mcp-launch');
     expect(report.global.workspacePin).toBe(workspace);
-    expect(report.grant.present).toBe(true);
-    expect(report.grant.deckName).toBe('personal-dev');
-    expect(report.issues.filter((i) => i.code === 'grant-missing')).toHaveLength(0);
+    expect(report.assignment.present).toBe(true);
+    expect(report.assignment.deckName).toBe('personal-dev');
+    expect(report.issues.filter((i) => i.code === 'assignment-missing')).toHaveLength(0);
     expect(report.issues.filter((i) => i.code === 'missing')).toHaveLength(0);
     expect(report.project.shape).toBe('missing');
     const formatted = formatCursorMcpInspection(report);
@@ -126,7 +126,7 @@ describe('inspectCursorMcpConfig', () => {
     expect(formatted).toContain('Issues: none');
   });
 
-  it('resolves project ${workspaceFolder} pin before grant lookup', () => {
+  it('resolves project ${workspaceFolder} pin before assignment lookup', () => {
     const { home, workspace } = makeHomeAndWorkspace();
     fs.mkdirSync(path.join(workspace, '.cursor'), { recursive: true });
     fs.writeFileSync(
@@ -153,13 +153,13 @@ describe('inspectCursorMcpConfig', () => {
     });
 
     expect(report.project.workspacePin).toBe(workspace);
-    expect(report.grant.checkedRoot).toBe(workspace);
-    expect(report.grant.present).toBe(true);
-    expect(report.issues.filter((i) => i.code === 'grant-missing')).toHaveLength(0);
+    expect(report.assignment.checkedRoot).toBe(workspace);
+    expect(report.assignment.present).toBe(true);
+    expect(report.issues.filter((i) => i.code === 'assignment-missing')).toHaveLength(0);
     expect(report.project.workspacePin).not.toContain('${workspaceFolder}');
   });
 
-  it('treats legacy v1 use.json as grant-missing', () => {
+  it('treats legacy v1 use.json as assignment-missing', () => {
     const { home, workspace } = makeHomeAndWorkspace();
     fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
     fs.writeFileSync(
@@ -195,8 +195,8 @@ describe('inspectCursorMcpConfig', () => {
       endpoint: { host: '127.0.0.1', mcpPort: 1110 },
     });
 
-    expect(report.grant.present).toBe(false);
-    expect(report.issues.map((i) => i.code)).toContain('grant-missing');
+    expect(report.assignment.present).toBe(false);
+    expect(report.issues.map((i) => i.code)).toContain('assignment-missing');
     expect(formatCursorMcpInspection(report)).toContain('Assignment missing');
   });
 
@@ -350,8 +350,8 @@ describe('inspectCursorMcpConfig', () => {
     expect(report.global.shape).toBe('legacy-bare-url');
   });
 
-  it('readGrantSummarySync never exposes secret field', () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-inspect-grant-'));
+  it('readAssignmentSummarySync never exposes secret field', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-inspect-assign-'));
     tmpDirs.push(workspace);
     fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
     fs.writeFileSync(
@@ -365,7 +365,7 @@ describe('inspectCursorMcpConfig', () => {
         updatedAt: new Date().toISOString(),
       }, null, 2)}\n`,
     );
-    const summary = readGrantSummarySync(workspace);
+    const summary = readAssignmentSummarySync(workspace);
     expect(summary.present).toBe(true);
     expect(JSON.stringify(summary)).not.toContain('nope');
   });

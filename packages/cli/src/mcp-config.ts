@@ -4,6 +4,10 @@ import path from 'node:path';
 
 import { sanitizeJsonText } from './strip-ansi';
 
+/** Shared recovery sentence for Cursor MCP diagnostics and docs (NOT-50). */
+export const CURSOR_MCP_RECOVERY_HINT =
+  "If Agent Deck tools are missing in Cursor, don't use `mcp_auth` — run `agent-deck use <deck> --client cursor` in the project folder, then reload Cursor MCP.";
+
 export type McpClient = 'cursor' | 'claude' | 'claude-desktop';
 export type SetupScope = 'global' | 'project';
 
@@ -47,7 +51,7 @@ export function resolveConfigPath(
 
 /**
  * MCP client entry for the agent-deck server. Uses the trusted local launcher,
- * which reads the private workspace grant at runtime — no deck id in tracked config.
+ * which reads the folder assignment at runtime — no deck id in tracked config.
  */
 export function buildAgentDeckEntry(
   client: McpClient,
@@ -93,7 +97,7 @@ export function buildAgentDeckEntry(
   };
 }
 
-/** Pre-1.7 Cursor/HTTP entries used bare `url` with no grant Bearer. */
+/** Pre-1.7 Cursor/HTTP entries used bare `url` with no deck-assignment launcher. */
 export function isLegacyBareHttpAgentDeckEntry(entry: unknown): boolean {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     return false;
@@ -160,7 +164,7 @@ export type CursorGlobalMcpEnsureResult =
 /**
  * Cursor Agent chat uses the user-level MCP entry (`user-agent-deck`).
  * Pre-1.7 bare `url` configs fail discovery and only expose Cursor's `mcp_auth`
- * (which is not how Agent Deck grants work).
+ * (which is not how Agent Deck folder assignment works).
  *
  * Without a workspaceRoot this is strictly read-only and returns diagnostics.
  * An explicit `agent-deck use` passes workspaceRoot and may create or repair
@@ -278,7 +282,7 @@ export function formatCursorGlobalMcpEnsureMessage(result: CursorGlobalMcpEnsure
       result.reason === 'missing'
         ? 'no user-level agent-deck entry exists'
         : result.reason === 'bare-url'
-          ? 'legacy bare URL has no workspace grant launcher'
+          ? 'legacy bare URL has no deck-assignment launcher'
           : result.reason === 'missing-workspace'
             ? 'mcp-launch has no AGENT_DECK_WORKSPACE pin'
             : result.reason === 'endpoint-changed'
@@ -286,7 +290,7 @@ export function formatCursorGlobalMcpEnsureMessage(result: CursorGlobalMcpEnsure
               : 'a custom agent-deck wrapper cannot be validated automatically';
     return [
       `Cursor MCP diagnostic: ${detail} in ${result.path}. No changes made.`,
-      '  Run `agent-deck use <deck> --client cursor` in the intended workspace; Cursor mcp_auth is not the Agent Deck grant path.',
+      `  ${CURSOR_MCP_RECOVERY_HINT}`,
     ].join('\n');
   }
   if (result.action === 'created') {
