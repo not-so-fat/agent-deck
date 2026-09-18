@@ -5,8 +5,8 @@
 ### Fix: no-deck MCP connections explain recovery instead of trapping Cursor in `mcp_auth` (NOT-50)
 
 - An MCP connect with no folder assignment (or no `x-agent-deck-deck-id`) used to answer **401**. Cursor treated that as OAuth and dead-ended on `mcp_auth` — the wrong recovery path for “pick a deck.”
-- Those connects now become an **unassigned, explain-only session**: `get_session_binding` returns `GRANT_REQUIRED` with assignment recovery text; deck-scoped tools stay unavailable. A late deck header cannot promote that session into a trusted launch runtime.
-- `mcp-launch` still starts without a deck header so the session can explain what to do; missing assignment prints a stderr hint. Diagnostics and the Cursor ADR speak in assignment terms and share the same “don’t use `mcp_auth`” recovery line.
+- Those connects now become an **unassigned, explain-only session**: `get_session_binding` returns `GRANT_REQUIRED` with assignment recovery text; deck-scoped tools stay unavailable. Sending a deck header later cannot turn that session into a normal deck-bound one.
+- `mcp-launch` still starts without a deck header so the session can explain what to do; missing assignment prints a stderr hint. Diagnostics use the same “don’t use `mcp_auth`” recovery line.
 
 ### After upgrade
 
