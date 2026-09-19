@@ -1,6 +1,6 @@
 /**
  * NOT-84: authenticated MCP session isolation + idempotent same-deck bind.
- * Runs with SKIP_GRANT_AUTH and SKIP_ADMIN_CHECK disabled against the real HTTP policy layer.
+ * Runs with SKIP_DECK_HEADER and SKIP_ADMIN_CHECK disabled against the real HTTP policy layer.
  */
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -34,13 +34,13 @@ type ScopeHit = { endpoint: string; runtimeSessionId: string | undefined };
 describe('MCP session-local context (NOT-84)', () => {
   const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
   let mcpServer: AgentDeckMCPServer | undefined;
-  let previousSkipGrant: string | undefined;
+  let previousSkipDeckHeader: string | undefined;
   let previousSkipAdmin: string | undefined;
   let previousStubSync: string | undefined;
   let previousUnregisterTimeout: string | undefined;
 
   beforeEach(() => {
-    previousSkipGrant = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
     previousUnregisterTimeout = process.env.AGENT_DECK_MCP_UNREGISTER_TIMEOUT_MS;
@@ -57,10 +57,10 @@ describe('MCP session-local context (NOT-84)', () => {
     while (servers.length) {
       await servers.pop()?.close();
     }
-    if (previousSkipGrant === undefined) {
+    if (previousSkipDeckHeader === undefined) {
       delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
           } else {
-      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipGrant;
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipDeckHeader;
     }
     if (previousSkipAdmin === undefined) {
       delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
