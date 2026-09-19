@@ -81,7 +81,43 @@ describe('agent-harness templates', () => {
       expect(text).toContain('agent-deck use');
       expect(text).toContain('optional persistent folder-assignment');
       expect(text).toContain('launch-selected sessions can be bound without that file');
+      expect(text).toContain('DECK_FIXED');
+      expect(text).toContain('ADMIN_REQUIRED');
+      expect(text).toContain('.agent-deck/use.json');
     }
+  });
+
+  it('harness text has no grant wording except the GRANT_REQUIRED error code', () => {
+    const texts = [
+      buildCursorHarnessFile('global'),
+      buildCursorHarnessFile('project'),
+      buildClaudeHarnessBlock('global'),
+      buildClaudeHarnessBlock('project'),
+      buildCodexHarnessBlock('global'),
+    ];
+    for (const text of texts) {
+      expect(text).toContain('GRANT_REQUIRED');
+      const withoutCode = text.replaceAll('GRANT_REQUIRED', '');
+      expect(withoutCode.toLowerCase()).not.toMatch(/grant/);
+    }
+  });
+
+  it('re-setup replaces an older grant-model harness block between markers', () => {
+    const stale = [
+      HARNESS_MARKER_START,
+      '## Agent Deck',
+      '',
+      'Grant auth is automatic… do **not** call `get_decks`.',
+      'Deck scope comes from the workspace grant.',
+      HARNESS_MARKER_END,
+    ].join('\n');
+    const { content, changed } = mergeClaudeHarness(stale, buildClaudeHarnessBlock('global'));
+    expect(changed).toBe(true);
+    expect(content).not.toContain('Grant auth is automatic');
+    expect(content).not.toContain('workspace grant');
+    expect(content).toContain('display_summary');
+    expect(content).toContain('.agent-deck/use.json');
+    expect(content).toContain(HARNESS_MARKER_START);
   });
 
   it('claude block carries the same fail-closed bootstrap contract', () => {
