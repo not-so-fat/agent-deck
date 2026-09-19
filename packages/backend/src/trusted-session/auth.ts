@@ -141,12 +141,22 @@ export function enforcePolicy(policy: AuthPolicy, principal: RequestPrincipal): 
     throw new TrustedAuthError('GRANT_REQUIRED', GRANT_REQUIRED_MESSAGE);
   }
 
-  if (principal.kind !== 'agent') {
+  // Dashboard OR agent-admin (PRD §4: create deck is Yes for both).
+  if (policy === 'requireDeckAdmin') {
+    if (principal.kind === 'dashboard') {
+      return;
+    }
+    if (principal.kind === 'agent' && principal.mode === 'agent-admin') {
+      return;
+    }
+    if (principal.kind === 'agent') {
+      throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
+    }
     throw new TrustedAuthError('GRANT_REQUIRED', GRANT_REQUIRED_MESSAGE);
   }
 
-  if (policy === 'requireDeckAdmin' && principal.mode !== 'agent-admin') {
-    throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
+  if (principal.kind !== 'agent') {
+    throw new TrustedAuthError('GRANT_REQUIRED', GRANT_REQUIRED_MESSAGE);
   }
 }
 
