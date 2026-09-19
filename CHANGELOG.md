@@ -4,13 +4,13 @@
 
 ### Fix: Create Deck from the dashboard works again (NOT-153)
 
-- Dashboard `POST /api/decks` was rejected with `GRANT_REQUIRED` because `requireDeckAdmin` did not treat the dashboard principal as admin — Create Deck always failed from the UI.
-- Empty names are trimmed; if the file-store flush fails after the DB insert, the row is rolled back. Duplicate name, auth, and store failures surface as clear toasts instead of a silent fail.
+- Create Deck from the UI always failed; the dashboard can create decks again.
+- Failed creates no longer leave a half-created deck, and errors show as clear toasts.
 
 ### Fix: CLI under host agent sandboxes (readonly `~/.agent-deck`) (NOT-154)
 
-- Host sandboxes that can only write the workspace used to fail `agent-deck use` (and related home-store opens) with a bare SQLite “readonly database” error.
-- Matching folder assignments can be repaired via the project MCP pin without opening `~/.agent-deck`. Other cases exit with an explicit sandbox / home-write recovery message. Status and doctor copy separate workspace-pin repair from home-store writes.
+- Host sandboxes that can only write the workspace used to fail `agent-deck use` with a bare SQLite “readonly database” error.
+- When the folder assignment already matches, the CLI repairs the project MCP pin without writing `~/.agent-deck`; otherwise it exits with an explicit sandbox / home-write recovery message.
 
 ### Docs / wording: drop leftover grant-model language (NOT-119)
 
