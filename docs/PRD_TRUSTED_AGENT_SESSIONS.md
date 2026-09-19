@@ -184,6 +184,8 @@ A host is killed without a disconnect. MCP activity stops, admin mode downgrades
 
 Every HTTP and MCP operation declares exactly one centralized policy: `requireAgentResource`, `requireDeckAdmin`, `requireDashboard`, or an explicit `allowPublic`. The guard derives authority from the authenticated runtime or dashboard principal before the handler runs; caller-supplied role, workspace, admin, or dashboard headers are never principals. Establishing a launch principal may use `x-agent-deck-deck-id` per C9; that header never elevates admin. An undeclared operation is denied before its handler runs. Public operations cannot access principal-scoped resources.
 
+`requireDeckAdmin` means dashboard principal **or** elevated `agent-admin` (NOT-153): the dashboard Create Deck path must not be rejected as `GRANT_REQUIRED`. Normal agents still receive `ADMIN_REQUIRED`.
+
 ## 5. MCP and error contracts
 
 Required behavior:

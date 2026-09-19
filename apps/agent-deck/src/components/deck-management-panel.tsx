@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Layers, Plus, Trash2, Copy, Download } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { createDeckErrorToast } from "@/lib/create-deck-error";
 import { useToast } from "@/hooks/use-toast";
 import { useMemo, useState } from "react";
 import {
@@ -57,7 +58,7 @@ export default function DeckManagementPanel({
     },
     onSuccess: async (response, name) => {
       const body = await response.json();
-      queryClient.invalidateQueries({ queryKey: ["/api/decks"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/decks"] });
       if (body.data?.id) {
         onSelectDeck(body.data.id);
       }
@@ -69,9 +70,10 @@ export default function DeckManagementPanel({
       setNewDeckName("");
     },
     onError: (error: Error) => {
+      const { title, description } = createDeckErrorToast(error);
       toast({
-        title: "Failed to create deck",
-        description: error.message,
+        title,
+        description,
         variant: "destructive",
       });
     },
