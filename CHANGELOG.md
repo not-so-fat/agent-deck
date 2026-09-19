@@ -1,10 +1,30 @@
 # Changelog
 
-## Unreleased
+## 1.10.3 — 2026-09-19
 
-### Docs / wording
+### Fix: Create Deck from the dashboard works again (NOT-153)
 
-- Remove leftover workspace-grant wording from agent harness, display source names, and trusted-session docs (NOT-119). **Re-run `agent-deck setup`** to refresh agent instructions between the harness markers.
+- Dashboard `POST /api/decks` was rejected with `GRANT_REQUIRED` because `requireDeckAdmin` did not treat the dashboard principal as admin — Create Deck always failed from the UI.
+- Empty names are trimmed; if the file-store flush fails after the DB insert, the row is rolled back. Duplicate name, auth, and store failures surface as clear toasts instead of a silent fail.
+
+### Fix: CLI under host agent sandboxes (readonly `~/.agent-deck`) (NOT-154)
+
+- Host sandboxes that can only write the workspace used to fail `agent-deck use` (and related home-store opens) with a bare SQLite “readonly database” error.
+- Matching folder assignments can be repaired via the project MCP pin without opening `~/.agent-deck`. Other cases exit with an explicit sandbox / home-write recovery message. Status and doctor copy separate workspace-pin repair from home-store writes.
+
+### Docs / wording: drop leftover grant-model language (NOT-119)
+
+- Setup-installed agent harness, display source names, and trusted-session docs now describe folder assignment + launch header + admin elevation only.
+- **Re-run `agent-deck setup`** to refresh agent instructions between the harness markers.
+
+### Internal
+
+- Prune unused shadcn UI wrappers and their exclusive npm deps from the dashboard; add `apps/agent-deck/README.md` + `components.json` for re-adding blocks (NOT-46).
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Re-run `agent-deck setup` (Cursor/Claude/Codex as you use) so harness wording matches the assignment model.
 
 ## 1.10.2 — 2026-09-18
 
