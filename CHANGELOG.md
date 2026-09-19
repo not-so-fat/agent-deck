@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.10.4 — 2026-09-19
+
+### Fix: auto-update could install a broken CLI that will not start
+
+- A background auto-update could leave a truncated file in the new version (`SyntaxError: Unexpected end of input` on `agent-deck start`, MCP connection closed) and still switch `current` to it.
+- Concurrent CLI launches used to extract the same version into one shared temp directory; each install now gets its own.
+- Every downloaded version is syntax-checked before it is installed or activated. A version that fails the check is discarded and re-downloaded instead of activated.
+
+### If you are stuck on a broken 1.10.3
+
+- Point `current` back at the last good version: `ln -sfn ~/.agent-deck/versions/<good> ~/.agent-deck/current`.
+- Or delete `~/.agent-deck/versions/1.10.3` and run `npm i -g @agent-deck/cli@1.10.4 && agent-deck install`.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+
 ## 1.10.3 — 2026-09-19
 
 ### Fix: Create Deck from the dashboard works again (NOT-153)
