@@ -121,12 +121,12 @@ describe('resolveDeckBindingSource', () => {
     ).toBe('env');
   });
 
-  it('maps launch to session_override for display schema', () => {
+  it('returns launch when binding is a launch session', () => {
     expect(
       resolveDeckBindingSource({
         deckId: '11111111-1111-4111-8111-111111111111',
         deckSource: 'launch',
       }),
-    ).toBe('session_override');
+    ).toBe('launch');
   });
 });

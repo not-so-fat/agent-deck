@@ -22,8 +22,5 @@ export function unassignedDeckBinding(): UnassignedDeckBinding {
 
 /** Unit-test escape hatch: allow full tools without a deck header. */
 export function skipDeckHeaderAuth(): boolean {
-  return (
-    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER === '1' ||
-    process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH === '1'
-  );
+  return process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER === '1';
 }

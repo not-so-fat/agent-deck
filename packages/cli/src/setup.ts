@@ -299,7 +299,7 @@ export async function runSetup(args: string[]): Promise<number> {
       ? (existingServers as Record<string, unknown>)['agent-deck']
       : undefined;
   // Project launchers always know their workspace. Global setup preserves a pin
-  // written by `agent-deck use` so re-running setup cannot reintroduce GRANT_REQUIRED.
+  // written by `agent-deck use` so re-running setup cannot drop the deck header.
   const workspaceRoot =
     client === 'cursor'
       ? scope === 'project'

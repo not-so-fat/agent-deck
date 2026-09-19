@@ -12,7 +12,7 @@ describe('LiveDisplayRegistry', () => {
       workspaceRoot: workspace,
       deckId: '11111111-1111-4111-8111-111111111111',
       deckName: 'personal-dev',
-      source: 'grant',
+      source: 'launch',
       cardCounts: { mcp: 2, credentials: 1, playbooks: 11 },
       updatedAt: '2026-09-10T22:19:00.000Z',
     });
@@ -22,7 +22,7 @@ describe('LiveDisplayRegistry', () => {
       mcpSessionId: 'claude',
       deckId: '11111111-1111-4111-8111-111111111111',
       deckName: 'personal-dev',
-      source: 'grant',
+      source: 'launch',
       cardCounts: { mcp: 2, credentials: 1, playbooks: 11 },
       updatedAt: '2026-09-10T22:19:05.000Z',
     });

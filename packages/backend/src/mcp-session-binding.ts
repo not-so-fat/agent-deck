@@ -7,7 +7,6 @@ import {
 } from '@agent-deck/shared';
 
 export type DeckBindingSource =
-  | 'grant'
   | 'session_override'
   | 'env'
   | 'launch';
@@ -143,15 +142,15 @@ export class McpSessionBindingStore {
       deckId,
       runtimeSessionId,
       mode: this.modeByMcp.get(sessionId),
+      // Every authenticated MCP session is a launch session (NOT-105/108).
+      // Non-launch paths are env defaults or explicit session overrides (tests / skip-header).
       deckSource: isLaunch
         ? 'launch'
-        : runtimeSessionId
-          ? 'grant'
-          : sessionDeck
-            ? 'session_override'
-            : this.defaultDeckId
-              ? 'env'
-              : undefined,
+        : sessionDeck
+          ? 'session_override'
+          : this.defaultDeckId
+            ? 'env'
+            : undefined,
     };
   }
 
@@ -176,12 +175,8 @@ export class McpSessionBindingStore {
 }
 
 export function resolveDeckBindingSource(binding: SessionBindingSnapshot): DeckBindingSource {
-  if (binding.deckSource === 'grant') {
-    return 'grant';
-  }
-  // Display schema does not yet include launch — surface as session_override.
   if (binding.deckSource === 'launch') {
-    return 'session_override';
+    return 'launch';
   }
   return binding.deckSource === 'env' ? 'env' : 'session_override';
 }

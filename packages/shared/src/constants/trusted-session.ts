@@ -1,7 +1,4 @@
-/** Bearer token presented by the trusted MCP launcher (raw grant secret). */
-export const AGENT_DECK_GRANT_AUTH_SCHEME = 'Bearer';
-
-/** Runtime session id returned to MCP layer after grant authentication. */
+/** Runtime session id returned to MCP layer after launch-deck authentication. */
 export const AGENT_DECK_SESSION_HEADER = 'x-agent-deck-session-id';
 
 /** Dashboard session cookie name. */
