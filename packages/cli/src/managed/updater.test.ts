@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { currentLinkPath, versionDir } from './paths';
-import { writeUpdateState } from './update-state';
+import { readUpdateState, writeUpdateState } from './update-state';
 import { maybeActivatePendingVersion } from './updater';
 
 function seedVersion(ver: string) {
@@ -59,5 +59,24 @@ describe('maybeActivatePendingVersion', () => {
     const result = maybeActivatePendingVersion();
     expect(result.activated).toBeNull();
     expect(fs.realpathSync(currentLinkPath())).toBe(fs.realpathSync(versionDir('1.0.0')));
+  });
+
+  it('does not activate a pending version with a truncated file, and drops it', () => {
+    seedVersion('1.0.0');
+    seedVersion('1.0.1');
+    const bad = path.join(versionDir('1.0.1'), 'node_modules', '@agent-deck', 'shared', 'dist', 'x.js');
+    fs.mkdirSync(path.dirname(bad), { recursive: true });
+    fs.writeFileSync(bad, 'const warnings = ');
+    fs.symlinkSync(versionDir('1.0.0'), currentLinkPath(), 'dir');
+    writeUpdateState({
+      checkedAt: new Date().toISOString(),
+      latest: '1.0.1',
+      pendingVersion: '1.0.1',
+    });
+
+    expect(maybeActivatePendingVersion().activated).toBeNull();
+    expect(fs.realpathSync(currentLinkPath())).toBe(fs.realpathSync(versionDir('1.0.0')));
+    expect(fs.existsSync(versionDir('1.0.1'))).toBe(false);
+    expect(readUpdateState()?.pendingVersion).toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import { installCliVersionToPrefix } from './npm-prefix-install';
 import { cliEntryInVersionDir, resolveCurrentVersionDir, versionDir } from './paths';
 import { compareSemver } from './semver';
 import { readUpdateState, writeUpdateState } from './update-state';
+import { verifyInstalledVersion } from './verify-install';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const REGISTRY_URL = 'https://registry.npmjs.org/@agent-deck/cli/latest';
@@ -58,6 +59,17 @@ export function maybeActivatePendingVersion(): { activated: string | null } {
     return { activated: null };
   }
 
+  // Never point `current` at a version that cannot load; drop it so the next check re-downloads.
+  if (!verifyInstalledVersion(dir).ok) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    writeUpdateState({
+      checkedAt: state?.checkedAt ?? new Date().toISOString(),
+      latest: state?.latest ?? pending,
+      pendingVersion: null,
+    });
+    return { activated: null };
+  }
+
   activateVersion(pending);
   writeUpdateState({
     checkedAt: state?.checkedAt ?? new Date().toISOString(),
@@ -76,6 +88,9 @@ export async function ensurePendingDownload(
   }
 
   const dir = versionDir(latest);
+  if (fs.existsSync(cliEntryInVersionDir(dir)) && !verifyInstalledVersion(dir).ok) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
   if (fs.existsSync(cliEntryInVersionDir(dir))) {
     const prev = readUpdateState();
     writeUpdateState({
