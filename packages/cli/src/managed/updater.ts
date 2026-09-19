@@ -7,7 +7,7 @@ import { installCliVersionToPrefix } from './npm-prefix-install';
 import { cliEntryInVersionDir, resolveCurrentVersionDir, versionDir } from './paths';
 import { compareSemver } from './semver';
 import { readUpdateState, writeUpdateState } from './update-state';
-import { verifyInstalledVersion } from './verify-install';
+import { markVerified, verifyInstalledVersion } from './verify-install';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const REGISTRY_URL = 'https://registry.npmjs.org/@agent-deck/cli/latest';
@@ -70,6 +70,7 @@ export function maybeActivatePendingVersion(): { activated: string | null } {
     return { activated: null };
   }
 
+  markVerified(dir);
   activateVersion(pending);
   writeUpdateState({
     checkedAt: state?.checkedAt ?? new Date().toISOString(),
