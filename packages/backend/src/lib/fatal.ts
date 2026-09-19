@@ -38,11 +38,21 @@ export function fatalHint(error: unknown): string | null {
       '  Fix: agent-deck stop  (or free the port: lsof -ti :<port> -sTCP:LISTEN | xargs kill)',
     ].join('\n');
   }
+  if (detail.includes('SQLITE_READONLY') || detail.includes('readonly database')) {
+    return [
+      'The Agent Deck database could not be written (often a host agent sandbox blocking ~/.agent-deck).',
+      '  Fix: re-run the command in an unsandboxed terminal, or request elevated permissions.',
+      '  If `.agent-deck/use.json` already assigns the deck and only a project MCP pin is missing, `agent-deck use <deck> --client cursor` can repair the pin from the sandbox.',
+    ].join('\n');
+  }
   if (detail.includes('SQLITE_') || detail.includes('database is locked')) {
     return 'The Agent Deck database could not be opened. Check ~/.agent-deck/agent_deck.db permissions and that no other instance holds it.';
   }
-  if (detail.includes('EACCES') || detail.includes('EPERM')) {
-    return 'Permission denied on a file or port Agent Deck needs. Check ownership of ~/.agent-deck.';
+  if (detail.includes('EACCES') || detail.includes('EPERM') || detail.includes('EROFS') || detail.includes('Operation not permitted')) {
+    return [
+      'Permission denied on a file Agent Deck needs (often ~/.agent-deck under a host agent sandbox).',
+      '  Fix: re-run in an unsandboxed terminal, or check ownership of ~/.agent-deck.',
+    ].join('\n');
   }
   return null;
 }

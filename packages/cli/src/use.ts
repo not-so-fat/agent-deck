@@ -13,11 +13,17 @@ import {
   resolveConfigPath,
   writeJsonFile,
   type McpClient,
+  type McpEndpoint,
 } from './mcp-config';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
 import { syncPlaybookStubs, type StubSyncResult } from './playbook-stubs';
-import { readAssignment, writeAssignment } from './assignment';
+import { readAssignment, writeAssignment, type AssignmentFields } from './assignment';
 import { readLegacyUseManifestV1 } from './playbook-stubs';
+import {
+  assignmentMatchesDeckRef,
+  formatHomeStoreWriteBlockedMessage,
+  isHomeStoreWriteError,
+} from './home-write';
 
 export type UseClientTarget = 'cursor' | 'claude' | 'both';
 
@@ -38,7 +44,21 @@ export type UseResult = {
   mcp: Array<{ client: McpClient; path: string }>;
   stubs: StubSyncResult;
   playbookCount: number;
+  /** True when home-store writes were skipped after a blocked open (sandbox-safe workspace repair). */
+  sandboxSafeRepair?: boolean;
 };
+
+function emptyStubSync(workspaceRoot: string): StubSyncResult {
+  return {
+    cursor: {
+      created: 0,
+      updated: 0,
+      removed: 0,
+      dir: path.join(workspaceRoot, '.cursor', 'rules', 'agent-deck-stubs'),
+    },
+    claude: { created: 0, updated: 0, removed: 0, dirs: [] },
+  };
+}
 
 function parseUseClient(value: string | undefined): UseClientTarget | null {
   if (!value || value === 'both') {
@@ -114,9 +134,143 @@ function clientsToWrite(target: UseClientTarget): McpClient[] {
   return ['cursor', 'claude'];
 }
 
-export async function runUse(parsed: UseOptions): Promise<UseResult | { error: string }> {
-  const admin = createCollectionAdmin();
+function writeProjectMcpConfigs(
+  parsed: UseOptions,
+  endpoint: McpEndpoint,
+): Array<{ client: McpClient; path: string }> {
+  const mcpWritten: Array<{ client: McpClient; path: string }> = [];
+  if (parsed.skipMcp) {
+    return mcpWritten;
+  }
+  for (const client of clientsToWrite(parsed.clients)) {
+    const configPath = resolveConfigPath(client, 'project', parsed.workspaceRoot);
+    const entry = buildAgentDeckEntry(client, endpoint, {
+      workspaceRoot: client === 'cursor' ? parsed.workspaceRoot : undefined,
+    });
+    const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
+    writeJsonFile(configPath, merged);
+    mcpWritten.push({ client, path: configPath });
+  }
+  return mcpWritten;
+}
 
+function tryEnsureGlobalCursorLaunch(endpoint: McpEndpoint, workspaceRoot: string): void {
+  try {
+    const globalResult = ensureGlobalCursorMcpLaunch(endpoint, { workspaceRoot });
+    const message = formatCursorGlobalMcpEnsureMessage(globalResult);
+    if (message) {
+      if (globalResult.action === 'skipped') {
+        console.warn(message);
+      } else {
+        console.log(message);
+      }
+    }
+  } catch (error) {
+    if (isHomeStoreWriteError(error)) {
+      console.warn(
+        [
+          'Cursor user-level MCP (~/.cursor/mcp.json) could not be updated from this shell.',
+          '  Project MCP pin was still written; reload Cursor MCP if the project entry is enough.',
+          `  ${formatHomeStoreWriteBlockedMessage(error instanceof Error ? error.message : String(error)).split('\n').slice(1).join('\n  ')}`,
+        ].join('\n'),
+      );
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Workspace-only repair when the home store is unwritable but `.agent-deck/use.json`
+ * already assigns the requested deck (typical Cursor agent sandbox).
+ */
+async function runUseWorkspaceOnlyRepair(
+  parsed: UseOptions,
+  assignment: AssignmentFields,
+  endpoint: McpEndpoint,
+  mcpUrl: string,
+): Promise<UseResult> {
+  const deck = { id: assignment.deckId, name: assignment.deckName };
+  const manifestPath = await writeAssignment(parsed.workspaceRoot, {
+    deckId: deck.id,
+    deckName: deck.name,
+    mcpUrl,
+  });
+  const mcpWritten = writeProjectMcpConfigs(parsed, endpoint);
+  if (!parsed.skipMcp && clientsToWrite(parsed.clients).includes('cursor')) {
+    tryEnsureGlobalCursorLaunch(endpoint, parsed.workspaceRoot);
+  }
+  ensureGitExcluded(parsed.workspaceRoot);
+  console.log(
+    'Sandbox-safe repair: updated workspace MCP / assignment without writing ~/.agent-deck (home store blocked).',
+  );
+  console.log('  Playbook stub refresh skipped — re-run `agent-deck use` unsandboxed to refresh stubs.');
+  return {
+    deck,
+    mcpUrl,
+    manifestPath,
+    mcp: mcpWritten,
+    stubs: emptyStubSync(parsed.workspaceRoot),
+    playbookCount: 0,
+    sandboxSafeRepair: true,
+  };
+}
+
+async function runUseFullPath(
+  parsed: UseOptions,
+  deckRef: string,
+  endpoint: McpEndpoint,
+  mcpUrl: string,
+): Promise<UseResult | { error: string }> {
+  const admin = createCollectionAdmin();
+  const deck = await admin.resolveDeck(deckRef);
+  if (!deck) {
+    return { error: `Deck not found: ${deckRef}` };
+  }
+
+  const playbooks = await admin.listDeckPlaybookStubs(deck.id);
+
+  const manifestPath = await writeAssignment(parsed.workspaceRoot, {
+    deckId: deck.id,
+    deckName: deck.name,
+    mcpUrl,
+  });
+
+  const mcpWritten = writeProjectMcpConfigs(parsed, endpoint);
+  if (!parsed.skipMcp && clientsToWrite(parsed.clients).includes('cursor')) {
+    const globalResult = ensureGlobalCursorMcpLaunch(endpoint, {
+      workspaceRoot: parsed.workspaceRoot,
+    });
+    const message = formatCursorGlobalMcpEnsureMessage(globalResult);
+    if (message) {
+      if (globalResult.action === 'skipped') {
+        console.warn(message);
+      } else {
+        console.log(message);
+      }
+    }
+    if (globalResult.action !== 'ok' && globalResult.action !== 'skipped') {
+      mcpWritten.push({ client: 'cursor', path: globalResult.path });
+    }
+  }
+
+  const stubs = syncPlaybookStubs(parsed.workspaceRoot, playbooks, {
+    cursor: parsed.clients !== 'claude',
+    claude: parsed.clients !== 'cursor',
+  });
+  ensureGitExcluded(parsed.workspaceRoot);
+
+  return {
+    deck,
+    mcpUrl,
+    manifestPath,
+    mcp: mcpWritten,
+    stubs,
+    playbookCount: playbooks.length,
+  };
+}
+
+export async function runUse(parsed: UseOptions): Promise<UseResult | { error: string }> {
   if (parsed.refresh) {
     const assignment = await readAssignment(parsed.workspaceRoot);
     const legacy = readLegacyUseManifestV1(parsed.workspaceRoot);
@@ -140,72 +294,27 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
     return { error: 'refresh-diagnosis-only' };
   }
 
-  let deckRef = parsed.deckRef;
+  const deckRef = parsed.deckRef;
   if (!deckRef) {
     return { error: 'deck name or id is required' };
   }
 
-  const deck = await admin.resolveDeck(deckRef);
-  if (!deck) {
-    return { error: `Deck not found: ${deckRef}` };
-  }
-
-  const playbooks = await admin.listDeckPlaybookStubs(deck.id);
   const endpoint = { host: parsed.host, mcpPort: parsed.mcpPort };
   const mcpUrl = buildMcpUrl(endpoint);
 
-  const manifestPath = await writeAssignment(parsed.workspaceRoot, {
-    deckId: deck.id,
-    deckName: deck.name,
-    mcpUrl,
-  });
-
-  const mcpWritten: Array<{ client: McpClient; path: string }> = [];
-  if (!parsed.skipMcp) {
-    for (const client of clientsToWrite(parsed.clients)) {
-      const configPath = resolveConfigPath(client, 'project', parsed.workspaceRoot);
-      const entry = buildAgentDeckEntry(client, endpoint, {
-        workspaceRoot: client === 'cursor' ? parsed.workspaceRoot : undefined,
-      });
-      const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
-      writeJsonFile(configPath, merged);
-      mcpWritten.push({ client, path: configPath });
-
-      // Cursor Agent chat loads the user-level MCP server (`user-agent-deck`).
-      // Pin it to this workspace. Last explicit use wins.
-      if (client === 'cursor') {
-        const globalResult = ensureGlobalCursorMcpLaunch(endpoint, {
-          workspaceRoot: parsed.workspaceRoot,
-        });
-        const message = formatCursorGlobalMcpEnsureMessage(globalResult);
-        if (message) {
-          if (globalResult.action === 'skipped') {
-            console.warn(message);
-          } else {
-            console.log(message);
-          }
-        }
-        if (globalResult.action !== 'ok' && globalResult.action !== 'skipped') {
-          mcpWritten.push({ client: 'cursor', path: globalResult.path });
-        }
-      }
+  try {
+    return await runUseFullPath(parsed, deckRef, endpoint, mcpUrl);
+  } catch (error) {
+    if (!isHomeStoreWriteError(error)) {
+      throw error;
     }
+    const detail = error instanceof Error ? error.message : String(error);
+    const assignment = await readAssignment(parsed.workspaceRoot);
+    if (assignment && assignmentMatchesDeckRef(assignment, deckRef)) {
+      return runUseWorkspaceOnlyRepair(parsed, assignment, endpoint, mcpUrl);
+    }
+    return { error: formatHomeStoreWriteBlockedMessage(detail) };
   }
-
-  const stubs = syncPlaybookStubs(parsed.workspaceRoot, playbooks, {
-    cursor: parsed.clients !== 'claude',
-    claude: parsed.clients !== 'cursor',
-  });
-  ensureGitExcluded(parsed.workspaceRoot);
-
-  return {
-    deck,
-    mcpUrl,
-    manifestPath,
-    mcp: mcpWritten,
-    stubs,
-    playbookCount: playbooks.length,
-  };
 }
 
 export function formatUseSummary(result: UseResult): string {
@@ -216,6 +325,9 @@ export function formatUseSummary(result: UseResult): string {
   ];
   for (const entry of result.mcp) {
     lines.push(`  ${entry.client}: ${entry.path}`);
+  }
+  if (result.sandboxSafeRepair) {
+    lines.push('Mode: sandbox-safe workspace repair (home store not written)');
   }
   lines.push(
     `Stubs: ${result.playbookCount} playbook(s) — cursor +${result.stubs.cursor.created} ~${result.stubs.cursor.updated} -${result.stubs.cursor.removed}; claude +${result.stubs.claude.created} ~${result.stubs.claude.updated} -${result.stubs.claude.removed}`,
