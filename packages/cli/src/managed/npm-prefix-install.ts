@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { cliEntryInVersionDir, partialVersionDir, versionDir, versionsDir } from './paths';
-import { verifyInstalledVersion } from './verify-install';
+import { markVerified, verifyInstalledVersion } from './verify-install';
 
 const STALE_PARTIAL_MS = 60 * 60 * 1000;
 
@@ -76,6 +76,7 @@ export async function installCliVersionToPrefix(
   if (!verified.ok) {
     return fail(`Install verification failed (${verified.file}): ${verified.error}`);
   }
+  markVerified(partial);
 
   // Another process may have finished the same version first; keep its copy if it is intact.
   if (fs.existsSync(finalDir)) {

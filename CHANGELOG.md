@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.5 — 2026-09-19
+
+### Fix: a broken managed install now falls back to the last good version
+
+- The `agent-deck` launcher checks a version once (then marks it `.verified`). If `current` cannot load, it falls back to the newest intact version, repoints `current`, and says so on stderr instead of crashing.
+- After this, a bad update no longer leaves `agent-deck upgrade` unable to run.
+- Corrected the 1.10.4 recovery steps below (the `agent-deck install` route could not work on a broken install).
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+
 ## 1.10.4 — 2026-09-19
 
 ### Fix: auto-update could install a broken CLI that will not start
@@ -10,8 +22,11 @@
 
 ### If you are stuck on a broken 1.10.3
 
-- Point `current` back at the last good version: `ln -sfn ~/.agent-deck/versions/<good> ~/.agent-deck/current`.
-- Or delete `~/.agent-deck/versions/1.10.3` and run `npm i -g @agent-deck/cli@1.10.4 && agent-deck install`.
+`agent-deck upgrade` and `agent-deck install` run the broken version, so they cannot fix it. Install the fixed version by hand instead:
+
+- `npm install --prefix ~/.agent-deck/versions/1.10.4 @agent-deck/cli@1.10.4`
+- `ln -sfn ~/.agent-deck/versions/1.10.4 ~/.agent-deck/current`
+- `agent-deck stop; agent-deck start --daemon`, then reload MCP in your IDE.
 
 ### After upgrade
 

@@ -20,6 +20,10 @@ export function partialVersionDir(version: string, token = `${process.pid}-${ran
   return path.join(versionsDir(), `.partial-${version}-${token}`);
 }
 
+export function launcherGuardPath(): string {
+  return path.join(agentDeckHome(), 'bin', 'launcher-guard.js');
+}
+
 export function currentLinkPath(): string {
   return path.join(agentDeckHome(), 'current');
 }

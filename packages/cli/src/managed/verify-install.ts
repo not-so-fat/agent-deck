@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
+/** Written once a version dir passes verification; the launcher skips its own check when present. */
+export const VERIFIED_MARKER = '.verified';
+
 export type VerifyResult = { ok: true } | { ok: false; file: string; error: string };
 
 const CJS_WRAPPER_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname'];
@@ -46,4 +49,12 @@ export function verifyInstalledVersion(versionDirPath: string): VerifyResult {
     }
   }
   return { ok: true };
+}
+
+export function markVerified(versionDirPath: string): void {
+  try {
+    fs.writeFileSync(path.join(versionDirPath, VERIFIED_MARKER), '');
+  } catch {
+    // marker is an optimisation; the launcher re-verifies without it
+  }
 }
