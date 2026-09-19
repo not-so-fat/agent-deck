@@ -76,7 +76,7 @@ Project entries may also set `AGENT_DECK_WORKSPACE` (or `${workspaceFolder}`) so
 - **NOT-50** answers no-deck HTTP connections with an unassigned MCP session instead of 401, so Cursor does not trap users in `mcp_auth`.
 - Explicit `agent-deck use` remains the only config writer for Cursor Agent Deck entries (aside from intentional `setup` preserving pins).
 - Docs / CHANGELOG / harness copy must say: Cursor `mcp_auth` ≠ Agent Deck folder assignment.
-- **NOT-154 (as-built):** Host agent sandboxes that cannot write `~/.agent-deck` still get a clear home-store error (not bare SQLite readonly). When `.agent-deck/use.json` already matches the requested deck, `agent-deck use` repairs the **project** MCP pin without opening the home DB. `status` / `doctor` recoveries distinguish missing assignment (unsandboxed) from missing workspace pin (sandbox-safe when assignment exists).
+- **NOT-154 (as-built):** Host agent sandboxes that cannot write `~/.agent-deck` still get a clear home-store error (not bare SQLite readonly). When `.agent-deck/use.json` already matches the requested deck, `agent-deck use` falls back to repairing the **project** MCP pin after a home-store write failure (no successful `~/.agent-deck` write required). `status` / `doctor` recoveries distinguish missing assignment (unsandboxed) from missing workspace pin (sandbox-safe when assignment exists).
 
 ## Alternatives rejected
 

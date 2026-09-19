@@ -324,7 +324,7 @@ describe('inspectCursorMcpConfig', () => {
       endpoint: { host: '127.0.0.1', mcpPort: 1110 },
     });
     const missingAssignmentText = formatCursorMcpInspection(missingAssignment);
-    expect(missingAssignmentText).toContain('Recovery [missing-assignment]');
+    expect(missingAssignmentText).toContain('Recovery [assignment-missing]');
     expect(missingAssignmentText).toContain('unsandboxed');
     expect(missingAssignmentText).not.toContain('Recovery [missing-workspace-pin]');
 
@@ -338,7 +338,7 @@ describe('inspectCursorMcpConfig', () => {
     expect(pinOnlyText).toContain('Recovery [missing-workspace-pin]');
     expect(pinOnlyText).toContain('workspace-writable');
     expect(pinOnlyText).toContain('host agent sandboxes');
-    expect(pinOnlyText).not.toContain('Recovery [missing-assignment]');
+    expect(pinOnlyText).not.toContain('Recovery [assignment-missing]');
   });
 
   it('detects custom wrappers without writing', () => {

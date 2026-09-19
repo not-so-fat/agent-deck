@@ -337,6 +337,7 @@ export function inspectCursorMcpConfig(options: {
 /**
  * Distinct recoveries for status/doctor: workspace-pin repair (agent sandbox OK
  * when assignment exists) vs missing assignment / home-store write (unsandboxed).
+ * Bracket labels match issue `code` values for grep parity.
  */
 export function formatCursorMcpRecoveryLines(report: CursorMcpInspection): string[] {
   const codes = new Set(report.issues.map((issue) => issue.code));
@@ -344,7 +345,7 @@ export function formatCursorMcpRecoveryLines(report: CursorMcpInspection): strin
 
   if (codes.has('assignment-missing')) {
     lines.push(
-      '  Recovery [missing-assignment]: run `agent-deck use <deck>` in an unsandboxed terminal (needs ~/.agent-deck). Host agent sandboxes often cannot create a new assignment.',
+      '  Recovery [assignment-missing]: run `agent-deck use <deck>` in an unsandboxed terminal (needs ~/.agent-deck). Host agent sandboxes often cannot create a new assignment.',
     );
   }
   if (
@@ -356,7 +357,7 @@ export function formatCursorMcpRecoveryLines(report: CursorMcpInspection): strin
     );
   }
   if (codes.has('bare-url') || codes.has('mcp_auth_dead_end')) {
-    lines.push(`  Recovery [mcp_auth]: ${CURSOR_MCP_RECOVERY_HINT}`);
+    lines.push(`  Recovery [mcp_auth_dead_end]: ${CURSOR_MCP_RECOVERY_HINT}`);
   }
   if (lines.length === 0) {
     lines.push(`  Recovery: ${CURSOR_MCP_RECOVERY_HINT}`);

@@ -46,7 +46,6 @@ import {
 import { readLastReindex } from './backend-runtime';
 import { formatLastReindex } from './store';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
-import { HOME_STORE_WRITE_BLOCKED_HINT } from './home-write';
 
 export interface StartOptions {
   backendPort?: number;
@@ -923,7 +922,6 @@ export async function runDoctor(): Promise<number> {
   });
   console.log('');
   console.log(formatCursorMcpInspection(inspection));
-  console.log(`  Note: ${HOME_STORE_WRITE_BLOCKED_HINT}`);
 
   return ok ? 0 : 1;
 }

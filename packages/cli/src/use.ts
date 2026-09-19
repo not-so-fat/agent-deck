@@ -44,7 +44,7 @@ export type UseResult = {
   mcp: Array<{ client: McpClient; path: string }>;
   stubs: StubSyncResult;
   playbookCount: number;
-  /** True when home-store writes were skipped (sandbox-safe workspace repair). */
+  /** True when home-store writes were skipped after a blocked open (sandbox-safe workspace repair). */
   sandboxSafeRepair?: boolean;
 };
 
