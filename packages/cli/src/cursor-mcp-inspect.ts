@@ -334,6 +334,36 @@ export function inspectCursorMcpConfig(options: {
   };
 }
 
+/**
+ * Distinct recoveries for status/doctor: workspace-pin repair (agent sandbox OK
+ * when assignment exists) vs missing assignment / home-store write (unsandboxed).
+ */
+export function formatCursorMcpRecoveryLines(report: CursorMcpInspection): string[] {
+  const codes = new Set(report.issues.map((issue) => issue.code));
+  const lines: string[] = [];
+
+  if (codes.has('assignment-missing')) {
+    lines.push(
+      '  Recovery [missing-assignment]: run `agent-deck use <deck>` in an unsandboxed terminal (needs ~/.agent-deck). Host agent sandboxes often cannot create a new assignment.',
+    );
+  }
+  if (
+    (codes.has('missing-workspace-pin') || codes.has('unresolved-workspace-pin')) &&
+    report.assignment.present
+  ) {
+    lines.push(
+      '  Recovery [missing-workspace-pin]: assignment exists — run `agent-deck use <deck> --client cursor` in this project to pin AGENT_DECK_WORKSPACE (workspace-writable; works under host agent sandboxes).',
+    );
+  }
+  if (codes.has('bare-url') || codes.has('mcp_auth_dead_end')) {
+    lines.push(`  Recovery [mcp_auth]: ${CURSOR_MCP_RECOVERY_HINT}`);
+  }
+  if (lines.length === 0) {
+    lines.push(`  Recovery: ${CURSOR_MCP_RECOVERY_HINT}`);
+  }
+  return lines;
+}
+
 export function formatCursorMcpInspection(report: CursorMcpInspection): string {
   const lines: string[] = [
     'Cursor MCP inspection (read-only):',
@@ -364,7 +394,7 @@ export function formatCursorMcpInspection(report: CursorMcpInspection): string {
     lines.push('  Issues: none');
   }
 
-  lines.push(`  Recovery: ${CURSOR_MCP_RECOVERY_HINT}`);
+  lines.push(...formatCursorMcpRecoveryLines(report));
 
   return lines.join('\n');
 }

@@ -45,6 +45,8 @@ import {
 } from './dashboard-open';
 import { readLastReindex } from './backend-runtime';
 import { formatLastReindex } from './store';
+import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
+import { HOME_STORE_WRITE_BLOCKED_HINT } from './home-write';
 
 export interface StartOptions {
   backendPort?: number;
@@ -913,6 +915,15 @@ export async function runDoctor(): Promise<number> {
       ok = false;
     }
   }
+
+  // Same Cursor MCP recovery text as `status` — distinguish sandbox-safe pin
+  // repair from missing assignment (home-store write).
+  const inspection = inspectCursorMcpConfig({
+    endpoint: { host, mcpPort },
+  });
+  console.log('');
+  console.log(formatCursorMcpInspection(inspection));
+  console.log(`  Note: ${HOME_STORE_WRITE_BLOCKED_HINT}`);
 
   return ok ? 0 : 1;
 }

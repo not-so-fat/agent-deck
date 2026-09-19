@@ -34,6 +34,13 @@ describe('fatal logging', () => {
     );
   });
 
+  it('explains SQLite readonly as a sandbox/home-write failure', () => {
+    const hint = fatalHint(new Error('attempt to write a readonly database'));
+    expect(hint).toContain('sandbox');
+    expect(hint).toContain('unsandboxed');
+    expect(hint).toContain('agent-deck use');
+  });
+
   it('has no hint for an unrecognised failure', () => {
     expect(fatalHint(new Error('something new'))).toBeNull();
   });

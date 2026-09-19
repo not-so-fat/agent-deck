@@ -44,6 +44,19 @@ describe('inspectCursorMcpConfig', () => {
     );
   }
 
+  function writeV3Assignment(workspace: string): void {
+    fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.agent-deck', 'use.json'),
+      `${JSON.stringify({
+        version: 3,
+        deckId: 'deck-1',
+        deckName: 'personal-dev',
+        mcpUrl: 'http://127.0.0.1:1110/mcp',
+      }, null, 2)}\n`,
+    );
+  }
+
   it('reports missing global and project entries without writing', () => {
     const { home, workspace } = makeHomeAndWorkspace();
     const before = fs.existsSync(path.join(home, '.cursor', 'mcp.json'));
@@ -288,6 +301,44 @@ describe('inspectCursorMcpConfig', () => {
     expect(report.global.issues.map((i) => i.code)).toEqual(
       expect.arrayContaining(['missing-workspace-pin', 'stale-endpoint']),
     );
+  });
+
+  it('formats distinct recoveries for missing assignment vs missing workspace pin', () => {
+    const { home, workspace } = makeHomeAndWorkspace();
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.cursor', 'mcp.json'),
+      `${JSON.stringify({
+        mcpServers: {
+          'agent-deck': {
+            command: 'agent-deck',
+            args: ['mcp-launch'],
+            env: { AGENT_DECK_HOST: '127.0.0.1', AGENT_DECK_MCP_PORT: '1110' },
+          },
+        },
+      }, null, 2)}\n`,
+    );
+
+    const missingAssignment = inspectCursorMcpConfig({
+      cwd: workspace,
+      endpoint: { host: '127.0.0.1', mcpPort: 1110 },
+    });
+    const missingAssignmentText = formatCursorMcpInspection(missingAssignment);
+    expect(missingAssignmentText).toContain('Recovery [missing-assignment]');
+    expect(missingAssignmentText).toContain('unsandboxed');
+    expect(missingAssignmentText).not.toContain('Recovery [missing-workspace-pin]');
+
+    writeV3Assignment(workspace);
+    const pinOnly = inspectCursorMcpConfig({
+      cwd: workspace,
+      endpoint: { host: '127.0.0.1', mcpPort: 1110 },
+    });
+    const pinOnlyText = formatCursorMcpInspection(pinOnly);
+    expect(pinOnly.assignment.present).toBe(true);
+    expect(pinOnlyText).toContain('Recovery [missing-workspace-pin]');
+    expect(pinOnlyText).toContain('workspace-writable');
+    expect(pinOnlyText).toContain('host agent sandboxes');
+    expect(pinOnlyText).not.toContain('Recovery [missing-assignment]');
   });
 
   it('detects custom wrappers without writing', () => {
