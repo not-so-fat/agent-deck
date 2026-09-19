@@ -66,7 +66,7 @@ npm run smoke:dev                  # lightweight launch smoke
 | REST routes | `packages/backend/src/routes/` |
 | Vault / credentials | `packages/backend/src/vault/` |
 | Shared types | `packages/shared/src/schemas/` |
-| Dashboard UI | `apps/agent-deck/src/` |
+| Dashboard UI | `apps/agent-deck/src/` ([frontend README](../apps/agent-deck/README.md)) |
 | CLI / harness | `packages/cli/src/` |
 | Agent harness template | `packages/cli/src/agent-harness.ts` |
 
