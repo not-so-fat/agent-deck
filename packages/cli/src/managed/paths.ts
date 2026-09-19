@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,8 +15,9 @@ export function versionDir(version: string): string {
   return path.join(versionsDir(), version);
 }
 
-export function partialVersionDir(version: string): string {
-  return path.join(versionsDir(), `.partial-${version}`);
+/** Unique per install attempt so concurrent CLI processes never extract into the same directory. */
+export function partialVersionDir(version: string, token = `${process.pid}-${randomBytes(4).toString('hex')}`): string {
+  return path.join(versionsDir(), `.partial-${version}-${token}`);
 }
 
 export function currentLinkPath(): string {

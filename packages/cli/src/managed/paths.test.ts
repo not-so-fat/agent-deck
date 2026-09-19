@@ -25,7 +25,7 @@ describe('managed paths', () => {
     expect(agentDeckHome()).toBe(tmp);
     expect(versionsDir()).toBe(path.join(tmp, 'versions'));
     expect(versionDir('1.2.3')).toBe(path.join(tmp, 'versions', '1.2.3'));
-    expect(partialVersionDir('1.2.3')).toBe(path.join(tmp, 'versions', '.partial-1.2.3'));
+    expect(partialVersionDir('1.2.3', 'tok')).toBe(path.join(tmp, 'versions', '.partial-1.2.3-tok'));
     expect(currentLinkPath()).toBe(path.join(tmp, 'current'));
   });
 });
