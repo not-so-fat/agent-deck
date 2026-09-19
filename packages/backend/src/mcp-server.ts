@@ -832,7 +832,7 @@ export class AgentDeckMCPServer {
     return { mode, deckId };
   }
 
-  private sendGrantRequired(res: Response): void {
+  private sendDeckRequired(res: Response): void {
     res.status(401).json({
       jsonrpc: '2.0',
       error: { code: -32001, message: 'GRANT_REQUIRED' },
@@ -919,7 +919,7 @@ export class AgentDeckMCPServer {
    * can succeed. Unassigned sessions (NOT-50) have no deck and stay open.
    * AGENT_DECK_MCP_SKIP_DECK_HEADER=1 only relaxes *missing* deck header (unit tests).
    */
-  private async requireFollowUpGrant(sessionId: string, req: Request, res: Response): Promise<boolean> {
+  private async requireFollowUpDeckHeader(sessionId: string, req: Request, res: Response): Promise<boolean> {
     const skipDeckHeader = skipDeckHeaderAuth();
 
     // Unassigned sessions stay explain-only for their lifetime. A late deck header
@@ -947,14 +947,14 @@ export class AgentDeckMCPServer {
     }
 
     if (this.sessionBinding.isLaunchSession(sessionId)) {
-      this.sendGrantRequired(res);
+      this.sendDeckRequired(res);
       return false;
     }
 
     if (skipDeckHeader) {
       return true;
     }
-    this.sendGrantRequired(res);
+    this.sendDeckRequired(res);
     return false;
   }
 
@@ -971,7 +971,7 @@ export class AgentDeckMCPServer {
     const existing = sessionIdHeader ? this.sessions.get(sessionIdHeader) : undefined;
 
     if (existing && sessionIdHeader) {
-      if (!(await this.requireFollowUpGrant(sessionIdHeader, req, res))) {
+      if (!(await this.requireFollowUpDeckHeader(sessionIdHeader, req, res))) {
         return;
       }
       this.touchLiveDisplay(sessionIdHeader);
@@ -1064,7 +1064,7 @@ export class AgentDeckMCPServer {
       await transport.handleRequest(req, res, body);
     } catch (error) {
       console.warn(
-        '[agent-deck] MCP initialize failed after grant auth — revoking runtime session:',
+        '[agent-deck] MCP initialize failed after launch-deck auth — revoking runtime session:',
         error instanceof Error ? error.message : error,
       );
       this.sessions.delete(sessionId);
@@ -1107,7 +1107,7 @@ export class AgentDeckMCPServer {
       return;
     }
 
-    if (!(await this.requireFollowUpGrant(sessionId, req, res))) {
+    if (!(await this.requireFollowUpDeckHeader(sessionId, req, res))) {
       return;
     }
 

@@ -6,9 +6,12 @@ implements_via: NOT-86, NOT-87
 related: NOT-84, NOT-77, NOT-79, docs/PRD_TRUSTED_AGENT_SESSIONS.md
 ---
 
+**Superseded by Agent Deck 1.8.2 ([NOT-105](https://linear.app/not-so-fat/issue/NOT-105/launch-selected-deck-for-agent-deck-mcp-connections-fixes-worktree)/107/108).**
+
+
 # Trusted unattended execution contract (Agent Dealer ↔ Agent Deck)
 
-**Status note (NOT-105 / NOT-107):** This contract is **superseded**. Worker and coordinator MCP access use a **launch-selected deck** (`x-agent-deck-deck-id`, NOT-105; Dealer wiring NOT-106). Execution authority and coordinator enrollment were deleted in NOT-107. Sections below are historical. Interactive path-bound workspace grants ([PRD_TRUSTED_AGENT_SESSIONS](../../PRD_TRUSTED_AGENT_SESSIONS.md)) remain unchanged for grant-based sessions.
+**Status note (NOT-105 / NOT-107):** This contract is **superseded**. Worker and coordinator MCP access use a **launch-selected deck** (`x-agent-deck-deck-id`, NOT-105; Dealer wiring NOT-106). Execution authority and coordinator enrollment were deleted in NOT-107. Sections below are historical. Interactive IDE sessions use the folder assignment + launch-header model in [PRD_TRUSTED_AGENT_SESSIONS](../../PRD_TRUSTED_AGENT_SESSIONS.md).
 
 **Accepted architecture (NOT-85, historical).** This document originally added a **separate** unattended principal alongside interactive grants; that principal no longer exists in the product.
 

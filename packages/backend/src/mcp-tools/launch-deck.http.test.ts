@@ -1,5 +1,5 @@
 /**
- * NOT-105: launch-selected deck MCP auth (deck header, no grant).
+ * NOT-105: launch-selected deck MCP auth (deck header only).
  */
 import Fastify from 'fastify';
 import fs from 'node:fs';
@@ -37,17 +37,16 @@ import { UNASSIGNED_DECK_MESSAGE } from '../mcp-unassigned';
 describe('MCP launch-selected deck (NOT-105)', () => {
   const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
   let mcpServer: AgentDeckMCPServer | undefined;
-  let previousSkipGrant: string | undefined;
+  let previousSkipDeckHeader: string | undefined;
   let previousSkipAdmin: string | undefined;
   let previousStubSync: string | undefined;
 
   beforeEach(() => {
-    previousSkipGrant = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER ?? process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
+    previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
     process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
-    delete process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
-    process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
+        process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     // Stub sync enabled — launch bind must still leave worktree empty.
     delete process.env.AGENT_DECK_STUB_SYNC;
   });
@@ -60,11 +59,10 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     while (servers.length) {
       await servers.pop()?.close();
     }
-    if (previousSkipGrant === undefined) {
+    if (previousSkipDeckHeader === undefined) {
       delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
-      delete process.env.AGENT_DECK_MCP_SKIP_GRANT_AUTH;
-    } else {
-      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipGrant;
+          } else {
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipDeckHeader;
     }
     if (previousSkipAdmin === undefined) {
       delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;

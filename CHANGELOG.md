@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Docs / wording
+
+- Remove leftover workspace-grant wording from agent harness, display source names, and trusted-session docs (NOT-119). **Re-run `agent-deck setup`** to refresh agent instructions between the harness markers.
+
 ## 1.10.2 — 2026-09-18
 
 ### Fix: no-deck MCP connections explain recovery instead of trapping Cursor in `mcp_auth` (NOT-50)

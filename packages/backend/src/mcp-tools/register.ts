@@ -71,8 +71,8 @@ function assignmentFileExists(workspaceRoot: string): boolean {
 }
 
 function shouldSyncStubsOnBind(host: McpToolHost, sessionId: string, workspaceRoot: string): boolean {
-  // Grant sessions always sync. Launch sessions sync only when the folder has an assignment
-  // (IDE). Dealer worktrees without use.json keep skipping stub sync (NOT-105 / NOT-108).
+  // Non-launch sessions (unit-test skip-header) always sync. Launch sessions sync only when the
+  // folder has an assignment (IDE). Dealer worktrees without use.json skip stub sync (NOT-105 / NOT-108).
   if (!host.sessionBinding.isLaunchSession(sessionId)) {
     return true;
   }
