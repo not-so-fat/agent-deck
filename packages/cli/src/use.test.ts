@@ -1,14 +1,21 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 
 import { parseUseArgs, runUse } from './use';
 import { writeUseManifest } from './playbook-stubs';
+import { HOME_STORE_WRITE_BLOCKED_HINT } from './home-write';
+
+const createCollectionAdminMock = vi.fn();
 
 vi.mock('./backend-runtime', () => ({
-  createCollectionAdmin: () => ({
+  createCollectionAdmin: () => createCollectionAdminMock(),
+}));
+
+function defaultCollectionAdmin() {
+  return {
     resolveDeck: async (ref: string) => {
       if (ref === 'dev' || ref === 'deck-1') {
         return { id: 'deck-1', name: 'dev' };
@@ -21,14 +28,16 @@ vi.mock('./backend-runtime', () => ({
     listDeckPlaybookStubs: async () => [
       { id: 'pb_test', title: 'Test playbook', triggers: ['test trigger'] },
     ],
-  }),
-}));
+  };
+}
 
 const tmpDirs: string[] = [];
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  createCollectionAdminMock.mockReset();
+  createCollectionAdminMock.mockImplementation(defaultCollectionAdmin);
   for (const dir of tmpDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -41,6 +50,10 @@ function makeWorkspace(): string {
 }
 
 describe('agent-deck use', () => {
+  beforeEach(() => {
+    createCollectionAdminMock.mockImplementation(defaultCollectionAdmin);
+  });
+
   it('parseUseArgs requires deck or --refresh', () => {
     expect(parseUseArgs([])).toEqual({ error: 'deck name or id is required (or pass --refresh)' });
     expect(parseUseArgs(['dev'])).toMatchObject({ deckRef: 'dev', refresh: false });
@@ -222,5 +235,68 @@ describe('agent-deck use', () => {
     const result = await runUse({ ...parsed, workspaceRoot: workspace });
     expect('error' in result).toBe(false);
     expect(warn.mock.calls.flat().join('\n')).toContain('left custom agent-deck entry unchanged');
+  });
+
+  it('repairs the project workspace pin without the home store when assignment already matches', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    // No ~/.cursor — global ensure would create it; sandbox path must still succeed
+    // when only the project pin is needed.
+    writeUseManifest(workspace, {
+      version: 3,
+      deckId: 'deck-1',
+      deckName: 'dev',
+      mcpUrl: 'http://127.0.0.1:1110/mcp',
+    });
+    createCollectionAdminMock.mockImplementation(() => {
+      throw Object.assign(new Error('attempt to write a readonly database'), {
+        code: 'SQLITE_READONLY',
+      });
+    });
+
+    const parsed = parseUseArgs(['dev', '--client', 'cursor']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(false);
+    if ('error' in result) {
+      return;
+    }
+
+    expect(result.deck).toEqual({ id: 'deck-1', name: 'dev' });
+    const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')) as {
+      mcpServers: Record<string, { env?: Record<string, string> }>;
+    };
+    expect(mcp.mcpServers['agent-deck']?.env?.AGENT_DECK_WORKSPACE).toBe(workspace);
+    expect(createCollectionAdminMock).toHaveBeenCalled();
+  });
+
+  it('exits with an explicit sandbox/home-write message when the home store is required', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    createCollectionAdminMock.mockImplementation(() => {
+      throw Object.assign(new Error('attempt to write a readonly database'), {
+        code: 'SQLITE_READONLY',
+      });
+    });
+
+    const parsed = parseUseArgs(['dev', '--client', 'cursor']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect(result).toMatchObject({ error: expect.stringContaining(HOME_STORE_WRITE_BLOCKED_HINT) });
+    if (!('error' in result)) {
+      return;
+    }
+    expect(result.error).toContain('attempt to write a readonly database');
+    expect(result.error.startsWith('attempt to write a readonly database')).toBe(false);
   });
 });
