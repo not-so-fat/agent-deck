@@ -6,6 +6,9 @@ parent_contract: docs/superpowers/specs/2026-09-12-trusted-unattended-execution-
 deferred: NOT-89, NOT-90, NOT-87
 ---
 
+**Superseded by Agent Deck 1.8.2 ([NOT-105](https://linear.app/not-so-fat/issue/NOT-105/launch-selected-deck-for-agent-deck-mcp-connections-fixes-worktree)/107/108).**
+
+
 # Execution authority issuer (Agent Deck) — NOT-86
 
 **Status note (NOT-105 / NOT-107):** This design is **superseded**. Unattended MCP uses a launch-selected deck (`x-agent-deck-deck-id`, NOT-105; Dealer wiring NOT-106). Execution authority and coordinator enrollment were deleted in NOT-107. Sections below are historical.

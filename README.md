@@ -161,7 +161,7 @@ agent-deck upgrade
 agent-deck stop
 ```
 
-`start` opens the dashboard with a one-shot bootstrap cookie by default (`--no-open` for CI / headless). Bare `http://127.0.0.1:1111` without bootstrap shows the dashboard cookie error (**Error Loading Data / No valid workspace grant**) — that is **not** the MCP `GRANT_REQUIRED` case (**No deck selected for this connection**; fix with `agent-deck use <deck>` in the workspace so the launcher can send the deck header). Re-open anytime with `agent-deck open`.
+`start` opens the dashboard with a one-shot bootstrap cookie by default (`--no-open` for CI / headless). Bare `http://127.0.0.1:1111` without bootstrap shows the dashboard cookie error (**Error Loading Data / Dashboard Access Expired**) — that is **not** the MCP `GRANT_REQUIRED` case (**No deck selected for this connection**; fix with `agent-deck use <deck>` in the workspace so the launcher can send the deck header). Re-open anytime with `agent-deck open`.
 
 Port conflicts: `agent-deck status` · `agent-deck start --force`
 
