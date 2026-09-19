@@ -170,6 +170,22 @@ describe('trusted session auth matrix (§8)', () => {
     expect(response.json()).toMatchObject({ error_code: 'ADMIN_REQUIRED' });
   });
 
+  it('dashboard session can create a deck without agent-admin elevation (NOT-153)', async () => {
+    const { fastify, store } = await buildApp();
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: dashboardAuthHeaders(store),
+      payload: { name: 'dashboard-created', isActive: false },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: { name: 'dashboard-created', isActive: false },
+    });
+  });
+
   it('elevation request → dashboard approve → deck creation succeeds', async () => {
     const { fastify, session, store } = await buildApp();
 

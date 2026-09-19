@@ -117,14 +117,44 @@ export async function registerDeckRoutes(
       if (!isDashboardClient(request)) {
         requireAgentAdmin(request);
       }
-      const deck = await fastify.db.createDeck(request.body);
-      await flushDeckFile(fastify.db, deck.id, storeWriter);
-      
+      const name =
+        typeof request.body?.name === 'string' ? request.body.name.trim() : '';
+      if (!name) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Deck name is required',
+        } satisfies ApiResponse);
+      }
+
+      const deck = await fastify.db.createDeck({
+        ...request.body,
+        name,
+      });
+      try {
+        await flushDeckFile(fastify.db, deck.id, storeWriter);
+      } catch (flushError) {
+        // Files are source of truth; do not leave a DB-only orphan that looks created.
+        try {
+          await fastify.db.deleteDeck(deck.id);
+        } catch (rollbackError) {
+          console.error(
+            `Failed to roll back deck ${deck.id} after file-store write failure:`,
+            rollbackError,
+          );
+        }
+        const detail =
+          flushError instanceof Error ? flushError.message : 'Unknown error';
+        return reply.status(400).send({
+          success: false,
+          error: `Failed to write deck to file store: ${detail}`,
+        } satisfies ApiResponse);
+      }
+
       const response: ApiResponse<Deck> = {
         success: true,
         data: deck,
       };
-      
+
       return reply.status(201).send(response);
     } catch (error) {
       if (error instanceof RoutePolicyError) {
@@ -134,7 +164,7 @@ export async function registerDeckRoutes(
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
       };
-      
+
       return reply.status(400).send(response);
     }
   });
