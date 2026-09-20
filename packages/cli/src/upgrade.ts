@@ -12,7 +12,18 @@ import {
   readCurrentManagedVersion,
   runManagedCliEntryHooks,
 } from './managed';
+import {
+  reconcileCodexPluginAfterUpgrade,
+  type CodexRunner,
+} from './codex-plugin';
 import { getAgentDeckVersion } from './version';
+
+export type UpgradeDeps = {
+  /** Test seam: replace the real npm/managed CLI install step. */
+  performCliUpgrade?: (target: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Test seam: Codex CLI runner used for post-upgrade plugin reconciliation. */
+  codexRunner?: CodexRunner;
+};
 
 const PACKAGE_NAME = '@agent-deck/cli';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -112,7 +123,7 @@ function parseToVersion(args: string[]): string | undefined {
   return undefined;
 }
 
-export async function runUpgrade(args: string[]): Promise<number> {
+export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promise<number> {
   const checkOnly = args.includes('--check');
   const toVersion = parseToVersion(args);
 
@@ -139,14 +150,22 @@ export async function runUpgrade(args: string[]): Promise<number> {
     }
 
     console.log(`Upgrading managed install ${PACKAGE_NAME} → ${latest} ...`);
-    const result = await installCliVersionToPrefix(latest);
-    if (!result.ok) {
-      console.error(`Upgrade failed: ${result.error}`);
-      return 1;
+    if (deps.performCliUpgrade) {
+      const stubbed = await deps.performCliUpgrade(latest);
+      if (!stubbed.ok) {
+        console.error(`Upgrade failed: ${stubbed.error ?? 'unknown error'}`);
+        return 1;
+      }
+    } else {
+      const result = await installCliVersionToPrefix(latest);
+      if (!result.ok) {
+        console.error(`Upgrade failed: ${result.error}`);
+        return 1;
+      }
+      activateVersion(latest);
     }
-    activateVersion(latest);
     console.log('Upgrade complete. Restart any running Agent Deck process.');
-    return 0;
+    return reconcileCodexPluginAfterUpgrade(latest, deps.codexRunner);
   }
 
   const result = await checkForUpgrade({ force: true });
@@ -173,16 +192,25 @@ export async function runUpgrade(args: string[]): Promise<number> {
   }
 
   console.log(`Upgrading ${PACKAGE_NAME} → ${target} ...`);
+  if (deps.performCliUpgrade) {
+    const stubbed = await deps.performCliUpgrade(target);
+    if (!stubbed.ok) {
+      console.error(`Upgrade failed: ${stubbed.error ?? 'unknown error'}`);
+      return 1;
+    }
+    console.log('Upgrade complete. Restart any running Agent Deck process.');
+    return reconcileCodexPluginAfterUpgrade(target, deps.codexRunner);
+  }
   const code = await runNpmInstallGlobal(target);
   if (code === 0) {
     console.log('Upgrade complete. Restart any running Agent Deck process.');
     console.log('Tip: agent-deck install  # switch CLI binary to managed auto-updates (data unchanged)');
-  } else {
-    console.error('Upgrade failed. Try manually:');
-    console.error(`  npm install -g ${PACKAGE_NAME}@${target}`);
-    console.error('Or managed install:');
-    console.error(`  npx ${PACKAGE_NAME}@latest install`);
+    return reconcileCodexPluginAfterUpgrade(target, deps.codexRunner);
   }
+  console.error('Upgrade failed. Try manually:');
+  console.error(`  npm install -g ${PACKAGE_NAME}@${target}`);
+  console.error('Or managed install:');
+  console.error(`  npx ${PACKAGE_NAME}@latest install`);
 
   return code;
 }
