@@ -46,6 +46,7 @@ import {
 import { readLastReindex } from './backend-runtime';
 import { formatLastReindex } from './store';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
+import { runCodexPluginDoctor } from './codex-plugin';
 
 export interface StartOptions {
   backendPort?: number;
@@ -922,6 +923,14 @@ export async function runDoctor(): Promise<number> {
   });
   console.log('');
   console.log(formatCursorMcpInspection(inspection));
+
+  // Read-only Codex plugin compatibility check (NOT-188): never mutates Codex
+  // state, only reports it. A stale/disabled/ambiguous plugin fails doctor.
+  console.log('');
+  const codexCode = await runCodexPluginDoctor(getAgentDeckVersion());
+  if (codexCode !== 0) {
+    ok = false;
+  }
 
   return ok ? 0 : 1;
 }
