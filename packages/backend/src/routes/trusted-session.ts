@@ -202,6 +202,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           success: true,
           data: {
             challengeId: challenge.id,
+            runtimeSessionId,
             expiresAt: challenge.expires_at,
             approvalUrl,
           },

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiRequest } from "@/lib/queryClient";
+import { adminApproveFailure } from "@/lib/admin-approve-error";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -12,11 +13,13 @@ export default function AdminApprovePage() {
 
   const [state, setState] = useState<ApproveState>("idle");
   const [message, setMessage] = useState<string>("");
+  const [retryable, setRetryable] = useState(true);
 
   useEffect(() => {
     if (!challengeId || !runtimeSessionId) {
       setState("error");
-      setMessage("Missing challenge or session in URL.");
+      setRetryable(false);
+      setMessage("This link is incomplete. Ask the agent to request admin elevation again.");
     }
   }, [challengeId, runtimeSessionId]);
 
@@ -33,8 +36,10 @@ export default function AdminApprovePage() {
       setState("success");
       setMessage("Admin elevation approved for this MCP session. Return to the agent.");
     } catch (error) {
+      const failure = adminApproveFailure(error);
       setState("error");
-      setMessage(error instanceof Error ? error.message : "Approval failed");
+      setRetryable(failure.retryable);
+      setMessage(failure.message);
     }
   }
 
@@ -63,12 +68,16 @@ export default function AdminApprovePage() {
           ) : null}
 
           {state === "success" ? (
-            <p className="text-sm text-green-700 dark:text-green-400">{message}</p>
+            <p role="status" className="text-sm text-green-700 dark:text-green-400">
+              {message}
+            </p>
           ) : state === "error" ? (
-            <p className="text-sm text-destructive">{message}</p>
+            <p role="alert" className="text-sm text-destructive">
+              {message}
+            </p>
           ) : null}
 
-          {state !== "success" && challengeId && runtimeSessionId ? (
+          {state !== "success" && challengeId && runtimeSessionId && (state !== "error" || retryable) ? (
             <Button onClick={() => void approve()} disabled={state === "loading"} className="w-full">
               {state === "loading" ? "Approving…" : "Approve elevation"}
             </Button>

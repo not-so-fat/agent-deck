@@ -10,8 +10,10 @@ import {
   AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
+import { openAdminElevationApproval } from './admin-elevation';
 import { buildMcpUrl, type McpEndpoint } from './mcp-config';
 import { clearKeychainAssignment, readAssignment, writeAssignment } from './assignment';
+import { readCliBackendPort } from './defaults';
 import { McpStdioHttpBridge } from './mcp-bridge';
 
 export type McpLaunchPlan = {
@@ -97,6 +99,34 @@ export async function resolveMcpLaunchPlan(
   };
 }
 
+/**
+ * The dashboard that can approve an elevation belongs to the MCP server that issued
+ * it. The backend port is only known for the endpoint this process was launched
+ * against, so any other MCP URL (an assignment that moved the bridge) has no
+ * dashboard we can name — and minting a sign-in against the wrong one would fail
+ * the approval and hand its admin secret to a server that did not ask for it.
+ */
+export function resolveApprovalBackendUrl(
+  mcpUrl: string,
+  endpoint: McpEndpoint,
+  backendPort: number = readCliBackendPort(),
+): string | undefined {
+  try {
+    const answered = new URL(mcpUrl);
+    const launched = new URL(buildMcpUrl(endpoint));
+    if (
+      answered.protocol === launched.protocol &&
+      answered.hostname === launched.hostname &&
+      answered.port === launched.port
+    ) {
+      return `http://${endpoint.host}:${backendPort}`;
+    }
+  } catch {
+    // An unparsable endpoint has no dashboard we can name.
+  }
+  return undefined;
+}
+
 export async function runMcpLaunch(): Promise<number> {
   const workspaceRoot = path.resolve(process.env.AGENT_DECK_WORKSPACE?.trim() || process.cwd());
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -122,6 +152,20 @@ export async function runMcpLaunch(): Promise<number> {
       },
       stdin: process.stdin,
       stdout: process.stdout,
+      onToolResult: async (toolName, result, { mcpUrl }) => {
+        if (toolName !== 'request_admin_elevation') {
+          return;
+        }
+        const backendUrl = resolveApprovalBackendUrl(mcpUrl, endpoint);
+        if (!backendUrl) {
+          console.error(
+            `[agent-deck] Approval page not opened: no known dashboard for ${mcpUrl}. ` +
+              'Open the approval URL from the tool result on that server\'s dashboard.',
+          );
+          return;
+        }
+        await openAdminElevationApproval(backendUrl, result);
+      },
     });
     await bridge.run();
     return 0;
