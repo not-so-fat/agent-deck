@@ -8,6 +8,7 @@ export type CodexClassification =
   | 'compatible'
   | 'version-mismatch'
   | 'legacy-http'
+  | 'unknown-transport'
   | 'ambiguous-source';
 
 export type CodexTransport = 'mcp-launch' | 'direct-http' | 'unknown';
@@ -169,6 +170,7 @@ function isAgentDeckPlugin(plugin: CodexInstalledPlugin): boolean {
 export interface CodexPluginState {
   available: boolean;
   error?: string;
+  marketplaceListError?: string;
   cliVersion: string;
   installed: CodexInstalledPlugin[];
   marketplaces: CodexMarketplace[];
@@ -276,6 +278,13 @@ export async function inspectCodexPlugin(
     } catch {
       return { ...base, installed, error: `could not parse \`codex plugin marketplace list --json\` output as JSON` };
     }
+  } else {
+    // A failed marketplace list must not silently become "no marketplaces":
+    // reconciling against an unresolved source could reinstall a stale copy.
+    base.marketplaceListError =
+      marketplaceOut.stderr.trim() ||
+      marketplaceOut.stdout.trim() ||
+      `codex exited with code ${marketplaceOut.code}`;
   }
   const marketplaces = marketplaceEntries
     .map(parseMarketplace)
@@ -365,6 +374,23 @@ export async function inspectCodexPlugin(
     };
   }
 
+  // `compatible` requires a verified mcp-launch transport. An unreadable,
+  // missing, or unrecognised `.mcp.json` is unverifiable — never healthy.
+  if (transport !== 'mcp-launch') {
+    return {
+      ...base,
+      installed,
+      marketplaces,
+      classification: 'unknown-transport',
+      installedVersion: first.version,
+      selector,
+      root,
+      marketplaceName,
+      sourceKind,
+      transport,
+    };
+  }
+
   return {
     ...base,
     installed,
@@ -400,12 +426,14 @@ function printManualSyncBlock(selector: string, marketplaceName?: string): void 
 /**
  * Reconcile the installed Agent Deck plugin after a successful CLI upgrade.
  *
- * Only acts when exactly one installed selector and one source root resolve.
- * For a Git marketplace the marketplace is refreshed first. Reinstalls through
- * supported `codex plugin remove` / `codex plugin add` commands, then
- * re-reads plugin state. Never edits Codex files directly: every failure path
- * prints `CLI upgrade complete; Codex plugin unchanged` (or the reconciled
- * state) plus the exact manual Codex commands, and returns 1.
+ * Only acts when exactly one installed selector and one source root resolve
+ * from a successful marketplace listing. For a Git marketplace the
+ * marketplace is refreshed first. Reinstalls through supported
+ * `codex plugin remove` / `codex plugin add` commands, then re-reads plugin
+ * state (which must verify `mcp-launch` before reporting OK). Never edits
+ * Codex files directly: every failure path prints whether the CLI upgrade
+ * succeeded and whether the plugin was left unchanged or was removed, plus
+ * the exact manual Codex commands, and returns 1.
  */
 export async function reconcileCodexPluginAfterUpgrade(
   expectedVersion: string,
@@ -426,8 +454,7 @@ export async function reconcileCodexPluginAfterUpgrade(
   }
 
   if (state.classification === 'compatible') {
-    const transport = state.transport === 'unknown' ? 'mcp-launch' : state.transport;
-    console.log(`Codex plugin: OK (${state.installedVersion ?? expectedVersion}, ${transport})`);
+    console.log(`Codex plugin: OK (${state.installedVersion ?? expectedVersion}, ${state.transport})`);
     return 0;
   }
 
@@ -437,12 +464,36 @@ export async function reconcileCodexPluginAfterUpgrade(
     return 1;
   }
 
+  if (state.classification === 'disabled') {
+    console.log('CLI upgrade complete; Codex plugin unchanged (plugin is disabled; leaving it as-is).');
+    printManualSyncBlock(selector, state.marketplaceName);
+    return 1;
+  }
+
   if (state.classification === 'ambiguous-source' || !state.selector || !state.root) {
     console.log(
       'CLI upgrade complete; Codex plugin unchanged (multiple sources could supply the installed plugin).',
     );
     printManualSyncBlock(selector, state.marketplaceName);
     console.log('See: codex plugin list --available --json');
+    return 1;
+  }
+
+  if (state.marketplaceListError) {
+    console.log(
+      `CLI upgrade complete; Codex plugin unchanged (marketplace list failed: ${state.marketplaceListError}).`,
+    );
+    printManualSyncBlock(selector, state.marketplaceName);
+    console.log('See: codex plugin marketplace list --json');
+    return 1;
+  }
+
+  if (state.sourceKind === 'unknown') {
+    console.log(
+      'CLI upgrade complete; Codex plugin unchanged (could not resolve a single marketplace source for the installed plugin).',
+    );
+    printManualSyncBlock(selector, state.marketplaceName);
+    console.log('See: codex plugin marketplace list --json');
     return 1;
   }
 
@@ -471,17 +522,22 @@ export async function reconcileCodexPluginAfterUpgrade(
 
   const added = await runner(['plugin', 'add', targetSelector]);
   if (added.code !== 0) {
+    // `remove` already succeeded, so the plugin is uninstalled — not
+    // "unchanged". Say so and print only the recovery commands.
     console.log(
-      `CLI upgrade complete; Codex plugin unchanged (add failed: ${(added.stderr.trim() || added.stdout.trim() || `exit ${added.code}`)}).`,
+      `CLI upgrade complete; Codex plugin removed but reinstall failed (add failed: ${(added.stderr.trim() || added.stdout.trim() || `exit ${added.code}`)}).`,
     );
-    printManualSyncBlock(targetSelector, marketplaceName);
+    console.log('To restore the plugin manually, run:');
+    if (state.sourceKind === 'git' && marketplaceName) {
+      console.log(`  codex plugin marketplace upgrade ${marketplaceName}`);
+    }
+    console.log(`  codex plugin add ${targetSelector}`);
     return 1;
   }
 
   const reread = await inspectCodexPlugin(expectedVersion, runner);
   if (reread.classification === 'compatible') {
-    const transport = reread.transport === 'unknown' ? 'mcp-launch' : reread.transport;
-    console.log(`Codex plugin: OK (${reread.installedVersion ?? expectedVersion}, ${transport})`);
+    console.log(`Codex plugin: OK (${reread.installedVersion ?? expectedVersion}, ${reread.transport})`);
     return 0;
   }
 
@@ -518,8 +574,7 @@ export async function runCodexPluginDoctor(
 
   switch (state.classification) {
     case 'compatible': {
-      const transport = state.transport === 'unknown' ? 'mcp-launch' : state.transport;
-      console.log(`Codex plugin: OK (${state.installedVersion ?? cliVersion}, ${transport})`);
+      console.log(`Codex plugin: OK (${state.installedVersion ?? cliVersion}, ${state.transport})`);
       return 0;
     }
     case 'missing': {
@@ -530,6 +585,7 @@ export async function runCodexPluginDoctor(
     case 'disabled':
     case 'version-mismatch':
     case 'legacy-http':
+    case 'unknown-transport':
     case 'ambiguous-source': {
       const selector = state.selector ?? DEFAULT_PLUGIN_SELECTOR;
       const root = state.root ?? '(unknown)';
