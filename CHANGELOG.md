@@ -2,14 +2,17 @@
 
 ## 1.10.6 — 2026-09-20
 
-### Fix: admin approval now opens the approval page and explains failures (NOT-199)
+### Fix: admin approval opens the approval page and explains failures (NOT-199)
 
-- After `request_admin_elevation`, the MCP bridge opens the exact approval page in your browser (set `AGENT_DECK_NO_OPEN` to skip). The tool result is never held back by this.
-- The approval page shows a clear message when the session is missing, the challenge expired, the session is gone, or the backend is unreachable, and drops the Approve button when a retry cannot succeed. Previously it showed "No deck selected for this connection" on a live-looking button.
+- After `request_admin_elevation`, the MCP bridge opens the approval page in your browser, already signed in to the dashboard (set `AGENT_DECK_NO_OPEN` to skip). The tool result is never held back by this.
+- If the open is skipped (the bridge was moved to a different MCP server by a deck assignment) or the browser cannot launch, the reason goes to stderr and the approval link in the tool result still works.
+- The approval page now says what is wrong instead of an inert button: this browser is not signed in to the dashboard (run `agent-deck open`), the link is incomplete, the request expired or was already used, the agent session is gone, or Agent Deck is unreachable. The Approve button is dropped when a retry cannot succeed.
+- Previously a browser without a dashboard sign-in showed "No deck selected for this connection" on a live-looking button.
 
 ### After upgrade
 
 - Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Reload MCP in your IDE (or restart the agent session): the auto-open lives in the `mcp-launch` bridge your IDE spawns, which keeps running the old code until reloaded.
 
 ## 1.10.5 — 2026-09-19
 
