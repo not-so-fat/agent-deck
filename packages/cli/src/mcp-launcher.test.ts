@@ -156,6 +156,28 @@ describe('bridge selection (NOT-101)', () => {
   });
 });
 
+describe('supported production host transport', () => {
+  it('routes the Codex plugin and Claude plugin through the shared mcp-launch path', () => {
+    const repositoryRoot = path.resolve(__dirname, '../../..');
+    const transport = JSON.parse(
+      fs.readFileSync(path.join(repositoryRoot, '.mcp.json'), 'utf8'),
+    ) as { mcpServers?: Record<string, { command?: string; args?: string[] }> };
+    const codexPlugin = JSON.parse(
+      fs.readFileSync(path.join(repositoryRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
+    ) as { mcpServers?: string };
+    const claudePlugin = JSON.parse(
+      fs.readFileSync(path.join(repositoryRoot, '.claude-plugin', 'plugin.json'), 'utf8'),
+    ) as { mcpServers?: string };
+
+    expect(codexPlugin.mcpServers).toBe('./.mcp.json');
+    expect(claudePlugin.mcpServers).toBe('./.mcp.json');
+    expect(transport.mcpServers?.['agent-deck']).toMatchObject({
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+    });
+  });
+});
+
 describe('parseLaunchHeaders', () => {
   it('turns launch header strings into the map the bridge replays on every call', () => {
     expect(

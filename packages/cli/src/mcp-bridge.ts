@@ -48,6 +48,8 @@ export type McpBridgeOptions = {
   /** How long `run()` waits for in-flight requests after the host closes stdin. */
   drainTimeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** Observe completed MCP tool calls before their result is returned to the host. */
+  onToolResult?: (toolName: string, result: unknown) => Promise<void> | void;
 };
 
 const SESSION_HEADER = 'mcp-session-id';
@@ -584,7 +586,7 @@ export class McpStdioHttpBridge {
     }
 
     this.captureSessionId(response);
-    this.emitResponseBody(response, bodyText, sentWithGeneration);
+    await this.emitResponseBody(response, bodyText, sentWithGeneration, message);
 
     if (isInitializeRequest(message)) {
       this.startServerStream();
@@ -607,18 +609,47 @@ export class McpStdioHttpBridge {
     }
   }
 
-  private emitResponseBody(
+  private async emitResponseBody(
     response: Response,
     bodyText: string,
     sentOnGeneration: number | undefined,
-  ): void {
+    request: JsonRpcMessage,
+  ): Promise<void> {
     const messages = decodeJsonRpcMessages(response, bodyText);
     if (!messages) {
       this.log('[agent-deck] bridge: dropping non-JSON response from MCP server');
       return;
     }
     for (const message of messages) {
+      await this.notifyToolResult(request, message);
       this.writeToClient(message, sentOnGeneration);
+    }
+  }
+
+  /**
+   * Production hosts all reach Agent Deck through this bridge. Keep host-neutral
+   * side effects (such as opening an approval page) here instead of teaching each
+   * IDE how to interpret one tool's response.
+   */
+  private async notifyToolResult(request: JsonRpcMessage, response: JsonRpcMessage): Promise<void> {
+    const toolName = readToolCallName(request);
+    if (
+      !toolName ||
+      !this.options.onToolResult ||
+      response.id !== request.id ||
+      response.error !== undefined ||
+      response.result === undefined
+    ) {
+      return;
+    }
+    try {
+      await this.options.onToolResult(toolName, response.result);
+    } catch (error) {
+      // The MCP result still reaches the host, including its approval URL, so a
+      // browser-launch failure remains recoverable instead of breaking the tool.
+      this.log(
+        `[agent-deck] bridge: ${toolName} follow-up failed: ${describeError(error)}`,
+      );
     }
   }
 

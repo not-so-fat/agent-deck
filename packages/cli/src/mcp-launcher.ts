@@ -10,8 +10,10 @@ import {
   AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
+import { openAdminElevationApproval } from './admin-elevation';
 import { buildMcpUrl, type McpEndpoint } from './mcp-config';
 import { clearKeychainAssignment, readAssignment, writeAssignment } from './assignment';
+import { readCliBackendPort } from './defaults';
 import { McpStdioHttpBridge } from './mcp-bridge';
 
 export type McpLaunchPlan = {
@@ -102,6 +104,7 @@ export async function runMcpLaunch(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const mcpPort = Number(process.env.AGENT_DECK_MCP_PORT ?? '1110');
   const endpoint: McpEndpoint = { host, mcpPort };
+  const backendUrl = `http://${host}:${readCliBackendPort()}`;
 
   const plan = await resolveMcpLaunchPlan(workspaceRoot, endpoint);
   if (plan.unassigned) {
@@ -122,6 +125,11 @@ export async function runMcpLaunch(): Promise<number> {
       },
       stdin: process.stdin,
       stdout: process.stdout,
+      onToolResult: async (toolName, result) => {
+        if (toolName === 'request_admin_elevation') {
+          await openAdminElevationApproval(backendUrl, result);
+        }
+      },
     });
     await bridge.run();
     return 0;

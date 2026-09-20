@@ -147,6 +147,71 @@ async function driveBridge(
 }
 
 describe('McpStdioHttpBridge', () => {
+  it('runs host-neutral tool-result follow-ups before returning the result', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const observed: Array<{ name: string; result: unknown }> = [];
+    const toolFetch = (async (url: any, init: any): Promise<Response> => {
+      const body = JSON.parse(init.body as string);
+      if (body.method === 'tools/call') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: body.id,
+            result: { content: [{ type: 'text', text: '{"approvalUrl":"/admin/approve"}' }] },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return stubFetch(state)(url, init);
+    }) as typeof fetch;
+    const { send, waitFor, finish } = await driveBridge(state, toolFetch, {
+      onToolResult: async (name, result) => {
+        observed.push({ name, result });
+      },
+    });
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'request_admin_elevation', arguments: {} },
+    });
+    const response = await waitFor(2);
+    await finish();
+
+    expect(response.result).toBeDefined();
+    expect(observed).toEqual([
+      { name: 'request_admin_elevation', result: response.result },
+    ]);
+  });
+
+  it('still returns the tool result when a follow-up cannot open its surface', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const logs: string[] = [];
+    const { send, waitFor, finish } = await driveBridge(state, undefined, {
+      log: (message) => logs.push(message),
+      onToolResult: () => {
+        throw new Error('browser unavailable');
+      },
+    });
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'request_admin_elevation', arguments: {} },
+    });
+    const response = await waitFor(2);
+    await finish();
+
+    expect(response.result).toEqual({ pong: true });
+    expect(logs).toContainEqual(expect.stringContaining('browser unavailable'));
+  });
+
   it('sends the launch headers on every request, not just initialize', async () => {
     const state = { sessionId: 'session-a', calls: [] as Recorded[] };
     const { send, waitFor, finish } = await driveBridge(state);
