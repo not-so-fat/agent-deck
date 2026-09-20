@@ -26,8 +26,25 @@ let output: string[];
 let originalLog: typeof console.log;
 let originalError: typeof console.error;
 
-function writeStub(): void {
+interface StubFlags {
+  failMarketplaceList?: boolean;
+  failMarketplaceUpgrade?: boolean;
+  failRemove?: boolean;
+  failAdd?: boolean;
+}
+
+function writeStub(flags: StubFlags = {}): void {
   const stub = path.join(codexHome, 'codex');
+  const marketplaceListBody = flags.failMarketplaceList
+    ? 'echo "stub codex: marketplace list unavailable" >&2\nexit 1'
+    : `cat "${codexHome}/marketplace-list.json"\nexit 0`;
+  const marketplaceUpgradeBody = flags.failMarketplaceUpgrade
+    ? 'echo "stub codex: marketplace upgrade failed" >&2\nexit 1'
+    : 'exit 0';
+  const removeBody = flags.failRemove ? 'echo "stub codex: remove failed" >&2\nexit 1' : 'exit 0';
+  const addBody = flags.failAdd
+    ? 'echo "stub codex: add failed" >&2\nexit 1'
+    : `cp "${codexHome}/after/plugin-list.json" "${codexHome}/plugin-list.json"\ncp "${codexHome}/after/mcp.json" "${pluginRoot}/.mcp.json"\nexit 0`;
   const script = `#!/bin/bash
 echo "codex $*" >> "${codexHome}/calls.log"
 if [ "$1" = "plugin" ] && [ "$2" = "list" ]; then
@@ -35,19 +52,16 @@ if [ "$1" = "plugin" ] && [ "$2" = "list" ]; then
   exit 0
 fi
 if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "list" ]; then
-  cat "${codexHome}/marketplace-list.json"
-  exit 0
+  ${marketplaceListBody}
 fi
 if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "upgrade" ]; then
-  exit 0
+  ${marketplaceUpgradeBody}
 fi
 if [ "$1" = "plugin" ] && [ "$2" = "remove" ]; then
-  exit 0
+  ${removeBody}
 fi
 if [ "$1" = "plugin" ] && [ "$2" = "add" ]; then
-  cp "${codexHome}/after/plugin-list.json" "${codexHome}/plugin-list.json"
-  cp "${codexHome}/after/mcp.json" "${pluginRoot}/.mcp.json"
-  exit 0
+  ${addBody}
 fi
 echo "stub codex: unexpected invocation: $*" >&2
 exit 1
@@ -266,5 +280,132 @@ describe('upgrade codex plugin reconciliation (NOT-188)', () => {
     expect(text).toContain(`codex plugin remove ${SELECTOR}`);
     expect(text).toContain(`codex plugin add ${SELECTOR}`);
     expect(hashLiveFixtures()).toBe(before);
+  });
+
+  it('reports removal (not "unchanged") when add fails after remove succeeded', async () => {
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'git' }]);
+    writeStub({ failAdd: true });
+    const before = hashLiveFixtures();
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+    });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(calls).toContain(`codex plugin remove ${SELECTOR}`);
+    expect(calls).toContain(`codex plugin add ${SELECTOR}`);
+    expect(text).toContain('Codex plugin removed but reinstall failed');
+    expect(text).not.toContain('Codex plugin unchanged');
+    // Recovery prints the add command (plus the git marketplace refresh),
+    // not a repeated remove: the plugin is already uninstalled.
+    expect(text).toContain('codex plugin marketplace upgrade agent-deck');
+    expect(text).toContain(`codex plugin add ${SELECTOR}`);
+    // The failed add left the pre-upgrade fixtures in place.
+    expect(hashLiveFixtures()).toBe(before);
+  });
+
+  it('does not reinstall when the marketplace list fails', async () => {
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    writeStub({ failMarketplaceList: true });
+    const before = hashLiveFixtures();
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+    });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('CLI upgrade complete; Codex plugin unchanged');
+    expect(text).toContain('marketplace list failed');
+    expect(text).toContain(`codex plugin remove ${SELECTOR}`);
+    expect(text).toContain(`codex plugin add ${SELECTOR}`);
+    expect(hashLiveFixtures()).toBe(before);
+  });
+
+  it('does not reinstall when no marketplace source resolves', async () => {
+    seedUpgradeHome();
+    // Default seed fixture: an empty marketplace list, so the installed
+    // plugin's source root cannot be resolved to exactly one marketplace.
+    const before = hashLiveFixtures();
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+    });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('CLI upgrade complete; Codex plugin unchanged');
+    expect(text).toContain('could not resolve a single marketplace source');
+    expect(text).toContain(`codex plugin remove ${SELECTOR}`);
+    expect(text).toContain(`codex plugin add ${SELECTOR}`);
+    expect(hashLiveFixtures()).toBe(before);
+  });
+
+  it('leaves a disabled plugin installed without remove/add', async () => {
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    fs.writeFileSync(
+      path.join(codexHome, 'plugin-list.json'),
+      `${JSON.stringify(
+        {
+          plugins: [
+            {
+              name: 'agent-deck',
+              version: '1.4.4',
+              selector: SELECTOR,
+              enabled: false,
+              marketplace: 'agent-deck',
+              install_root: pluginRoot,
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const before = hashLiveFixtures();
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+    });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('CLI upgrade complete; Codex plugin unchanged');
+    expect(text).toContain('disabled');
+    expect(hashLiveFixtures()).toBe(before);
+  });
+
+  it('fails the re-read when the reinstalled plugin still lacks mcp-launch', async () => {
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    // The reinstall "succeeds" but leaves the legacy direct-HTTP transport.
+    fs.writeFileSync(path.join(codexHome, 'after', 'mcp.json'), `${JSON.stringify(LEGACY_MCP, null, 2)}\n`);
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+    });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(calls).toContain(`codex plugin remove ${SELECTOR}`);
+    expect(calls).toContain(`codex plugin add ${SELECTOR}`);
+    expect(text).not.toContain('Codex plugin: OK (');
+    expect(text).toContain('still legacy-http');
+    expect(text).toContain(`codex plugin add ${SELECTOR}`);
   });
 });

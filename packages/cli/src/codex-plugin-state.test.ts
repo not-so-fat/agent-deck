@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { runCodexPluginDoctor } from './codex-plugin';
+import { inspectCodexPlugin, runCodexPluginDoctor } from './codex-plugin';
 import { runDoctor } from './start';
 import { getAgentDeckVersion } from './version';
 
@@ -157,6 +157,32 @@ describe('doctor codex plugin state (NOT-188)', () => {
     expect(calls).not.toContain('plugin remove');
     expect(calls).not.toContain('plugin add');
     expect(calls).not.toContain('marketplace upgrade');
+  });
+
+  it('fails when the version matches but the transport is unverifiable', async () => {
+    seedCodexHome(CLI_VERSION, { mcpServers: {} });
+    const before = hashFixtures();
+
+    // A matching version with an unreadable/missing/unrecognised .mcp.json
+    // is never "compatible": compatible requires a verified mcp-launch.
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.classification).toBe('unknown-transport');
+
+    output.length = 0;
+    const code = await runCodexPluginDoctor(CLI_VERSION);
+    const text = output.join('\n');
+
+    expect(code).toBe(1);
+    expect(text).toContain('unknown-transport');
+    expect(text).toContain('Transport: unknown');
+    expect(text).toContain(`codex plugin remove ${SELECTOR}`);
+    expect(text).not.toContain('Codex plugin: OK (');
+
+    // Read-only: no fixture file changed and no mutating Codex command ran.
+    expect(hashFixtures()).toBe(before);
+    const calls = fs.readFileSync(path.join(codexHome, 'calls.log'), 'utf8');
+    expect(calls).not.toContain('plugin remove');
+    expect(calls).not.toContain('plugin add');
   });
 
   it('reports one OK line for a current mcp-launch plugin', async () => {
