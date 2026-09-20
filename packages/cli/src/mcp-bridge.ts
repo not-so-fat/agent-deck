@@ -48,8 +48,17 @@ export type McpBridgeOptions = {
   /** How long `run()` waits for in-flight requests after the host closes stdin. */
   drainTimeoutMs?: number;
   fetchImpl?: typeof fetch;
-  /** Observe completed MCP tool calls before their result is returned to the host. */
-  onToolResult?: (toolName: string, result: unknown) => Promise<void> | void;
+  /**
+   * Observe a completed MCP tool call. It runs after the result has been handed to
+   * the host and never delays it, so a follow-up that hangs cannot withhold the
+   * result. `source.mcpUrl` is the endpoint that produced the result, which can
+   * differ from the launch URL once the assignment has moved the bridge.
+   */
+  onToolResult?: (
+    toolName: string,
+    result: unknown,
+    source: { mcpUrl: string },
+  ) => Promise<void> | void;
 };
 
 const SESSION_HEADER = 'mcp-session-id';
@@ -508,6 +517,8 @@ export class McpStdioHttpBridge {
     // per response and throw away the session the first recovery just won.
     const sentWithSession = this.sessionId;
     const sentWithGeneration = this.sessionGeneration;
+    // ...and the endpoint it went to, which a later recovery may repoint.
+    const sentToUrl = this.url;
     // ...and the deck it was meant for. A replayed handshake re-binds from the
     // launch headers, which can land on a different deck than the one the client
     // bound this session to; a retry then applies the call to the wrong deck.
@@ -586,7 +597,7 @@ export class McpStdioHttpBridge {
     }
 
     this.captureSessionId(response);
-    await this.emitResponseBody(response, bodyText, sentWithGeneration, message);
+    this.emitResponseBody(response, bodyText, sentWithGeneration, message, sentToUrl);
 
     if (isInitializeRequest(message)) {
       this.startServerStream();
@@ -609,20 +620,23 @@ export class McpStdioHttpBridge {
     }
   }
 
-  private async emitResponseBody(
+  private emitResponseBody(
     response: Response,
     bodyText: string,
     sentOnGeneration: number | undefined,
     request: JsonRpcMessage,
-  ): Promise<void> {
+    sentToUrl: string,
+  ): void {
     const messages = decodeJsonRpcMessages(response, bodyText);
     if (!messages) {
       this.log('[agent-deck] bridge: dropping non-JSON response from MCP server');
       return;
     }
     for (const message of messages) {
-      await this.notifyToolResult(request, message);
       this.writeToClient(message, sentOnGeneration);
+      // Only after the host has the result, and never awaited: a follow-up that
+      // never settles must not be able to hold the result back.
+      void this.notifyToolResult(request, message, sentToUrl);
     }
   }
 
@@ -631,7 +645,11 @@ export class McpStdioHttpBridge {
    * side effects (such as opening an approval page) here instead of teaching each
    * IDE how to interpret one tool's response.
    */
-  private async notifyToolResult(request: JsonRpcMessage, response: JsonRpcMessage): Promise<void> {
+  private async notifyToolResult(
+    request: JsonRpcMessage,
+    response: JsonRpcMessage,
+    sentToUrl: string,
+  ): Promise<void> {
     const toolName = readToolCallName(request);
     if (
       !toolName ||
@@ -643,9 +661,9 @@ export class McpStdioHttpBridge {
       return;
     }
     try {
-      await this.options.onToolResult(toolName, response.result);
+      await this.options.onToolResult(toolName, response.result, { mcpUrl: sentToUrl });
     } catch (error) {
-      // The MCP result still reaches the host, including its approval URL, so a
+      // The host already has the result, including its approval URL, so a
       // browser-launch failure remains recoverable instead of breaking the tool.
       this.log(
         `[agent-deck] bridge: ${toolName} follow-up failed: ${describeError(error)}`,

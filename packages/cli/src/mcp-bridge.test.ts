@@ -1,5 +1,5 @@
 import { PassThrough } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   McpStdioHttpBridge,
@@ -147,9 +147,9 @@ async function driveBridge(
 }
 
 describe('McpStdioHttpBridge', () => {
-  it('runs host-neutral tool-result follow-ups before returning the result', async () => {
+  it('hands the result to the host, then runs host-neutral tool-result follow-ups', async () => {
     const state = { sessionId: 'session-a', calls: [] as Recorded[] };
-    const observed: Array<{ name: string; result: unknown }> = [];
+    const observed: Array<{ name: string; result: unknown; mcpUrl: string }> = [];
     const toolFetch = (async (url: any, init: any): Promise<Response> => {
       const body = JSON.parse(init.body as string);
       if (body.method === 'tools/call') {
@@ -165,8 +165,8 @@ describe('McpStdioHttpBridge', () => {
       return stubFetch(state)(url, init);
     }) as typeof fetch;
     const { send, waitFor, finish } = await driveBridge(state, toolFetch, {
-      onToolResult: async (name, result) => {
-        observed.push({ name, result });
+      onToolResult: async (name, result, source) => {
+        observed.push({ name, result, mcpUrl: source.mcpUrl });
       },
     });
 
@@ -182,9 +182,36 @@ describe('McpStdioHttpBridge', () => {
     await finish();
 
     expect(response.result).toBeDefined();
-    expect(observed).toEqual([
-      { name: 'request_admin_elevation', result: response.result },
-    ]);
+    await vi.waitFor(() =>
+      expect(observed).toEqual([
+        { name: 'request_admin_elevation', result: response.result, mcpUrl: 'http://stub/mcp' },
+      ]),
+    );
+  });
+
+  it('returns the tool result even when a follow-up never settles', async () => {
+    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    let started = false;
+    const { send, waitFor, finish } = await driveBridge(state, undefined, {
+      onToolResult: () => {
+        started = true;
+        return new Promise<void>(() => {});
+      },
+    });
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'request_admin_elevation', arguments: {} },
+    });
+    const response = await waitFor(2);
+    await finish();
+
+    expect(response.result).toEqual({ pong: true });
+    expect(started).toBe(true);
   });
 
   it('still returns the tool result when a follow-up cannot open its surface', async () => {
@@ -860,6 +887,35 @@ describe('McpStdioHttpBridge across a deck change', () => {
 
     expect(urls[0]).toBe('http://stub/mcp');
     expect(urls[urls.length - 1]).toBe('http://moved/mcp');
+  });
+
+  it('reports the endpoint that answered a tool call after the assignment moved the bridge', async () => {
+    const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
+    const sources: string[] = [];
+    const { send, waitFor, finish } = await driveBridge(
+      state,
+      deckAwareFetch(state) as unknown as typeof fetch,
+      {
+        resolveTarget: async () => ({ url: 'http://moved/mcp' }),
+        onToolResult: (_name, _result, source) => {
+          sources.push(source.mcpUrl);
+        },
+      },
+    );
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'request_admin_elevation' } });
+    await waitFor(2);
+
+    // A restart invalidates the session; recovery re-reads the assignment and
+    // moves the bridge, so this call is answered by the new endpoint.
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'request_admin_elevation' } });
+    await waitFor(3);
+    await finish();
+
+    await vi.waitFor(() => expect(sources).toEqual(['http://stub/mcp', 'http://moved/mcp']));
   });
 });
 

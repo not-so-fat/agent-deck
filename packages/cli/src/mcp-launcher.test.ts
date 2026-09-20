@@ -11,6 +11,7 @@ import {
 import {
   NO_ASSIGNMENT_MESSAGE,
   parseLaunchHeaders,
+  resolveApprovalBackendUrl,
   resolveBridgeKind,
   resolveMcpLaunchPlan,
 } from './mcp-launcher';
@@ -193,5 +194,28 @@ describe('parseLaunchHeaders', () => {
 
   it('drops malformed entries instead of sending empty headers', () => {
     expect(parseLaunchHeaders(['no-colon', 'empty:', ': novalue'])).toEqual({});
+  });
+});
+
+describe('resolveApprovalBackendUrl (NOT-199)', () => {
+  const endpoint = { host: '127.0.0.1', mcpPort: 1110 };
+
+  it('names the dashboard for the endpoint this process was launched against', () => {
+    expect(resolveApprovalBackendUrl('http://127.0.0.1:1110/mcp', endpoint, 1111)).toBe(
+      'http://127.0.0.1:1111',
+    );
+  });
+
+  it('has no dashboard to name once the assignment moved the bridge to another port', () => {
+    expect(resolveApprovalBackendUrl('http://127.0.0.1:2110/mcp', endpoint, 1111)).toBeUndefined();
+  });
+
+  it('has no dashboard to name for another host', () => {
+    expect(resolveApprovalBackendUrl('http://other.example:1110/mcp', endpoint, 1111)).toBeUndefined();
+    expect(resolveApprovalBackendUrl('https://127.0.0.1:1110/mcp', endpoint, 1111)).toBeUndefined();
+  });
+
+  it('has no dashboard to name for an unparsable endpoint', () => {
+    expect(resolveApprovalBackendUrl('not a url', endpoint, 1111)).toBeUndefined();
   });
 });

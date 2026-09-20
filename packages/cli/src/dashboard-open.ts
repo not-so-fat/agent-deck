@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 
 import { readAdminSecret } from './admin-secret';
 
+const NONCE_TIMEOUT_MS = 10_000;
+
 export type MintDashboardUrlResult =
   | { ok: true; url: string; bootstrapped: true }
   | { ok: true; url: string; bootstrapped: false; reason: string }
@@ -30,6 +32,8 @@ export async function mintDashboardBootstrapUrl(
     const nonceRes = await fetch(`${base}/api/dashboard-auth/bootstrap/nonce`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${secret}` },
+      // A port that accepts the connection but never answers must not hang callers.
+      signal: AbortSignal.timeout(NONCE_TIMEOUT_MS),
     });
     if (!nonceRes.ok) {
       return {
