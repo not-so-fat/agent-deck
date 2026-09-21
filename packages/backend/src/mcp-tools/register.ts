@@ -2,6 +2,8 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { countDeckCards, formatDisplayLine, PatchOpSchema } from '@agent-deck/shared';
+import type { ElicitationResult } from './elicitation';
+import { presentDeckSwitchApproval, submitDeckSwitchApprovalViaBackend } from './elicitation';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
 import { healUseManifest, readUseManifest } from '../playbooks/stub-sync';
 import { resolveBindingActiveSource, resolveDeckBindingSource } from '../mcp-session-binding';
@@ -60,6 +62,19 @@ export type McpToolHost = {
   };
   badgeBySession: Map<string, string>;
   backendUrl: string;
+  /**
+   * NOT-213: host-native approval form. Absent when the MCP server has no
+   * elicitation provider wired for this session — the tool then keeps the
+   * established browser fallback. Present but reporting unsupported also
+   * falls back.
+   */
+  elicitation?: {
+    supportsFormElicitation(): boolean;
+    elicitForm(input: {
+      message: string;
+      requestedSchema: Record<string, unknown>;
+    }): Promise<ElicitationResult>;
+  };
   toolResult(data: unknown): { content: Array<{ type: 'text'; text: string }> };
   toolError(error: unknown): { content: Array<{ type: 'text'; text: string }> };
 };
@@ -372,7 +387,7 @@ function registerRuntimeTools(host: McpToolHost): void {
   r('switch_deck', {
     title: 'Request Deck Switch',
     description:
-      'Request-only deck switch: resolves the target server-side and opens a pending human-approval request. Changes nothing — the active deck and all service/playbook routing stay on the current deck until approval is committed elsewhere. Target accepts a deck UUID or exact deck name.',
+      'Request-only deck switch: resolves the target server-side and opens a pending human-approval request. Changes nothing — the active deck and all service/playbook routing stay on the current deck until approval is committed elsewhere. Target accepts a deck UUID or exact deck name. When the connected host supports MCP form elicitation, the pending request is presented there for human approval; otherwise the browser fallback hint is returned.',
     inputSchema: {
       target: z.string().min(1),
     },
@@ -396,6 +411,36 @@ function registerRuntimeTools(host: McpToolHost): void {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target }),
       });
+      // NOT-213: first supported surface wins. A freshly created pending
+      // request goes to the host-native form when the client advertises
+      // form elicitation; every other outcome (already on deck, no
+      // elicitation provider, fallback) returns the creation result
+      // unchanged so the browser/menubar path owns the approval.
+      if (
+        host.elicitation &&
+        result &&
+        typeof result === 'object' &&
+        (result as { status?: unknown }).status === 'pending' &&
+        typeof (result as { requestId?: unknown }).requestId === 'string' &&
+        snapshot.runtimeSessionId
+      ) {
+        const elicitation = host.elicitation;
+        const runtimeSessionId = snapshot.runtimeSessionId;
+        const outcome = await presentDeckSwitchApproval({
+          creation: result,
+          runtimeSessionId,
+          supportsFormElicitation: () => elicitation.supportsFormElicitation(),
+          elicitForm: (input) => elicitation.elicitForm(input),
+          submitApproval: ({ requestId, runtimeSessionId: owner, decision }) =>
+            submitDeckSwitchApprovalViaBackend({
+              callBackendAPI: (endpoint, init) => host.callBackendAPI(endpoint, init),
+              requestId,
+              runtimeSessionId: owner,
+              decision,
+            }),
+        });
+        return host.toolResult(outcome.payload);
+      }
       return host.toolResult(result);
     } catch (error) {
       return host.toolError(error);
