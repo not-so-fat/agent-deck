@@ -1,5 +1,7 @@
 # Monorepo scope (session binding)
 
+> **Switching contract:** agent-initiated `switch_bound_deck` switching below is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204). Agents may only request a switch; a human approves it as This session only or This workspace by default.
+
 **Status:** As-built — session-only binding (no repo `deck.yaml`).
 
 ## One workspace path, many decks

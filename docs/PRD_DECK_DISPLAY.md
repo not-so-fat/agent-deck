@@ -8,6 +8,8 @@ playbooks: pb_ai_codegen_prd, pb_product_principle
 
 **Status:** Phase 5a shipped · **Codegen load path:** `docs/PRD_DECK_DISPLAY.md` · **Contracts:** `packages/shared/src/schemas/deck-display.ts` (Zod + exported JSON Schema)
 
+> **Switching contract:** agent-initiated `switch_bound_deck` switching referenced in this PRD is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204). Agents may only request a switch; a human approves it as This session only or This workspace by default.
+
 ---
 
 ## 1. Product overview

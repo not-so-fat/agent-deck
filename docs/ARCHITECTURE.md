@@ -167,6 +167,8 @@ The bridge must send the launch headers (`x-agent-deck-deck-id`,
 `x-agent-deck-workspace`) on **every** request, not just `initialize` — the server
 re-validates the launch deck per call.
 
+> **Switching contract:** agent-initiated `switch_bound_deck` switching below is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204). Agents may only request a switch; a human approves it as This session only or This workspace by default.
+
 **A replayed handshake can land on a different deck.** A session deck override
 (`bind_workspace`) does not survive a restart, and `switch_bound_deck` can move the
 folder assignment while the bridge is connected, so the launch headers it started

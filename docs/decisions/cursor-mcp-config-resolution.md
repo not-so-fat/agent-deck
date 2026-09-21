@@ -11,6 +11,8 @@ Agent Deck scopes MCP to the **deck the user assigned** for a folder (`agent-dec
 
 If Agent Deck tools are missing in Cursor, don't use `mcp_auth` — run `agent-deck use <deck> --client cursor` in the project folder, then reload Cursor MCP.
 
+> **Switching contract note:** the `use` + MCP reload step above is missing-tools config repair, not the deck-switch approval path. Deck switching follows [Session/default deck-switching redesign](../superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204), which excludes IDE reload from the switch path.
+
 This ADR records an evidence-backed contract before Agent Deck claims further global/project ownership. It does **not** add secrets, tokens, or approval steps for deck selection.
 
 ## Evidence (2026-09-09)
