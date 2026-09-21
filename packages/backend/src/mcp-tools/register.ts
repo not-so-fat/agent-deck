@@ -386,17 +386,15 @@ function registerRuntimeTools(host: McpToolHost): void {
       // Request-only: this tool never touches the local binding and never
       // calls the approval commit. The backend resolves the target, reuses an
       // identical pending request, and returns an opaque request id plus
-      // display-safe labels and a presentation hint. The workspace root is
-      // never agent-controlled here: only the server-known bound workspace
-      // from the session snapshot is forwarded, so a later approval can only
-      // write to the workspace this session is already bound to.
+      // display-safe labels and a presentation hint. The body carries only
+      // the target: the bound workspace travels in the session header the
+      // host sets from its server-side binding, and the backend ignores any
+      // body-supplied path — so a later approval can only write to the
+      // workspace this session is already bound to.
       const result = await host.callBackendAPI('/api/trusted-session/deck-switch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          target,
-          workspaceRoot: snapshot.workspaceRoot,
-        }),
+        body: JSON.stringify({ target }),
       });
       return host.toolResult(result);
     } catch (error) {

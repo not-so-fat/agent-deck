@@ -8,6 +8,7 @@ import {
 import {
   AGENT_DECK_DASHBOARD_COOKIE,
   AGENT_DECK_SESSION_HEADER,
+  AGENT_DECK_WORKSPACE_HEADER,
   DASHBOARD_NONCE_TTL_MS,
   DASHBOARD_COOKIE_MAX_AGE_MS,
 } from '@agent-deck/shared';
@@ -328,7 +329,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.post<{ Body: { target?: string; workspaceRoot?: string } }>(
+  fastify.post<{ Body: { target?: string } }>(
     '/deck-switch',
     async (request, reply) => {
       try {
@@ -344,6 +345,13 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         // contents and no binding change. This endpoint never mutates the
         // session or workspace-default binding — approval commits later via
         // the dashboard-only resolve route (NOT-207).
+        //
+        // The request body carries only the target. The workspace stored on
+        // the request — the future write target of a workspace-default
+        // approval — comes solely from the bound-workspace header the MCP
+        // server sets from its server-side session binding. A body-supplied
+        // path is never trusted, so no caller can smuggle an arbitrary
+        // directory into a human approval.
         const requested = await resolveDeckRef(fastify.db, target);
         if (!requested) {
           return reply.status(404).send({ success: false, error: 'Deck not found' });
@@ -361,7 +369,10 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           });
         }
 
-        const workspaceRoot = request.body?.workspaceRoot?.trim() || undefined;
+        const workspaceHeader = request.headers[AGENT_DECK_WORKSPACE_HEADER];
+        const workspaceRoot =
+          (Array.isArray(workspaceHeader) ? workspaceHeader[0] : workspaceHeader)?.trim() ||
+          undefined;
         const row = store.getRuntimeSessionRow(session.sessionId);
         const record = store.createDeckSwitchRequest({
           runtimeSessionId: session.sessionId,

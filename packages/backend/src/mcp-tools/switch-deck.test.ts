@@ -9,7 +9,7 @@ import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import { AGENT_DECK_SESSION_HEADER } from '@agent-deck/shared';
+import { AGENT_DECK_SESSION_HEADER, AGENT_DECK_WORKSPACE_HEADER } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
 import { registerTrustedSessionRoutes } from '../routes/trusted-session';
@@ -193,6 +193,44 @@ describe('switch_deck creation endpoint (NOT-209)', () => {
     expect(noSession.statusCode).toBe(401);
     expect(store.listPendingDeckSwitchRequests(session.sessionId)).toHaveLength(0);
   });
+
+  it('stores the bound workspace from the header and ignores a forged body path', async () => {
+    const { fastify, store, deckA } = await buildApp();
+    const session = store.createRuntimeSession({ deckId: deckA.id });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/trusted-session/deck-switch',
+      headers: {
+        ...agentHeaders(session.sessionId),
+        [AGENT_DECK_WORKSPACE_HEADER]: '/work/bound',
+      },
+      payload: { target: 'beta', workspaceRoot: '/evil/elsewhere' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const pending = store.listPendingDeckSwitchRequests(session.sessionId);
+    expect(pending).toHaveLength(1);
+    // The approval write target is the bound workspace, never the forged body path.
+    expect(pending[0].workspaceRoot).toBe('/work/bound');
+  });
+
+  it('stores no workspace when the header is absent, even if the body carries one', async () => {
+    const { fastify, store, deckA } = await buildApp();
+    const session = store.createRuntimeSession({ deckId: deckA.id });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/trusted-session/deck-switch',
+      headers: agentHeaders(session.sessionId),
+      payload: { target: 'beta', workspaceRoot: '/evil/elsewhere' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const pending = store.listPendingDeckSwitchRequests(session.sessionId);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].workspaceRoot).toBeUndefined();
+  });
 });
 
 describe('switch_deck tool wiring (NOT-209)', () => {
@@ -286,10 +324,9 @@ describe('switch_deck tool wiring (NOT-209)', () => {
     const [endpoint, init] = spies.callBackendAPI.mock.calls[0];
     expect(endpoint).toBe('/api/trusted-session/deck-switch');
     expect(init.method).toBe('POST');
-    expect(JSON.parse(String(init.body))).toMatchObject({
-      target: 'beta',
-      workspaceRoot: '/work/test',
-    });
+    // The body carries only the target; the bound workspace travels via the
+    // session header the host sets from its server-side binding.
+    expect(JSON.parse(String(init.body))).toEqual({ target: 'beta' });
     expect(JSON.parse(result.content[0].text)).toMatchObject({
       requestId: 'req_test',
       status: 'pending',
@@ -336,7 +373,7 @@ describe('switch_deck tool wiring (NOT-209)', () => {
     expect(Object.keys(schema)).toEqual(['target']);
   });
 
-  it('ignores an agent-supplied workspaceRoot and forwards the bound workspace', async () => {
+  it('drops an agent-supplied workspaceRoot — the body carries only the target', async () => {
     const { host, tools, spies } = buildStubHost({ workspaceRoot: '/work/bound' });
     registerMcpTools(host);
 
@@ -347,22 +384,17 @@ describe('switch_deck tool wiring (NOT-209)', () => {
 
     expect(spies.callBackendAPI).toHaveBeenCalledTimes(1);
     const [, init] = spies.callBackendAPI.mock.calls[0];
-    expect(JSON.parse(String(init.body))).toEqual({
-      target: 'beta',
-      workspaceRoot: '/work/bound',
-    });
+    expect(JSON.parse(String(init.body))).toEqual({ target: 'beta' });
     expect(JSON.parse(result.content[0].text)).toMatchObject({ status: 'pending' });
   });
 
-  it('omits workspaceRoot when the session has no bound workspace', async () => {
+  it('never sends a workspaceRoot, even when the session has no bound workspace', async () => {
     const { host, tools, spies } = buildStubHost({ omitWorkspaceRoot: true });
     registerMcpTools(host);
 
     await tools.get('switch_deck')!.handler({ target: 'beta' });
 
     const [, init] = spies.callBackendAPI.mock.calls[0];
-    const body = JSON.parse(String(init.body));
-    expect(body.target).toBe('beta');
-    expect('workspaceRoot' in body).toBe(false);
+    expect(JSON.parse(String(init.body))).toEqual({ target: 'beta' });
   });
 });
