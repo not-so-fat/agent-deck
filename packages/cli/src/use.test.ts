@@ -60,7 +60,7 @@ describe('agent-deck use', () => {
     expect(parseUseArgs(['--refresh'])).toMatchObject({ refresh: true });
   });
 
-  it('writes v3 assignment, exclude lines, and stubs without calling grant endpoints', async () => {
+  it('writes v3 assignment and exclude lines without per-playbook stubs or grant endpoints', async () => {
     const workspace = makeWorkspace();
     execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
     const fakeHome = makeWorkspace();
@@ -89,8 +89,9 @@ describe('agent-deck use', () => {
     expect(withMcp.playbookCount).toBe(1);
     expect(fs.existsSync(path.join(workspace, '.cursor', 'mcp.json'))).toBe(true);
     expect(fs.existsSync(path.join(workspace, '.agent-deck', 'use.json'))).toBe(true);
+    // NOT-206: bind-time sync writes no per-playbook stubs; discovery is runtime-only.
     expect(fs.existsSync(path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'pb_test.mdc'))).toBe(
-      true,
+      false,
     );
     const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')) as {
       mcpServers: Record<
