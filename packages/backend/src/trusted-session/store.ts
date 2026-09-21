@@ -37,6 +37,62 @@ export type DashboardSessionRow = {
   expires_at: string;
 };
 
+/** Default validity of a deck-switch request (NOT-205). */
+export const DECK_SWITCH_REQUEST_TTL_MS = 30 * 60 * 1000;
+
+export type DeckSwitchRequestStatus = 'pending' | 'approved' | 'declined' | 'expired' | 'consumed';
+
+export type DeckSwitchRequestRow = {
+  id: string;
+  runtime_session_id: string;
+  mcp_session_id: string | null;
+  current_deck_id: string;
+  requested_deck_id: string;
+  workspace_root: string | null;
+  status: DeckSwitchRequestStatus;
+  created_at: string;
+  expires_at: string;
+  resolved_at: string | null;
+};
+
+/**
+ * Server-side deck-switch request (NOT-205).
+ * The requested deck id and workspace root stay server-side; client-facing
+ * readers get {@link DeckSwitchRequestSummary} instead.
+ */
+export type DeckSwitchRequest = {
+  requestId: string;
+  runtimeSessionId: string;
+  mcpSessionId?: string;
+  currentDeckId: string;
+  requestedDeckId: string;
+  workspaceRoot?: string;
+  status: DeckSwitchRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+  resolvedAt: string | null;
+};
+
+/**
+ * Display-safe client view of a deck-switch request: opaque request id plus
+ * lifecycle fields only. Never carries the requested deck id or workspace
+ * root, so a pending/declined request exposes nothing of the target deck.
+ */
+export type DeckSwitchRequestSummary = {
+  requestId: string;
+  status: DeckSwitchRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+};
+
+const DECK_SWITCH_STATUS_TRANSITIONS: Record<DeckSwitchRequestStatus, DeckSwitchRequestStatus[]> = {
+  pending: ['approved', 'declined', 'expired'],
+  approved: ['consumed'],
+  declined: [],
+  expired: [],
+  consumed: [],
+};
+
 const DASHBOARD_SESSION_TOUCH_INTERVAL_MS = 60 * 1000;
 
 function hashSecret(secret: string): string {
@@ -45,6 +101,20 @@ function hashSecret(secret: string): string {
 
 export function hashDashboardSessionToken(token: string): string {
   return hashSecret(token);
+}
+
+/**
+ * NOT-205: project a request to its display-safe client view.
+ * Only the opaque request id plus lifecycle fields are exposed; the
+ * requested deck id, session identity, and workspace root stay server-side.
+ */
+export function toDeckSwitchRequestSummary(request: DeckSwitchRequest): DeckSwitchRequestSummary {
+  return {
+    requestId: request.requestId,
+    status: request.status,
+    createdAt: request.createdAt,
+    expiresAt: request.expiresAt,
+  };
 }
 
 function nowIso(): string {
@@ -105,6 +175,22 @@ export class TrustedSessionStore {
 
       CREATE INDEX IF NOT EXISTS dashboard_sessions_expiry_idx
         ON dashboard_sessions (expires_at);
+
+      CREATE TABLE IF NOT EXISTS deck_switch_requests (
+        id TEXT PRIMARY KEY,
+        runtime_session_id TEXT NOT NULL,
+        mcp_session_id TEXT,
+        current_deck_id TEXT NOT NULL,
+        requested_deck_id TEXT NOT NULL,
+        workspace_root TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'declined', 'expired', 'consumed')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        resolved_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS deck_switch_requests_pending_idx
+        ON deck_switch_requests (runtime_session_id, requested_deck_id, status, expires_at);
     `);
   }
 
@@ -139,6 +225,7 @@ export class TrustedSessionStore {
     try {
       this.db.exec(`
         DROP TABLE IF EXISTS admin_challenges;
+        DROP TABLE IF EXISTS deck_switch_requests;
         DROP TABLE IF EXISTS runtime_sessions;
         DROP TABLE IF EXISTS workspace_grants;
         DROP TABLE IF EXISTS workspace_keys;
@@ -510,6 +597,218 @@ export class TrustedSessionStore {
       expiresAt: row.expires_at,
       createdAt: row.created_at,
     }));
+  }
+
+  /**
+   * NOT-205: record a human-decision deck-switch request.
+   * Never mutates the runtime session binding — the session keeps serving
+   * its current deck while the request is pending (or declined).
+   * Duplicate pending requests for the same session and requested target are
+   * idempotent: the existing pending request is returned as-is.
+   */
+  createDeckSwitchRequest(input: {
+    runtimeSessionId: string;
+    mcpSessionId?: string;
+    currentDeckId: string;
+    requestedDeckId: string;
+    workspaceRoot?: string;
+    ttlMs?: number;
+  }): DeckSwitchRequest {
+    const ttlMs = input.ttlMs ?? DECK_SWITCH_REQUEST_TTL_MS;
+    let result: DeckSwitchRequest | null = null;
+    const tx = this.db.transaction(() => {
+      this.expireDeckSwitchRequests();
+      const existing = this.db
+        .prepare(
+          `SELECT id, runtime_session_id, mcp_session_id, current_deck_id,
+                  requested_deck_id, workspace_root, status,
+                  created_at, expires_at, resolved_at
+           FROM deck_switch_requests
+           WHERE runtime_session_id = ? AND requested_deck_id = ?
+             AND status = 'pending' AND expires_at > ?
+           ORDER BY created_at ASC
+           LIMIT 1`,
+        )
+        .get(input.runtimeSessionId, input.requestedDeckId, nowIso()) as
+        | DeckSwitchRequestRow
+        | undefined;
+      if (existing) {
+        result = this.toDeckSwitchRequest(existing);
+        return;
+      }
+
+      const id = prefixTrustedId('req', randomUUID());
+      const createdAt = nowIso();
+      const expiresAt = addMs(createdAt, ttlMs);
+      this.db
+        .prepare(
+          `INSERT INTO deck_switch_requests
+           (id, runtime_session_id, mcp_session_id, current_deck_id,
+            requested_deck_id, workspace_root, status, created_at, expires_at, resolved_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)`,
+        )
+        .run(
+          id,
+          input.runtimeSessionId,
+          input.mcpSessionId ?? null,
+          input.currentDeckId,
+          input.requestedDeckId,
+          input.workspaceRoot ?? null,
+          createdAt,
+          expiresAt,
+        );
+      result = this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(id)!);
+    });
+    tx();
+    return result!;
+  }
+
+  private getDeckSwitchRequestRow(requestId: string): DeckSwitchRequestRow | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT id, runtime_session_id, mcp_session_id, current_deck_id,
+                  requested_deck_id, workspace_root, status,
+                  created_at, expires_at, resolved_at
+           FROM deck_switch_requests WHERE id = ?`,
+        )
+        .get(requestId) as DeckSwitchRequestRow | undefined) ?? null
+    );
+  }
+
+  /**
+   * Read a request, lazily marking it expired when its TTL has passed.
+   * An expired request is returned with status `expired` and can never be
+   * approved afterwards.
+   */
+  getDeckSwitchRequest(requestId: string): DeckSwitchRequest | null {
+    const row = this.getDeckSwitchRequestRow(requestId);
+    if (!row) {
+      return null;
+    }
+    if (row.status === 'pending' && Date.parse(row.expires_at) <= Date.now()) {
+      this.markDeckSwitchRequestExpired(requestId);
+      return this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!);
+    }
+    return this.toDeckSwitchRequest(row);
+  }
+
+  /** Client-safe view: opaque id plus lifecycle fields, no target deck data. */
+  getDeckSwitchRequestSummary(requestId: string): DeckSwitchRequestSummary | null {
+    const request = this.getDeckSwitchRequest(requestId);
+    return request ? toDeckSwitchRequestSummary(request) : null;
+  }
+
+  listPendingDeckSwitchRequests(runtimeSessionId?: string): DeckSwitchRequest[] {
+    this.expireDeckSwitchRequests();
+    const now = nowIso();
+    const rows =
+      runtimeSessionId === undefined
+        ? (this.db
+            .prepare(
+              `SELECT id, runtime_session_id, mcp_session_id, current_deck_id,
+                      requested_deck_id, workspace_root, status,
+                      created_at, expires_at, resolved_at
+               FROM deck_switch_requests
+               WHERE status = 'pending' AND expires_at > ?
+               ORDER BY created_at ASC`,
+            )
+            .all(now) as DeckSwitchRequestRow[])
+        : (this.db
+            .prepare(
+              `SELECT id, runtime_session_id, mcp_session_id, current_deck_id,
+                      requested_deck_id, workspace_root, status,
+                      created_at, expires_at, resolved_at
+               FROM deck_switch_requests
+               WHERE runtime_session_id = ? AND status = 'pending' AND expires_at > ?
+               ORDER BY created_at ASC`,
+            )
+            .all(runtimeSessionId, now) as DeckSwitchRequestRow[]);
+    return rows.map((row) => this.toDeckSwitchRequest(row));
+  }
+
+  /**
+   * Compare-and-set status transition. Returns the updated request on success,
+   * or null when the request is missing, the current status differs from
+   * `expectedStatus`, the transition is illegal, or an expired pending request
+   * is resolved to anything but `expired`. Exactly one concurrent resolver
+   * wins because the UPDATE is conditional on the expected status.
+   */
+  transitionDeckSwitchRequestStatus(
+    requestId: string,
+    expectedStatus: DeckSwitchRequestStatus,
+    nextStatus: DeckSwitchRequestStatus,
+  ): DeckSwitchRequest | null {
+    if (!DECK_SWITCH_STATUS_TRANSITIONS[expectedStatus]?.includes(nextStatus)) {
+      return null;
+    }
+    const row = this.getDeckSwitchRequestRow(requestId);
+    if (!row) {
+      return null;
+    }
+    if (row.status === 'pending' && Date.parse(row.expires_at) <= Date.now()) {
+      this.markDeckSwitchRequestExpired(requestId);
+      return null;
+    }
+    if (row.status !== expectedStatus) {
+      return null;
+    }
+
+    const now = nowIso();
+    const resolvedAt = expectedStatus === 'pending' ? now : row.resolved_at;
+    const result = this.db
+      .prepare(
+        `UPDATE deck_switch_requests
+         SET status = ?, resolved_at = ?
+         WHERE id = ? AND status = ?`,
+      )
+      .run(nextStatus, resolvedAt, requestId, expectedStatus);
+    if (result.changes === 0) {
+      return null;
+    }
+    return this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!);
+  }
+
+  /**
+   * Sweep pending requests past their TTL to `expired`. Returns the number
+   * of requests newly expired.
+   */
+  expireDeckSwitchRequests(): number {
+    const now = nowIso();
+    const result = this.db
+      .prepare(
+        `UPDATE deck_switch_requests
+         SET status = 'expired', resolved_at = ?
+         WHERE status = 'pending' AND expires_at <= ?`,
+      )
+      .run(now, now);
+    return result.changes;
+  }
+
+  private markDeckSwitchRequestExpired(requestId: string): void {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `UPDATE deck_switch_requests
+         SET status = 'expired', resolved_at = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(now, requestId);
+  }
+
+  private toDeckSwitchRequest(row: DeckSwitchRequestRow): DeckSwitchRequest {
+    return {
+      requestId: row.id,
+      runtimeSessionId: row.runtime_session_id,
+      mcpSessionId: row.mcp_session_id ?? undefined,
+      currentDeckId: row.current_deck_id,
+      requestedDeckId: row.requested_deck_id,
+      workspaceRoot: row.workspace_root ?? undefined,
+      status: row.status,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      resolvedAt: row.resolved_at,
+    };
   }
 
   expireStaleSessions(): number {
