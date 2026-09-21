@@ -8,6 +8,8 @@ shipped: 1.7.0
 
 # Trusted agent sessions & ephemeral admin mode — AI Codegen PRD
 
+> **Switching contract:** deck-switching behavior in this PRD (admin-elevation / C4 switch rule) is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204).
+
 Every MCP session receives a bound deck selected at connect via `x-agent-deck-deck-id` (launch session). For IDE folders, that deck comes from the folder assignment file (`<folder>/.agent-deck/use.json`); for unattended workers it comes from the launch config. Normal agents can use that deck and preserve the feedback-to-playbook suggestion loop; temporary admin mode adds narrowly scoped deck administration without becoming persistent authority.
 
 **Related (C9 / NOT-105):** Unattended Agent Dealer workers use a **launch-selected deck** (`x-agent-deck-deck-id`) — not folder assignments copied into generated worktrees, and not coordinator enrollment / execution authority (removed in NOT-107). See C9 below and [trusted unattended execution contract](./superpowers/specs/2026-09-12-trusted-unattended-execution-contract-design.md) (superseded). The interactive IDE path is the same launch session model; the folder’s assignment file is how the launcher chooses the deck header.

@@ -4,6 +4,8 @@
 **Sources:** [2026-07-11-architecture-revisit-triggering-learning-loop.md](./2026-07-11-architecture-revisit-triggering-learning-loop.md) (A′ decision, build-order item 3), [2026-07-11-playbook-learning-loop-design.md](./2026-07-11-playbook-learning-loop-design.md), [PLAYBOOKS_AND_SKILLS.md](../../PLAYBOOKS_AND_SKILLS.md)
 **Supersedes:** the manual-only sync behavior of `agent-deck use` (`packages/cli/src/use.ts`, `playbook-stubs.ts`)
 
+> **Switching contract:** stub regeneration on `switch_bound_deck` and any host-reload step as part of the switch path in this spec are **superseded by** [Session/default deck-switching redesign](./2026-09-20-session-deck-switching-redesign.md) (NOT-204), which excludes stub regeneration and IDE reload from the switch path.
+
 > **One line:** Stubs regenerate automatically at `bind_workspace` and on patch-accept, so the host's skill discovery always reflects the deck — no human has to remember `agent-deck use --refresh`.
 
 ## Why now (evidence, 2026-07-12)

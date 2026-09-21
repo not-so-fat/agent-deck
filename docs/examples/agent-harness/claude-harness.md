@@ -1,4 +1,5 @@
 <!-- Merged into ~/.claude/CLAUDE.md by `agent-deck setup` (between agent-deck:harness markers) -->
+<!-- Switching contract: deck-switching via admin elevation below is superseded by docs/superpowers/specs/2026-09-20-session-deck-switching-redesign.md (NOT-204). -->
 
 ## Agent Deck
 

@@ -2,6 +2,7 @@
 description: Use when user mentions decks, playbooks, deck MCP tools, or corrects playbook output — Agent Deck harness
 alwaysApply: true
 ---
+<!-- Switching contract: deck-switching via admin elevation below is superseded by docs/superpowers/specs/2026-09-20-session-deck-switching-redesign.md (NOT-204). -->
 
 <!-- agent-deck:harness:start -->
 # Agent Deck

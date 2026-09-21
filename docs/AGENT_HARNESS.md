@@ -4,6 +4,8 @@
 **Status:** Installed automatically by `agent-deck setup`  
 **Related:** [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md), [examples/agent-harness/](./examples/agent-harness/)
 
+> **Switching contract:** deck-switching via admin elevation described here is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204).
+
 Agent Deck exposes **tools** (MCP). Your agent’s **control plane** (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`) teaches *how* to use them. Setup treats the harness as a **required install step** alongside host MCP configuration where applicable. For Codex, the plugin owns MCP transport and setup only merges the harness. Agent Deck can run without the harness, but the intended workflow always installs it.
 
 ---
