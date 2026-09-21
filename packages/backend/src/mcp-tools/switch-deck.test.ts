@@ -204,6 +204,7 @@ describe('switch_deck tool wiring (NOT-209)', () => {
   function buildStubHost(overrides?: {
     runtimeSessionId?: string | null;
     workspaceRoot?: string;
+    omitWorkspaceRoot?: boolean;
     callBackendAPI?: (endpoint: string, init?: RequestInit) => Promise<any>;
   }): { host: McpToolHost; tools: Map<string, CapturedTool>; spies: Record<string, any> } {
     const tools = new Map<string, CapturedTool>();
@@ -241,7 +242,7 @@ describe('switch_deck tool wiring (NOT-209)', () => {
       syncWorkspaceOnBind: async () => null,
       sessionBinding: {
         getBinding: () => ({
-          workspaceRoot: overrides?.workspaceRoot ?? '/work/test',
+          workspaceRoot: overrides?.omitWorkspaceRoot ? undefined : (overrides?.workspaceRoot ?? '/work/test'),
           deckId: 'deck_a',
           runtimeSessionId: runtimeSessionId ?? undefined,
         }),
@@ -325,5 +326,43 @@ describe('switch_deck tool wiring (NOT-209)', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).not.toContain('beta');
     expect(result.content[0].text).not.toContain('requestId');
+  });
+
+  it('exposes only a target input — no agent-controlled workspaceRoot', () => {
+    const { host, tools } = buildStubHost();
+    registerMcpTools(host);
+
+    const schema = tools.get('switch_deck')!.config.inputSchema;
+    expect(Object.keys(schema)).toEqual(['target']);
+  });
+
+  it('ignores an agent-supplied workspaceRoot and forwards the bound workspace', async () => {
+    const { host, tools, spies } = buildStubHost({ workspaceRoot: '/work/bound' });
+    registerMcpTools(host);
+
+    const result = await tools.get('switch_deck')!.handler({
+      target: 'beta',
+      workspaceRoot: '/evil/elsewhere',
+    });
+
+    expect(spies.callBackendAPI).toHaveBeenCalledTimes(1);
+    const [, init] = spies.callBackendAPI.mock.calls[0];
+    expect(JSON.parse(String(init.body))).toEqual({
+      target: 'beta',
+      workspaceRoot: '/work/bound',
+    });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ status: 'pending' });
+  });
+
+  it('omits workspaceRoot when the session has no bound workspace', async () => {
+    const { host, tools, spies } = buildStubHost({ omitWorkspaceRoot: true });
+    registerMcpTools(host);
+
+    await tools.get('switch_deck')!.handler({ target: 'beta' });
+
+    const [, init] = spies.callBackendAPI.mock.calls[0];
+    const body = JSON.parse(String(init.body));
+    expect(body.target).toBe('beta');
+    expect('workspaceRoot' in body).toBe(false);
   });
 });
