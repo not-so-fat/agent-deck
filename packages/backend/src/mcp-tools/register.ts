@@ -369,6 +369,39 @@ function registerRuntimeTools(host: McpToolHost): void {
     }
   });
 
+  r('switch_deck', {
+    title: 'Request Deck Switch',
+    description:
+      'Request-only deck switch: resolves the target server-side and opens a pending human-approval request. Changes nothing — the active deck and all service/playbook routing stay on the current deck until approval is committed elsewhere. Target accepts a deck UUID or exact deck name.',
+    inputSchema: {
+      target: z.string().min(1),
+      workspaceRoot: z.string().optional(),
+    },
+  }, async ({ target, workspaceRoot }) => {
+    try {
+      const sessionId = host.getSessionId();
+      const snapshot = host.sessionBinding.getBinding(sessionId);
+      if (!snapshot.runtimeSessionId) {
+        return host.toolError(new Error('GRANT_REQUIRED'));
+      }
+      // Request-only: this tool never touches the local binding and never
+      // calls the approval commit. The backend resolves the target, reuses an
+      // identical pending request, and returns an opaque request id plus
+      // display-safe labels and a presentation hint.
+      const result = await host.callBackendAPI('/api/trusted-session/deck-switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target,
+          workspaceRoot: workspaceRoot ?? snapshot.workspaceRoot,
+        }),
+      });
+      return host.toolResult(result);
+    } catch (error) {
+      return host.toolError(error);
+    }
+  });
+
   r('get_session_binding', {
     title: 'Get Session Binding',
     description:

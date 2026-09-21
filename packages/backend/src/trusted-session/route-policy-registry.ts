@@ -41,6 +41,11 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/admin\/exit$/, policy: 'requireAgentResource' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/bind-workspace$/, policy: 'requireAgentResource' },
   {
+    methods: ['POST'],
+    pattern: /^\/api\/trusted-session\/deck-switch$/,
+    policy: 'requireAgentResource',
+  },
+  {
     methods: ['GET'],
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+$/,
     policy: 'requireAgentOrDashboard',

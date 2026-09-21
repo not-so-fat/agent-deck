@@ -12,6 +12,7 @@ import {
   DASHBOARD_COOKIE_MAX_AGE_MS,
 } from '@agent-deck/shared';
 
+import { resolveDeckRef } from '../lib/deck-resolve';
 import { parseBearerToken } from '../lib/http-auth';
 import {
   requireTrustedWriterBearer,
@@ -316,6 +317,79 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             deckName: deck.name,
             mode: session.mode,
             expiresAt: session.expiresAt,
+          },
+        });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.post<{ Body: { target?: string; workspaceRoot?: string } }>(
+    '/deck-switch',
+    async (request, reply) => {
+      try {
+        const session = resolveRuntimeSessionFromHeader(request, store);
+
+        const target = request.body?.target?.trim();
+        if (!target) {
+          return reply.status(400).send({ success: false, error: 'target required' });
+        }
+
+        // NOT-209: request-only creation. The target is resolved server-side
+        // by id or exact name; unknown/ambiguous refs fail with no deck
+        // contents and no binding change. This endpoint never mutates the
+        // session or workspace-default binding — approval commits later via
+        // the dashboard-only resolve route (NOT-207).
+        const requested = await resolveDeckRef(fastify.db, target);
+        if (!requested) {
+          return reply.status(404).send({ success: false, error: 'Deck not found' });
+        }
+
+        const current = await fastify.db.getDeck(session.deckId);
+        if (requested.id === session.deckId) {
+          return reply.send({
+            success: true,
+            data: {
+              status: 'already_on_deck',
+              currentDeckId: session.deckId,
+              ...(current ? { currentDeckName: current.name } : {}),
+            },
+          });
+        }
+
+        const workspaceRoot = request.body?.workspaceRoot?.trim() || undefined;
+        const row = store.getRuntimeSessionRow(session.sessionId);
+        const record = store.createDeckSwitchRequest({
+          runtimeSessionId: session.sessionId,
+          ...(row?.mcp_session_id ? { mcpSessionId: row.mcp_session_id } : {}),
+          currentDeckId: session.deckId,
+          requestedDeckId: requested.id,
+          ...(workspaceRoot ? { workspaceRoot } : {}),
+        });
+
+        return reply.send({
+          success: true,
+          data: {
+            requestId: record.requestId,
+            status: record.status,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            currentDeckId: session.deckId,
+            ...(current ? { currentDeckName: current.name } : {}),
+            requestedDeckId: requested.id,
+            requestedDeckName: requested.name,
+            presentation: {
+              kind: 'deck_switch_request',
+              title: `Switch deck to "${requested.name}"?`,
+              body: `Agent requested a switch from "${current?.name ?? session.deckId}" to "${requested.name}". The active deck is unchanged; a human decision is still required.`,
+              status: record.status,
+              expiresAt: record.expiresAt,
+              channels: ['host-elicitation', 'browser'],
+            },
           },
         });
       } catch (error) {
