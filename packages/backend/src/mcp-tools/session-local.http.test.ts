@@ -2,6 +2,9 @@
  * NOT-84: authenticated MCP session isolation + idempotent same-deck bind.
  * Runs with SKIP_DECK_HEADER and SKIP_ADMIN_CHECK disabled against the real HTTP policy layer.
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -12,6 +15,7 @@ import {
 } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
+import { writeUseManifest } from '../playbooks/stub-sync';
 import type { AgentDeckMCPServer } from '../mcp-server';
 import { registerCredentialRoutes } from '../routes/credentials';
 import { registerDeckRoutes } from '../routes/decks';
@@ -351,6 +355,122 @@ describe('MCP session-local context (NOT-84)', () => {
     expect(stillBound.data.effective_deck_id).toBe(deckBeta.id);
     expect(stillBound.data.effective_deck_name).toBe('beta');
     expect(liveDisplayRegistry.list().some((e) => e.mcpSessionId === sessionB)).toBe(true);
+  });
+
+  it('reports session source when active deck differs from workspace default (NOT-211)', async () => {
+    const { backendUrl, deckAlpha, deckBeta } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not211-override-'));
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id };
+    const sessionId = await openSession(started.port, 1, deckHeaders);
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot, deckId: deckBeta.id },
+      2,
+      deckHeaders,
+    );
+    expect(bound.isError, JSON.stringify(bound.data)).toBe(false);
+
+    // Session-only state: active beta while the saved folder default is alpha.
+    writeUseManifest(workspaceRoot, { version: 3, deckId: deckAlpha.id, deckName: 'alpha' });
+
+    const binding = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_binding',
+      {},
+      3,
+      deckHeaders,
+    );
+    expect(binding.isError, JSON.stringify(binding.data)).toBe(false);
+    expect(binding.data.active_deck_id).toBe(deckBeta.id);
+    expect(binding.data.active_deck_name).toBe('beta');
+    expect(binding.data.workspace_default_deck_id).toBe(deckAlpha.id);
+    expect(binding.data.workspace_default_deck_name).toBe('alpha');
+    expect(binding.data.active_source).toBe('session');
+    // Legacy fields stay compatible.
+    expect(binding.data.effective_deck_id).toBe(deckBeta.id);
+    expect(binding.data.effective_deck_name).toBe('beta');
+    expect(String(binding.data.display_summary)).toContain('beta');
+    expect(String(binding.data.display_summary)).toContain('session (default alpha)');
+  });
+
+  it('reports workspace source with no override marker when active equals default (NOT-211)', async () => {
+    const { backendUrl, deckBeta } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not211-equal-'));
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id };
+    const sessionId = await openSession(started.port, 1, deckHeaders);
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot, deckId: deckBeta.id },
+      2,
+      deckHeaders,
+    );
+    expect(bound.isError, JSON.stringify(bound.data)).toBe(false);
+
+    writeUseManifest(workspaceRoot, { version: 3, deckId: deckBeta.id, deckName: 'beta' });
+
+    const binding = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_binding',
+      {},
+      3,
+      deckHeaders,
+    );
+    expect(binding.isError, JSON.stringify(binding.data)).toBe(false);
+    expect(binding.data.active_deck_id).toBe(deckBeta.id);
+    expect(binding.data.workspace_default_deck_id).toBe(deckBeta.id);
+    expect(binding.data.active_source).toBe('workspace');
+    expect(String(binding.data.display_summary)).toContain('beta');
+    expect(String(binding.data.display_summary)).not.toContain('session (default');
+  });
+
+  it('reports launch source with explicit missing default and no assignment file (NOT-211)', async () => {
+    const { backendUrl, deckBeta } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not211-launch-'));
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id };
+    const sessionId = await openSession(started.port, 1, deckHeaders);
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'bind_workspace',
+      { workspaceRoot, deckId: deckBeta.id },
+      2,
+      deckHeaders,
+    );
+    expect(bound.isError, JSON.stringify(bound.data)).toBe(false);
+
+    // Launch bind without an assignment must not create one.
+    expect(fs.existsSync(path.join(workspaceRoot, '.agent-deck', 'use.json'))).toBe(false);
+
+    const binding = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_binding',
+      {},
+      3,
+      deckHeaders,
+    );
+    expect(binding.isError, JSON.stringify(binding.data)).toBe(false);
+    expect(binding.data.active_deck_id).toBe(deckBeta.id);
+    expect(binding.data.active_deck_name).toBe('beta');
+    expect(binding.data.workspace_default_deck_id).toBeNull();
+    expect(binding.data.workspace_default_deck_name).toBeNull();
+    expect(binding.data.active_source).toBe('launch');
+    expect(String(binding.data.display_summary)).not.toContain('session (default');
   });
 
   it('hung live-display DELETE still clears session maps after abort timeout', async () => {

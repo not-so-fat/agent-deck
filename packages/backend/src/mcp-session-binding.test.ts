@@ -5,6 +5,7 @@ import {
 } from '@agent-deck/shared';
 import {
   McpSessionBindingStore,
+  resolveBindingActiveSource,
   resolveDeckBindingSource,
 } from './mcp-session-binding';
 
@@ -99,6 +100,88 @@ describe('McpSessionBindingStore', () => {
     });
     store.clearSession('s1');
     expect(store.isLaunchSession('s1')).toBe(false);
+  });
+});
+
+describe('resolveBindingActiveSource (NOT-211)', () => {
+  const deckA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const deckB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  it('returns session when the active deck differs from the workspace default', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: false,
+        activeDeckId: deckB,
+        workspaceDefaultDeckId: deckA,
+      }),
+    ).toBe('session');
+  });
+
+  it('returns workspace when the active deck equals the workspace default', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: false,
+        activeDeckId: deckA,
+        workspaceDefaultDeckId: deckA,
+      }),
+    ).toBe('workspace');
+  });
+
+  it('returns workspace when active is unset but a default exists', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: false,
+        activeDeckId: null,
+        workspaceDefaultDeckId: deckA,
+      }),
+    ).toBe('workspace');
+  });
+
+  it('prefers the default comparison over the launch flag', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckB,
+        workspaceDefaultDeckId: deckA,
+      }),
+    ).toBe('session');
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckA,
+        workspaceDefaultDeckId: deckA,
+      }),
+    ).toBe('workspace');
+  });
+
+  it('returns launch for a launch-selected deck with no assignment file', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckB,
+        workspaceDefaultDeckId: null,
+      }),
+    ).toBe('launch');
+  });
+
+  it('returns session for a bound deck with no saved default outside launch', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: false,
+        activeDeckId: deckB,
+        workspaceDefaultDeckId: null,
+      }),
+    ).toBe('session');
+  });
+
+  it('returns workspace when nothing is bound and no default exists', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: false,
+        activeDeckId: null,
+        workspaceDefaultDeckId: null,
+      }),
+    ).toBe('workspace');
   });
 });
 

@@ -4,6 +4,7 @@ import {
   AGENT_DECK_CLIENT_HEADER,
   AGENT_DECK_SESSION_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
+  type BindingActiveSource,
 } from '@agent-deck/shared';
 
 export type DeckBindingSource =
@@ -172,6 +173,35 @@ export class McpSessionBindingStore {
 
     return headers;
   }
+}
+
+/**
+ * Resolve the NOT-211 active source reported by `get_session_binding`.
+ *
+ * The saved workspace default (`.agent-deck/use.json` assignment) wins the
+ * comparison, and the comparison is by deck id — never by display name, which
+ * goes stale after a rename: when a default exists, the source is `session`
+ * only if the active deck id differs from it, otherwise `workspace`, so an
+ * active deck that equals the default never implies an override. A
+ * launch-selected deck with no assignment file reports `launch` with the
+ * missing default left explicit. Without any saved default, a bound active
+ * deck is session-held (`session`).
+ */
+export function resolveBindingActiveSource(input: {
+  isLaunchSession: boolean;
+  activeDeckId?: string | null;
+  workspaceDefaultDeckId?: string | null;
+}): BindingActiveSource {
+  if (input.workspaceDefaultDeckId) {
+    if (input.activeDeckId && input.activeDeckId !== input.workspaceDefaultDeckId) {
+      return 'session';
+    }
+    return 'workspace';
+  }
+  if (input.isLaunchSession) {
+    return 'launch';
+  }
+  return input.activeDeckId ? 'session' : 'workspace';
 }
 
 export function resolveDeckBindingSource(binding: SessionBindingSnapshot): DeckBindingSource {
