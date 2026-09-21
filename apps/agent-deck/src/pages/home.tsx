@@ -428,7 +428,7 @@ export default function Home() {
                   data-testid="button-register-mcp"
                 >
                   <Server className="w-3 h-3 mr-2" />
-                  Register MCP
+                  <span className="font-ui-display">Register MCP</span>
                 </Button>
                 
                 <Button 
@@ -439,7 +439,7 @@ export default function Home() {
                   data-testid="button-register-api-key"
                 >
                   <KeyRound className="w-3 h-3 mr-2" />
-                  Register API key
+                  <span className="font-ui-display">Register API key</span>
                 </Button>
 
                 <Button 
@@ -450,7 +450,7 @@ export default function Home() {
                   data-testid="button-register-playbook"
                 >
                   <BookOpen className="w-3 h-3 mr-2" />
-                  Register Playbook
+                  <span className="font-ui-display">Register Playbook</span>
                 </Button>
               </div>
             </div>
@@ -548,7 +548,7 @@ export default function Home() {
                     data-testid="button-export-all"
                   >
                     <Download className="w-3 h-3 mr-1" />
-                    {exportingAll ? "Exporting…" : "Export all"}
+                    <span className="font-ui-display">{exportingAll ? "Exporting…" : "Export all"}</span>
                   </Button>
                   <Button
                     size="sm"
@@ -559,7 +559,7 @@ export default function Home() {
                     data-testid="button-import-bundle"
                   >
                     <Upload className="w-3 h-3 mr-1" />
-                    Import
+                    <span className="font-ui-display">Import</span>
                   </Button>
                   {/* Search Input */}
                   <div className="relative">
@@ -679,7 +679,7 @@ export default function Home() {
                         data-testid="button-register-mcp-empty"
                       >
                         <Server className="w-3 h-3 mr-1" />
-                        Register MCP
+                        <span className="font-ui-display">Register MCP</span>
                       </Button>
                       <Button 
                         variant="ghost"
@@ -690,7 +690,7 @@ export default function Home() {
                         data-testid="button-register-api-key-empty"
                       >
                         <KeyRound className="w-3 h-3 mr-1" />
-                        Register API key
+                        <span className="font-ui-display">Register API key</span>
                       </Button>
                     </div>
                   )}

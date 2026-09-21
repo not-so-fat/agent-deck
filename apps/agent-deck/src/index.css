@@ -39,9 +39,10 @@
   --font-sans: Monaco, 'Nunito Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-serif: Georgia, serif;
   --font-mono: Monaco, 'SF Mono', Menlo, 'Consolas', 'Liberation Mono', monospace;
-  /* Replaceable system display face for major nav/section labels only.
-     Card interiors stay on the Monaco stack. System fonts only — no downloads. */
-  --font-ui-display: Optima, Candara, "Segoe UI", system-ui, sans-serif;
+  /* Replaceable system display face for UI chrome labels only (NOT-230).
+     Card interiors and operational values stay on the Monaco stack.
+     System fonts only — no downloads. */
+  --font-ui-display: "Avenir Next", Avenir, "Helvetica Neue", system-ui, sans-serif;
   --radius: 1.3rem;
   --shadow-2xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00);
   --shadow-xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0.00);

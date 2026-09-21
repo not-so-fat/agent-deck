@@ -65,12 +65,14 @@ describe('NOT-218 display-font token', () => {
     expect(declAt).toBeLessThan(darkAt);
   });
 
-  it('uses system fonts only, with Optima first and no download', () => {
+  it('uses system fonts only, with Avenir first and no download (NOT-230)', () => {
     const value = declarationValue(read('src/index.css'));
-    expect(value.startsWith('Optima')).toBe(true);
-    for (const face of ['Candara', 'system-ui', 'sans-serif']) {
+    expect(value.startsWith('"Avenir Next"')).toBe(true);
+    expect(value.startsWith('Optima')).toBe(false);
+    for (const face of ['Avenir', '"Helvetica Neue"', 'system-ui', 'sans-serif']) {
       expect(value).toContain(face);
     }
+    expect(value).not.toMatch(/optima/i);
     expect(value).not.toMatch(/url\(|woff|@font-face/i);
   });
 
@@ -84,7 +86,7 @@ describe('NOT-218 display-font token', () => {
 
   it('is never hard-coded into a React component or shared primitive', () => {
     const offenders = walkSources(srcRoot).filter((file) =>
-      /optima/i.test(fs.readFileSync(file, 'utf8')),
+      /(optima|avenir)/i.test(fs.readFileSync(file, 'utf8')),
     );
     expect(offenders).toEqual([]);
   });
@@ -175,5 +177,129 @@ describe('NOT-218 display-font token', () => {
       card.remove();
       label.remove();
     }
+  });
+
+  describe('NOT-230 chrome labels on the display token', () => {
+    it.each([
+      ['src/pages/home.tsx', 'Register MCP'],
+      ['src/pages/home.tsx', 'Register API key'],
+      ['src/pages/home.tsx', 'Register Playbook'],
+      ['src/pages/home.tsx', 'Export all'],
+      ['src/pages/feedback-signals.tsx', 'Copy for agent'],
+      ['src/pages/playbook-patches.tsx', 'Proposals'],
+      ['src/pages/playbook-patches.tsx', 'Detail'],
+    ])('applies the utility to chrome label %s in %s', (file, label) => {
+      expect(labelUsesDisplayUtility(read(file), label)).toBe(true);
+    });
+
+    it('applies the utility to the Import button label', () => {
+      expect(read('src/pages/home.tsx').includes('<span className="font-ui-display">Import</span>')).toBe(
+        true,
+      );
+    });
+
+    it('applies the utility to the Feedback Playbook filter label', () => {
+      expect(
+        read('src/pages/feedback-signals.tsx').includes(
+          '<span className="font-ui-display">Playbook</span>',
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('NOT-230 Monaco boundaries', () => {
+    it('keeps deck-name values on Monaco', () => {
+      const builder = read('src/components/deck-builder.tsx');
+      expect(regionKeepsMonaco(builder, 'value={nameDraft}', 3)).toBe(true);
+      expect(regionKeepsMonaco(builder, '{deck.name}', 3)).toBe(true);
+      expect(regionKeepsMonaco(builder, 'button-rename-deck', 3)).toBe(true);
+      const panel = read('src/components/deck-management-panel.tsx');
+      expect(regionKeepsMonaco(panel, '{deck.name}', 3)).toBe(true);
+    });
+
+    it('keeps search text and filter values on Monaco', () => {
+      const home = read('src/pages/home.tsx');
+      expect(regionKeepsMonaco(home, 'input-search', 3)).toBe(true);
+      expect(regionKeepsMonaco(home, 'placeholder="Search..."', 3)).toBe(true);
+      expect(regionKeepsMonaco(home, '<SelectItem value="all">All</SelectItem>', 1)).toBe(true);
+      expect(regionKeepsMonaco(home, '<SelectItem value="mcp">MCP</SelectItem>', 1)).toBe(true);
+      expect(regionKeepsMonaco(home, '<SelectItem value="api-key">API Key</SelectItem>', 1)).toBe(true);
+      expect(regionKeepsMonaco(home, '<SelectItem value="playbook">Playbook</SelectItem>', 1)).toBe(
+        true,
+      );
+    });
+
+    it('keeps registration authentication notes on Monaco', () => {
+      for (const file of [
+        'src/components/service-registration-modal.tsx',
+        'src/components/credential-registration-modal.tsx',
+        'src/components/playbook-registration-modal.tsx',
+      ]) {
+        expect(read(file).includes('font-ui-display')).toBe(false);
+      }
+      const credential = read('src/components/credential-registration-modal.tsx');
+      expect(regionKeepsMonaco(credential, 'never shown again', 3)).toBe(true);
+      const playbook = read('src/components/playbook-registration-modal.tsx');
+      expect(regionKeepsMonaco(playbook, 'auto-detects API key', 3)).toBe(true);
+      const service = read('src/components/service-registration-modal.tsx');
+      expect(regionKeepsMonaco(service, 'requires authentication', 3)).toBe(true);
+    });
+
+    it('keeps proposal rows and detail content on Monaco', () => {
+      const page = read('src/pages/playbook-patches.tsx');
+      expect(regionKeepsMonaco(page, '{patch.displayTitle}', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, '{patch.rationale}', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, '<PlaybookPatchDiff', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, 'user_feedback_excerpt', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, '{patch.kind}', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, '{patches.length}', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, '{label}', 2)).toBe(true);
+    });
+
+    it('keeps feedback excerpts, badges, counts, and filter values on Monaco', () => {
+      const page = read('src/pages/feedback-signals.tsx');
+      expect(regionKeepsMonaco(page, 'userFeedbackExcerpt', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, 'In proposal', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, '{signals.length}', 0)).toBe(true);
+      expect(regionKeepsMonaco(page, '<option value="">All</option>', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, '{p.title}', 2)).toBe(true);
+      expect(regionKeepsMonaco(page, 'selected.size', 0)).toBe(true);
+      expect(regionKeepsMonaco(page, '<th className="px-3 py-2">Playbook</th>', 2)).toBe(true);
+    });
+
+    it('resolves a NOT-230 display label through the token while values stay Monaco', () => {
+      const value = declarationValue(read('src/index.css'));
+      const style = document.createElement('style');
+      style.textContent = [
+        `:root { --font-ui-display: ${value}; }`,
+        'body { font-family: Monaco, monospace; }',
+        '.font-ui-display { font-family: var(--font-ui-display); }',
+      ].join('\n');
+      document.head.appendChild(style);
+
+      const label = document.createElement('span');
+      label.className = 'font-ui-display';
+      label.textContent = 'Register MCP';
+      document.body.appendChild(label);
+
+      const deckName = document.createElement('button');
+      deckName.textContent = 'My deck name';
+      document.body.appendChild(deckName);
+
+      const search = document.createElement('input');
+      search.placeholder = 'Search...';
+      document.body.appendChild(search);
+
+      try {
+        expect(getComputedStyle(label).fontFamily).toContain('var(--font-ui-display)');
+        expect(getComputedStyle(deckName).fontFamily).toMatch(/Monaco/);
+        expect(getComputedStyle(search).fontFamily).toMatch(/Monaco/);
+      } finally {
+        style.remove();
+        label.remove();
+        deckName.remove();
+        search.remove();
+      }
+    });
   });
 });

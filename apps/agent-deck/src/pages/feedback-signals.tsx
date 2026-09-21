@@ -147,7 +147,7 @@ export default function FeedbackSignalsPage() {
 
         <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-800 bg-gray-900/40 p-3">
           <label className="text-xs text-gray-500">
-            Playbook
+            <span className="font-ui-display">Playbook</span>
             <select
               className="mt-1 block min-w-[12rem] rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100"
               value={playbookId}
@@ -216,7 +216,7 @@ export default function FeedbackSignalsPage() {
               onClick={() => void copyForAgent()}
             >
               <Copy className="mr-1 h-3.5 w-3.5" />
-              Copy for agent
+              <span className="font-ui-display">Copy for agent</span>
               {selected.size > 0 ? ` (${selected.size})` : ""}
             </Button>
             <Button

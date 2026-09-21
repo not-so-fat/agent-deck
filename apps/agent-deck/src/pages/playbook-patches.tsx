@@ -175,7 +175,7 @@ export default function PlaybookPatchesPage() {
 
       <main className="mx-auto grid w-full max-w-7xl min-h-0 flex-1 gap-6 overflow-hidden px-4 py-6 sm:px-6 lg:grid-cols-[minmax(18rem,20rem)_minmax(0,1fr)] lg:items-stretch">
         <section className="flex min-h-0 min-w-0 flex-col">
-          <h2 className="mb-3 shrink-0 text-sm font-medium text-gray-400">Proposals</h2>
+          <h2 className="font-ui-display mb-3 shrink-0 text-sm font-medium text-gray-400">Proposals</h2>
 
           <div className="mb-3 flex shrink-0 flex-wrap gap-1">
             {STATUS_FILTERS.map(({ value, label }) => {
@@ -289,7 +289,7 @@ export default function PlaybookPatchesPage() {
         </section>
 
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-          <h2 className="mb-3 shrink-0 text-sm font-medium text-gray-400">Detail</h2>
+          <h2 className="font-ui-display mb-3 shrink-0 text-sm font-medium text-gray-400">Detail</h2>
           {!selected && (
             <p className="text-sm text-gray-500">Select a proposal to preview the diff.</p>
           )}
