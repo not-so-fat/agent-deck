@@ -21,6 +21,10 @@ import {
   resolveDeckBindingSource,
 } from './mcp-session-binding';
 import { registerMcpTools } from './mcp-tools/register';
+import {
+  DECK_SWITCH_ELICITATION_TIMEOUT_MS,
+  supportsFormElicitation,
+} from './mcp-tools/elicitation';
 import { McpToolProfile, resolveMcpToolProfile } from './mcp-tools/profile';
 import {
   skipDeckHeaderAuth,
@@ -408,6 +412,10 @@ export class AgentDeckMCPServer {
   }
 
   private setupTools(sessionId: string) {
+    // NOT-213: capture the session server while in the registration context;
+    // the closures below run later at tool-call time and must not touch
+    // `this.server` (registration-only getter).
+    const elicitingServer = this.server;
     registerMcpTools({
       registerTool: (name, config, handler) => this.registerTool(name, config, handler),
       profile: this.toolProfile,
@@ -428,6 +436,27 @@ export class AgentDeckMCPServer {
       backendUrl: this.backendUrl,
       toolResult: (data) => this.toolResult(data),
       toolError: (error) => this.toolError(error),
+      // NOT-213: host-native approval form for this session. Capability
+      // detection reads the capabilities the client reported at initialize;
+      // elicitation itself goes through the session server so the host UI
+      // answers. Timeouts/errors degrade to the browser fallback downstream.
+      elicitation: {
+        supportsFormElicitation: () =>
+          supportsFormElicitation(elicitingServer.server.getClientCapabilities()),
+        elicitForm: async (input) => {
+          const params = {
+            message: input.message,
+            requestedSchema: input.requestedSchema,
+          } as Parameters<typeof elicitingServer.server.elicitInput>[0];
+          const result = await elicitingServer.server.elicitInput(params, {
+            timeout: DECK_SWITCH_ELICITATION_TIMEOUT_MS,
+          });
+          return {
+            action: result.action,
+            ...(result.content ? { content: { ...result.content } } : {}),
+          };
+        },
+      },
     });
   }
 
