@@ -614,7 +614,7 @@ describe('PatchManager', () => {
     expect(updated?.status).toBe('discarded');
   });
 
-  it('persists trigger conflicts on genesis propose and syncs stubs on accept', async () => {
+  it('persists trigger conflicts on genesis propose and writes no stubs on accept', async () => {
     const existing = await playbookManager.create({
       title: 'Existing',
       body: '## Gotchas\n- one\n',
@@ -648,8 +648,9 @@ describe('PatchManager', () => {
 
     await patchManager.accept(patch.id);
 
+    // NOT-206: patch accept syncs no per-playbook stub files; discovery is runtime-only.
     const cursorStubDir = path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs');
-    expect(fs.existsSync(cursorStubDir)).toBe(true);
+    expect(fs.existsSync(cursorStubDir)).toBe(false);
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 });

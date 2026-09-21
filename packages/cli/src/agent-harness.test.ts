@@ -1,6 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildClaudeHarnessBlock,
@@ -10,6 +12,7 @@ import {
   HARNESS_MARKER_END,
   HARNESS_MARKER_START,
   HARNESS_RULE_DESCRIPTION,
+  installAgentHarness,
   mergeClaudeHarness,
   mergeCursorHarnessFile,
   resolveHarnessPath,
@@ -250,5 +253,177 @@ alwaysApply: false
   it('only touches agent-deck.mdc filename (not other rules)', () => {
     expect(CURSOR_RULE_FILENAME).toBe('agent-deck.mdc');
     expect(buildCursorHarnessFile('global')).toContain(HARNESS_MARKER_START);
+  });
+});
+
+describe('NOT-206 static runtime discovery', () => {
+  const texts = () => [
+    buildClaudeHarnessBlock('global'),
+    buildClaudeHarnessBlock('project'),
+    buildCodexHarnessBlock('global'),
+    buildCursorHarnessFile('global'),
+    buildCursorHarnessFile('project'),
+  ];
+
+  it('directs deck-B-only playbooks through get_bound_deck + get_playbook', () => {
+    for (const text of texts()) {
+      expect(text).toContain('get_bound_deck');
+      expect(text).toContain('get_playbook');
+      expect(text).toContain('exists only on the newly active deck');
+    }
+  });
+
+  it('needs no regenerated files when the deck switches', () => {
+    for (const text of texts()) {
+      expect(text).toContain('never requires regenerating workspace files');
+    }
+  });
+
+  it('names no stub generation or refresh step', () => {
+    for (const text of texts()) {
+      expect(text).not.toContain('trigger stubs');
+      expect(text).not.toContain('refresh stubs');
+      expect(text).not.toContain('use --refresh');
+    }
+  });
+});
+
+describe('managed-block refresh preserves user content byte-for-byte', () => {
+  it('keeps triple newlines around claude markers and adds no trailing newline', () => {
+    const before = '# Team conventions\n\n\n';
+    const after = '\n\n\n# More notes';
+    const existing = `${before}${HARNESS_MARKER_START}\nold harness\n${HARNESS_MARKER_END}${after}`;
+    const { content, changed } = mergeClaudeHarness(existing, buildClaudeHarnessBlock('global'));
+
+    expect(changed).toBe(true);
+    expect(content.slice(0, content.indexOf(HARNESS_MARKER_START))).toBe(before);
+    const endSlice = content.slice(
+      content.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length,
+    );
+    expect(endSlice).toBe(after);
+    expect(content).not.toContain('old harness');
+    expect(content).toContain('## Agent Deck');
+  });
+
+  it('keeps triple newlines around cursor markers with custom frontmatter', () => {
+    const existing = `---
+description: My custom description
+alwaysApply: true
+---
+
+# My preamble
+
+
+${HARNESS_MARKER_START}
+old
+${HARNESS_MARKER_END}
+
+
+# Keep this footer`;
+    const { content } = mergeCursorHarnessFile(existing, '# Agent Deck\n\nnew body');
+
+    expect(content).toContain('description: My custom description');
+    expect(content).toContain('# My preamble\n\n\n');
+    expect(content).toContain('\n\n\n# Keep this footer');
+    expect(content).toContain('new body');
+    expect(content).not.toContain('\nold\n');
+  });
+
+  it('appends without trimming existing trailing whitespace', () => {
+    const existing = '# My notes\n\n\n';
+    const { content } = mergeClaudeHarness(existing, buildClaudeHarnessBlock('global'));
+    expect(content.startsWith(existing)).toBe(true);
+    expect(content).toContain(HARNESS_MARKER_START);
+  });
+});
+
+describe('installAgentHarness on-disk byte preservation', () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  function useTmpCwd(): string {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-harness-'));
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    return tmpDir;
+  }
+
+  it('claude refresh preserves no-trailing-newline user text verbatim', () => {
+    const cwd = useTmpCwd();
+    const target = resolveHarnessPath('claude', 'project');
+    expect(target).toBe(path.join(cwd, 'CLAUDE.md'));
+    const after = '\n\n\n# More notes';
+    fs.writeFileSync(
+      target as string,
+      `# Team conventions\n\n${HARNESS_MARKER_START}\nold harness\n${HARNESS_MARKER_END}${after}`,
+      'utf8',
+    );
+    const result = installAgentHarness('claude', 'project');
+    expect(result.action).toBe('updated');
+    const written = fs.readFileSync(target as string, 'utf8');
+    const endSlice = written.slice(
+      written.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length,
+    );
+    expect(endSlice).toBe(after);
+    expect(written.endsWith('\n')).toBe(false);
+    const repeat = installAgentHarness('claude', 'project');
+    expect(repeat.action).toBe('unchanged');
+    expect(fs.readFileSync(target as string, 'utf8')).toBe(written);
+  });
+
+  it('codex refresh preserves no-trailing-newline user text verbatim', () => {
+    const cwd = useTmpCwd();
+    const target = resolveHarnessPath('codex', 'project');
+    expect(target).toBe(path.join(cwd, 'AGENTS.md'));
+    const after = '\n\n\n# More notes';
+    fs.writeFileSync(
+      target as string,
+      `# Team conventions\n\n${HARNESS_MARKER_START}\nold harness\n${HARNESS_MARKER_END}${after}`,
+      'utf8',
+    );
+    const result = installAgentHarness('codex', 'project');
+    expect(result.action).toBe('updated');
+    const written = fs.readFileSync(target as string, 'utf8');
+    const endSlice = written.slice(
+      written.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length,
+    );
+    expect(endSlice).toBe(after);
+    expect(written.endsWith('\n')).toBe(false);
+    const repeat = installAgentHarness('codex', 'project');
+    expect(repeat.action).toBe('unchanged');
+    expect(fs.readFileSync(target as string, 'utf8')).toBe(written);
+  });
+
+  it('cursor refresh preserves no-trailing-newline footer verbatim', () => {
+    const cwd = useTmpCwd();
+    const target = resolveHarnessPath('cursor', 'project');
+    expect(target).toBe(
+      path.join(cwd, '.cursor', 'rules', CURSOR_RULE_FILENAME),
+    );
+    const footer = '\n\n\n# Keep this footer';
+    fs.mkdirSync(path.dirname(target as string), { recursive: true });
+    fs.writeFileSync(
+      target as string,
+      `---\ndescription: My custom description\nalwaysApply: true\n---\n\n# My preamble\n\n${HARNESS_MARKER_START}\nold\n${HARNESS_MARKER_END}${footer}`,
+      'utf8',
+    );
+    const result = installAgentHarness('cursor', 'project');
+    expect(result.action).toBe('updated');
+    const written = fs.readFileSync(target as string, 'utf8');
+    const endSlice = written.slice(
+      written.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length,
+    );
+    expect(endSlice).toBe(footer);
+    expect(written.endsWith('\n')).toBe(false);
+    expect(written).toContain('description: My custom description');
+    const repeat = installAgentHarness('cursor', 'project');
+    expect(repeat.action).toBe('unchanged');
+    expect(fs.readFileSync(target as string, 'utf8')).toBe(written);
   });
 });

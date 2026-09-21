@@ -3,16 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  buildClaudeStubFile,
-  buildCursorStubFile,
-  buildStubDescription,
+  CURSOR_STUBS_DIR,
   readUseManifest,
-  STUB_MARKER_END,
-  STUB_MARKER_START_PREFIX,
-  resolvePlaybookSlugs,
+  stubSyncChanged,
   syncPlaybookStubs,
   writeUseManifest,
-  yamlSingleQuote,
 } from './stub-sync';
 
 const tmpDirs: string[] = [];
@@ -29,71 +24,54 @@ function makeWorkspace(): string {
   return dir;
 }
 
-describe('stub-sync', () => {
-  const playbook = {
-    id: 'pb_hiring_inbox',
-    title: 'Hiring Inbox',
-    triggers: ['check inbox', 'triage candidates'],
-  };
+describe('stub-sync (NOT-206: static runtime discovery, no generated stubs)', () => {
+  const deckAPlaybooks = [
+    { id: 'pb_alpha_only', title: 'Alpha Only', triggers: ['alpha trigger'] },
+  ];
+  const deckBPlaybooks = [
+    { id: 'pb_beta_only', title: 'Beta Only', triggers: ['beta trigger'] },
+  ];
 
-  it('builds cursor stub with title and triggers in quoted description', () => {
-    const file = buildCursorStubFile(playbook);
-    expect(file).toContain(
-      "description: 'Hiring Inbox — use when the user asks about check inbox, triage candidates",
-    );
-    expect(file).toContain('get_playbook("pb_hiring_inbox")');
-    expect(file).toContain('alwaysApply: false');
-    expect(file).toContain(`${STUB_MARKER_START_PREFIX} pb_hiring_inbox -->`);
-    expect(file).toContain(STUB_MARKER_END);
-  });
-
-  it('falls back to title when triggers are empty', () => {
-    expect(buildStubDescription({ ...playbook, triggers: [] })).toContain(
-      'Hiring Inbox — use when the user asks about Hiring Inbox',
-    );
-  });
-
-  it('quotes YAML safely when triggers contain colon-space or apostrophe', () => {
-    const risky = {
-      ...playbook,
-      triggers: ["note: read this", "user's inbox"],
-    };
-    const file = buildCursorStubFile(risky);
-    expect(file.startsWith('---\ndescription: ')).toBe(true);
-    expect(yamlSingleQuote("it's fine")).toBe("'it''s fine'");
-    expect(file).toContain("note: read this");
-  });
-
-  it('sync creates stubs, removes retired playbooks, and preserves non-marker files', () => {
+  it('writes no per-playbook files and reports zero changes', () => {
     const workspace = makeWorkspace();
-    const first = syncPlaybookStubs(workspace, [playbook]);
-    expect(first.cursor.created).toBe(1);
-    expect(first.claude.created).toBe(1);
+    const result = syncPlaybookStubs(workspace, deckBPlaybooks);
 
-    const customPath = path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'custom.mdc');
-    fs.writeFileSync(customPath, '# user rule\n');
-
-    const other = {
-      id: 'pb_retired',
-      title: 'Retired',
-      triggers: ['old'],
-    };
-    fs.mkdirSync(path.dirname(cursorStubPath(workspace, other.id)), { recursive: true });
-    fs.writeFileSync(cursorStubPath(workspace, other.id), buildCursorStubFile(other));
-
-    const second = syncPlaybookStubs(workspace, [playbook]);
-    expect(second.cursor.removed).toBe(1);
-    expect(fs.existsSync(customPath)).toBe(true);
+    expect(result.cursor).toEqual({
+      created: 0,
+      updated: 0,
+      removed: 0,
+      dir: path.join(workspace, '.cursor', 'rules', CURSOR_STUBS_DIR),
+    });
+    expect(result.claude).toEqual({ created: 0, updated: 0, removed: 0, dirs: [] });
+    expect(stubSyncChanged(result)).toBe(false);
+    expect(fs.existsSync(path.join(workspace, '.cursor'))).toBe(false);
+    expect(fs.existsSync(path.join(workspace, '.claude'))).toBe(false);
   });
 
-  it('second bind reports zero changes when stubs already match', () => {
+  it('needs no regeneration when the workspace switches from deck A to deck B', () => {
     const workspace = makeWorkspace();
-    const first = syncPlaybookStubs(workspace, [playbook]);
-    expect(first.cursor.created).toBe(1);
-    const second = syncPlaybookStubs(workspace, [playbook]);
-    expect(second.cursor.created).toBe(0);
-    expect(second.cursor.updated).toBe(0);
-    expect(second.cursor.removed).toBe(0);
+    const beforeSwitch = syncPlaybookStubs(workspace, deckAPlaybooks);
+    const afterSwitch = syncPlaybookStubs(workspace, deckBPlaybooks);
+
+    expect(beforeSwitch).toEqual(afterSwitch);
+    expect(stubSyncChanged(afterSwitch)).toBe(false);
+  });
+
+  it('leaves legacy stub files and user rules byte-for-byte untouched', () => {
+    const workspace = makeWorkspace();
+    const legacyStub = path.join(workspace, '.cursor', 'rules', CURSOR_STUBS_DIR, 'pb_alpha_only.mdc');
+    const userRule = path.join(workspace, '.cursor', 'rules', 'custom.mdc');
+    fs.mkdirSync(path.dirname(legacyStub), { recursive: true });
+    fs.writeFileSync(legacyStub, '<!-- agent-deck:stub:start pb_alpha_only -->\n# legacy\n');
+    fs.writeFileSync(userRule, '# user rule\n');
+
+    const result = syncPlaybookStubs(workspace, deckBPlaybooks);
+
+    expect(result.cursor.removed).toBe(0);
+    expect(fs.readFileSync(legacyStub, 'utf8')).toBe(
+      '<!-- agent-deck:stub:start pb_alpha_only -->\n# legacy\n',
+    );
+    expect(fs.readFileSync(userRule, 'utf8')).toBe('# user rule\n');
   });
 
   it('writes and reads use manifest', () => {
@@ -107,38 +85,4 @@ describe('stub-sync', () => {
     writeUseManifest(workspace, manifest);
     expect(readUseManifest(workspace)).toEqual(manifest);
   });
-
-  it('resolvePlaybookSlugs suffixes colliding title slugs with playbook ids', () => {
-    const slugs = resolvePlaybookSlugs([
-      { id: 'pb_pr_summary', title: 'PR Summary', triggers: [] },
-      { id: 'pb_ui_principle', title: 'pr-summary', triggers: [] },
-      { id: 'pb_hiring_inbox', title: 'Hiring Inbox', triggers: [] },
-    ]);
-
-    expect(slugs.get('pb_hiring_inbox')).toBe('hiring-inbox');
-    expect(slugs.get('pb_pr_summary')).toBe('pr-summary-pr_summary');
-    expect(slugs.get('pb_ui_principle')).toBe('pr-summary-ui_principle');
-  });
-
-  it('sync writes separate claude dirs when title slugs collide', () => {
-    const workspace = makeWorkspace();
-    syncPlaybookStubs(workspace, [
-      { id: 'pb_pr_summary', title: 'PR Summary', triggers: ['summarize PR'] },
-      { id: 'pb_ui_principle', title: 'pr-summary', triggers: ['review UI'] },
-    ]);
-
-    const skillsRoot = path.join(workspace, '.claude', 'skills');
-    expect(fs.existsSync(path.join(skillsRoot, 'agent-deck-pr-summary-pr_summary'))).toBe(true);
-    expect(fs.existsSync(path.join(skillsRoot, 'agent-deck-pr-summary-ui_principle'))).toBe(true);
-    expect(
-      fs.readFileSync(path.join(skillsRoot, 'agent-deck-pr-summary-pr_summary', 'SKILL.md'), 'utf8'),
-    ).toContain('get_playbook("pb_pr_summary")');
-    expect(
-      fs.readFileSync(path.join(skillsRoot, 'agent-deck-pr-summary-ui_principle', 'SKILL.md'), 'utf8'),
-    ).toContain('get_playbook("pb_ui_principle")');
-  });
 });
-
-function cursorStubPath(workspace: string, playbookId: string): string {
-  return path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', `${playbookId}.mdc`);
-}
