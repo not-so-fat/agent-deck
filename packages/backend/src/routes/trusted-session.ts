@@ -184,6 +184,33 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     return reply.send({ success: true, data });
   });
 
+  // NOT-212: menubar approval inbox. Lists every pending deck-switch
+  // request with display-safe labels and a secret-free approval path, so a
+  // missed auto-open tab stays recoverable. Lazy expiry in the store means
+  // resolved/expired requests drop out on refresh. Mirrors the allowPublic
+  // admin/challenges endpoint the menubar already polls.
+  fastify.get('/deck-switch/pending', async (_request, reply) => {
+    const pending = store.listPendingDeckSwitchRequests();
+    const data = await Promise.all(
+      pending.map(async (record) => {
+        const current = await fastify.db.getDeck(record.currentDeckId);
+        const requested = await fastify.db.getDeck(record.requestedDeckId);
+        const approvalPath = `/deck-switch/approve?request=${encodeURIComponent(record.requestId)}&session=${encodeURIComponent(record.runtimeSessionId)}`;
+        return {
+          requestId: record.requestId,
+          runtimeSessionId: record.runtimeSessionId,
+          status: record.status,
+          createdAt: record.createdAt,
+          expiresAt: record.expiresAt,
+          ...(current ? { currentDeckName: current.name } : {}),
+          ...(requested ? { requestedDeckName: requested.name } : {}),
+          approvalPath,
+        };
+      }),
+    );
+    return reply.send({ success: true, data });
+  });
+
   fastify.post<{ Body: { runtimeSessionId: string } }>(
     '/admin/request-elevation',
     async (request, reply) => {

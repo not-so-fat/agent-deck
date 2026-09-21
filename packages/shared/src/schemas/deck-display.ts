@@ -86,6 +86,24 @@ export const PendingAdminChallengeSchema = z.object({
 });
 
 export type PendingAdminChallenge = z.infer<typeof PendingAdminChallengeSchema>;
+
+/**
+ * NOT-212: a pending deck-switch request as the local menubar inbox sees it.
+ * Display-safe labels only — the approval itself still commits through the
+ * dashboard-only resolve route, and the browser page mints its session via
+ * the trusted bootstrap mechanism (no reusable secret in the URL).
+ */
+export const PendingDeckSwitchRequestSchema = z.object({
+  requestId: z.string().min(1),
+  runtimeSessionId: z.string().min(1),
+  status: z.literal('pending'),
+  currentDeckName: z.string().min(1).optional(),
+  requestedDeckName: z.string().min(1).optional(),
+  expiresAt: z.string().datetime(),
+  approvalPath: z.string().min(1),
+});
+
+export type PendingDeckSwitchRequest = z.infer<typeof PendingDeckSwitchRequestSchema>;
 export type DeckDisplay = z.infer<typeof DeckDisplaySchema>;
 export type StatusLinePayload = z.infer<typeof StatusLinePayloadSchema>;
 

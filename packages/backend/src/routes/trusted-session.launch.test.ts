@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { AGENT_DECK_SESSION_HEADER } from '@agent-deck/shared';
 
+import { resolveRoutePolicy } from '../trusted-session/route-policy-registry';
+
 import { DatabaseManager } from '../models/database';
 import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
@@ -296,6 +298,95 @@ describe('trusted-session launch routes (NOT-105)', () => {
       expect((await approve(elevation.challengeId, launch.sessionId)).statusCode).toBe(200);
       const reused = await approve(elevation.challengeId, launch.sessionId);
       expect(reused.json()).toMatchObject({ error_code: 'ADMIN_CHALLENGE_EXPIRED' });
+    });
+  });
+
+  describe('pending deck-switch inbox (NOT-212)', () => {
+    it('is reachable without auth, like the menubar admin-challenges feed', () => {
+      expect(resolveRoutePolicy('GET', '/api/trusted-session/deck-switch/pending')).toBe(
+        'allowPublic',
+      );
+    });
+
+    it('lists a pending request with deck labels and a secret-free approval path', async () => {
+      const { fastify, store, boundDeck, otherDeck } = await buildApp();
+      const launch = store.createRuntimeSession({ deckId: boundDeck.id });
+      const request = store.createDeckSwitchRequest({
+        runtimeSessionId: launch.sessionId,
+        currentDeckId: boundDeck.id,
+        requestedDeckId: otherDeck.id,
+      });
+
+      const response = await fastify.inject({
+        method: 'GET',
+        url: '/api/trusted-session/deck-switch/pending',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const data = response.json().data as Array<Record<string, unknown>>;
+      expect(data).toHaveLength(1);
+      expect(data[0]).toMatchObject({
+        requestId: request.requestId,
+        runtimeSessionId: launch.sessionId,
+        status: 'pending',
+        currentDeckName: 'bound',
+        requestedDeckName: 'other',
+      });
+      const approvalPath = String(data[0].approvalPath);
+      expect(approvalPath).toBe(
+        `/deck-switch/approve?request=${encodeURIComponent(request.requestId)}&session=${encodeURIComponent(launch.sessionId)}`,
+      );
+      expect(approvalPath).not.toMatch(/bootstrap|token|secret|cookie|bearer|authoriz/i);
+    });
+
+    it('omits resolved and expired requests on refresh', async () => {
+      const { fastify, store, boundDeck, otherDeck } = await buildApp();
+      const launch = store.createRuntimeSession({ deckId: boundDeck.id });
+
+      const declined = store.createDeckSwitchRequest({
+        runtimeSessionId: launch.sessionId,
+        currentDeckId: boundDeck.id,
+        requestedDeckId: otherDeck.id,
+      });
+      expect(
+        store.transitionDeckSwitchRequestStatus(declined.requestId, 'pending', 'declined'),
+      ).not.toBeNull();
+
+      // Past-TTL requests expire lazily on read and never appear as pending.
+      store.createDeckSwitchRequest({
+        runtimeSessionId: launch.sessionId,
+        currentDeckId: otherDeck.id,
+        requestedDeckId: boundDeck.id,
+        ttlMs: -60_000,
+      });
+
+      const response = await fastify.inject({
+        method: 'GET',
+        url: '/api/trusted-session/deck-switch/pending',
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data).toEqual([]);
+    });
+
+    it('does not swallow the single-request route for real ids', async () => {
+      const { fastify, store, boundDeck, otherDeck } = await buildApp();
+      const launch = store.createRuntimeSession({ deckId: boundDeck.id });
+      const request = store.createDeckSwitchRequest({
+        runtimeSessionId: launch.sessionId,
+        currentDeckId: boundDeck.id,
+        requestedDeckId: otherDeck.id,
+      });
+
+      const single = await fastify.inject({
+        method: 'GET',
+        url: `/api/trusted-session/deck-switch/${request.requestId}`,
+        headers: { [AGENT_DECK_SESSION_HEADER]: launch.sessionId },
+      });
+      expect(single.statusCode).toBe(200);
+      expect(single.json().data).toMatchObject({
+        requestId: request.requestId,
+        status: 'pending',
+      });
     });
   });
 });
