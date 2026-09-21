@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.11.1 — 2026-09-21
+
+### UI: Avenir-first dashboard labels
+
+- The dashboard's display font (`--font-ui-display`) now leads with Avenir (local system stack, no downloads) instead of Optima.
+- More chrome labels use it: Register MCP / API key / Playbook, Export all, Import, Copy for agent, the Feedback playbook filter label, and the Proposals / Detail headings. Deck names, search, filter values, auth notes and proposal/detail content stay Monaco.
+- Corrected the 1.11.0 notes below (stub paths, status-line wording, MCP reload reason, `--scope project` upgrade step). No behavior change.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start` to load the updated dashboard.
+
 ## 1.11.0 — 2026-09-21
 
 ### Feature: switch decks from an agent session, with your approval
