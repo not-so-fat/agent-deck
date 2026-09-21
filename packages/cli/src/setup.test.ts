@@ -157,6 +157,121 @@ describe('setup statusline defaults', () => {
     }
   });
 
+  it('removes managed legacy stubs in the workspace while keeping the harness and user files', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cleanup-'));
+    const managedCursor = path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'pb_old.mdc');
+    const userRule = path.join(workspace, '.cursor', 'rules', 'custom.mdc');
+    const managedSkill = path.join(workspace, '.claude', 'skills', 'agent-deck-old', 'SKILL.md');
+    const userSkill = path.join(workspace, '.claude', 'skills', 'my-skill', 'SKILL.md');
+    fs.mkdirSync(path.dirname(managedCursor), { recursive: true });
+    fs.writeFileSync(
+      managedCursor,
+      '<!-- agent-deck:stub:start pb_old -->\n# legacy\n<!-- agent-deck:stub:end -->\n',
+    );
+    fs.writeFileSync(userRule, '# user rule\n');
+    fs.mkdirSync(path.dirname(managedSkill), { recursive: true });
+    fs.writeFileSync(
+      managedSkill,
+      '<!-- agent-deck:stub:start pb_old -->\n# legacy\n<!-- agent-deck:stub:end -->\n',
+    );
+    fs.mkdirSync(path.dirname(userSkill), { recursive: true });
+    fs.writeFileSync(userSkill, '# user skill\n');
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    let code = -1;
+    let logged = '';
+    try {
+      code = await runSetup([
+        '--client',
+        'cursor',
+        '--scope',
+        'project',
+        '--no-statusline',
+        '--no-menubar',
+      ]);
+    } finally {
+      cwd.mockRestore();
+      logged = log.mock.calls.flat().join('\n');
+      log.mockRestore();
+    }
+    expect(code).toBe(0);
+
+    expect(fs.existsSync(managedCursor)).toBe(false);
+    expect(fs.existsSync(path.dirname(managedSkill))).toBe(false);
+    expect(fs.readFileSync(userRule, 'utf8')).toBe('# user rule\n');
+    expect(fs.readFileSync(userSkill, 'utf8')).toBe('# user skill\n');
+    const harness = fs.readFileSync(path.join(workspace, '.cursor', 'rules', 'agent-deck.mdc'), 'utf8');
+    expect(harness).toContain('<!-- agent-deck:harness:start -->');
+    expect(harness).toContain('<!-- agent-deck:harness:end -->');
+    expect(logged).toContain('Removed 2 legacy playbook stub(s)');
+
+    // Idempotent: a second run succeeds with no further changes.
+    const rerunLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const rerunCwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    try {
+      expect(
+        await runSetup([
+          '--client',
+          'cursor',
+          '--scope',
+          'project',
+          '--no-statusline',
+          '--no-menubar',
+        ]),
+      ).toBe(0);
+    } finally {
+      rerunCwd.mockRestore();
+      rerunLog.mockRestore();
+    }
+    expect(rerunLog.mock.calls.flat().join('\n')).not.toContain('legacy playbook stub(s)');
+    expect(fs.readFileSync(userRule, 'utf8')).toBe('# user rule\n');
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it('names the exact path and fails setup when a managed stub cannot be removed', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cleanup-fail-'));
+    const managedCursor = path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'pb_old.mdc');
+    fs.mkdirSync(path.dirname(managedCursor), { recursive: true });
+    fs.writeFileSync(
+      managedCursor,
+      '<!-- agent-deck:stub:start pb_old -->\n# legacy\n<!-- agent-deck:stub:end -->\n',
+    );
+
+    const realUnlink = fs.unlinkSync;
+    vi.spyOn(fs, 'unlinkSync').mockImplementation(((target: unknown, ...rest: unknown[]) => {
+      if (String(target) === managedCursor) {
+        throw new Error('EACCES: permission denied');
+      }
+      return (realUnlink as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as typeof fs.unlinkSync);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    let code = -1;
+    let errored = '';
+    try {
+      code = await runSetup([
+        '--client',
+        'cursor',
+        '--scope',
+        'project',
+        '--no-statusline',
+        '--no-menubar',
+      ]);
+    } finally {
+      cwd.mockRestore();
+      errored = error.mock.calls.flat().join('\n');
+      log.mockRestore();
+      vi.restoreAllMocks();
+    }
+    expect(code).toBe(1);
+    expect(errored).toContain(managedCursor);
+    // Failure happens before the harness install, so no new files are written.
+    expect(fs.existsSync(path.join(workspace, '.cursor', 'rules', 'agent-deck.mdc'))).toBe(false);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
   it.skipIf(process.platform !== 'darwin')(
     'setup --menubar alone installs only the SwiftBar plugin',
     async () => {

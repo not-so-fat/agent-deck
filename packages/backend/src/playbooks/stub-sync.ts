@@ -8,9 +8,24 @@ import { ensureGitExcluded } from '@agent-deck/shared';
  * deck and are discovered at runtime (`get_bound_deck` lists triggers,
  * `get_playbook` fetches bodies), so switching decks never requires
  * regenerating workspace files. Legacy stub files already present in a
- * workspace are left untouched (their migration is a separate ticket).
+ * workspace are removed by `removeLegacyPlaybookStubs` (NOT-208), which
+ * `agent-deck setup` / `agent-deck use` run as a one-time migration.
  */
 export const CURSOR_STUBS_DIR = 'agent-deck-stubs';
+export const CLAUDE_SKILL_PREFIX = 'agent-deck-';
+
+/**
+ * Markers written by the pre-NOT-206 stub generator. A file carrying both
+ * markers is provably Agent Deck-managed; anything else is user-authored
+ * (or foreign) and must never be touched by cleanup.
+ */
+export const STUB_MARKER_START_PREFIX = '<!-- agent-deck:stub:start';
+export const STUB_MARKER_END = '<!-- agent-deck:stub:end -->';
+
+/** True only for content the Agent Deck stub generator wrote. */
+export function isManagedStubContent(content: string): boolean {
+  return content.includes(STUB_MARKER_START_PREFIX) && content.includes(STUB_MARKER_END);
+}
 
 export type PlaybookStubInput = {
   id: string;
@@ -64,6 +79,140 @@ export function syncPlaybookStubs(
     },
     claude: { created: 0, updated: 0, removed: 0, dirs: [] },
   };
+}
+
+export type LegacyStubCleanupOptions = {
+  cursor?: boolean;
+  claude?: boolean;
+};
+
+export type LegacyStubCleanupResult = {
+  cursor: { removed: number; dir: string };
+  claude: { removed: number; dirs: string[] };
+  removedPaths: string[];
+};
+
+function cleanupFailureMessage(failures: Array<{ path: string; reason: string }>): string {
+  const details = failures.map((failure) => `${failure.path}: ${failure.reason}`).join('; ');
+  return `Failed to remove legacy Agent Deck playbook stub(s): ${details}`;
+}
+
+/**
+ * NOT-208: one-time migration that removes Agent Deck-managed legacy
+ * playbook stubs left by the pre-NOT-206 generator. Only files whose
+ * content carries both stub markers are removed:
+ *
+ * - `<workspace>/.cursor/rules/agent-deck-stubs/` entries (regular files only)
+ * - `<workspace>/.claude/skills/agent-deck-<slug>/SKILL.md` (whole skill dir)
+ *
+ * User-authored skills, rules, and instructions are preserved — including
+ * similarly named files that lack the markers. Idempotent: absent
+ * files/directories are a no-op. Throws an Error naming the exact
+ * path(s) when a managed file cannot be removed; files already removed
+ * before the failure stay removed, unrelated files are never touched.
+ */
+export function removeLegacyPlaybookStubs(
+  workspaceRoot: string,
+  options: LegacyStubCleanupOptions = {},
+): LegacyStubCleanupResult {
+  const cleanCursor = options.cursor !== false;
+  const cleanClaude = options.claude !== false;
+  const cursorDir = path.join(workspaceRoot, '.cursor', 'rules', CURSOR_STUBS_DIR);
+  const claudeSkillsRoot = path.join(workspaceRoot, '.claude', 'skills');
+  const result: LegacyStubCleanupResult = {
+    cursor: { removed: 0, dir: cursorDir },
+    claude: { removed: 0, dirs: [] },
+    removedPaths: [],
+  };
+  const failures: Array<{ path: string; reason: string }> = [];
+
+  if (cleanCursor && fs.existsSync(cursorDir)) {
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(cursorDir, { withFileTypes: true });
+    } catch {
+      entries = [];
+    }
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      const filePath = path.join(cursorDir, entry.name);
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, 'utf8');
+      } catch {
+        // Unreadable: cannot prove it is managed, so leave it untouched.
+        continue;
+      }
+      if (!isManagedStubContent(content)) {
+        continue;
+      }
+      try {
+        fs.unlinkSync(filePath);
+        result.cursor.removed += 1;
+        result.removedPaths.push(filePath);
+      } catch (error) {
+        failures.push({
+          path: filePath,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    // Drop the now-empty managed dir; never recurse or touch anything else.
+    try {
+      if (fs.existsSync(cursorDir) && fs.readdirSync(cursorDir).length === 0) {
+        fs.rmdirSync(cursorDir);
+      }
+    } catch {
+      // Best effort: a non-empty or locked dir simply stays.
+    }
+  }
+
+  if (cleanClaude && fs.existsSync(claudeSkillsRoot)) {
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(claudeSkillsRoot, { withFileTypes: true });
+    } catch {
+      entries = [];
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(CLAUDE_SKILL_PREFIX)) {
+        continue;
+      }
+      const skillDir = path.join(claudeSkillsRoot, entry.name);
+      const skillPath = path.join(skillDir, 'SKILL.md');
+      let content: string;
+      try {
+        if (!fs.existsSync(skillPath)) {
+          continue;
+        }
+        content = fs.readFileSync(skillPath, 'utf8');
+      } catch {
+        // Unreadable: cannot prove it is managed, so leave it untouched.
+        continue;
+      }
+      if (!isManagedStubContent(content)) {
+        continue;
+      }
+      try {
+        fs.rmSync(skillDir, { recursive: true, force: true });
+        result.claude.removed += 1;
+        result.claude.dirs.push(skillDir);
+        result.removedPaths.push(skillDir);
+      } catch (error) {
+        failures.push({
+          path: skillDir,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(cleanupFailureMessage(failures));
+  }
+  return result;
 }
 
 /** Folder→deck assignment written by `agent-deck use` and bind stub-sync (NOT-108). */
