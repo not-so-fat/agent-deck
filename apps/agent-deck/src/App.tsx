@@ -12,6 +12,7 @@ import McpTestPage from "@/pages/mcp-test";
 import PlaybookPatchesPage from "@/pages/playbook-patches";
 import FeedbackSignalsPage from "@/pages/feedback-signals";
 import AdminApprovePage from "@/pages/admin-approve";
+import DeckSwitchApprovePage from "@/pages/deck-switch-approve";
 
 function Router() {
   return (
@@ -21,6 +22,7 @@ function Router() {
       <Route path="/playbook-patches" component={PlaybookPatchesPage} />
       <Route path="/feedback-signals" component={FeedbackSignalsPage} />
       <Route path="/admin/approve" component={AdminApprovePage} />
+      <Route path="/deck-switch/approve" component={DeckSwitchApprovePage} />
       <Route path="/mcp-test" component={McpTestPage} />
       <Route component={NotFound} />
     </Switch>
