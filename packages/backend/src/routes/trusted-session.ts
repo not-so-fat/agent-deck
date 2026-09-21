@@ -1,7 +1,10 @@
 import { randomBytes } from 'node:crypto';
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { RuntimeSession } from '@agent-deck/shared';
+import {
+  DeckSwitchResolveBodySchema,
+  type RuntimeSession,
+} from '@agent-deck/shared';
 import {
   AGENT_DECK_DASHBOARD_COOKIE,
   AGENT_DECK_SESSION_HEADER,
@@ -315,6 +318,163 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             expiresAt: session.expiresAt,
           },
         });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.get<{ Params: { requestId: string } }>(
+    '/deck-switch/:requestId',
+    async (request, reply) => {
+      try {
+        const requestId = request.params.requestId?.trim();
+        if (!requestId) {
+          return reply.status(400).send({ success: false, error: 'requestId required' });
+        }
+
+        // NOT-207: opaque request inspection. Lazy expiry marks a past-TTL
+        // request expired on read; bindings are never touched here.
+        const record = store.getDeckSwitchRequest(requestId);
+        if (!record) {
+          return reply.status(404).send({ success: false, error: 'Deck-switch request not found' });
+        }
+
+        const principal = request.requestPrincipal;
+        if (principal?.kind === 'agent' && principal.session.sessionId !== record.runtimeSessionId) {
+          throw new TrustedAuthError(
+            'RESOURCE_OUT_OF_SCOPE',
+            'Deck-switch request belongs to a different session',
+          );
+        }
+
+        if (principal?.kind !== 'dashboard') {
+          return reply.send({
+            success: true,
+            data: {
+              requestId: record.requestId,
+              status: record.status,
+              createdAt: record.createdAt,
+              expiresAt: record.expiresAt,
+            },
+          });
+        }
+
+        const currentDeck = await fastify.db.getDeck(record.currentDeckId);
+        const requestedDeck = await fastify.db.getDeck(record.requestedDeckId);
+        return reply.send({
+          success: true,
+          data: {
+            requestId: record.requestId,
+            status: record.status,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            resolvedAt: record.resolvedAt,
+            runtimeSessionId: record.runtimeSessionId,
+            currentDeckId: record.currentDeckId,
+            ...(currentDeck ? { currentDeckName: currentDeck.name } : {}),
+            requestedDeckId: record.requestedDeckId,
+            ...(requestedDeck ? { requestedDeckName: requestedDeck.name } : {}),
+            ...(record.workspaceRoot ? { workspaceRoot: record.workspaceRoot } : {}),
+          },
+        });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.post<{ Params: { requestId: string } }>(
+    '/deck-switch/:requestId/resolve',
+    async (request, reply) => {
+      try {
+        const requestId = request.params.requestId?.trim();
+        if (!requestId) {
+          return reply.status(400).send({ success: false, error: 'requestId required' });
+        }
+
+        // Exactly three decisions exist; anything else is a 400.
+        const parsed = DeckSwitchResolveBodySchema.safeParse(request.body);
+        if (!parsed.success) {
+          return reply.status(400).send({
+            success: false,
+            error: parsed.error.issues.map((issue) => issue.message).join('; '),
+          });
+        }
+        const { runtimeSessionId, decision } = parsed.data;
+
+        // NOT-207: approval is the only commit point. Session rebind and
+        // workspace-default assignment commit atomically inside the store;
+        // every other outcome leaves both bindings unchanged.
+        // Ownership check: the dashboard principal is intentionally not tied
+        // to a runtime session (dashboard-only route per the policy registry),
+        // so belonging is established by matching the body-supplied
+        // runtimeSessionId against the request's owner. The request's
+        // workspace is not compared; the stored workspaceRoot travels with
+        // the request itself.
+        const result = store.applyDeckSwitchResolution(
+          requestId,
+          runtimeSessionId.trim(),
+          decision,
+        );
+
+        switch (result.outcome) {
+          case 'not-found':
+            return reply.status(404).send({ success: false, error: 'Deck-switch request not found' });
+          case 'unauthorized':
+            throw new TrustedAuthError(
+              'RESOURCE_OUT_OF_SCOPE',
+              'Deck-switch request belongs to a different session',
+            );
+          case 'expired':
+            throw new TrustedAuthError('DECK_SWITCH_EXPIRED', 'Deck-switch request expired');
+          case 'already-resolved':
+            return reply.status(409).send({
+              success: false,
+              error: `Deck-switch request already resolved (status=${result.request.status})`,
+              error_code: 'DECK_SWITCH_CONSUMED',
+              status: result.request.status,
+            });
+          case 'target-missing':
+            return reply.status(404).send({ success: false, error: 'Deck not found' });
+          case 'session-invalid':
+            throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
+          case 'workspace-required':
+            return reply.status(400).send({
+              success: false,
+              error: 'workspace-default requires a workspaceRoot on the request',
+            });
+          case 'assignment-failed':
+            return reply.status(500).send({
+              success: false,
+              error: `Workspace assignment write failed: ${result.error}`,
+            });
+          case 'declined':
+            return reply.send({
+              success: true,
+              data: { requestId, decision, status: 'declined' },
+            });
+          case 'resolved': {
+            const deck = await fastify.db.getDeck(result.request.requestedDeckId);
+            return reply.send({
+              success: true,
+              data: {
+                requestId,
+                decision,
+                status: 'consumed',
+                deckId: result.request.requestedDeckId,
+                ...(deck ? { deckName: deck.name } : {}),
+                ...(result.workspaceRoot ? { workspaceRoot: result.workspaceRoot } : {}),
+              },
+            });
+          }
+        }
       } catch (error) {
         if (error instanceof TrustedAuthError) {
           return sendTrustedAuthError(reply, error);

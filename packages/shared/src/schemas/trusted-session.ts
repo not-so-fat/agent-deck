@@ -12,6 +12,10 @@ export const TrustedSessionErrorCodeSchema = z.enum([
   'ADMIN_CHALLENGE_EXPIRED',
   /** Launch-selected deck cannot be changed by the agent (NOT-105). */
   'DECK_FIXED',
+  /** Deck-switch request past its TTL (NOT-207). */
+  'DECK_SWITCH_EXPIRED',
+  /** Deck-switch request already resolved; repeat resolution is a no-op (NOT-207). */
+  'DECK_SWITCH_CONSUMED',
 ]);
 
 /** @deprecated Legacy v2 grant file shape — CLI reads for migration only (NOT-108). */
@@ -101,9 +105,45 @@ export function httpStatusForTrustedError(code: TrustedSessionErrorCode): number
     case 'DASHBOARD_REQUIRED':
     case 'DECK_FIXED':
       return 403;
+    case 'DECK_SWITCH_CONSUMED':
+      return 409;
     case 'ADMIN_CHALLENGE_EXPIRED':
+    case 'DECK_SWITCH_EXPIRED':
       return 410;
     default:
       return 500;
   }
 }
+
+/**
+ * Human approval scope for a deck-switch request (NOT-207).
+ * Exactly three decisions exist: rebind this session only, rebind the
+ * session and the workspace default, or decline.
+ */
+export const DeckSwitchDecisionSchema = z.enum(['session', 'workspace-default', 'decline']);
+
+export type DeckSwitchDecision = z.infer<typeof DeckSwitchDecisionSchema>;
+
+/** Approval request body for resolving one opaque deck-switch request. */
+export const DeckSwitchResolveBodySchema = z
+  .object({
+    runtimeSessionId: z.string().min(1),
+    decision: DeckSwitchDecisionSchema,
+  })
+  .strict();
+
+export type DeckSwitchResolveBody = z.infer<typeof DeckSwitchResolveBodySchema>;
+
+/** Successful resolution result for a deck-switch request. */
+export const DeckSwitchResolutionSchema = z
+  .object({
+    requestId: z.string(),
+    decision: DeckSwitchDecisionSchema,
+    status: z.enum(['consumed', 'declined']),
+    deckId: z.string().optional(),
+    deckName: z.string().optional(),
+    workspaceRoot: z.string().optional(),
+  })
+  .strict();
+
+export type DeckSwitchResolution = z.infer<typeof DeckSwitchResolutionSchema>;

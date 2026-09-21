@@ -1,12 +1,16 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   ADMIN_CHALLENGE_TTL_MS,
   ADMIN_MODE_LEASE_MS,
   DASHBOARD_SESSION_LEASE_MS,
   RUNTIME_SESSION_LEASE_MS,
+  ensureGitExcluded,
   prefixTrustedId,
   type AgentSessionMode,
+  type DeckSwitchDecision,
   type RuntimeSession,
 } from '@agent-deck/shared';
 import type Database from 'better-sqlite3';
@@ -93,6 +97,81 @@ const DECK_SWITCH_STATUS_TRANSITIONS: Record<DeckSwitchRequestStatus, DeckSwitch
   consumed: [],
 };
 
+/** Result of the atomic approval commit (NOT-207). */
+export type DeckSwitchResolutionOutcome =
+  | { outcome: 'not-found' }
+  | { outcome: 'unauthorized' }
+  | { outcome: 'expired'; request: DeckSwitchRequest }
+  | { outcome: 'already-resolved'; request: DeckSwitchRequest }
+  | { outcome: 'declined'; request: DeckSwitchRequest }
+  | { outcome: 'resolved'; request: DeckSwitchRequest; workspaceRoot?: string }
+  | { outcome: 'target-missing' }
+  | { outcome: 'session-invalid' }
+  | { outcome: 'workspace-required' }
+  | { outcome: 'assignment-failed'; error: string };
+
+/**
+ * Sentinel that aborts the approval transaction when the requesting session
+ * vanishes mid-commit, so the status transition and session rebind roll back
+ * together (the already-written assignment file is compensated by restore).
+ */
+class DeckSwitchCommitFailed extends Error {
+  constructor(public readonly outcome: 'session-invalid') {
+    super(`deck-switch commit failed: ${outcome}`);
+    this.name = 'DeckSwitchCommitFailed';
+  }
+}
+
+/**
+ * Workspace-default assignment writer seam (NOT-207).
+ *
+ * Preferred injection point is {@link TrustedSessionStoreOptions}; the
+ * per-call `deps` override on {@link TrustedSessionStore.applyDeckSwitchResolution}
+ * is kept for backwards compatibility. Custom writers own their side effects:
+ * snapshot/restore compensation below only applies to the default file writer.
+ */
+export type WorkspaceAssignmentWriter = (
+  workspaceRoot: string,
+  deckId: string,
+  nowIso: string,
+) => void;
+
+export type TrustedSessionStoreOptions = {
+  workspaceAssignmentWriter?: WorkspaceAssignmentWriter;
+  deckExists?: (deckId: string) => boolean;
+};
+
+function useJsonPath(workspaceRoot: string): string {
+  return path.join(workspaceRoot, '.agent-deck', 'use.json');
+}
+
+/** Best-effort read of the raw `use.json` bytes (null when absent). */
+function readRawUseJson(workspaceRoot: string): string | null {
+  try {
+    return fs.readFileSync(useJsonPath(workspaceRoot), 'utf8');
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** Restore `use.json` to previously snapshotted bytes (null deletes it). */
+function restoreRawUseJson(workspaceRoot: string, raw: string | null): void {
+  const filePath = useJsonPath(workspaceRoot);
+  if (raw === null) {
+    try {
+      fs.rmSync(filePath);
+    } catch {
+      // Already absent; nothing to restore.
+    }
+    return;
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, raw.endsWith('\n') ? raw : `${raw}\n`, 'utf8');
+}
+
 const DASHBOARD_SESSION_TOUCH_INTERVAL_MS = 60 * 1000;
 
 function hashSecret(secret: string): string {
@@ -126,8 +205,74 @@ function addMs(iso: string, ms: number): string {
 }
 
 export class TrustedSessionStore {
-  constructor(private readonly db: Database.Database) {
+  constructor(
+    private readonly db: Database.Database,
+    private readonly options?: TrustedSessionStoreOptions,
+  ) {
     this.ensureTables();
+  }
+
+  /**
+   * Default workspace-default assignment write (NOT-207): the v3 `use.json`
+   * at the request's workspaceRoot. Preserves the existing `mcpUrl`, if any.
+   * Never touches `deck_workspaces` — that registry only records which
+   * folders receive stub syncs for a deck; the assignment file is the source
+   * of truth launchers and the CLI read for the folder's default deck.
+   */
+  private writeWorkspaceAssignmentFile(workspaceRoot: string, deckId: string): void {
+    const deck = this.db.prepare(`SELECT id, name FROM decks WHERE id = ?`).get(deckId) as
+      | { id: string; name: string }
+      | undefined;
+    if (!deck) {
+      throw new Error(`deck not found: ${deckId}`);
+    }
+    let mcpUrl: string | undefined;
+    try {
+      const raw = readRawUseJson(workspaceRoot);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (typeof parsed.mcpUrl === 'string' && parsed.mcpUrl.length > 0) {
+          mcpUrl = parsed.mcpUrl;
+        }
+      }
+    } catch {
+      // Unreadable or corrupt manifest; overwrite it below.
+    }
+    const next: Record<string, unknown> = {
+      version: 3,
+      deckId: deck.id,
+      deckName: deck.name,
+      ...(mcpUrl ? { mcpUrl } : {}),
+    };
+    const dir = path.join(workspaceRoot, '.agent-deck');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(useJsonPath(workspaceRoot), `${JSON.stringify(next, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o644,
+    });
+    ensureGitExcluded(workspaceRoot);
+  }
+
+  /**
+   * Approval-path session rebind: move the requesting session to the new deck
+   * and renew its lease. Unlike {@link setRuntimeSessionDeck} (agent-initiated,
+   * agent-admin-gated), approval acts as the human, so no mode check applies;
+   * the session must still be live. Returns false when the row is gone,
+   * revoked, or expired.
+   */
+  private rebindRuntimeSessionDeck(
+    sessionId: string,
+    deckId: string,
+    now: string,
+  ): boolean {
+    const changed = this.db
+      .prepare(
+        `UPDATE runtime_sessions
+         SET deck_id = ?, last_seen_at = ?, expires_at = ?
+         WHERE id = ? AND revoked_at IS NULL AND expires_at > ?`,
+      )
+      .run(deckId, now, addMs(now, RUNTIME_SESSION_LEASE_MS), sessionId, now);
+    return changed.changes > 0;
   }
 
   private ensureTables(): void {
@@ -767,6 +912,182 @@ export class TrustedSessionStore {
       return null;
     }
     return this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!);
+  }
+
+  /**
+   * NOT-207: approval commit for a deck-switch request.
+   *
+   * The only commit point for changing a deck binding from a request.
+   *
+   * Ordering is rollback-safe because a file write cannot join the SQLite
+   * transaction: for `workspace-default` the v3 `use.json` at the request's
+   * workspaceRoot is written *before* the database transaction runs. A failed
+   * write returns `assignment-failed` with zero database mutation, so the
+   * session stays on the prior deck. The transaction then atomically covers
+   * pending→approved, the requesting session's rebind, and approved→consumed;
+   * if it fails after the file was written (only possible when the session
+   * row vanishes concurrently), the file is restored from its snapshot and
+   * `session-invalid` is returned. Either way the prior binding stays
+   * effective and no partial commit is visible.
+   *
+   * - `session`: rebind requesting session only; workspace default untouched.
+   * - `workspace-default`: as `session`, plus replace the workspace-root
+   *   assignment file (never `deck_workspaces`).
+   * - `decline`: pending→declined; bindings untouched.
+   */
+  applyDeckSwitchResolution(
+    requestId: string,
+    runtimeSessionId: string,
+    decision: DeckSwitchDecision,
+    deps?: {
+      deckExists?: (deckId: string) => boolean;
+      writeWorkspaceAssignment?: (workspaceRoot: string, deckId: string, nowIso: string) => void;
+    },
+  ): DeckSwitchResolutionOutcome {
+    const row = this.getDeckSwitchRequestRow(requestId);
+    if (!row) {
+      return { outcome: 'not-found' };
+    }
+    if (row.runtime_session_id !== runtimeSessionId) {
+      return { outcome: 'unauthorized' };
+    }
+    if (row.status !== 'pending') {
+      // Stable repeat mapping: an already-expired request keeps reporting
+      // `expired`, every other resolved request reports `already-resolved`.
+      if (row.status === 'expired') {
+        return { outcome: 'expired', request: this.toDeckSwitchRequest(row) };
+      }
+      return { outcome: 'already-resolved', request: this.toDeckSwitchRequest(row) };
+    }
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      this.markDeckSwitchRequestExpired(requestId);
+      return {
+        outcome: 'expired',
+        request: this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!),
+      };
+    }
+
+    const now = nowIso();
+    if (decision === 'decline') {
+      this.db
+        .prepare(
+          `UPDATE deck_switch_requests
+           SET status = 'declined', resolved_at = ?
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .run(now, requestId);
+      return {
+        outcome: 'declined',
+        request: this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!),
+      };
+    }
+
+    const deckExists =
+      deps?.deckExists ??
+      this.options?.deckExists ??
+      ((deckId: string) => {
+        const found = this.db.prepare(`SELECT 1 AS ok FROM decks WHERE id = ?`).get(deckId) as
+          | { ok: number }
+          | undefined;
+        return found !== undefined;
+      });
+    if (!deckExists(row.requested_deck_id)) {
+      return { outcome: 'target-missing' };
+    }
+
+    const workspaceRoot = row.workspace_root?.trim() ? row.workspace_root.trim() : null;
+    if (decision === 'workspace-default' && !workspaceRoot) {
+      return { outcome: 'workspace-required' };
+    }
+
+    const sessionRow = this.getRuntimeSessionRow(row.runtime_session_id);
+    if (!sessionRow || sessionRow.revoked_at || Date.parse(sessionRow.expires_at) <= Date.now()) {
+      return { outcome: 'session-invalid' };
+    }
+
+    // File-first ordering (see doc comment): write the assignment before the
+    // database transaction so a failed write leaves the session on the prior
+    // deck with no database mutation to unwind.
+    let assignmentRollback: { workspaceRoot: string; priorRaw: string | null } | null = null;
+    if (decision === 'workspace-default' && workspaceRoot) {
+      const customWriter = deps?.writeWorkspaceAssignment ?? this.options?.workspaceAssignmentWriter;
+      const writeAssignment: WorkspaceAssignmentWriter = customWriter
+        ? (root, deckId, at) => customWriter(root, deckId, at)
+        : (root, deckId) => this.writeWorkspaceAssignmentFile(root, deckId);
+      if (!customWriter) {
+        try {
+          assignmentRollback = { workspaceRoot, priorRaw: readRawUseJson(workspaceRoot) };
+        } catch (error) {
+          return {
+            outcome: 'assignment-failed',
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      try {
+        writeAssignment(workspaceRoot, row.requested_deck_id, now);
+      } catch (error) {
+        return {
+          outcome: 'assignment-failed',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+
+    let outcome: DeckSwitchResolutionOutcome = { outcome: 'not-found' };
+    const tx = this.db.transaction(() => {
+      const approved = this.db
+        .prepare(
+          `UPDATE deck_switch_requests
+           SET status = 'approved', resolved_at = ?
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .run(now, requestId);
+      if (approved.changes === 0) {
+        outcome = {
+          outcome: 'already-resolved',
+          request: this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!),
+        };
+        return;
+      }
+
+      if (!this.rebindRuntimeSessionDeck(row.runtime_session_id, row.requested_deck_id, now)) {
+        throw new DeckSwitchCommitFailed('session-invalid');
+      }
+
+      this.db
+        .prepare(
+          `UPDATE deck_switch_requests
+           SET status = 'consumed'
+           WHERE id = ? AND status = 'approved'`,
+        )
+        .run(requestId);
+      outcome = {
+        outcome: 'resolved',
+        request: this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!),
+        ...(workspaceRoot && decision === 'workspace-default' ? { workspaceRoot } : {}),
+      };
+    });
+
+    try {
+      tx();
+    } catch (error) {
+      // The transaction rolled back; compensate the already-written file so
+      // no partial commit (file on B, session on A) is visible.
+      if (assignmentRollback) {
+        try {
+          restoreRawUseJson(assignmentRollback.workspaceRoot, assignmentRollback.priorRaw);
+        } catch {
+          // Best effort: the database is already rolled back; surface the
+          // session outcome rather than masking it with a restore error.
+        }
+      }
+      if (error instanceof DeckSwitchCommitFailed) {
+        return { outcome: 'session-invalid' };
+      }
+      throw error;
+    }
+    return outcome;
   }
 
   /**

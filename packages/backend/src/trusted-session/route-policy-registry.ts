@@ -40,6 +40,11 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/admin\/exit$/, policy: 'requireAgentResource' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/bind-workspace$/, policy: 'requireAgentResource' },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+$/,
+    policy: 'requireAgentOrDashboard',
+  },
   { methods: ['GET'], pattern: /^\/api\/scope\/deck$/, policy: 'requireAgentResource' },
   { methods: ['POST'], pattern: /^\/api\/scope\/live-display$/, policy: 'requireAgentResource' },
   { methods: ['DELETE'], pattern: /^\/api\/scope\/live-display\/[^/]+$/, policy: 'requireAgentResource' },
@@ -103,6 +108,11 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/local-mcp\/[^/]+\/status$/, policy: 'requireDashboard' },
   { methods: ['GET'], pattern: /^\/api\/local-mcp\/list$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/admin\/approve$/, policy: 'requireDashboard' },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+\/resolve$/,
+    policy: 'requireDashboard',
+  },
 
   // Agent or dashboard (dual-auth routes — handler branches on principal kind)
   { methods: ['GET'], pattern: /^\/api\/decks$/, policy: 'requireAgentOrDashboard' },
