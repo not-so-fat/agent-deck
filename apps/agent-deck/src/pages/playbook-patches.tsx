@@ -158,10 +158,10 @@ export default function PlaybookPatchesPage() {
           <Link href="/">
             <Button variant="ghost" size="sm" className="text-gray-300">
               <ArrowLeft className="mr-1 h-4 w-4" />
-              Deck
+              <span className="font-ui-display">Deck</span>
             </Button>
           </Link>
-          <h1 className="text-lg font-semibold">Playbook review queue</h1>
+          <h1 className="font-ui-display text-lg font-semibold">Playbook review queue</h1>
           <Badge variant="secondary">{proposedPatches.length} waiting</Badge>
           <Link
             href="/feedback-signals"

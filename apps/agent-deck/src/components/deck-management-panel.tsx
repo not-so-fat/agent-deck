@@ -191,7 +191,7 @@ export default function DeckManagementPanel({
       <div className="h-full flex flex-col" data-testid="deck-management-panel">
         <h2 className="text-lg font-bold mb-3 flex items-center">
           <Layers className="w-4 h-4 mr-2" style={{ color: "#92E4DD" }} />
-          <span style={{ color: "#92E4DD" }}>My Decks</span>
+          <span className="font-ui-display" style={{ color: "#92E4DD" }}>My Decks</span>
         </h2>
 
         <div className="mb-3">

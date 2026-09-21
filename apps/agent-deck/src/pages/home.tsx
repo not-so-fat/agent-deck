@@ -325,8 +325,8 @@ export default function Home() {
                 <div className={`w-2 h-2 rounded-full animate-pulse ${
                   connectionStatus === 'connected' ? 'bg-emerald-400' : 'bg-red-400'
                 }`}></div>
-                <button 
-                  className={`text-sm hover:underline cursor-pointer ${
+                <button
+                  className={`font-ui-display text-sm hover:underline cursor-pointer ${
                     connectionStatus === 'connected' ? 'text-emerald-300' : 'text-red-300'
                   }`} 
                   data-testid="button-copy-mcp-url"
@@ -350,7 +350,7 @@ export default function Home() {
 
               <Link href="/feedback-signals">
                 <Button variant="outline" size="sm" className="relative border-white/20 bg-white/5 text-[#E8F6F4]">
-                  Feedback
+                  <span className="font-ui-display">Feedback</span>
                   {openSignalCount > 0 && (
                     <span
                       className="ml-2 rounded-full px-2 py-0.5 text-xs font-semibold"
@@ -366,7 +366,7 @@ export default function Home() {
               <Link href="/playbook-patches">
                 <Button variant="outline" size="sm" className="relative border-white/20 bg-white/5 text-[#E8F6F4]">
                   <GitPullRequest className="mr-2 h-4 w-4" />
-                  Review
+                  <span className="font-ui-display">Review</span>
                   {proposedPatches.length > 0 && (
                     <span
                       className="ml-2 rounded-full px-2 py-0.5 text-xs font-semibold"
@@ -416,7 +416,7 @@ export default function Home() {
             <div className="panel-surface p-4">
               <h2 className="text-lg font-bold mb-3 flex items-center">
                 <Bolt className="w-4 h-4 mr-2" style={{ color: "#92E4DD" }} />
-                <span style={{ color: "#92E4DD" }}>Add Cards</span>
+                <span className="font-ui-display" style={{ color: "#92E4DD" }}>Add Cards</span>
               </h2>
               
               <div className="space-y-2">
@@ -530,7 +530,7 @@ export default function Home() {
               <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2">
                 <h2 className="text-lg font-bold flex items-center">
                   <LayoutGrid className="w-4 h-4 mr-2" style={{ color: "#92E4DD" }} />
-                  <span style={{ color: "#92E4DD" }}>My Collection</span>
+                  <span className="font-ui-display" style={{ color: "#92E4DD" }}>My Collection</span>
                   <span className="ml-3 text-sm font-normal text-gray-400">
                     ({collectionCount} cards)
                   </span>
