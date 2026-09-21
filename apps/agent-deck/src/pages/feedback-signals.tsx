@@ -127,7 +127,7 @@ export default function FeedbackSignalsPage() {
               Home
             </Button>
           </Link>
-          <h1 className="text-lg font-semibold">Feedback</h1>
+          <h1 className="font-ui-display text-lg font-semibold">Feedback</h1>
           <Badge variant="outline">{signals.length}</Badge>
           <Link
             href="/playbook-patches"

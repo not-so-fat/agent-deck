@@ -110,7 +110,7 @@ export default function DeckBuilder({
     <div className="flex h-full min-w-0 flex-col overflow-hidden">
       <h3 className="mb-4 flex min-w-0 shrink-0 items-center text-lg font-bold">
         <i className="fas fa-layer-group mr-2 text-blue-400"></i>
-        Deck
+        <span className="font-ui-display">Deck</span>
         {editingName ? (
           <Input
             ref={nameInputRef}

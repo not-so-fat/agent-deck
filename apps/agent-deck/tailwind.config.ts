@@ -22,6 +22,8 @@ export default {
         sans: ["var(--font-sans)"],
         serif: ["var(--font-serif)"],
         mono: ["var(--font-mono)"],
+        // NOT-218: semantic display-face utility backed by --font-ui-display.
+        "ui-display": ["var(--font-ui-display)"],
       },
       colors: {
         border: "hsl(var(--border))",
