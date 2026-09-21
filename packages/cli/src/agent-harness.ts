@@ -187,7 +187,10 @@ function readTextFile(filePath: string): string {
 
 function writeTextFile(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, content.endsWith('\n') ? content : `${content}\n`, 'utf8');
+  // Write merged content verbatim: the merge functions already append a
+  // trailing newline when they add the block, and user bytes after the end
+  // marker must be preserved byte-for-byte (even without a final newline).
+  fs.writeFileSync(filePath, content, 'utf8');
 }
 
 export function installAgentHarness(client: HarnessClient, scope: SetupScope): HarnessInstallResult {

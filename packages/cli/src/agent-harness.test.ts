@@ -1,6 +1,8 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildClaudeHarnessBlock,
@@ -10,6 +12,7 @@ import {
   HARNESS_MARKER_END,
   HARNESS_MARKER_START,
   HARNESS_RULE_DESCRIPTION,
+  installAgentHarness,
   mergeClaudeHarness,
   mergeCursorHarnessFile,
   resolveHarnessPath,
@@ -331,5 +334,96 @@ ${HARNESS_MARKER_END}
     const { content } = mergeClaudeHarness(existing, buildClaudeHarnessBlock('global'));
     expect(content.startsWith(existing)).toBe(true);
     expect(content).toContain(HARNESS_MARKER_START);
+  });
+});
+
+describe('installAgentHarness on-disk byte preservation', () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  function useTmpCwd(): string {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-harness-'));
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    return tmpDir;
+  }
+
+  it('claude refresh preserves no-trailing-newline user text verbatim', () => {
+    const cwd = useTmpCwd();
+    const target = resolveHarnessPath('claude', 'project');
+    expect(target).toBe(path.join(cwd, 'CLAUDE.md'));
+    const after = '\n\n\n# More notes';
+    fs.writeFileSync(
+      target as string,
+      `# Team conventions\n\n${HARNESS_MARKER_START}\nold harness\n${HARNESS_MARKER_END}${after}`,
+      'utf8',
+    );
+    const result = installAgentHarness('claude', 'project');
+    expect(result.action).toBe('updated');
+    const written = fs.readFileSync(target as string, 'utf8');
+    const endSlice = written.slice(
+      written.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length,
+    );
+    expect(endSlice).toBe(after);
+    expect(written.endsWith('\n')).toBe(false);
+    const repeat = installAgentHarness('claude', 'project');
+    expect(repeat.action).toBe('unchanged');
+    expect(fs.readFileSync(target as string, 'utf8')).toBe(written);
+  });
+
+  it('codex refresh preserves no-trailing-newline user text verbatim', () => {
+    const cwd = useTmpCwd();
+    const target = resolveHarnessPath('codex', 'project');
+    expect(target).toBe(path.join(cwd, 'AGENTS.md'));
+    const after = '\n\n\n# More notes';
+    fs.writeFileSync(
+      target as string,
+      `# Team conventions\n\n${HARNESS_MARKER_START}\nold harness\n${HARNESS_MARKER_END}${after}`,
+      'utf8',
+    );
+    const result = installAgentHarness('codex', 'project');
+    expect(result.action).toBe('updated');
+    const written = fs.readFileSync(target as string, 'utf8');
+    const endSlice = written.slice(
+      written.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length,
+    );
+    expect(endSlice).toBe(after);
+    expect(written.endsWith('\n')).toBe(false);
+    const repeat = installAgentHarness('codex', 'project');
+    expect(repeat.action).toBe('unchanged');
+    expect(fs.readFileSync(target as string, 'utf8')).toBe(written);
+  });
+
+  it('cursor refresh preserves no-trailing-newline footer verbatim', () => {
+    const cwd = useTmpCwd();
+    const target = resolveHarnessPath('cursor', 'project');
+    expect(target).toBe(
+      path.join(cwd, '.cursor', 'rules', CURSOR_RULE_FILENAME),
+    );
+    const footer = '\n\n\n# Keep this footer';
+    fs.mkdirSync(path.dirname(target as string), { recursive: true });
+    fs.writeFileSync(
+      target as string,
+      `---\ndescription: My custom description\nalwaysApply: true\n---\n\n# My preamble\n\n${HARNESS_MARKER_START}\nold\n${HARNESS_MARKER_END}${footer}`,
+      'utf8',
+    );
+    const result = installAgentHarness('cursor', 'project');
+    expect(result.action).toBe('updated');
+    const written = fs.readFileSync(target as string, 'utf8');
+    const endSlice = written.slice(
+      written.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length,
+    );
+    expect(endSlice).toBe(footer);
+    expect(written.endsWith('\n')).toBe(false);
+    expect(written).toContain('description: My custom description');
+    const repeat = installAgentHarness('cursor', 'project');
+    expect(repeat.action).toBe('unchanged');
+    expect(fs.readFileSync(target as string, 'utf8')).toBe(written);
   });
 });
