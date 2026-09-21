@@ -108,7 +108,7 @@ Restart Cursor / Claude Code so MCP reloads **`:3001`**. Dashboard: http://local
 **Goal:** Your normal workflow still works without repo files.
 
 1. Temporarily rename `.agent-deck/use.json` aside.
-2. New chat: *"Use the dev deck"* → `bind_workspace` / `switch_bound_deck`.
+2. New chat: *"Use the dev deck"* → `bind_workspace` (bootstrap) — or `switch_deck` + human approval when already bound.
 3. Playbooks available via `get_bound_deck`; stubs optional.
 
 **Pass:** deck binds; playbooks listed; no dependency on `use.json`.
