@@ -188,7 +188,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('bind_workspace other deck → DECK_FIXED', async () => {
+  it('bind_workspace other deck → SWITCH_APPROVAL_REQUIRED (NOT-214)', async () => {
     const { backendUrl, deckAlpha, deckBeta } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
@@ -205,7 +205,8 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     );
 
     expect(denied.isError).toBe(true);
-    expect(denied.data.error_code).toBe('DECK_FIXED');
+    expect(denied.data.error_code).toBe('SWITCH_APPROVAL_REQUIRED');
+    expect(JSON.stringify(denied.data)).toContain('switch_deck');
   });
 
   it('propose_playbook_patch signal_only succeeds', async () => {
@@ -341,7 +342,7 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     expect(store.findActiveRuntimeSessionByMcpSessionId(sessionId!)).toBeFalsy();
   });
 
-  it('elevated launch session with use.json can switch decks', async () => {
+  it('elevated launch session with use.json cannot switch decks via bind (NOT-214)', async () => {
     const { backendUrl, deckAlpha, deckBeta, store } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
@@ -359,7 +360,8 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     expect(runtime).toBeTruthy();
     store.elevateSessionToAdmin(runtime!.sessionId);
 
-    const switched = await callToolMcpResult(
+    // Elevation is no longer a switching path: no rewrite, no binding change.
+    const denied = await callToolMcpResult(
       started.port,
       sessionId,
       'bind_workspace',
@@ -367,16 +369,17 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       2,
       deckHeaders,
     );
-    expect(switched.isError).toBe(false);
-    expect(switched.data.assignment_updated).toBe(true);
-    expect(switched.data.deck_name).toBe('beta');
+    expect(denied.isError).toBe(true);
+    expect(denied.data.error_code).toBe('SWITCH_APPROVAL_REQUIRED');
+    expect(JSON.stringify(denied.data)).toContain('switch_deck');
+    expect(denied.data.assignment_updated).toBeUndefined();
 
     const assigned = JSON.parse(
       fs.readFileSync(path.join(tmpRoot, '.agent-deck', 'use.json'), 'utf8'),
     ) as { version: number; deckId: string; deckName: string };
     expect(assigned.version).toBe(3);
-    expect(assigned.deckId).toBe(deckBeta.id);
-    expect(assigned.deckName).toBe('beta');
+    expect(assigned.deckId).toBe(deckAlpha.id);
+    expect(assigned.deckName).toBe('alpha');
 
     const bound = await callToolMcpResult(
       started.port,
@@ -387,11 +390,11 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       deckHeaders,
     );
     expect(bound.isError).toBe(false);
-    expect(bound.data.id).toBe(deckBeta.id);
+    expect(bound.data.id).toBe(deckAlpha.id);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('launch session with use.json but not elevated → ADMIN_REQUIRED', async () => {
+  it('launch session with use.json but not elevated → SWITCH_APPROVAL_REQUIRED (NOT-214)', async () => {
     const { backendUrl, deckAlpha, deckBeta } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
@@ -414,11 +417,12 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       deckHeaders,
     );
     expect(denied.isError).toBe(true);
-    expect(denied.data.error_code).toBe('ADMIN_REQUIRED');
+    expect(denied.data.error_code).toBe('SWITCH_APPROVAL_REQUIRED');
+    expect(JSON.stringify(denied.data)).toContain('switch_deck');
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('launch session without use.json → DECK_FIXED', async () => {
+  it('launch session without use.json → SWITCH_APPROVAL_REQUIRED (NOT-214)', async () => {
     const { backendUrl, deckAlpha, deckBeta } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
@@ -434,7 +438,8 @@ describe('MCP launch-selected deck (NOT-105)', () => {
       deckHeaders,
     );
     expect(denied.isError).toBe(true);
-    expect(denied.data.error_code).toBe('DECK_FIXED');
+    expect(denied.data.error_code).toBe('SWITCH_APPROVAL_REQUIRED');
+    expect(JSON.stringify(denied.data)).toContain('switch_deck');
   });
 
   it('same-deck bind with use.json in a git repo leaves porcelain empty', async () => {

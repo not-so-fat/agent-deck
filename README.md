@@ -128,7 +128,7 @@ Drag cards onto your deck in the dashboard, or ask the agent when building the d
 
 ### 6. Pick a deck each session
 
-**Default (agent-operated):** no repo config required. Tell the agent which deck — *“use the dev deck”*, *“work deck for this project”*, or mid-session *“switch to my personal deck”*. It calls `bind_workspace` / `switch_bound_deck` over MCP.
+**Default (agent-operated):** no repo config required. Tell the agent which deck — *“use the dev deck”*, *“work deck for this project”*, or mid-session *“switch to my personal deck”*. It calls `switch_deck` over MCP and waits for you to approve the switch as This session only or This workspace by default.
 
 **Optional `agent-deck use`:** writes `.agent-deck/use.json` so the agent can bind that deck on session open without you naming it; trigger stubs improve playbook matching.
 

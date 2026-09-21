@@ -59,6 +59,21 @@ describe('agent-harness templates', () => {
     expect(file).not.toContain('weekly priority');
   });
 
+  it('harness teaches the request-only switch flow, not the retired direct switch (NOT-214)', () => {
+    const texts = [
+      buildCursorHarnessFile('global'),
+      buildClaudeHarnessBlock('global'),
+      buildCodexHarnessBlock('global'),
+    ];
+    for (const text of texts) {
+      expect(text).toContain('switch_deck');
+      expect(text).toContain('This session only');
+      expect(text).toContain('This workspace by default');
+      expect(text).not.toContain('switch_bound_deck');
+      expect(text).not.toContain('admin elevation) and only works where the folder has an assignment file');
+    }
+  });
+
   it('harness never names removed MCP tools (1.3.0 catalog)', () => {
     const cursor = buildCursorHarnessFile('project');
     const claude = buildClaudeHarnessBlock('project');
@@ -169,6 +184,26 @@ describe('agent-harness templates', () => {
     expect(end).toBeGreaterThan(start);
     const checkedInBlock = file.slice(start + HARNESS_MARKER_START.length, end).trim();
     expect(checkedInBlock).toBe(buildClaudeHarnessBlock('project'));
+  });
+
+  it('keeps the checked-in cursor rule on the generated project harness (NOT-214)', () => {
+    const file = fs.readFileSync(
+      new URL('../../../.cursor/rules/agent-deck.mdc', import.meta.url),
+      'utf8',
+    );
+    const start = file.indexOf(HARNESS_MARKER_START);
+    const end = file.indexOf(HARNESS_MARKER_END);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const checkedInInner = file.slice(start + HARNESS_MARKER_START.length, end).trim();
+    const generated = buildCursorHarnessFile('project');
+    const generatedInner = generated
+      .slice(
+        generated.indexOf(HARNESS_MARKER_START) + HARNESS_MARKER_START.length,
+        generated.indexOf(HARNESS_MARKER_END),
+      )
+      .trim();
+    expect(checkedInInner).toBe(generatedInner);
   });
 });
 

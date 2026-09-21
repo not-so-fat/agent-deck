@@ -13,7 +13,7 @@ Agent Deck scopes **per MCP session**, not per git root file. Multiple agents ca
   Agent B  →  bind_workspace({ workspaceRoot: "/repo", deckId: "api-stack" })
 ```
 
-Use `switch_bound_deck` to change deck mid-session without affecting other sessions.
+Call `switch_deck` to request a deck change mid-session — the user approves it as This session only or This workspace by default; the active deck is unchanged until approval and no reload is needed.
 
 ## Choosing a deck
 

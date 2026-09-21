@@ -34,9 +34,9 @@ export type McpBridgeOptions = {
   headers: Record<string, string>;
   /**
    * Re-read the folder assignment before replaying a handshake. It can have moved
-   * to another deck — or another endpoint — while we were connected
-   * (`switch_bound_deck`, `agent-deck use`), and the values we launched with would
-   * otherwise reconnect us to the deck and server we started on.
+   * to another deck — or another endpoint — while we were connected (an approved
+   * workspace-default switch, `agent-deck use`), and the values we launched with
+   * would otherwise reconnect us to the deck and server we started on.
    */
   resolveTarget?: () => Promise<{ url?: string; headers?: Record<string, string> } | undefined>;
   stdin: Readable;
@@ -74,12 +74,14 @@ const DEFAULT_DRAIN_TIMEOUT_MS = 2_000;
 const LEGACY_SESSION_INVALID_MESSAGE = 'no valid session id provided';
 
 /**
- * Tools that move this session to another deck. A session override does not
+ * Tools that bind this session to a deck. A session override does not
  * survive a restart, so the deck a replayed handshake lands on is whatever the
  * launch headers say — which is why we track what the client bound to and refuse
- * to replay a request across a deck change.
+ * to replay a request across a deck change. (NOT-214: switch_bound_deck is
+ * retired — it changes nothing, so it is not tracked here. Deck moves go
+ * through switch_deck + human approval, which commit server-side.)
  */
-const DECK_REBINDING_TOOLS = new Set(['bind_workspace', 'switch_bound_deck']);
+const DECK_REBINDING_TOOLS = new Set(['bind_workspace']);
 
 /** Read-only tool that reports the deck a session actually acts on. */
 const SESSION_BINDING_TOOL = 'get_session_binding';
@@ -212,7 +214,7 @@ export class McpStdioHttpBridge {
   /** The deck the client is working against: launch deck, or whatever it bound to. */
   private boundDeckId: string | undefined;
   /**
-   * In-flight `bind_workspace` / `switch_bound_deck` calls: request id → the session
+   * In-flight `bind_workspace` calls: request id → the session
    * generation the call went out on. A binding result only describes the session that
    * answered it, so one that arrives after a restart must not be read as the deck the
    * replacement session is on.

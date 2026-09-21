@@ -200,10 +200,10 @@ export async function runMcpLaunch(): Promise<number> {
     const bridge = new McpStdioHttpBridge({
       url: plan.mcpUrl,
       headers: parseLaunchHeaders(plan.headers),
-      // An elevated `switch_bound_deck` rewrites the folder assignment while we
-      // are connected, and `agent-deck use` can point it at another endpoint.
-      // Re-reading it before a replayed handshake is what keeps a restart from
-      // reconnecting to the deck and server this process started on.
+      // An approved workspace-default switch (or `agent-deck use`) can rewrite
+      // the folder assignment while we are connected. Re-reading it before a
+      // replayed handshake is what keeps a restart from reconnecting to the
+      // deck and server this process started on.
       resolveTarget: async () => {
         const current = await resolveMcpLaunchPlan(workspaceRoot, endpoint);
         return { url: current.mcpUrl, headers: parseLaunchHeaders(current.headers) };

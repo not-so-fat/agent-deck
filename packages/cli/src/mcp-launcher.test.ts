@@ -66,9 +66,9 @@ describe('mcp-launch assignment headers', () => {
     expect(clearKeychainAssignment).not.toHaveBeenCalled();
   });
 
-  // What the bridge calls before it replays a handshake (NOT-101): an elevated
-  // `switch_bound_deck` rewrites the assignment mid-session, and reconnecting with
-  // the deck this process started on would put the client back on the old deck.
+  // What the bridge calls before it replays a handshake (NOT-101): an approved
+  // workspace-default switch rewrites the assignment mid-session, and reconnecting
+  // with the deck this process started on would put the client back on the old deck.
   it('re-resolves to the deck the assignment names now, not the one we launched on', async () => {
     const workspace = makeWorkspace();
     await writeAssignment(workspace, { deckId: 'deck-a', deckName: 'a' });

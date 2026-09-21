@@ -225,7 +225,7 @@ describe('MCP session-local context (NOT-84)', () => {
     expect(rebound.data.mode).toBe('normal');
   });
 
-  it('different-deck bind returns DECK_FIXED without elevation', async () => {
+  it('different-deck bind returns SWITCH_APPROVAL_REQUIRED without elevation (NOT-214)', async () => {
     const { backendUrl, workspaceRootA, deckAlpha, deckBeta } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
@@ -242,7 +242,8 @@ describe('MCP session-local context (NOT-84)', () => {
     );
 
     expect(denied.isError).toBe(true);
-    expect(denied.data.error_code).toBe('DECK_FIXED');
+    expect(denied.data.error_code).toBe('SWITCH_APPROVAL_REQUIRED');
+    expect(JSON.stringify(denied.data)).toContain('switch_deck');
   });
 
   it('overlapping tool calls keep each session scoped to its origin', async () => {

@@ -100,7 +100,9 @@ Admin authority has a 30-minute inactivity lease renewed only by authenticated M
 
 The single elevation approval covers all C5 actions for that session until elevation ends; create, switch, bind, and edit do not require separate approvals.
 
-**Switch rule (NOT-108):** An agent may change the folder’s deck (`bind_workspace` / `switch_bound_deck` to another deck) only when **both** hold:
+> **Switching contract:** agent-initiated switching via admin elevation below is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204). Agents may only request a switch via `switch_deck`; a human approves it as This session only or This workspace by default.
+
+**Switch rule (NOT-108, retired by NOT-214):** An agent may change the folder’s deck (`bind_workspace` / `switch_bound_deck` to another deck) only when **both** hold:
 
 1. The session is elevated (`agent-admin`); and
 2. The session’s workspace folder has a `.agent-deck/use.json`.
