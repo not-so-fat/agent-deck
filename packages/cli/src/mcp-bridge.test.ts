@@ -405,7 +405,7 @@ describe('readDeckIdFromToolResult', () => {
 type DeckState = BridgeState & {
   /** Deck the live session acts on — an override the next restart forgets. */
   sessionDeck?: string;
-  /** The folder assignment, which an elevated switch does update. */
+  /** The folder assignment, which an approved workspace-default switch does update. */
   assignedDeck: string;
 };
 
@@ -461,9 +461,16 @@ function deckAwareFetch(state: DeckState) {
       return toolResult(body.id, { deck_id: state.sessionDeck, deck_source: 'session_override' });
     }
     if (tool === 'switch_bound_deck') {
-      state.sessionDeck = body.params.arguments.deckId;
-      state.assignedDeck = state.sessionDeck!;
-      return toolResult(body.id, { deck_id: state.sessionDeck, assignment_updated: true });
+      // Retired (NOT-214): the real server answers a compatibility error that
+      // names no deck, so the bridge records nothing from it.
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          error: { code: -32000, message: 'switch_bound_deck is retired — call switch_deck' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
     }
     if (tool === 'get_session_binding') {
       return toolResult(body.id, { effective_deck_id: state.sessionDeck });
@@ -579,7 +586,7 @@ describe('McpStdioHttpBridge across a deck change', () => {
     expect(bridge.getRecoveryCount()).toBe(1);
   });
 
-  it('reconnects to the deck an elevated switch persisted, and retries there', async () => {
+  it('reconnects to the deck an approved switch persisted, and retries there', async () => {
     const state: DeckState = { sessionId: 'session-a', calls: [], assignedDeck: 'deck-1' };
     const { bridge, send, waitFor, finish } = await driveBridge(
       state,
@@ -594,9 +601,14 @@ describe('McpStdioHttpBridge across a deck change', () => {
       jsonrpc: '2.0',
       id: 2,
       method: 'tools/call',
-      params: { name: 'switch_bound_deck', arguments: { deckId: 'deck-2' } },
+      params: { name: 'bind_workspace', arguments: { deckId: 'deck-2' } },
     });
     await waitFor(2);
+
+    // The human-approved workspace-default switch commits server-side: the
+    // folder assignment now names the deck the client chose. (No agent tool
+    // call rewrites it anymore — switch_bound_deck is retired.)
+    state.assignedDeck = 'deck-2';
 
     state.sessionId = 'session-b';
     send({

@@ -59,6 +59,21 @@ describe('agent-harness templates', () => {
     expect(file).not.toContain('weekly priority');
   });
 
+  it('harness teaches the request-only switch flow, not the retired direct switch (NOT-214)', () => {
+    const texts = [
+      buildCursorHarnessFile('global'),
+      buildClaudeHarnessBlock('global'),
+      buildCodexHarnessBlock('global'),
+    ];
+    for (const text of texts) {
+      expect(text).toContain('switch_deck');
+      expect(text).toContain('This session only');
+      expect(text).toContain('This workspace by default');
+      expect(text).not.toContain('switch_bound_deck');
+      expect(text).not.toContain('admin elevation) and only works where the folder has an assignment file');
+    }
+  });
+
   it('harness never names removed MCP tools (1.3.0 catalog)', () => {
     const cursor = buildCursorHarnessFile('project');
     const claude = buildClaudeHarnessBlock('project');
