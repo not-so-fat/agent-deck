@@ -1,6 +1,10 @@
 import path from 'node:path';
 
-import type { LiveBinding, PendingAdminChallenge } from '@agent-deck/shared';
+import type {
+  LiveBinding,
+  PendingAdminChallenge,
+  PendingDeckSwitchRequest,
+} from '@agent-deck/shared';
 import { resolveBackendPorts } from './statusline';
 
 const DEFAULT_TIMEOUT_MS = 1500;
@@ -68,6 +72,31 @@ export function buildOpenDashboardMenubarLine(): string {
   return 'Open dashboard | bash=agent-deck param1=open terminal=false';
 }
 
+/** NOT-212: reopen one pending deck-switch request in the trusted browser flow. */
+export function buildDeckSwitchApprovalHref(
+  pending: PendingDeckSwitchRequest,
+  _dashboardBaseUrl: string,
+): string {
+  const pathPart = pending.approvalPath.startsWith('/')
+    ? pending.approvalPath
+    : `/${pending.approvalPath}`;
+  // SwiftBar runs agent-deck open so each click mints a fresh bootstrap cookie.
+  // Encode path so ? and & survive SwiftBar param parsing.
+  return `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent(pathPart)}`;
+}
+
+/** NOT-212: one inbox row naming both decks so the human knows what they approve. */
+export function buildDeckSwitchApprovalLine(pending: PendingDeckSwitchRequest, now: Date): string {
+  const current = pending.currentDeckName ? truncateName(pending.currentDeckName) : 'current deck';
+  const requested = pending.requestedDeckName
+    ? truncateName(pending.requestedDeckName)
+    : 'requested deck';
+  const age = formatTimeUntil(pending.expiresAt, now);
+  const meta = age ? `expires in ${age}` : 'pending';
+  const href = buildDeckSwitchApprovalHref(pending, resolveDashboardBaseUrl());
+  return `⧉ ${current} → ${requested} — ${meta} | ${href} terminal=false`;
+}
+
 /** How the menu bar names itself when it stops the deck. */
 export const MENUBAR_STOP_SOURCE = 'menubar';
 
@@ -97,12 +126,13 @@ export function renderMenubar(
   now: Date,
   pendingApprovals: PendingAdminChallenge[] = [],
   dashboardBaseUrl = resolveDashboardBaseUrl(),
+  pendingDeckSwitches: PendingDeckSwitchRequest[] = [],
 ): string {
   if (bindings === null) {
     return ['◆ off | color=gray', '---', 'Agent Deck offline | color=gray', ''].join('\n');
   }
 
-  const pendingCount = pendingApprovals.length;
+  const pendingCount = pendingApprovals.length + pendingDeckSwitches.length;
   const title =
     pendingCount > 0
       ? `◆ ⚠ ${pendingCount}`
@@ -122,7 +152,7 @@ export function renderMenubar(
     '---',
   ];
 
-  if (pendingCount > 0) {
+  if (pendingApprovals.length > 0) {
     lines.push('Admin approval pending | size=11 color=orange');
     for (const challenge of pendingApprovals) {
       const deckLabel = challenge.deckName ? truncateName(challenge.deckName) : 'agent session';
@@ -130,6 +160,17 @@ export function renderMenubar(
       const meta = age ? `expires in ${age}` : 'pending';
       const href = buildApprovalHref(challenge, dashboardBaseUrl);
       lines.push(`⚠ Approve ${deckLabel} — ${meta} | ${href} terminal=false`);
+    }
+    lines.push('---');
+  }
+
+  // NOT-212: deck-switch approval inbox. A closed or failed auto-open tab
+  // stays recoverable here — each row reopens its approval page through
+  // `agent-deck open`, which mints a fresh bootstrap cookie per click.
+  if (pendingDeckSwitches.length > 0) {
+    lines.push(`Pending approvals (${pendingDeckSwitches.length}) | size=11 color=orange`);
+    for (const pending of pendingDeckSwitches) {
+      lines.push(buildDeckSwitchApprovalLine(pending, now));
     }
     lines.push('---');
   }
@@ -208,8 +249,21 @@ export async function runMenubar(): Promise<number> {
           '/api/trusted-session/admin/challenges',
           timeoutMs,
         )) ?? [];
+      // NOT-212: a failed inbox fetch is a missing section, never a stale one.
+      const pendingDeckSwitches =
+        (await fetchJson<PendingDeckSwitchRequest[]>(
+          backendUrl,
+          '/api/trusted-session/deck-switch/pending',
+          timeoutMs,
+        )) ?? [];
       process.stdout.write(
-        renderMenubar(bindings, new Date(), pendingApprovals, resolveDashboardBaseUrl()),
+        renderMenubar(
+          bindings,
+          new Date(),
+          pendingApprovals,
+          resolveDashboardBaseUrl(),
+          pendingDeckSwitches,
+        ),
       );
       return 0;
     }
