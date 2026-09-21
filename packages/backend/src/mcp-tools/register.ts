@@ -5,7 +5,7 @@ import { countDeckCards, formatDisplayLine, PatchOpSchema } from '@agent-deck/sh
 import type { ElicitationResult } from './elicitation';
 import { presentDeckSwitchApproval, submitDeckSwitchApprovalViaBackend } from './elicitation';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
-import { healUseManifest, readUseManifest } from '../playbooks/stub-sync';
+import { readUseManifest } from '../playbooks/stub-sync';
 import { resolveBindingActiveSource, resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
@@ -99,9 +99,12 @@ function isOutOfScopeError(error: unknown): boolean {
 }
 
 /**
- * Resolve deck id/name for bind/switch.
+ * Resolve deck id/name for bootstrap bind.
  * Normal agents may only GET the bound deck; out-of-scope requires elevation,
  * then a retry of GET /api/decks/:id (agent-admin is allowed to read any deck).
+ *
+ * A session that already has a deck never gets the elevation path: reaching
+ * another deck requires a human-approved switch_deck request (NOT-214).
  *
  * Launch sessions without an assignment file stay DECK_FIXED (NOT-108).
  */
@@ -115,6 +118,9 @@ async function resolveDeckForBind(
   } catch (error) {
     if (!isOutOfScopeError(error)) {
       throw error;
+    }
+    if (host.sessionBinding.getBinding(host.getSessionId()).deckId) {
+      return mcpPolicyError('SWITCH_APPROVAL_REQUIRED');
     }
     if (host.sessionBinding.isLaunchSession(host.getSessionId())) {
       if (!workspaceRoot || !assignmentFileExists(workspaceRoot)) {
@@ -174,7 +180,7 @@ function registerRuntimeTools(host: McpToolHost): void {
   r('bind_workspace', {
     title: 'Bind Workspace',
     description:
-      'Bind this MCP session to a workspace root and deck. deckId accepts a UUID or exact deck name. Use get_decks to list decks.',
+      'Bootstrap this MCP session to a workspace root and deck. deckId accepts a UUID or exact deck name. Use get_decks to list decks. Already bound to another deck? Call switch_deck instead — bind_workspace never moves a bound session.',
     inputSchema: {
       workspaceRoot: z.string(),
       deckId: z.string().min(1),
@@ -183,61 +189,32 @@ function registerRuntimeTools(host: McpToolHost): void {
     try {
       const sessionId = host.getSessionId();
       const current = host.sessionBinding.getBinding(sessionId);
-      const isLaunch = host.sessionBinding.isLaunchSession(sessionId);
       const resolved = await resolveDeckForBind(host, deckId, workspaceRoot);
       if ('isError' in resolved) {
         return resolved;
       }
       const deck = resolved;
+      // NOT-214: bootstrap/connection only. A session that already has a deck
+      // cannot move via bind — not even elevated, and never by rewriting the
+      // folder assignment. Deck changes go through switch_deck + human approval.
+      if (current.deckId && current.deckId !== deck.id) {
+        return mcpPolicyError('SWITCH_APPROVAL_REQUIRED');
+      }
       let bindResult: Record<string, unknown> | undefined;
 
       if (current.runtimeSessionId) {
-        if (isLaunch && current.deckId && current.deckId !== deck.id) {
-          if (!assignmentFileExists(workspaceRoot)) {
-            return mcpPolicyError('DECK_FIXED');
-          }
-          const denied = await requireMcpAdmin(host);
-          if (denied) {
-            return denied;
-          }
-          bindResult = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ workspaceRoot, deckId: deck.id, updateAssignment: true }),
-          })) as Record<string, unknown>;
-          host.sessionBinding.setTrustedSession(sessionId, {
-            runtimeSessionId: current.runtimeSessionId,
-            deckId: String(bindResult?.deckId ?? deck.id),
-            workspaceRoot,
-            mode: (bindResult?.mode as 'normal' | 'agent-admin' | undefined) ?? current.mode ?? 'normal',
-          });
-          healUseManifest(workspaceRoot, deck);
-        } else {
-          if (current.deckId && current.deckId !== deck.id) {
-            const denied = await requireMcpAdmin(host);
-            if (denied) {
-              return denied;
-            }
-          }
-          bindResult = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
-          })) as Record<string, unknown>;
-          host.sessionBinding.setTrustedSession(sessionId, {
-            runtimeSessionId: current.runtimeSessionId,
-            deckId: String(bindResult?.deckId ?? deck.id),
-            workspaceRoot,
-            mode: (bindResult?.mode as 'normal' | 'agent-admin' | undefined) ?? current.mode ?? 'normal',
-          });
-        }
+        bindResult = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ workspaceRoot, deckId: deck.id }),
+        })) as Record<string, unknown>;
+        host.sessionBinding.setTrustedSession(sessionId, {
+          runtimeSessionId: current.runtimeSessionId,
+          deckId: String(bindResult?.deckId ?? deck.id),
+          workspaceRoot,
+          mode: (bindResult?.mode as 'normal' | 'agent-admin' | undefined) ?? current.mode ?? 'normal',
+        });
       } else {
-        if (current.deckId && current.deckId !== deck.id) {
-          const denied = await requireMcpAdmin(host);
-          if (denied) {
-            return denied;
-          }
-        }
         host.sessionBinding.setWorkspace(sessionId, workspaceRoot);
         host.sessionBinding.setDeckId(sessionId, deck.id);
       }
@@ -255,13 +232,8 @@ function registerRuntimeTools(host: McpToolHost): void {
       const response: Record<string, unknown> = {
         ...payload,
         deck_name: deck.name,
-        message: bindResult?.assignmentUpdated
-          ? 'Folder assignment updated to new deck.'
-          : 'Session bound to deck.',
+        message: 'Session bound to deck.',
       };
-      if (bindResult?.assignmentUpdated) {
-        response.assignment_updated = true;
-      }
       if (stubSync) {
         response.stubs = {
           created: stubSync.stubs.cursor.created + stubSync.stubs.claude.created,
@@ -274,100 +246,6 @@ function registerRuntimeTools(host: McpToolHost): void {
         if (stubSync.manifestPath) {
           response.manifestPath = stubSync.manifestPath;
         }
-        if (stubSync.host_reload_required) {
-          response.stub_sync_note =
-            'Restart the IDE host so skill/rule discovery reloads stub changes.';
-        }
-      }
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(response, null, 2),
-        }],
-      };
-    } catch (error) {
-      return host.toolError(error);
-    }
-  });
-
-  r('switch_bound_deck', {
-    title: 'Switch Bound Deck',
-    description:
-      'Persistently bind this workspace to another deck (requires agent-admin). Updates the folder assignment when present.',
-    inputSchema: { deckId: z.string().min(1) },
-  }, async ({ deckId }) => {
-    try {
-      const sessionId = host.getSessionId();
-      const snapshot = host.sessionBinding.getBinding(sessionId);
-      const workspaceRoot = snapshot.workspaceRoot;
-      if (!workspaceRoot) {
-        return host.toolError(new Error('workspaceRoot missing — call bind_workspace first'));
-      }
-      if (!snapshot.runtimeSessionId) {
-        return host.toolError(new Error('GRANT_REQUIRED'));
-      }
-
-      const isLaunch = host.sessionBinding.isLaunchSession(sessionId);
-      if (isLaunch && !assignmentFileExists(workspaceRoot)) {
-        return mcpPolicyError('DECK_FIXED');
-      }
-
-      const denied = await requireMcpAdmin(host);
-      if (denied) {
-        return denied;
-      }
-
-      // Already elevated above — GET /api/decks/:id allows agent-admin any deck.
-      const deck = await host.fetchDeck(deckId);
-
-      const bound = (await host.callBackendAPI('/api/trusted-session/bind-workspace', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          workspaceRoot,
-          deckId: deck.id,
-          ...(isLaunch ? { updateAssignment: true } : {}),
-        }),
-      })) as Record<string, unknown>;
-
-      host.sessionBinding.setTrustedSession(sessionId, {
-        runtimeSessionId: snapshot.runtimeSessionId,
-        deckId: String(bound.deckId ?? deck.id),
-        workspaceRoot,
-        mode: (bound.mode as 'normal' | 'agent-admin' | undefined) ?? 'agent-admin',
-      });
-
-      if (isLaunch || assignmentFileExists(workspaceRoot)) {
-        healUseManifest(workspaceRoot, deck);
-      }
-
-      let stubSync: StubBindSyncResult | null = null;
-      if (shouldSyncStubsOnBind(host, sessionId, workspaceRoot)) {
-        try {
-          stubSync = await host.syncWorkspaceOnBind(workspaceRoot, deck);
-        } catch {
-          stubSync = null;
-        }
-      }
-      await host.registerLiveDisplay(sessionId);
-      const payload = await host.buildBindingPayload(sessionId);
-      const response: Record<string, unknown> = {
-        ...payload,
-        deck_name: deck.name,
-        message: bound.assignmentUpdated
-          ? 'Folder assignment updated to new deck.'
-          : 'Already bound to this deck.',
-      };
-      if (bound.assignmentUpdated) {
-        response.assignment_updated = true;
-      }
-      if (stubSync) {
-        response.stubs = {
-          created: stubSync.stubs.cursor.created + stubSync.stubs.claude.created,
-          updated: stubSync.stubs.cursor.updated + stubSync.stubs.claude.updated,
-          removed: stubSync.stubs.cursor.removed + stubSync.stubs.claude.removed,
-          host_reload_required: stubSync.host_reload_required,
-        };
         if (stubSync.host_reload_required) {
           response.stub_sync_note =
             'Restart the IDE host so skill/rule discovery reloads stub changes.';
@@ -921,6 +799,20 @@ function registerEditingTools(host: McpToolHost): void {
 
 function registerLegacyTools(host: McpToolHost): void {
   const { registerTool: r } = host;
+
+  // NOT-214: retired direct-switch path. Legacy-profile hosts with a stale
+  // cached tool list can still invoke it, so it stays advertised here only as
+  // a compatibility error: it changes nothing and points at switch_deck.
+  r('switch_bound_deck', {
+    title: 'Switch Bound Deck (retired)',
+    description:
+      'Retired — always fails and changes nothing. Call switch_deck to request a human-approved deck switch.',
+    inputSchema: { deckId: z.string().min(1) },
+  }, async () => host.toolError(
+    new Error(
+      'switch_bound_deck is retired and changed nothing — call switch_deck with { "target": "<deck>" } to request a human-approved switch (This session only or This workspace by default).',
+    ),
+  ));
 
   const boundDeckListHandler = async (segment: 'services' | 'credentials' | 'playbooks') => {
     const deck = await host.callBackendAPI('/api/scope/deck');

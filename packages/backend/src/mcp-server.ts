@@ -350,7 +350,7 @@ export class AgentDeckMCPServer {
   private async getBoundDeckId(sessionId: string): Promise<string> {
     const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
     if (!deck?.id) {
-      throw new Error('No bound deck — call bind_workspace (optionally with deckId) or switch_bound_deck first');
+      throw new Error('No bound deck — call bind_workspace (optionally with deckId) first');
     }
     return deck.id as string;
   }
@@ -1164,7 +1164,7 @@ export class AgentDeckMCPServer {
           console.log(`✅ Agent Deck MCP Server is ready to accept connections`);
           console.log(`📋 Available tools:`);
           console.log(`   - bind_workspace: Bind session to workspace + deck (deckId required)`);
-          console.log(`   - switch_bound_deck: Switch deck for this session only`);
+          console.log(`   - switch_deck: Request a human-approved deck switch (session or workspace default)`);
           console.log(`   - get_session_binding: Show session workspace + effective deck`);
           console.log(`   - get_bound_deck: Get session-bound deck`);
           console.log(`   - list_service_tools: List tools for a specific service`);

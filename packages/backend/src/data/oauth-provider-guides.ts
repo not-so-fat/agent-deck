@@ -33,7 +33,7 @@ export type OAuthProviderGuide = {
 };
 
 const AFTER_DECK_HINT =
-  'Drag this card onto a deck in the dashboard, then bind your agent (bind_workspace or switch_bound_deck) so tools appear in chat.';
+  'Drag this card onto a deck in the dashboard, then bind your agent (bind_workspace) so tools appear in chat.';
 
 /** Slack MCP app manifest with redirect URI and common user scopes pre-filled. */
 export function getSlackMcpAppManifest(redirectUri = getOAuthRedirectUri()): string {

@@ -51,6 +51,8 @@ function bodyMessage(code: TrustedSessionErrorCode): string {
       return 'Resource is outside the bound deck';
     case 'DECK_FIXED':
       return "This connection's deck was set when it was launched and cannot be changed by the agent. Change it where the connection is configured (for example the Agent Dealer profile).";
+    case 'SWITCH_APPROVAL_REQUIRED':
+      return 'This session already has a deck. Agents cannot switch decks directly — call switch_deck to request a switch and wait for the human to approve it as This session only or This workspace by default. The active deck is unchanged and no reload is needed.';
     default:
       return code;
   }

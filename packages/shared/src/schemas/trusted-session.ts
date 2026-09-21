@@ -12,6 +12,8 @@ export const TrustedSessionErrorCodeSchema = z.enum([
   'ADMIN_CHALLENGE_EXPIRED',
   /** Launch-selected deck cannot be changed by the agent (NOT-105). */
   'DECK_FIXED',
+  /** Bound session must request a human-approved switch via switch_deck (NOT-214). */
+  'SWITCH_APPROVAL_REQUIRED',
   /** Deck-switch request past its TTL (NOT-207). */
   'DECK_SWITCH_EXPIRED',
   /** Deck-switch request already resolved; repeat resolution is a no-op (NOT-207). */
@@ -104,6 +106,7 @@ export function httpStatusForTrustedError(code: TrustedSessionErrorCode): number
     case 'ADMIN_REQUIRED':
     case 'DASHBOARD_REQUIRED':
     case 'DECK_FIXED':
+    case 'SWITCH_APPROVAL_REQUIRED':
       return 403;
     case 'DECK_SWITCH_CONSUMED':
       return 409;
