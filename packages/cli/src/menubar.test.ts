@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { LiveBinding, PendingAdminChallenge } from '@agent-deck/shared';
+import type {
+  LiveBinding,
+  PendingAdminChallenge,
+  PendingDeckSwitchRequest,
+} from '@agent-deck/shared';
 import {
   MENUBAR_STOP_SOURCE,
   buildApprovalHref,
+  buildDeckSwitchApprovalHref,
+  buildDeckSwitchApprovalLine,
   buildStopDeckMenubarArgs,
   buildStopDeckMenubarLine,
   formatAge,
@@ -121,6 +127,70 @@ describe('renderMenubar', () => {
       `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent('/admin/approve?challenge=adm_test&session=ses_test')}`,
     );
     expect(output).toContain('Approve Product Design');
+  });
+});
+
+describe('deck-switch approval inbox (NOT-212)', () => {
+  function pendingSwitch(overrides: Partial<PendingDeckSwitchRequest> = {}): PendingDeckSwitchRequest {
+    return {
+      requestId: 'req_inbox_1',
+      runtimeSessionId: 'ses_inbox_1',
+      status: 'pending',
+      currentDeckName: 'Product Design',
+      requestedDeckName: 'Task Management',
+      expiresAt: '2026-07-03T12:04:00.000Z',
+      approvalPath: '/deck-switch/approve?request=req_inbox_1&session=ses_inbox_1',
+      ...overrides,
+    };
+  }
+
+  it('shows a Pending approvals entry with count and both deck labels', () => {
+    const output = renderMenubar([], NOW, [], 'http://127.0.0.1:1111', [pendingSwitch()]);
+    expect(output.split('\n')[0]).toBe('◆ ⚠ 1');
+    expect(output).toContain('Pending approvals (1)');
+    expect(output).toContain('Product Design');
+    expect(output).toContain('Task Management');
+    expect(output).toContain(
+      `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent('/deck-switch/approve?request=req_inbox_1&session=ses_inbox_1')}`,
+    );
+  });
+
+  it('counts admin and deck-switch approvals together in the title', () => {
+    const admin: PendingAdminChallenge = {
+      challengeId: 'adm_test',
+      runtimeSessionId: 'ses_test',
+      deckId: '11111111-1111-4111-8111-111111111111',
+      deckName: 'Product Design',
+      expiresAt: '2026-07-03T12:04:00.000Z',
+      approvalPath: '/admin/approve?challenge=adm_test&session=ses_test',
+    };
+    const output = renderMenubar([], NOW, [admin], 'http://127.0.0.1:1111', [pendingSwitch()]);
+    expect(output.split('\n')[0]).toBe('◆ ⚠ 2');
+    expect(output).toContain('Admin approval pending');
+    expect(output).toContain('Pending approvals (1)');
+  });
+
+  it('omits the inbox section when nothing is pending', () => {
+    const output = renderMenubar([binding({})], NOW);
+    expect(output).not.toContain('Pending approvals');
+  });
+
+  it('reopens the approval page through agent-deck open, never a bare URL', () => {
+    const href = buildDeckSwitchApprovalHref(pendingSwitch(), 'http://127.0.0.1:1111');
+    expect(href).toBe(
+      `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent('/deck-switch/approve?request=req_inbox_1&session=ses_inbox_1')}`,
+    );
+    expect(href).not.toContain('bootstrap=');
+  });
+
+  it('falls back to generic labels when deck names are absent', () => {
+    const line = buildDeckSwitchApprovalLine(
+      pendingSwitch({ currentDeckName: undefined, requestedDeckName: undefined }),
+      NOW,
+    );
+    expect(line).toContain('current deck');
+    expect(line).toContain('requested deck');
+    expect(line).toContain('expires in 4m');
   });
 });
 

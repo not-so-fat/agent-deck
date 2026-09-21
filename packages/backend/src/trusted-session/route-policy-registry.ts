@@ -45,6 +45,13 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
     pattern: /^\/api\/trusted-session\/deck-switch$/,
     policy: 'requireAgentResource',
   },
+  // NOT-212: static pending-inbox path must win over the :requestId
+  // pattern below ("pending" would otherwise parse as a request id).
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/trusted-session\/deck-switch\/pending$/,
+    policy: 'allowPublic',
+  },
   {
     methods: ['GET'],
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+$/,

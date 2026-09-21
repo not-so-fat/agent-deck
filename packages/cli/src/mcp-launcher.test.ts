@@ -10,6 +10,8 @@ import {
 
 import {
   NO_ASSIGNMENT_MESSAGE,
+  clearDeckSwitchAutoOpened,
+  handleSwitchDeckToolResult,
   parseLaunchHeaders,
   resolveApprovalBackendUrl,
   resolveBridgeKind,
@@ -194,6 +196,155 @@ describe('parseLaunchHeaders', () => {
 
   it('drops malformed entries instead of sending empty headers', () => {
     expect(parseLaunchHeaders(['no-colon', 'empty:', ': novalue'])).toEqual({});
+  });
+});
+
+describe('switch_deck browser fallback (NOT-212)', () => {
+  const backendUrl = 'http://127.0.0.1:1111';
+
+  function pendingResult(overrides: Record<string, unknown> = {}) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            requestId: 'req_pending_1',
+            status: 'pending',
+            currentDeckId: 'deck-a',
+            currentDeckName: 'alpha',
+            requestedDeckId: 'deck-b',
+            requestedDeckName: 'beta',
+            presentation: {
+              kind: 'deck_switch_request',
+              status: 'pending',
+              channels: ['host-elicitation', 'browser'],
+            },
+            ...overrides,
+          }),
+        },
+      ],
+    };
+  }
+
+  function stubOpener(impl?: (backend: string, path?: string) => Promise<{ code: number; url?: string; message?: string }>) {
+    return vi.fn(
+      impl ?? (async () => ({ code: 0, url: 'http://127.0.0.1:1111/opened' })),
+    );
+  }
+
+  afterEach(() => {
+    clearDeckSwitchAutoOpened();
+  });
+
+  it('opens one trusted approval page for a new pending request', async () => {
+    const opener = stubOpener();
+    const outcome = await handleSwitchDeckToolResult(backendUrl, pendingResult(), {
+      opener,
+      env: {},
+    });
+
+    expect(outcome).toEqual({ opened: true, requestId: 'req_pending_1' });
+    expect(opener).toHaveBeenCalledTimes(1);
+    expect(opener).toHaveBeenCalledWith(
+      backendUrl,
+      '/deck-switch/approve?request=req_pending_1',
+    );
+    // Reusable auth secrets never travel in the approval URL.
+    const openedPath = String(opener.mock.calls[0][1]);
+    expect(openedPath).not.toMatch(/bootstrap|token|secret|cookie|bearer|authoriz/i);
+  });
+
+  it('does not open a second tab when the same request is returned again', async () => {
+    const opener = stubOpener();
+    const deps = { opener, env: {} as NodeJS.ProcessEnv };
+
+    expect(await handleSwitchDeckToolResult(backendUrl, pendingResult(), deps)).toMatchObject({
+      opened: true,
+    });
+    expect(await handleSwitchDeckToolResult(backendUrl, pendingResult(), deps)).toMatchObject({
+      opened: false,
+      requestId: 'req_pending_1',
+    });
+    expect(opener).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens again for a different request id', async () => {
+    const opener = stubOpener();
+    const deps = { opener, env: {} as NodeJS.ProcessEnv };
+
+    await handleSwitchDeckToolResult(backendUrl, pendingResult(), deps);
+    const second = await handleSwitchDeckToolResult(
+      backendUrl,
+      pendingResult({ requestId: 'req_pending_2' }),
+      deps,
+    );
+    expect(second).toEqual({ opened: true, requestId: 'req_pending_2' });
+    expect(opener).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores already_on_deck results without opening', async () => {
+    const opener = stubOpener();
+    const outcome = await handleSwitchDeckToolResult(
+      backendUrl,
+      {
+        content: [
+          { type: 'text', text: JSON.stringify({ status: 'already_on_deck' }) },
+        ],
+      },
+      { opener, env: {} },
+    );
+    expect(outcome).toEqual({ opened: false });
+    expect(opener).not.toHaveBeenCalled();
+  });
+
+  it('keeps the request pending and names the menubar path when opening fails', async () => {
+    const opener = stubOpener(async () => ({ code: 1, message: 'no browser' }));
+    const errors: string[] = [];
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation((message: string) => {
+      errors.push(String(message));
+    });
+    try {
+      const deps = { opener, env: {} as NodeJS.ProcessEnv };
+      expect(await handleSwitchDeckToolResult(backendUrl, pendingResult(), deps)).toMatchObject({
+        opened: false,
+        requestId: 'req_pending_1',
+      });
+      // Not marked as opened, so a repeat retries instead of dropping the request.
+      expect(await handleSwitchDeckToolResult(backendUrl, pendingResult(), deps)).toMatchObject({
+        opened: false,
+      });
+      expect(opener).toHaveBeenCalledTimes(2);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toContain('req_pending_1');
+    expect(errors[0]).toContain('still pending');
+    expect(errors[0]).toContain('menubar Pending approvals');
+  });
+
+  it('does not open a browser when AGENT_DECK_NO_OPEN is set', async () => {
+    const opener = stubOpener();
+    const outcome = await handleSwitchDeckToolResult(backendUrl, pendingResult(), {
+      opener,
+      env: { AGENT_DECK_NO_OPEN: '1' },
+    });
+    expect(outcome).toMatchObject({ opened: true });
+    expect(opener).not.toHaveBeenCalled();
+  });
+
+  it('leaves the active deck unchanged while the request is pending', async () => {
+    const workspace = makeWorkspace();
+    const endpoint = { host: '127.0.0.1', mcpPort: 1110 };
+    await writeAssignment(workspace, { deckId: 'deck-a', deckName: 'alpha' });
+
+    const opener = stubOpener();
+    await handleSwitchDeckToolResult(backendUrl, pendingResult(), { opener, env: {} });
+
+    const after = await resolveMcpLaunchPlan(workspace, endpoint);
+    expect(parseLaunchHeaders(after.headers)).toMatchObject({
+      [AGENT_DECK_DECK_ID_HEADER]: 'deck-a',
+    });
   });
 });
 

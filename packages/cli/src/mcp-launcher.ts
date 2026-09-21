@@ -11,6 +11,11 @@ import {
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
 import { openAdminElevationApproval } from './admin-elevation';
+import {
+  openDashboardInBrowser,
+  openDeckSwitchApproval,
+  readDeckSwitchApproval,
+} from './dashboard-open';
 import { buildMcpUrl, type McpEndpoint } from './mcp-config';
 import { clearKeychainAssignment, readAssignment, writeAssignment } from './assignment';
 import { readCliBackendPort } from './defaults';
@@ -127,6 +132,59 @@ export function resolveApprovalBackendUrl(
   return undefined;
 }
 
+/**
+ * NOT-212: request ids the launcher already auto-opened a browser tab for.
+ * `switch_deck` creation is idempotent — repeats return the same pending
+ * request — so without this every repeat would open another tab.
+ */
+const deckSwitchAutoOpened = new Set<string>();
+
+export function clearDeckSwitchAutoOpened(): void {
+  deckSwitchAutoOpened.clear();
+}
+
+export type DeckSwitchFollowUpDeps = {
+  opener?: typeof openDashboardInBrowser;
+  env?: NodeJS.ProcessEnv;
+  /** Override for tests; defaults to the process-wide dedupe set. */
+  opened?: Set<string>;
+};
+
+/**
+ * NOT-212: browser fallback for `switch_deck`. When host-native form
+ * elicitation is unavailable the pending request would otherwise have no
+ * discoverable approval path, so open the trusted approval page once per
+ * request. Never touches the session or assignment — the active deck stays
+ * unchanged while the request is pending. A failed open keeps the request
+ * pending and reports the menubar inbox as the recovery path.
+ */
+export async function handleSwitchDeckToolResult(
+  backendUrl: string,
+  result: unknown,
+  deps: DeckSwitchFollowUpDeps = {},
+): Promise<{ opened: boolean; requestId?: string }> {
+  const approval = readDeckSwitchApproval(result);
+  if (!approval) {
+    return { opened: false };
+  }
+  const opened = deps.opened ?? deckSwitchAutoOpened;
+  if (opened.has(approval.requestId)) {
+    return { opened: false, requestId: approval.requestId };
+  }
+  try {
+    await openDeckSwitchApproval(backendUrl, result, deps.opener, deps.env);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[agent-deck] Could not open the deck-switch approval page for request ${approval.requestId} (${reason}). ` +
+        `The request is still pending — approve it from the menubar Pending approvals inbox or run: agent-deck open --path "${approval.approvalPath}"`,
+    );
+    return { opened: false, requestId: approval.requestId };
+  }
+  opened.add(approval.requestId);
+  return { opened: true, requestId: approval.requestId };
+}
+
 export async function runMcpLaunch(): Promise<number> {
   const workspaceRoot = path.resolve(process.env.AGENT_DECK_WORKSPACE?.trim() || process.cwd());
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
@@ -153,6 +211,18 @@ export async function runMcpLaunch(): Promise<number> {
       stdin: process.stdin,
       stdout: process.stdout,
       onToolResult: async (toolName, result, { mcpUrl }) => {
+        if (toolName === 'switch_deck') {
+          const backendUrl = resolveApprovalBackendUrl(mcpUrl, endpoint);
+          if (!backendUrl) {
+            console.error(
+              `[agent-deck] Approval page not opened: no known dashboard for ${mcpUrl}. ` +
+                'Open the approval page from the menubar Pending approvals inbox on that server.',
+            );
+            return;
+          }
+          await handleSwitchDeckToolResult(backendUrl, result);
+          return;
+        }
         if (toolName !== 'request_admin_elevation') {
           return;
         }
