@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import {
+  BindingActiveSourceSchema,
   DISPLAY_LINE_MAX_LENGTH,
   DeckDisplaySchema,
   LiveBindingSchema,
+  appendSessionOverrideSuffix,
   countDeckCards,
   formatDisplayLine,
   formatDisplayUpdatedSuffix,
@@ -127,6 +129,127 @@ describe('deck-display', () => {
       expect(
         formatDisplayLine(null, { mcp: 0, credentials: 0, playbooks: 0 }, { badge: 'fox' }),
       ).not.toContain('⌘');
+    });
+  });
+
+  describe('formatDisplayLine session override (NOT-211)', () => {
+    const counts = { mcp: 3, credentials: 2, playbooks: 1 };
+
+    it('marks a session override concisely without breaking the one-line shape', () => {
+      const line = formatDisplayLine('Beta', counts, { workspaceDefaultName: 'Alpha' });
+      expect(line).toBe('◆ Beta · 3 MCP · 2 keys · 1 playbooks · session (default Alpha)');
+      expect(line).toContain('◆ Beta · 3 MCP · 2 keys · 1 playbooks');
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+      expect(line).not.toContain('\n');
+    });
+
+    it('omits the marker when active equals the workspace default', () => {
+      expect(formatDisplayLine('Alpha', counts, { workspaceDefaultName: 'Alpha' })).toBe(
+        formatDisplayLine('Alpha', counts),
+      );
+    });
+
+    it('omits the marker when no workspace default is known', () => {
+      expect(formatDisplayLine('Beta', counts)).toBe(
+        '◆ Beta · 3 MCP · 2 keys · 1 playbooks',
+      );
+      expect(formatDisplayLine('Beta', counts, { workspaceDefaultName: null })).toBe(
+        formatDisplayLine('Beta', counts),
+      );
+    });
+
+    it('omits the marker when unbound even with a saved default', () => {
+      expect(
+        formatDisplayLine(null, counts, { workspaceDefaultName: 'Alpha' }),
+      ).toBe('◆ Unbound — bind a deck to use Agent Deck');
+    });
+
+    it('keeps badge and override marker together within max length', () => {
+      const line = formatDisplayLine('Beta', counts, {
+        badge: 'fox',
+        workspaceDefaultName: 'Alpha',
+      });
+      expect(line).toContain('⌘fox');
+      expect(line).toContain('session (default Alpha)');
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+    });
+
+    it('truncates a long default name instead of exceeding max length', () => {
+      const line = formatDisplayLine('Beta', counts, {
+        workspaceDefaultName: 'A'.repeat(200),
+      });
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+      expect(line).toContain('session (default ');
+      expect(line.endsWith(')')).toBe(true);
+    });
+
+    it('keeps the marker visible when the base line already fills the budget', () => {
+      const base = formatDisplayLine('B'.repeat(200), { mcp: 12, credentials: 34, playbooks: 56 }, { badge: 'zephyr' });
+      expect(base.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+      const line = formatDisplayLine('B'.repeat(200), { mcp: 12, credentials: 34, playbooks: 56 }, {
+        badge: 'zephyr',
+        workspaceDefaultName: 'Alpha',
+      });
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+      expect(line).toContain('session (default Alpha)');
+      expect(line.endsWith(')')).toBe(true);
+    });
+
+    it('explicit sessionOverride=false hides a stale default name', () => {
+      // use.json deckName is stale after a rename: ids are equal, so this is
+      // not an override even though the names differ.
+      const line = formatDisplayLine('Beta', counts, {
+        workspaceDefaultName: 'Alpha',
+        sessionOverride: false,
+      });
+      expect(line).toBe(formatDisplayLine('Beta', counts));
+      expect(line).not.toContain('session (default');
+    });
+
+    it('explicit sessionOverride=true shows a same-name override', () => {
+      // Same display name but different deck ids is a real override.
+      const line = formatDisplayLine('Beta', counts, {
+        workspaceDefaultName: 'Beta',
+        sessionOverride: true,
+      });
+      expect(line).toContain('session (default Beta)');
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+    });
+
+    it('appendSessionOverrideSuffix honors the explicit flag over names', () => {
+      expect(appendSessionOverrideSuffix('◆ Beta · 1 MCP', 'Beta', 'Beta')).toBe(
+        '◆ Beta · 1 MCP',
+      );
+      expect(appendSessionOverrideSuffix('◆ Beta · 1 MCP', 'Beta', null)).toBe(
+        '◆ Beta · 1 MCP',
+      );
+      expect(appendSessionOverrideSuffix('◆ Beta · 1 MCP', null, 'Alpha')).toBe(
+        '◆ Beta · 1 MCP',
+      );
+      expect(appendSessionOverrideSuffix('◆ Beta · 1 MCP', 'Beta', 'Alpha', false)).toBe(
+        '◆ Beta · 1 MCP',
+      );
+      expect(appendSessionOverrideSuffix('◆ Beta · 1 MCP', 'Beta', 'Beta', true)).toBe(
+        '◆ Beta · 1 MCP · session (default Beta)',
+      );
+    });
+
+    it('appendSessionOverrideSuffix keeps a near-budget line marker visible', () => {
+      const line = `◆ ${'B'.repeat(110)}`;
+      const marked = appendSessionOverrideSuffix(line, 'Beta', 'Alpha', true);
+      expect(marked.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+      expect(marked).toContain('session (default ');
+      expect(marked.endsWith(')')).toBe(true);
+    });
+  });
+
+  describe('BindingActiveSourceSchema', () => {
+    it('accepts session, workspace, and launch', () => {
+      for (const source of ['session', 'workspace', 'launch'] as const) {
+        expect(BindingActiveSourceSchema.parse(source)).toBe(source);
+      }
+      expect(BindingActiveSourceSchema.safeParse('session_override').success).toBe(false);
+      expect(BindingActiveSourceSchema.safeParse('env').success).toBe(false);
     });
   });
 
