@@ -13,6 +13,7 @@ import {
   type McpEndpoint,
   type SetupScope,
 } from './mcp-config';
+import { formatLegacyStubCleanupMessage, removeLegacyPlaybookStubs } from './playbook-stubs';
 import { installStatusline, type StatuslineClient } from './statusline-setup';
 import { isDarwinPlatform, setupMenubar } from './menubar-setup';
 import { CLI_DEFAULT_MCP_PORT, parseCliMcpPort } from './defaults';
@@ -213,6 +214,21 @@ async function finishSetup(
   withStatusline: boolean,
   withMenubar: boolean,
 ): Promise<number> {
+  // NOT-208 one-time migration: drop Agent Deck-managed legacy playbook
+  // stubs from the current workspace (both hosts — the stubs are stale no
+  // matter which client is being configured). Only marker-carrying files
+  // are removed; user-authored skills/rules are never touched.
+  try {
+    const cleanup = removeLegacyPlaybookStubs(process.cwd());
+    const message = formatLegacyStubCleanupMessage(cleanup);
+    if (message) {
+      console.log(message);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+
   const harness = installAgentHarness(client, scope);
   console.log(harness.message);
   if (!harness.installed && client === 'claude-desktop') {

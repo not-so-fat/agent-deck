@@ -16,7 +16,13 @@ import {
   type McpEndpoint,
 } from './mcp-config';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
-import { syncPlaybookStubs, type StubSyncResult } from './playbook-stubs';
+import {
+  formatLegacyStubCleanupMessage,
+  removeLegacyPlaybookStubs,
+  syncPlaybookStubs,
+  type LegacyStubCleanupResult,
+  type StubSyncResult,
+} from './playbook-stubs';
 import { readAssignment, writeAssignment, type AssignmentFields } from './assignment';
 import { readLegacyUseManifestV1 } from './playbook-stubs';
 import {
@@ -47,6 +53,28 @@ export type UseResult = {
   /** True when home-store writes were skipped after a blocked open (sandbox-safe workspace repair). */
   sandboxSafeRepair?: boolean;
 };
+
+/**
+ * NOT-208 one-time migration: remove Agent Deck-managed legacy playbook
+ * stubs from the workspace. Prints the migration note when anything was
+ * removed; returns an { error } naming the exact path when a managed file
+ * cannot be removed.
+ */
+function cleanupLegacyStubs(
+  workspaceRoot: string,
+  options?: { cursor?: boolean; claude?: boolean },
+): LegacyStubCleanupResult | { error: string } {
+  try {
+    const cleanup = removeLegacyPlaybookStubs(workspaceRoot, options);
+    const message = formatLegacyStubCleanupMessage(cleanup);
+    if (message) {
+      console.log(message);
+    }
+    return cleanup;
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 function emptyStubSync(workspaceRoot: string): StubSyncResult {
   return {
@@ -189,7 +217,7 @@ async function runUseWorkspaceOnlyRepair(
   assignment: AssignmentFields,
   endpoint: McpEndpoint,
   mcpUrl: string,
-): Promise<UseResult> {
+): Promise<UseResult | { error: string }> {
   const deck = { id: assignment.deckId, name: assignment.deckName };
   const manifestPath = await writeAssignment(parsed.workspaceRoot, {
     deckId: deck.id,
@@ -201,16 +229,27 @@ async function runUseWorkspaceOnlyRepair(
     tryEnsureGlobalCursorLaunch(endpoint, parsed.workspaceRoot);
   }
   ensureGitExcluded(parsed.workspaceRoot);
+  const stubs = emptyStubSync(parsed.workspaceRoot);
+  const cleanup = cleanupLegacyStubs(parsed.workspaceRoot, {
+    cursor: parsed.clients !== 'claude',
+    claude: parsed.clients !== 'cursor',
+  });
+  if ('error' in cleanup) {
+    return cleanup;
+  }
+  stubs.cursor.removed += cleanup.cursor.removed;
+  stubs.claude.removed += cleanup.claude.removed;
+  stubs.claude.dirs.push(...cleanup.claude.dirs);
   console.log(
     'Sandbox-safe repair: updated workspace MCP / assignment without writing ~/.agent-deck (home store blocked).',
   );
-  console.log('  Playbook stub refresh skipped — re-run `agent-deck use` unsandboxed to refresh stubs.');
+  console.log('  Playbook discovery is runtime-only (get_bound_deck/get_playbook) — no stub refresh step.');
   return {
     deck,
     mcpUrl,
     manifestPath,
     mcp: mcpWritten,
-    stubs: emptyStubSync(parsed.workspaceRoot),
+    stubs,
     playbookCount: 0,
     sandboxSafeRepair: true,
   };
@@ -258,6 +297,16 @@ async function runUseFullPath(
     cursor: parsed.clients !== 'claude',
     claude: parsed.clients !== 'cursor',
   });
+  const cleanup = cleanupLegacyStubs(parsed.workspaceRoot, {
+    cursor: parsed.clients !== 'claude',
+    claude: parsed.clients !== 'cursor',
+  });
+  if ('error' in cleanup) {
+    return cleanup;
+  }
+  stubs.cursor.removed += cleanup.cursor.removed;
+  stubs.claude.removed += cleanup.claude.removed;
+  stubs.claude.dirs.push(...cleanup.claude.dirs);
   ensureGitExcluded(parsed.workspaceRoot);
 
   return {
@@ -272,6 +321,10 @@ async function runUseFullPath(
 
 export async function runUse(parsed: UseOptions): Promise<UseResult | { error: string }> {
   if (parsed.refresh) {
+    const cleanup = cleanupLegacyStubs(parsed.workspaceRoot);
+    if ('error' in cleanup) {
+      return cleanup;
+    }
     const assignment = await readAssignment(parsed.workspaceRoot);
     const legacy = readLegacyUseManifestV1(parsed.workspaceRoot);
     const inspection = inspectCursorMcpConfig({

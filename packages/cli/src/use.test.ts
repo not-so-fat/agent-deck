@@ -148,6 +148,150 @@ describe('agent-deck use', () => {
     expect(porcelain.trim()).toBe('');
   });
 
+  it('removes managed legacy stubs on refresh while preserving user content', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    const managedCursor = path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'pb_old.mdc');
+    const userRule = path.join(workspace, '.cursor', 'rules', 'custom.mdc');
+    const managedSkill = path.join(workspace, '.claude', 'skills', 'agent-deck-old', 'SKILL.md');
+    const userSkill = path.join(workspace, '.claude', 'skills', 'my-skill', 'SKILL.md');
+    fs.mkdirSync(path.dirname(managedCursor), { recursive: true });
+    fs.writeFileSync(
+      managedCursor,
+      '<!-- agent-deck:stub:start pb_old -->\n# legacy\n<!-- agent-deck:stub:end -->\n',
+    );
+    fs.writeFileSync(userRule, '# user rule\n');
+    fs.mkdirSync(path.dirname(managedSkill), { recursive: true });
+    fs.writeFileSync(
+      managedSkill,
+      '<!-- agent-deck:stub:start pb_old -->\n# legacy\n<!-- agent-deck:stub:end -->\n',
+    );
+    fs.mkdirSync(path.dirname(userSkill), { recursive: true });
+    fs.writeFileSync(userSkill, '# user skill\n');
+    writeUseManifest(workspace, {
+      version: 3,
+      deckId: 'deck-1',
+      deckName: 'dev',
+      mcpUrl: 'http://127.0.0.1:1110/mcp',
+    });
+
+    const parsed = parseUseArgs(['--refresh']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await runUse({ ...parsed, workspaceRoot: workspace, skipMcp: true });
+    expect(result).toEqual({ error: 'refresh-diagnosis-only' });
+    expect(fs.existsSync(managedCursor)).toBe(false);
+    expect(fs.existsSync(path.dirname(managedSkill))).toBe(false);
+    expect(fs.readFileSync(userRule, 'utf8')).toBe('# user rule\n');
+    expect(fs.readFileSync(userSkill, 'utf8')).toBe('# user skill\n');
+    expect(log.mock.calls.flat().join('\n')).toContain('Removed 2 legacy playbook stub(s)');
+  });
+
+  it('removes managed legacy stubs on full use and stays idempotent', async () => {
+    const workspace = makeWorkspace();
+    execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, '.cursor', 'mcp.json'),
+      `${JSON.stringify({ mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:1110/mcp' } } }, null, 2)}\n`,
+    );
+    const managedCursor = path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'pb_old.mdc');
+    const userRule = path.join(workspace, '.cursor', 'rules', 'custom.mdc');
+    const lookalike = path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'notes.mdc');
+    const managedSkill = path.join(workspace, '.claude', 'skills', 'agent-deck-old', 'SKILL.md');
+    const userSkill = path.join(workspace, '.claude', 'skills', 'agent-deck-manual', 'SKILL.md');
+    fs.mkdirSync(path.dirname(managedCursor), { recursive: true });
+    fs.writeFileSync(
+      managedCursor,
+      '<!-- agent-deck:stub:start pb_old -->\n# legacy\n<!-- agent-deck:stub:end -->\n',
+    );
+    fs.writeFileSync(userRule, '# user rule\n');
+    fs.writeFileSync(lookalike, '# similarly named but user-authored\n');
+    fs.mkdirSync(path.dirname(managedSkill), { recursive: true });
+    fs.writeFileSync(
+      managedSkill,
+      '<!-- agent-deck:stub:start pb_old -->\n# legacy\n<!-- agent-deck:stub:end -->\n',
+    );
+    fs.mkdirSync(path.dirname(userSkill), { recursive: true });
+    fs.writeFileSync(userSkill, '# hand-written skill sharing the prefix\n');
+
+    const parsed = parseUseArgs(['dev']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const first = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in first).toBe(false);
+    if ('error' in first) {
+      return;
+    }
+    expect(first.stubs.cursor.removed).toBe(1);
+    expect(first.stubs.claude.removed).toBe(1);
+    expect(fs.existsSync(managedCursor)).toBe(false);
+    expect(fs.existsSync(path.dirname(managedSkill))).toBe(false);
+    expect(fs.readFileSync(userRule, 'utf8')).toBe('# user rule\n');
+    expect(fs.readFileSync(lookalike, 'utf8')).toBe('# similarly named but user-authored\n');
+    expect(fs.readFileSync(userSkill, 'utf8')).toBe('# hand-written skill sharing the prefix\n');
+    expect(log.mock.calls.flat().join('\n')).toContain('Removed 2 legacy playbook stub(s)');
+
+    log.mockClear();
+    const second = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in second).toBe(false);
+    if ('error' in second) {
+      return;
+    }
+    expect(second.stubs.cursor.removed).toBe(0);
+    expect(second.stubs.claude.removed).toBe(0);
+    expect(log.mock.calls.flat().join('\n')).not.toContain('legacy playbook stub(s)');
+  });
+
+  it('reports the exact path when a managed stub cannot be removed', async () => {
+    const workspace = makeWorkspace();
+    execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    const managedCursor = path.join(workspace, '.cursor', 'rules', 'agent-deck-stubs', 'pb_old.mdc');
+    const userRule = path.join(workspace, '.cursor', 'rules', 'custom.mdc');
+    fs.mkdirSync(path.dirname(managedCursor), { recursive: true });
+    fs.writeFileSync(
+      managedCursor,
+      '<!-- agent-deck:stub:start pb_old -->\n# legacy\n<!-- agent-deck:stub:end -->\n',
+    );
+    fs.writeFileSync(userRule, '# user rule\n');
+
+    const realUnlink = fs.unlinkSync;
+    vi.spyOn(fs, 'unlinkSync').mockImplementation(((target: unknown, ...rest: unknown[]) => {
+      if (String(target) === managedCursor) {
+        throw new Error('EACCES: permission denied');
+      }
+      return (realUnlink as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as typeof fs.unlinkSync);
+
+    const parsed = parseUseArgs(['dev']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(true);
+    if (!('error' in result)) {
+      return;
+    }
+    expect(result.error).toContain(managedCursor);
+    expect(fs.readFileSync(userRule, 'utf8')).toBe('# user rule\n');
+  });
+
   it('refresh diagnoses assignment or legacy manifest without rewriting', async () => {
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();
