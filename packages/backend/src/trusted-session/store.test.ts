@@ -5,6 +5,7 @@ import { DatabaseManager } from '../models/database';
 import {
   TrustedSessionStore,
   hashDashboardSessionToken,
+  toDeckSwitchRequestSummary,
 } from './store';
 
 describe('TrustedSessionStore', () => {
@@ -244,5 +245,246 @@ describe('TrustedSessionStore', () => {
       deckId: 'deck-new',
     });
     expect(launch.deckId).toBe('deck-new');
+  });
+});
+
+describe('TrustedSessionStore deck-switch requests (NOT-205)', () => {
+  it('creates a pending request without changing the session binding', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+      workspaceRoot: '/work/ws',
+    });
+
+    expect(request.status).toBe('pending');
+    expect(request.requestId).toMatch(/^req_/);
+    expect(request.currentDeckId).toBe('deck-a');
+    expect(request.requestedDeckId).toBe('deck-b');
+    expect(request.workspaceRoot).toBe('/work/ws');
+    expect(request.resolvedAt).toBeNull();
+    expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe('deck-a');
+  });
+
+  it('returns the existing pending request on duplicate submit', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+
+    const first = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+    const second = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+
+    expect(second.requestId).toBe(first.requestId);
+    const count = (
+      db.prepare('SELECT COUNT(*) AS n FROM deck_switch_requests').get() as { n: number }
+    ).n;
+    expect(count).toBe(1);
+  });
+
+  it('tracks a different target as a separate request', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+
+    const forB = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+    const forC = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-c',
+    });
+
+    expect(forC.requestId).not.toBe(forB.requestId);
+    expect(store.listPendingDeckSwitchRequests(session.sessionId)).toHaveLength(2);
+  });
+
+  it('lets exactly one consumer resolve a request via compare-and-set', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+
+    const winner = store.transitionDeckSwitchRequestStatus(
+      request.requestId,
+      'pending',
+      'approved',
+    );
+    const loser = store.transitionDeckSwitchRequestStatus(
+      request.requestId,
+      'pending',
+      'declined',
+    );
+
+    expect(winner?.status).toBe('approved');
+    expect(winner?.resolvedAt).not.toBeNull();
+    expect(loser).toBeNull();
+    expect(store.getDeckSwitchRequest(request.requestId)?.status).toBe('approved');
+  });
+
+  it('consumes an approved request exactly once', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'pending', 'approved')
+        ?.status,
+    ).toBe('approved');
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'approved', 'consumed')
+        ?.status,
+    ).toBe('consumed');
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'approved', 'consumed'),
+    ).toBeNull();
+  });
+
+  it('rejects illegal and repeated transitions', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'pending', 'consumed'),
+    ).toBeNull();
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'approved', 'approved'),
+    ).toBeNull();
+    expect(store.transitionDeckSwitchRequestStatus('req_missing', 'pending', 'approved')).toBeNull();
+
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'pending', 'declined')
+        ?.status,
+    ).toBe('declined');
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'declined', 'approved'),
+    ).toBeNull();
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'pending', 'approved'),
+    ).toBeNull();
+    expect(store.getDeckSwitchRequest(request.requestId)?.status).toBe('declined');
+  });
+
+  it('expires requests and refuses to approve them afterwards', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+      ttlMs: 1,
+    });
+    db.prepare('UPDATE deck_switch_requests SET expires_at = ? WHERE id = ?').run(
+      '2000-01-01T00:00:00.000Z',
+      request.requestId,
+    );
+
+    const read = store.getDeckSwitchRequest(request.requestId);
+    expect(read?.status).toBe('expired');
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'pending', 'approved'),
+    ).toBeNull();
+    expect(
+      store.transitionDeckSwitchRequestStatus(request.requestId, 'expired', 'approved'),
+    ).toBeNull();
+    expect(store.listPendingDeckSwitchRequests()).toHaveLength(0);
+  });
+
+  it('sweeps expired pendings via expireDeckSwitchRequests', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+    db.prepare('UPDATE deck_switch_requests SET expires_at = ? WHERE id = ?').run(
+      '2000-01-01T00:00:00.000Z',
+      request.requestId,
+    );
+
+    expect(store.expireDeckSwitchRequests()).toBe(1);
+    expect(store.expireDeckSwitchRequests()).toBe(0);
+    expect(store.getDeckSwitchRequest(request.requestId)?.status).toBe('expired');
+  });
+
+  it('lists pending requests, optionally scoped to a session', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const first = store.createRuntimeSession({ deckId: 'deck-a' });
+    const second = store.createRuntimeSession({ deckId: 'deck-a' });
+
+    const pending = store.createDeckSwitchRequest({
+      runtimeSessionId: first.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+    const declined = store.createDeckSwitchRequest({
+      runtimeSessionId: second.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+    });
+    store.transitionDeckSwitchRequestStatus(declined.requestId, 'pending', 'declined');
+
+    expect(store.listPendingDeckSwitchRequests().map((r) => r.requestId)).toEqual([
+      pending.requestId,
+    ]);
+    expect(store.listPendingDeckSwitchRequests(first.sessionId)).toHaveLength(1);
+    expect(store.listPendingDeckSwitchRequests(second.sessionId)).toHaveLength(0);
+  });
+
+  it('exposes only opaque id plus lifecycle fields in the client summary', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a' });
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: 'deck-a',
+      requestedDeckId: 'deck-b',
+      workspaceRoot: '/work/ws',
+    });
+
+    const summary = toDeckSwitchRequestSummary(request);
+    expect(summary).toEqual({
+      requestId: request.requestId,
+      status: 'pending',
+      createdAt: request.createdAt,
+      expiresAt: request.expiresAt,
+    });
+    expect('requestedDeckId' in summary).toBe(false);
+    expect('workspaceRoot' in summary).toBe(false);
+    expect(store.getDeckSwitchRequestSummary(request.requestId)).toEqual(summary);
+    expect(store.getDeckSwitchRequestSummary('req_missing')).toBeNull();
   });
 });
