@@ -7,6 +7,7 @@ import {
   RUNTIME_SESSION_LEASE_MS,
   prefixTrustedId,
   type AgentSessionMode,
+  type DeckSwitchDecision,
   type RuntimeSession,
 } from '@agent-deck/shared';
 import type Database from 'better-sqlite3';
@@ -92,6 +93,34 @@ const DECK_SWITCH_STATUS_TRANSITIONS: Record<DeckSwitchRequestStatus, DeckSwitch
   expired: [],
   consumed: [],
 };
+
+/** Result of the atomic approval commit (NOT-207). */
+export type DeckSwitchResolutionOutcome =
+  | { outcome: 'not-found' }
+  | { outcome: 'unauthorized' }
+  | { outcome: 'expired'; request: DeckSwitchRequest }
+  | { outcome: 'already-resolved'; request: DeckSwitchRequest }
+  | { outcome: 'declined'; request: DeckSwitchRequest }
+  | { outcome: 'resolved'; request: DeckSwitchRequest; workspaceRoot?: string }
+  | { outcome: 'target-missing' }
+  | { outcome: 'session-invalid' }
+  | { outcome: 'workspace-required' }
+  | { outcome: 'assignment-failed'; error: string };
+
+/**
+ * Sentinel that aborts the approval transaction after a late failure
+ * (session vanished mid-commit or the assignment write threw), so the
+ * status transition and session rebind roll back together.
+ */
+class DeckSwitchCommitFailed extends Error {
+  constructor(
+    public readonly outcome: 'session-invalid' | 'assignment-failed',
+    public readonly detail?: string,
+  ) {
+    super(`deck-switch commit failed: ${outcome}`);
+    this.name = 'DeckSwitchCommitFailed';
+  }
+}
 
 const DASHBOARD_SESSION_TOUCH_INTERVAL_MS = 60 * 1000;
 
@@ -767,6 +796,179 @@ export class TrustedSessionStore {
       return null;
     }
     return this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!);
+  }
+
+  /**
+   * NOT-207: approval commit for a deck-switch request.
+   *
+   * The only commit point for changing a deck binding from a request: one
+   * SQLite transaction covers the request status transition, the requesting
+   * session's active deck, and (for `workspace-default`) the workspace
+   * assignment. Any failure rolls everything back, so the prior binding
+   * stays effective and no partial commit is visible.
+   *
+   * - `session`: pending→approved, rebind requesting session, approved→consumed.
+   * - `workspace-default`: as `session`, plus replace the workspace-root
+   *   assignment with the requested deck in the same transaction.
+   * - `decline`: pending→declined; bindings untouched.
+   */
+  applyDeckSwitchResolution(
+    requestId: string,
+    runtimeSessionId: string,
+    decision: DeckSwitchDecision,
+    deps?: {
+      deckExists?: (deckId: string) => boolean;
+      writeWorkspaceAssignment?: (workspaceRoot: string, deckId: string, nowIso: string) => void;
+    },
+  ): DeckSwitchResolutionOutcome {
+    let outcome: DeckSwitchResolutionOutcome = { outcome: 'not-found' };
+    const tx = this.db.transaction(() => {
+      const row = this.getDeckSwitchRequestRow(requestId);
+      if (!row) {
+        outcome = { outcome: 'not-found' };
+        return;
+      }
+      if (row.runtime_session_id !== runtimeSessionId) {
+        outcome = { outcome: 'unauthorized' };
+        return;
+      }
+      if (row.status !== 'pending') {
+        outcome = { outcome: 'already-resolved', request: this.toDeckSwitchRequest(row) };
+        return;
+      }
+      if (Date.parse(row.expires_at) <= Date.now()) {
+        this.markDeckSwitchRequestExpired(requestId);
+        outcome = {
+          outcome: 'expired',
+          request: this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!),
+        };
+        return;
+      }
+
+      const now = nowIso();
+      if (decision === 'decline') {
+        this.db
+          .prepare(
+            `UPDATE deck_switch_requests
+             SET status = 'declined', resolved_at = ?
+             WHERE id = ? AND status = 'pending'`,
+          )
+          .run(now, requestId);
+        outcome = {
+          outcome: 'declined',
+          request: this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!),
+        };
+        return;
+      }
+
+      const deckExists =
+        deps?.deckExists ??
+        ((deckId: string) => {
+          const found = this.db
+            .prepare(`SELECT 1 AS ok FROM decks WHERE id = ?`)
+            .get(deckId) as { ok: number } | undefined;
+          return found !== undefined;
+        });
+      if (!deckExists(row.requested_deck_id)) {
+        outcome = { outcome: 'target-missing' };
+        return;
+      }
+
+      const workspaceRoot = row.workspace_root?.trim() ? row.workspace_root.trim() : null;
+      if (decision === 'workspace-default' && !workspaceRoot) {
+        outcome = { outcome: 'workspace-required' };
+        return;
+      }
+
+      const sessionRow = this.getRuntimeSessionRow(row.runtime_session_id);
+      if (
+        !sessionRow ||
+        sessionRow.revoked_at ||
+        Date.parse(sessionRow.expires_at) <= Date.now()
+      ) {
+        outcome = { outcome: 'session-invalid' };
+        return;
+      }
+
+      const approved = this.db
+        .prepare(
+          `UPDATE deck_switch_requests
+           SET status = 'approved', resolved_at = ?
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .run(now, requestId);
+      if (approved.changes === 0) {
+        outcome = {
+          outcome: 'already-resolved',
+          request: this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!),
+        };
+        return;
+      }
+
+      const switched = this.db
+        .prepare(
+          `UPDATE runtime_sessions
+           SET deck_id = ?, last_seen_at = ?, expires_at = ?
+           WHERE id = ? AND revoked_at IS NULL AND expires_at > ?`,
+        )
+        .run(row.requested_deck_id, now, addMs(now, RUNTIME_SESSION_LEASE_MS), row.runtime_session_id, now);
+      if (switched.changes === 0) {
+        throw new DeckSwitchCommitFailed('session-invalid');
+      }
+
+      if (decision === 'workspace-default' && workspaceRoot) {
+        const writeAssignment =
+          deps?.writeWorkspaceAssignment ??
+          ((root: string, deckId: string, at: string) => {
+            this.db
+              .prepare(
+                `DELETE FROM deck_workspaces WHERE workspace_root = ? AND deck_id != ?`,
+              )
+              .run(root, deckId);
+            this.db
+              .prepare(
+                `INSERT INTO deck_workspaces (workspace_root, deck_id, last_bound_at)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT(workspace_root, deck_id) DO UPDATE SET
+                   last_bound_at = excluded.last_bound_at`,
+              )
+              .run(root, deckId, at);
+          });
+        try {
+          writeAssignment(workspaceRoot, row.requested_deck_id, now);
+        } catch (error) {
+          throw new DeckSwitchCommitFailed(
+            'assignment-failed',
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+
+      this.db
+        .prepare(
+          `UPDATE deck_switch_requests
+           SET status = 'consumed'
+           WHERE id = ? AND status = 'approved'`,
+        )
+        .run(requestId);
+      outcome = {
+        outcome: 'resolved',
+        request: this.toDeckSwitchRequest(this.getDeckSwitchRequestRow(requestId)!),
+        ...(workspaceRoot && decision === 'workspace-default' ? { workspaceRoot } : {}),
+      };
+    });
+
+    try {
+      tx();
+    } catch (error) {
+      if (error instanceof DeckSwitchCommitFailed) {
+        return error.outcome === 'assignment-failed'
+          ? { outcome: 'assignment-failed', error: error.detail ?? 'assignment write failed' }
+          : { outcome: 'session-invalid' };
+      }
+      throw error;
+    }
+    return outcome;
   }
 
   /**
