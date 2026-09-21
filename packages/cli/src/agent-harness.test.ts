@@ -185,6 +185,26 @@ describe('agent-harness templates', () => {
     const checkedInBlock = file.slice(start + HARNESS_MARKER_START.length, end).trim();
     expect(checkedInBlock).toBe(buildClaudeHarnessBlock('project'));
   });
+
+  it('keeps the checked-in cursor rule on the generated project harness (NOT-214)', () => {
+    const file = fs.readFileSync(
+      new URL('../../../.cursor/rules/agent-deck.mdc', import.meta.url),
+      'utf8',
+    );
+    const start = file.indexOf(HARNESS_MARKER_START);
+    const end = file.indexOf(HARNESS_MARKER_END);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const checkedInInner = file.slice(start + HARNESS_MARKER_START.length, end).trim();
+    const generated = buildCursorHarnessFile('project');
+    const generatedInner = generated
+      .slice(
+        generated.indexOf(HARNESS_MARKER_START) + HARNESS_MARKER_START.length,
+        generated.indexOf(HARNESS_MARKER_END),
+      )
+      .trim();
+    expect(checkedInInner).toBe(generatedInner);
+  });
 });
 
 describe('mergeClaudeHarness', () => {
