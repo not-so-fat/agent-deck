@@ -23,8 +23,11 @@ describe('resolveMcpToolProfile', () => {
 describe('tool tiers by profile', () => {
   it('runtime stays under the recommended budget', () => {
     const names = listToolNamesForProfile('runtime');
-    expect(names.length).toBeLessThanOrEqual(12);
+    // NOT-209: request-only switch_deck is the 13th runtime tool — safe for the
+    // minimal tier (creates a pending request, commits nothing).
+    expect(names.length).toBeLessThanOrEqual(13);
     expect(names).toContain('bind_workspace');
+    expect(names).toContain('switch_deck');
     expect(names).toContain('call_service_tool');
     expect(names).not.toContain('manage_deck_card');
     expect(names).not.toContain('create_deck');
