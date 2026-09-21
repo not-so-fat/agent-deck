@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { countDeckCards, formatDisplayLine, PatchOpSchema } from '@agent-deck/shared';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
-import { healUseManifest } from '../playbooks/stub-sync';
-import { resolveDeckBindingSource } from '../mcp-session-binding';
+import { healUseManifest, readUseManifest } from '../playbooks/stub-sync';
+import { resolveBindingActiveSource, resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
 import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard } from './policy';
@@ -372,7 +372,7 @@ function registerRuntimeTools(host: McpToolHost): void {
   r('get_session_binding', {
     title: 'Get Session Binding',
     description:
-      'Show workspace and effective deck for this MCP session (session override or env default).',
+      'Show workspace, active deck, and saved workspace default for this MCP session (active source: session, workspace, or launch).',
     inputSchema: {},
   }, async () => {
     try {
@@ -381,7 +381,30 @@ function registerRuntimeTools(host: McpToolHost): void {
       const deck = await host.callBackendAPI('/api/scope/deck');
       const badge = host.badgeBySession.get(sessionId);
       const cardCounts = deck ? countDeckCards(deck) : { mcp: 0, credentials: 0, playbooks: 0 };
-      const displaySummary = formatDisplayLine(deck?.name ?? null, cardCounts, { badge });
+      // Persistent workspace default from the folder assignment file (NOT-211).
+      // Null covers both "no assignment file" and "present but unreadable"
+      // (corrupt JSON or a pre-v3 manifest): either way there is no usable
+      // saved default to report, so it stays explicit as null.
+      const workspaceDefault = snapshot.workspaceRoot
+        ? readUseManifest(snapshot.workspaceRoot)
+        : null;
+      const activeDeckId: string | null = deck?.id ?? null;
+      const activeDeckName: string | null = deck?.name ?? null;
+      const activeSource = resolveBindingActiveSource({
+        isLaunchSession: host.sessionBinding.isLaunchSession(sessionId),
+        activeDeckId,
+        workspaceDefaultDeckId: workspaceDefault?.deckId ?? null,
+      });
+      // The override marker follows the id-based source, never the display
+      // names: use.json deckName goes stale after a deck rename (heal only
+      // runs on bind/switch), and two decks can share a name. Passing the
+      // explicit sessionOverride keeps display_summary and active_source from
+      // contradicting each other.
+      const displaySummary = formatDisplayLine(activeDeckName, cardCounts, {
+        badge,
+        workspaceDefaultName: workspaceDefault?.deckName ?? null,
+        sessionOverride: activeSource === 'session',
+      });
       return {
         content: [{
           type: 'text',
@@ -392,6 +415,11 @@ function registerRuntimeTools(host: McpToolHost): void {
             effective_deck_id: deck?.id,
             effective_deck_name: deck?.name,
             effective_deck_source: resolveDeckBindingSource(snapshot as Parameters<typeof resolveDeckBindingSource>[0]),
+            active_deck_id: activeDeckId,
+            active_deck_name: activeDeckName,
+            workspace_default_deck_id: workspaceDefault?.deckId ?? null,
+            workspace_default_deck_name: workspaceDefault?.deckName ?? null,
+            active_source: activeSource,
             badge,
             display_summary: displaySummary,
           }, null, 2),
