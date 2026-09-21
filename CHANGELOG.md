@@ -8,11 +8,11 @@
 - You choose the scope when you approve: **This session only**, or **This workspace by default** (writes the folder's `.agent-deck/use.json`). Decline, expiry or a failed write leaves every binding unchanged.
 - Approval reaches you three ways: the host's native form when the IDE supports MCP elicitation, otherwise a two-choice approval page that opens in your browser (once per request), plus a **Pending approvals** inbox in the menubar to recover a missed request.
 - Failures on the approval page say what is wrong (expired, already used, session gone, not signed in) instead of an inert button.
-- `get_session_binding` / the status line now report the active session deck separately from the workspace default, so a session-only switch is visible.
+- `get_session_binding` (and the `display_summary` line agents show) now reports the active session deck separately from the workspace default, so a session-only switch is visible. The terminal status line is unchanged.
 
 ### Change: no per-playbook stub files
 
-- `agent-deck setup` and `agent-deck use` no longer generate deck-specific playbook stubs (`.cursor/skills/`, rules). Agents discover playbooks at runtime from `get_bound_deck` and read bodies with `get_playbook`, so switching decks never leaves stale files behind.
+- `agent-deck setup` and `agent-deck use` no longer generate deck-specific playbook stubs (Cursor rule stubs under `.cursor/rules/agent-deck-stubs/` and Claude skill stubs under `.claude/skills/agent-deck-*/`). Agents discover playbooks at runtime from `get_bound_deck` and read bodies with `get_playbook`, so switching decks never leaves stale files behind.
 - On the next `setup` / `use`, stubs Agent Deck previously generated are removed (only files carrying Agent Deck's markers; your own skills and rules are untouched) and a note is printed.
 - Trigger changes from accepted playbook patches take effect on the next `get_bound_deck` call — `agent-deck use --refresh` is no longer needed for them.
 
@@ -28,8 +28,8 @@
 ### After upgrade
 
 - Upgrade the CLI, then `agent-deck stop && agent-deck start`.
-- Reload MCP in your IDE (or restart the agent session) so the `mcp-launch` bridge picks up `switch_deck`.
-- Re-run `agent-deck setup --client <client>` in each workspace to drop old stubs and refresh the guidance block.
+- Reload MCP in your IDE (or restart the agent session): the bridge's approval-page auto-open and the new tool list live in the `mcp-launch` process your IDE spawns, which keeps running the old code until reloaded.
+- Run `agent-deck setup --client <client>` (or `agent-deck use <deck>`) from each folder that had generated stubs to remove them. Add `--scope project` to `setup` if you keep the guidance block in the repo (`CLAUDE.md` / `.cursor/rules/agent-deck.mdc`) rather than globally.
 
 ## 1.10.6 — 2026-09-20
 
