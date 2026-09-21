@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.11.0 — 2026-09-21
+
+### Feature: switch decks from an agent session, with your approval
+
+- Agents can now call `switch_deck` to ask for a different deck. The request only creates a pending approval — the active deck does not change until you approve, and no MCP reload is needed afterwards.
+- You choose the scope when you approve: **This session only**, or **This workspace by default** (writes the folder's `.agent-deck/use.json`). Decline, expiry or a failed write leaves every binding unchanged.
+- Approval reaches you three ways: the host's native form when the IDE supports MCP elicitation, otherwise a two-choice approval page that opens in your browser (once per request), plus a **Pending approvals** inbox in the menubar to recover a missed request.
+- Failures on the approval page say what is wrong (expired, already used, session gone, not signed in) instead of an inert button.
+- `get_session_binding` / the status line now report the active session deck separately from the workspace default, so a session-only switch is visible.
+
+### Change: no per-playbook stub files
+
+- `agent-deck setup` and `agent-deck use` no longer generate deck-specific playbook stubs (`.cursor/skills/`, rules). Agents discover playbooks at runtime from `get_bound_deck` and read bodies with `get_playbook`, so switching decks never leaves stale files behind.
+- On the next `setup` / `use`, stubs Agent Deck previously generated are removed (only files carrying Agent Deck's markers; your own skills and rules are untouched) and a note is printed.
+- Trigger changes from accepted playbook patches take effect on the next `get_bound_deck` call — `agent-deck use --refresh` is no longer needed for them.
+
+### Change: retired legacy switch paths
+
+- Deck switches never use admin elevation any more. `bind_workspace` is bootstrap-only; use `switch_deck` to move an existing session. Admin elevation remains for creating and editing decks.
+- Regenerated harness guidance (`CLAUDE.md` / `.cursor/rules/agent-deck.mdc`) teaches `switch_deck`. Re-run `agent-deck setup --client <client>` to refresh yours.
+
+### UI
+
+- Dashboard section labels (My Decks, Add Cards, My Collection, Get MCP URL, Feedback, review queue) use a configurable display font (`--font-ui-display`, system stack, no downloads). Card contents stay Monaco.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Reload MCP in your IDE (or restart the agent session) so the `mcp-launch` bridge picks up `switch_deck`.
+- Re-run `agent-deck setup --client <client>` in each workspace to drop old stubs and refresh the guidance block.
+
 ## 1.10.6 — 2026-09-20
 
 ### Fix: admin approval opens the approval page and explains failures (NOT-199)
