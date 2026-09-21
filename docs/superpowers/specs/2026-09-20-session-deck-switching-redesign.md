@@ -31,6 +31,10 @@ scope. Later tickets must not reinterpret which mechanism applies.
 
 - The **agent** may only *request* a switch to a named deck. The request names
   the target `deckId` and the requesting session; it grants nothing by itself.
+- The legacy direct-switch path is retired as an unapproved path: neither
+  `switch_bound_deck` nor `bind_workspace` to another deck may change the
+  active deck without the human approval in this section; where those tools
+  still exist they are request-only under this contract.
 - The **human** makes the decision at approval time and picks exactly one of
   two commit scopes:
   - **This session only** — rebind only the requesting session to the target

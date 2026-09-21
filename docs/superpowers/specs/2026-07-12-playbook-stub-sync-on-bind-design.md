@@ -1,5 +1,7 @@
 # Playbook Stub Sync on Bind — Design
 
+> **Switching contract:** stub regeneration on `switch_bound_deck` and the IDE reload note in this spec are **superseded by** [Session/default deck-switching redesign](./2026-09-20-session-deck-switching-redesign.md) (NOT-204), which excludes stub regeneration and IDE reload from the switch path.
+
 **Date:** 2026-07-12 · **Status:** Draft for review · **Scope:** agent_deck core (shared stub module + MCP bind + patch accept)
 
 **Problem:** Thin playbook stubs (A′ architecture) only sync when someone manually runs `agent-deck use`. Deck playbooks can change via dashboard, MCP `register_playbook`, or accepted patches — but on-disk stubs in `.cursor/rules/agent-deck-stubs/` and `.claude/skills/agent-deck-*` drift immediately. Live evidence in this repo: 6 deck playbooks, 3 on-disk stubs, 2 stubs point at retired playbooks (`pb_dev_smoke_checklist`, `pb_pr_summary` → 404 on `get_playbook`). Only 1 of 6 playbooks is reachable via host skill-matching; 2 stubs actively mislead the agent.
