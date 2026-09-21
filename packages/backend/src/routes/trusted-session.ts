@@ -412,6 +412,12 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         // NOT-207: approval is the only commit point. Session rebind and
         // workspace-default assignment commit atomically inside the store;
         // every other outcome leaves both bindings unchanged.
+        // Ownership check: the dashboard principal is intentionally not tied
+        // to a runtime session (dashboard-only route per the policy registry),
+        // so belonging is established by matching the body-supplied
+        // runtimeSessionId against the request's owner. The request's
+        // workspace is not compared; the stored workspaceRoot travels with
+        // the request itself.
         const result = store.applyDeckSwitchResolution(
           requestId,
           runtimeSessionId.trim(),

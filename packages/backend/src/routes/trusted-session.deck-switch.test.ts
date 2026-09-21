@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -9,6 +13,29 @@ import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { resolveRoutePolicy } from '../trusted-session/route-policy-registry';
 import { TrustedSessionStore } from '../trusted-session/store';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
+
+function makeWorkspaceRoot(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-route-switch-'));
+}
+
+function writeUseJson(workspaceRoot: string, manifest: Record<string, unknown>): void {
+  fs.mkdirSync(path.join(workspaceRoot, '.agent-deck'), { recursive: true });
+  fs.writeFileSync(
+    path.join(workspaceRoot, '.agent-deck', 'use.json'),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    'utf8',
+  );
+}
+
+function readUseJson(workspaceRoot: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(workspaceRoot, '.agent-deck', 'use.json'), 'utf8'),
+    ) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
 
 describe('trusted-session deck-switch approval routes (NOT-207)', () => {
   const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
@@ -36,14 +63,9 @@ describe('trusted-session deck-switch approval routes (NOT-207)', () => {
     return { fastify, db, store, deckA, deckB };
   }
 
-  function workspaceBindings(db: DatabaseManager) {
-    return (
-      db
-        .getSqliteDatabase()
-        .prepare(`SELECT workspace_root, deck_id FROM deck_workspaces`)
-        .all() as Array<{ workspace_root: string; deck_id: string }>
-    ).map((row) => ({ workspaceRoot: row.workspace_root, deckId: row.deck_id }));
-  }
+  // NOTE: workspace-default approval writes the v3 `use.json` assignment file,
+  // never the `deck_workspaces` stub-sync registry. Tests below seed a real
+  // temp-dir assignment and assert on the file.
 
   it('registers authorization policies for the approval endpoints', () => {
     expect(resolveRoutePolicy('GET', '/api/trusted-session/deck-switch/req_123')).toBe(
@@ -55,14 +77,15 @@ describe('trusted-session deck-switch approval routes (NOT-207)', () => {
   });
 
   it('session-only approval rebinds the session and keeps the workspace default', async () => {
-    const { fastify, db, store, deckA, deckB } = await buildApp();
+    const { fastify, store, deckA, deckB } = await buildApp();
+    const workspaceRoot = makeWorkspaceRoot();
+    writeUseJson(workspaceRoot, { version: 3, deckId: deckA.id, deckName: 'deck-a' });
     const session = store.createRuntimeSession({ deckId: deckA.id });
-    await db.upsertDeckWorkspace('/work/ws', deckA.id);
     const request = store.createDeckSwitchRequest({
       runtimeSessionId: session.sessionId,
       currentDeckId: deckA.id,
       requestedDeckId: deckB.id,
-      workspaceRoot: '/work/ws',
+      workspaceRoot,
     });
 
     const response = await fastify.inject({
@@ -78,18 +101,19 @@ describe('trusted-session deck-switch approval routes (NOT-207)', () => {
       data: { requestId: request.requestId, decision: 'session', status: 'consumed', deckId: deckB.id },
     });
     expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckB.id);
-    expect(workspaceBindings(db)).toEqual([{ workspaceRoot: '/work/ws', deckId: deckA.id }]);
+    expect(readUseJson(workspaceRoot)).toMatchObject({ version: 3, deckId: deckA.id });
   });
 
   it('workspace-default approval rebinds the session and the assignment without reload', async () => {
-    const { fastify, db, store, deckA, deckB } = await buildApp();
+    const { fastify, store, deckA, deckB } = await buildApp();
+    const workspaceRoot = makeWorkspaceRoot();
+    writeUseJson(workspaceRoot, { version: 3, deckId: deckA.id, deckName: 'deck-a' });
     const session = store.createRuntimeSession({ deckId: deckA.id });
-    await db.upsertDeckWorkspace('/work/ws', deckA.id);
     const request = store.createDeckSwitchRequest({
       runtimeSessionId: session.sessionId,
       currentDeckId: deckA.id,
       requestedDeckId: deckB.id,
-      workspaceRoot: '/work/ws',
+      workspaceRoot,
     });
 
     const response = await fastify.inject({
@@ -107,11 +131,15 @@ describe('trusted-session deck-switch approval routes (NOT-207)', () => {
         decision: 'workspace-default',
         status: 'consumed',
         deckId: deckB.id,
-        workspaceRoot: '/work/ws',
+        workspaceRoot,
       },
     });
     expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckB.id);
-    expect(workspaceBindings(db)).toEqual([{ workspaceRoot: '/work/ws', deckId: deckB.id }]);
+    expect(readUseJson(workspaceRoot)).toMatchObject({
+      version: 3,
+      deckId: deckB.id,
+      deckName: 'deck-b',
+    });
 
     const runtime = await fastify.inject({
       method: 'GET',
@@ -122,14 +150,15 @@ describe('trusted-session deck-switch approval routes (NOT-207)', () => {
   });
 
   it('decline keeps the prior binding effective', async () => {
-    const { fastify, db, store, deckA, deckB } = await buildApp();
+    const { fastify, store, deckA, deckB } = await buildApp();
+    const workspaceRoot = makeWorkspaceRoot();
+    writeUseJson(workspaceRoot, { version: 3, deckId: deckA.id, deckName: 'deck-a' });
     const session = store.createRuntimeSession({ deckId: deckA.id });
-    await db.upsertDeckWorkspace('/work/ws', deckA.id);
     const request = store.createDeckSwitchRequest({
       runtimeSessionId: session.sessionId,
       currentDeckId: deckA.id,
       requestedDeckId: deckB.id,
-      workspaceRoot: '/work/ws',
+      workspaceRoot,
     });
 
     const response = await fastify.inject({
@@ -145,7 +174,7 @@ describe('trusted-session deck-switch approval routes (NOT-207)', () => {
       data: { requestId: request.requestId, decision: 'decline', status: 'declined' },
     });
     expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
-    expect(workspaceBindings(db)).toEqual([{ workspaceRoot: '/work/ws', deckId: deckA.id }]);
+    expect(readUseJson(workspaceRoot)).toMatchObject({ version: 3, deckId: deckA.id });
   });
 
   it('repeat resolution returns consumed and applies no second mutation', async () => {
@@ -186,27 +215,36 @@ describe('trusted-session deck-switch approval routes (NOT-207)', () => {
 
   it('expired requests resolve with a stable code and change nothing', async () => {
     const { fastify, db, store, deckA, deckB } = await buildApp();
+    const workspaceRoot = makeWorkspaceRoot();
+    writeUseJson(workspaceRoot, { version: 3, deckId: deckA.id, deckName: 'deck-a' });
     const session = store.createRuntimeSession({ deckId: deckA.id });
     const request = store.createDeckSwitchRequest({
       runtimeSessionId: session.sessionId,
       currentDeckId: deckA.id,
       requestedDeckId: deckB.id,
-      workspaceRoot: '/work/ws',
+      workspaceRoot,
     });
     db.getSqliteDatabase()
       .prepare(`UPDATE deck_switch_requests SET expires_at = ? WHERE id = ?`)
       .run('2000-01-01T00:00:00.000Z', request.requestId);
 
-    const response = await fastify.inject({
-      method: 'POST',
-      url: `/api/trusted-session/deck-switch/${request.requestId}/resolve`,
-      headers: dashboardAuthHeaders(store),
-      payload: { runtimeSessionId: session.sessionId, decision: 'session' },
-    });
+    const url = `/api/trusted-session/deck-switch/${request.requestId}/resolve`;
+    const headers = dashboardAuthHeaders(store);
+    const payload = { runtimeSessionId: session.sessionId, decision: 'session' };
+    const response = await fastify.inject({ method: 'POST', url, headers, payload });
 
     expect(response.statusCode).toBe(410);
     expect(response.json()).toMatchObject({ success: false, error_code: 'DECK_SWITCH_EXPIRED' });
     expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+    expect(readUseJson(workspaceRoot)).toMatchObject({ deckId: deckA.id });
+
+    // A second resolution of the same expired request stays expired (410),
+    // never flipping to 409 CONSUMED.
+    const repeat = await fastify.inject({ method: 'POST', url, headers, payload });
+    expect(repeat.statusCode).toBe(410);
+    expect(repeat.json()).toMatchObject({ success: false, error_code: 'DECK_SWITCH_EXPIRED' });
+    expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+    expect(readUseJson(workspaceRoot)).toMatchObject({ deckId: deckA.id });
   });
 
   it('foreign-session approval is unauthorized and changes nothing', async () => {
