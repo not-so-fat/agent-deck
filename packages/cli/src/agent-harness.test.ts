@@ -252,3 +252,84 @@ alwaysApply: false
     expect(buildCursorHarnessFile('global')).toContain(HARNESS_MARKER_START);
   });
 });
+
+describe('NOT-206 static runtime discovery', () => {
+  const texts = () => [
+    buildClaudeHarnessBlock('global'),
+    buildClaudeHarnessBlock('project'),
+    buildCodexHarnessBlock('global'),
+    buildCursorHarnessFile('global'),
+    buildCursorHarnessFile('project'),
+  ];
+
+  it('directs deck-B-only playbooks through get_bound_deck + get_playbook', () => {
+    for (const text of texts()) {
+      expect(text).toContain('get_bound_deck');
+      expect(text).toContain('get_playbook');
+      expect(text).toContain('exists only on the newly active deck');
+    }
+  });
+
+  it('needs no regenerated files when the deck switches', () => {
+    for (const text of texts()) {
+      expect(text).toContain('never requires regenerating workspace files');
+    }
+  });
+
+  it('names no stub generation or refresh step', () => {
+    for (const text of texts()) {
+      expect(text).not.toContain('trigger stubs');
+      expect(text).not.toContain('refresh stubs');
+      expect(text).not.toContain('use --refresh');
+    }
+  });
+});
+
+describe('managed-block refresh preserves user content byte-for-byte', () => {
+  it('keeps triple newlines around claude markers and adds no trailing newline', () => {
+    const before = '# Team conventions\n\n\n';
+    const after = '\n\n\n# More notes';
+    const existing = `${before}${HARNESS_MARKER_START}\nold harness\n${HARNESS_MARKER_END}${after}`;
+    const { content, changed } = mergeClaudeHarness(existing, buildClaudeHarnessBlock('global'));
+
+    expect(changed).toBe(true);
+    expect(content.slice(0, content.indexOf(HARNESS_MARKER_START))).toBe(before);
+    const endSlice = content.slice(
+      content.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length,
+    );
+    expect(endSlice).toBe(after);
+    expect(content).not.toContain('old harness');
+    expect(content).toContain('## Agent Deck');
+  });
+
+  it('keeps triple newlines around cursor markers with custom frontmatter', () => {
+    const existing = `---
+description: My custom description
+alwaysApply: true
+---
+
+# My preamble
+
+
+${HARNESS_MARKER_START}
+old
+${HARNESS_MARKER_END}
+
+
+# Keep this footer`;
+    const { content } = mergeCursorHarnessFile(existing, '# Agent Deck\n\nnew body');
+
+    expect(content).toContain('description: My custom description');
+    expect(content).toContain('# My preamble\n\n\n');
+    expect(content).toContain('\n\n\n# Keep this footer');
+    expect(content).toContain('new body');
+    expect(content).not.toContain('\nold\n');
+  });
+
+  it('appends without trimming existing trailing whitespace', () => {
+    const existing = '# My notes\n\n\n';
+    const { content } = mergeClaudeHarness(existing, buildClaudeHarnessBlock('global'));
+    expect(content.startsWith(existing)).toBe(true);
+    expect(content).toContain(HARNESS_MARKER_START);
+  });
+});
