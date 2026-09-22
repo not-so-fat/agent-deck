@@ -17,7 +17,8 @@ import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { resolveRoutePolicy } from '../trusted-session/route-policy-registry';
 import { TrustedSessionStore } from '../trusted-session/store';
 import { BackendApiError } from '../lib/backend-api-error';
-import { formatMcpToolError } from './policy';
+import { UNASSIGNED_DECK_MESSAGE } from '../mcp-unassigned';
+import { SWITCH_BEFORE_BIND_MESSAGE, formatMcpToolError } from './policy';
 import { registerMcpTools, type McpToolHost } from './register';
 
 const FORBIDDEN_SUBSTRINGS = [
@@ -348,6 +349,80 @@ describe('switch_deck tool wiring (NOT-209)', () => {
 
     expect(result.isError).toBe(true);
     expect(spies.callBackendAPI).not.toHaveBeenCalled();
+  });
+
+  it('NOT-234: unbound session gets a structured GRANT_REQUIRED naming the bind-first retry', async () => {
+    const { host, tools, spies } = buildStubHost({ runtimeSessionId: null });
+    registerMcpTools(host);
+
+    const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
+
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.error_code).toBe('GRANT_REQUIRED');
+    expect(body.error).toBe(SWITCH_BEFORE_BIND_MESSAGE);
+    // Distinct from the genuinely-unassigned-folder message, which prescribes
+    // the CLI-and-reload remedy — this path must never suggest either.
+    expect(body.error).not.toBe(UNASSIGNED_DECK_MESSAGE);
+    expect(body.error).not.toContain('agent-deck use');
+    expect(body.error).not.toMatch(/reload/i);
+    expect(body.error).toContain('bind_workspace');
+    expect(body.error).toContain('get_session_binding');
+    expect(body.error).toContain('switch_deck');
+    expect(spies.callBackendAPI).not.toHaveBeenCalled();
+  });
+
+  it('NOT-234: bind-then-switch creates the request normally once the session binds', async () => {
+    const binding: { workspaceRoot?: string; deckId?: string; runtimeSessionId?: string } = {
+      workspaceRoot: '/work/test',
+      deckId: 'deck_a',
+    };
+    const { host, tools, spies } = buildStubHost({ runtimeSessionId: null });
+    host.fetchDeck = async () => ({ id: 'deck_a', name: 'alpha' });
+    host.sessionBinding.getBinding = () => ({ ...binding });
+    host.sessionBinding.setWorkspace = (_sessionId: string, workspaceRoot: string) => {
+      binding.workspaceRoot = workspaceRoot;
+    };
+    host.sessionBinding.setDeckId = (_sessionId: string, deckId: string) => {
+      binding.deckId = deckId;
+    };
+    host.sessionBinding.setTrustedSession = (
+      _sessionId: string,
+      input: { runtimeSessionId: string; deckId: string; workspaceRoot?: string },
+    ) => {
+      binding.runtimeSessionId = input.runtimeSessionId;
+      binding.deckId = input.deckId;
+      binding.workspaceRoot = input.workspaceRoot;
+    };
+    registerMcpTools(host);
+
+    const denied = await tools.get('switch_deck')!.handler({ target: 'beta' });
+    expect(denied.isError).toBe(true);
+    expect(JSON.parse(denied.content[0].text)).toMatchObject({ error_code: 'GRANT_REQUIRED' });
+
+    const bound = await tools.get('bind_workspace')!.handler({
+      workspaceRoot: '/work/test',
+      deckId: 'deck_a',
+    });
+    expect(bound.isError ?? false).toBe(false);
+
+    // The server bind path establishes the runtime session for later calls.
+    host.sessionBinding.setTrustedSession('mcp_test', {
+      runtimeSessionId: 'rs_1',
+      deckId: 'deck_a',
+      workspaceRoot: '/work/test',
+    });
+
+    const retried = await tools.get('switch_deck')!.handler({ target: 'beta' });
+    expect(retried.isError ?? false).toBe(false);
+    expect(JSON.parse(retried.content[0].text)).toMatchObject({
+      requestId: 'req_test',
+      status: 'pending',
+    });
+    expect(spies.callBackendAPI).toHaveBeenCalledTimes(1);
+    const [endpoint, init] = spies.callBackendAPI.mock.calls[0];
+    expect(endpoint).toBe('/api/trusted-session/deck-switch');
+    expect(JSON.parse(String(init.body))).toEqual({ target: 'beta' });
   });
 
   it('surfaces backend failures without leaking deck contents', async () => {

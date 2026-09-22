@@ -91,17 +91,43 @@ describe('agent-harness templates', () => {
     }
   });
 
-  it('project harness adds optional assignment guidance without the obsolete bind flow', () => {
+  it('project harness adds optional assignment guidance with a branched GRANT_REQUIRED retry (NOT-234)', () => {
     const cursor = buildCursorHarnessFile('project');
     const claude = buildClaudeHarnessBlock('project');
     for (const text of [cursor, claude]) {
-      expect(text).not.toContain('bind_workspace');
       expect(text).toContain('agent-deck use');
       expect(text).toContain('optional persistent folder-assignment');
       expect(text).toContain('launch-selected sessions can be bound without that file');
       expect(text).toContain('DECK_FIXED');
       expect(text).toContain('ADMIN_REQUIRED');
       expect(text).toContain('.agent-deck/use.json');
+      // NOT-234: the opener branches on which GRANT_REQUIRED message came
+      // back — the not-yet-bound retry names bind_workspace, while the
+      // unassigned-folder remedy keeps the `agent-deck use` CLI step.
+      expect(text).toContain('match the message before acting');
+      expect(text).toContain('bind_workspace');
+    }
+  });
+
+  it('NOT-234: GRANT_REQUIRED guidance names both messages with differing remedies', () => {
+    const texts = [
+      buildCursorHarnessFile('global'),
+      buildCursorHarnessFile('project'),
+      buildClaudeHarnessBlock('global'),
+      buildClaudeHarnessBlock('project'),
+      buildCodexHarnessBlock('global'),
+    ];
+    for (const text of texts) {
+      expect(text).toContain('GRANT_REQUIRED');
+      // Unassigned folder keeps the CLI-and-reload remedy, then stop.
+      expect(text).toContain('No deck assigned to this folder');
+      expect(text).toContain('agent-deck use <deck>');
+      // Not-yet-bound session retries once via bind, with no CLI step.
+      expect(text).toContain('has not bound yet');
+      expect(text).toContain('get_session_binding');
+      expect(text).toContain('then retry `switch_deck`');
+      expect(text).toContain('no CLI step');
+      expect(text).toContain('stop only if that retry also fails');
     }
   });
 

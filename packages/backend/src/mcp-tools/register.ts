@@ -9,7 +9,7 @@ import { readUseManifest } from '../playbooks/stub-sync';
 import { resolveBindingActiveSource, resolveDeckBindingSource } from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
-import { mcpPolicyError, requireMcpAdmin, requireMcpDashboard } from './policy';
+import { SWITCH_BEFORE_BIND_MESSAGE, mcpPolicyError, mcpPolicyErrorWithMessage, requireMcpAdmin, requireMcpDashboard } from './policy';
 import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
 import { unassignedDeckBinding } from '../mcp-unassigned';
 
@@ -274,7 +274,11 @@ function registerRuntimeTools(host: McpToolHost): void {
       const sessionId = host.getSessionId();
       const snapshot = host.sessionBinding.getBinding(sessionId);
       if (!snapshot.runtimeSessionId) {
-        return host.toolError(new Error('GRANT_REQUIRED'));
+        // NOT-234: the session is assigned but has made no binding call yet
+        // in its own lifetime, so there is no runtime session to switch from.
+        // Name the retry (bind first, then switch_deck) instead of the
+        // unassigned-folder CLI-and-reload remedy.
+        return mcpPolicyErrorWithMessage('GRANT_REQUIRED', SWITCH_BEFORE_BIND_MESSAGE);
       }
       // Request-only: this tool never touches the local binding and never
       // calls the approval commit. The backend resolves the target, reuses an
