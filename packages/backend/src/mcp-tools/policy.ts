@@ -20,12 +20,27 @@ export function formatMcpToolError(error: unknown) {
 }
 
 export function mcpPolicyError(code: TrustedSessionErrorCode) {
-  const body = trustedSessionError(code, bodyMessage(code));
+  return mcpPolicyErrorWithMessage(code, bodyMessage(code));
+}
+
+export function mcpPolicyErrorWithMessage(code: TrustedSessionErrorCode, message: string) {
+  const body = trustedSessionError(code, message);
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(body) }],
     isError: true,
   };
 }
+
+/**
+ * NOT-234: a correctly-assigned session that calls switch_deck before any
+ * binding call in its own lifetime has no runtimeSessionId yet. This message
+ * names the one retry that heals it and stays distinct from the
+ * unassigned-folder message in mcp-unassigned.ts (which prescribes
+ * `agent-deck use <deck>` + reload). It deliberately names no CLI command
+ * and no reload.
+ */
+export const SWITCH_BEFORE_BIND_MESSAGE =
+  'This MCP session has not bound yet. Call bind_workspace (or get_session_binding) first, then retry switch_deck.';
 
 export function mcpContractError(error_code: string, message: string, correlation?: Record<string, unknown>) {
   return {
