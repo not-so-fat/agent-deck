@@ -49,7 +49,12 @@ describe('parseSseMessages', () => {
 type Recorded = { sessionId?: string; body: any; deck?: string };
 
 /** Minimal streamable-HTTP stand-in whose session id we can invalidate at will. */
-function stubFetch(state: { sessionId: string; calls: Recorded[]; legacy400?: boolean }) {
+function stubFetch(state: {
+  sessionId: string;
+  calls: Recorded[];
+  legacy400?: boolean;
+  initializeResult?: unknown;
+}) {
   return async (_url: any, init: any): Promise<Response> => {
     const headers = (init?.headers ?? {}) as Record<string, string>;
     const sessionId = headers['mcp-session-id'];
@@ -63,10 +68,13 @@ function stubFetch(state: { sessionId: string; calls: Recorded[]; legacy400?: bo
     state.calls.push({ sessionId, body });
 
     if (body.method === 'initialize') {
-      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { ok: true } }), {
-        status: 200,
-        headers: { 'content-type': 'application/json', 'mcp-session-id': state.sessionId },
-      });
+      return new Response(
+        JSON.stringify({ jsonrpc: '2.0', id: body.id, result: state.initializeResult ?? { ok: true } }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'mcp-session-id': state.sessionId },
+        },
+      );
     }
 
     if (sessionId !== state.sessionId) {
@@ -96,7 +104,12 @@ function stubFetch(state: { sessionId: string; calls: Recorded[]; legacy400?: bo
   };
 }
 
-type BridgeState = { sessionId: string; calls: Recorded[]; legacy400?: boolean };
+type BridgeState = {
+  sessionId: string;
+  calls: Recorded[];
+  legacy400?: boolean;
+  initializeResult?: unknown;
+};
 
 async function driveBridge(
   state: BridgeState,
@@ -144,6 +157,22 @@ async function driveBridge(
   };
 
   return { bridge, send, waitFor, out, finish: async () => (stdin.end(), running) };
+}
+
+/** Client-side `notifications/tools/list_changed` messages written by the bridge. */
+function listChangedNotifications(out: any[]): any[] {
+  return out.filter((message) => message.method === 'notifications/tools/list_changed');
+}
+
+async function waitForNotification(out: any[], method: string): Promise<unknown> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const match = out.find((message) => message.method === method);
+    if (match) {
+      return match;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`no ${method} notification`);
 }
 
 describe('McpStdioHttpBridge', () => {
@@ -293,6 +322,71 @@ describe('McpStdioHttpBridge', () => {
 
     // A second `initialize` result for id 1 would be an unsolicited response upstream.
     expect(out.filter((message) => message.id === 1)).toHaveLength(1);
+  });
+
+  it('tells the client to refresh its tool list after a recovery', async () => {
+    // NOT-235: a session that outlives a backend upgrade keeps the tool list it
+    // fetched from the old backend unless the host re-fetches it.
+    const state: BridgeState = {
+      sessionId: 'session-a',
+      calls: [],
+      initializeResult: { capabilities: { tools: { listChanged: true } } },
+    };
+    const { send, waitFor, out, finish } = await driveBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    const response = await waitFor(2);
+    await waitForNotification(out, 'notifications/tools/list_changed');
+    await finish();
+
+    expect(response.result).toEqual({ pong: true });
+    // The replayed handshake stays swallowed — the host sees one notification,
+    // not a second `initialize` result.
+    expect(out.filter((message) => message.id === 1)).toHaveLength(1);
+    expect(listChangedNotifications(out)).toHaveLength(1);
+  });
+
+  it('sends nothing after a recovery the handshake did not opt into', async () => {
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    const logs: string[] = [];
+    const { send, waitFor, out, finish } = await driveBridge(state, undefined, {
+      log: (message) => logs.push(message),
+    });
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    await waitFor(2);
+    // Recovery is done once the retried request answered; the notification would
+    // have been written before it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await finish();
+
+    expect(listChangedNotifications(out)).toHaveLength(0);
+    expect(logs.filter((line) => line.includes('not sending notifications/tools/list_changed')))
+      .toHaveLength(1);
+  });
+
+  it('sends no tool-list notification on the first connect', async () => {
+    const state: BridgeState = {
+      sessionId: 'session-a',
+      calls: [],
+      initializeResult: { capabilities: { tools: { listChanged: true } } },
+    };
+    const { send, waitFor, out, finish } = await driveBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    await waitFor(2);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await finish();
+
+    expect(listChangedNotifications(out)).toHaveLength(0);
   });
 
   it('recovers from the legacy 400 session-invalid body as well', async () => {
@@ -1045,7 +1139,11 @@ describe('McpStdioHttpBridge message pipelining', () => {
   });
 
   it('re-initializes once when several in-flight requests come back stale', async () => {
-    const state = { sessionId: 'session-a', calls: [] as Recorded[] };
+    const state: BridgeState = {
+      sessionId: 'session-a',
+      calls: [],
+      initializeResult: { capabilities: { tools: { listChanged: true } } },
+    };
     let releaseSecondStale: () => void = () => {};
     const secondStaleGate = new Promise<void>((resolve) => {
       releaseSecondStale = resolve;
@@ -1065,7 +1163,7 @@ describe('McpStdioHttpBridge message pipelining', () => {
       return response;
     }) as unknown as typeof fetch;
 
-    const { bridge, send, waitFor, finish } = await driveBridge(state, staggeredFetch);
+    const { bridge, send, waitFor, out, finish } = await driveBridge(state, staggeredFetch);
 
     send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
     await waitFor(1);
@@ -1081,11 +1179,14 @@ describe('McpStdioHttpBridge message pipelining', () => {
     // The late 404 must reuse the session the first recovery established rather
     // than handshaking again and orphaning it on the server.
     expect((await waitFor(3)).result).toEqual({ pong: true });
+    await waitForNotification(out, 'notifications/tools/list_changed');
     await finish();
 
     expect(bridge.getRecoveryCount()).toBe(1);
     expect(bridge.getSessionId()).toBe('session-b');
     expect(state.calls.filter((call) => call.body.method === 'initialize')).toHaveLength(2);
+    // One shared recovery means one notification, even though two requests went stale.
+    expect(listChangedNotifications(out)).toHaveLength(1);
   });
 
   it('still holds messages until the handshake has a session id', async () => {

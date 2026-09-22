@@ -243,6 +243,13 @@ export class McpStdioHttpBridge {
   /** The client's own handshake, replayed verbatim when a session disappears. */
   private cachedInitialize: JsonRpcMessage | undefined;
   private cachedInitialized: JsonRpcMessage | undefined;
+  /**
+   * Whether the `initialize` result the client actually received declared
+   * `capabilities.tools.listChanged` — i.e. the host knows the tool list can
+   * change under it. Recorded when that result passes through the bridge; a
+   * recovery notifies only on this basis (NOT-235).
+   */
+  private clientHandlesToolListChanged = false;
   private streamAbort: AbortController | undefined;
   private closed = false;
   private recovering: Promise<boolean> | undefined;
@@ -447,6 +454,8 @@ export class McpStdioHttpBridge {
       this.boundDeckId = readHeader(this.launchHeaders, AGENT_DECK_DECK_ID_HEADER);
       this.clientChosenDeckId = undefined;
       this.deckAwaitingRebind = undefined;
+      // Re-recorded when the new handshake's result passes through below.
+      this.clientHandlesToolListChanged = false;
       // Assigned before the first await so a message read on the very next line
       // already sees the gate and waits for the session id.
       const handshake = this.deliver(message, { allowRecovery: false });
@@ -634,11 +643,33 @@ export class McpStdioHttpBridge {
       this.log('[agent-deck] bridge: dropping non-JSON response from MCP server');
       return;
     }
+    if (isInitializeRequest(request)) {
+      // The replayed handshake in runRecovery never comes through here — it is
+      // posted directly and its response swallowed — so this records exactly the
+      // `initialize` results the client received.
+      this.noteInitializeResult(request, messages);
+    }
     for (const message of messages) {
       this.writeToClient(message, sentOnGeneration);
       // Only after the host has the result, and never awaited: a follow-up that
       // never settles must not be able to hold the result back.
       void this.notifyToolResult(request, message, sentToUrl);
+    }
+  }
+
+  /**
+   * Remember whether the `initialize` result the client just received declared
+   * `capabilities.tools.listChanged`. The server advertises it (the MCP SDK's
+   * `registerTool` path sets it), so a host that saw it knows a
+   * `notifications/tools/list_changed` may arrive later.
+   */
+  private noteInitializeResult(request: JsonRpcMessage, messages: JsonRpcMessage[]): void {
+    for (const message of messages) {
+      if (message.id !== request.id) {
+        continue;
+      }
+      const result = message.result as { capabilities?: { tools?: { listChanged?: unknown } } } | undefined;
+      this.clientHandlesToolListChanged = result?.capabilities?.tools?.listChanged === true;
     }
   }
 
@@ -795,8 +826,28 @@ export class McpStdioHttpBridge {
     }
 
     this.log(`[agent-deck] bridge: reconnected with MCP session ${this.sessionId}`);
+    this.notifyToolsListChanged();
     this.startServerStream();
     return true;
+  }
+
+  /**
+   * Tell the host its cached tool list may be stale (NOT-235). A session that
+   * outlives a backend upgrade would otherwise keep calling tools the new
+   * backend no longer has. Only after a recovery — never on the first connect —
+   * and only when the `initialize` result the client received declared
+   * `capabilities.tools.listChanged`, so hosts that never opted in see nothing
+   * new on the wire.
+   */
+  private notifyToolsListChanged(): void {
+    if (!this.clientHandlesToolListChanged) {
+      this.log(
+        '[agent-deck] bridge: not sending notifications/tools/list_changed — ' +
+          'the initialize result the client received did not declare capabilities.tools.listChanged',
+      );
+      return;
+    }
+    this.writeToClient({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
   }
 
   private async refreshLaunchTarget(): Promise<void> {
