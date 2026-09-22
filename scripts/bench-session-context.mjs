@@ -6,7 +6,9 @@
  * reporting mean/p50/p95. This is a local benchmark, not a unit test:
  * host UI latency is deliberately not asserted in the committed suite.
  *
- * Run:  npm run build --workspace @agent-deck/backend && node scripts/bench-session-context.mjs
+ * Run:  npm run bench:session-context
+ * (requires an environment where localhost listening sockets are allowed;
+ * sandboxed runs without network-listening permission cannot execute it.)
  * Gate: exits 1 when p95 >= 250 ms.
  */
 import http from 'node:http';
