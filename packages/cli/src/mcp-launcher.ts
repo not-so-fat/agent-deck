@@ -19,6 +19,9 @@ import {
 import { buildMcpUrl, type McpEndpoint } from './mcp-config';
 import { clearKeychainAssignment, readAssignment, writeAssignment } from './assignment';
 import { readCliBackendPort } from './defaults';
+import { readCurrentManagedVersion } from './managed';
+import { warnIfInvokerStale } from './stale-cli-check';
+import { getAgentDeckVersion } from './version';
 import { McpStdioHttpBridge } from './mcp-bridge';
 
 export type McpLaunchPlan = {
@@ -186,6 +189,15 @@ export async function handleSwitchDeckToolResult(
 }
 
 export async function runMcpLaunch(): Promise<number> {
+  // NOT-236: a stale `agent-deck` copy earlier on PATH (e.g. Homebrew) can
+  // silently run an old launcher against a current backend. Log one stderr
+  // line naming the gap; never block launch on it.
+  warnIfInvokerStale({
+    invokerVersion: getAgentDeckVersion(),
+    invokerPath: process.argv[1],
+    currentVersion: readCurrentManagedVersion(),
+  });
+
   const workspaceRoot = path.resolve(process.env.AGENT_DECK_WORKSPACE?.trim() || process.cwd());
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const mcpPort = Number(process.env.AGENT_DECK_MCP_PORT ?? '1110');
