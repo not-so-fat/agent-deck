@@ -333,6 +333,30 @@ describe('switch_deck browser fallback (NOT-212)', () => {
     expect(opener).not.toHaveBeenCalled();
   });
 
+  it('fires the menubar error path when the opener rejects with a spawn failure (NOT-237)', async () => {
+    const opener = vi.fn(async () => {
+      throw new Error('spawn xdg-open ENOENT');
+    });
+    const errors: string[] = [];
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation((message: string) => {
+      errors.push(String(message));
+    });
+    try {
+      const outcome = await handleSwitchDeckToolResult(backendUrl, pendingResult(), {
+        opener,
+        env: {},
+      });
+      expect(outcome).toMatchObject({ opened: false, requestId: 'req_pending_1' });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('req_pending_1');
+    expect(errors[0]).toContain('ENOENT');
+    expect(errors[0]).toContain('menubar Pending approvals');
+    expect(errors[0]).toContain('agent-deck open --path');
+  });
+
   it('leaves the active deck unchanged while the request is pending', async () => {
     const workspace = makeWorkspace();
     const endpoint = { host: '127.0.0.1', mcpPort: 1110 };
