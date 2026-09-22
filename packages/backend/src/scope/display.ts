@@ -1,10 +1,12 @@
 import {
   DeckDisplay,
   DeckDisplaySource,
+  type DeckCardCounts,
   countDeckCards,
   formatDisplayLine,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
+import { readUseManifest } from '../playbooks/stub-sync';
 import { LiveDisplayRegistry } from './live-display-registry';
 
 const EMPTY_COUNTS = { mcp: 0, credentials: 0, playbooks: 0 };
@@ -49,7 +51,9 @@ function buildDisplay(
     mcpOnline?: boolean;
     updatedAt?: string;
     liveDeckName?: string | null;
+    liveDeckId?: string | null;
     liveCardCounts?: typeof EMPTY_COUNTS;
+    liveBadge?: string;
   },
 ): DeckDisplay {
   const agentDeckOnline = options?.agentDeckOnline ?? true;
@@ -58,6 +62,15 @@ function buildDisplay(
   const deckName = deck?.name ?? options?.liveDeckName ?? null;
   const deckId = deck?.id ?? null;
   const updatedAt = options?.updatedAt;
+  // NOT-233: same composition as get_session_binding.display_summary — the
+  // override marker follows the id comparison against the saved workspace
+  // default (use.json), never the display names. The flag stays explicit so
+  // a stale default name after a deck rename cannot imply an override.
+  const workspaceDefault = readUseManifest(input.workspaceRoot);
+  const activeDeckId = deck?.id ?? options?.liveDeckId ?? null;
+  const sessionOverride = Boolean(
+    workspaceDefault && activeDeckId && workspaceDefault.deckId !== activeDeckId,
+  );
 
   return {
     workspaceRoot: input.workspaceRoot,
@@ -72,8 +85,53 @@ function buildDisplay(
       offline: !agentDeckOnline,
       mcpOffline: agentDeckOnline && !mcpOnline,
       updatedAt,
+      badge: options?.liveBadge,
+      workspaceDefaultName: workspaceDefault?.deckName ?? null,
+      sessionOverride,
     }),
   };
+}
+
+/**
+ * NOT-233: refresh the statusline data source after a deck-switch approval
+ * commits. The commit rebinds the runtime session in the database, but the
+ * live-display entry the statusline reads still names the previous deck —
+ * refresh it to the newly-active deck so the next statusline render names it.
+ * Only an already-live session is touched (no presence is created), and the
+ * entry's folder, badge, client, and source are preserved; the bumped
+ * timestamp keeps the switched session most-recent for its workspace.
+ * Returns true when an entry was refreshed.
+ */
+export function refreshLiveDisplayAfterDeckSwitch(
+  registry: LiveDisplayRegistry,
+  input: {
+    mcpSessionId?: string;
+    deckId: string;
+    deckName: string;
+    cardCounts: DeckCardCounts;
+    workspaceRoot?: string;
+    updatedAt: string;
+  },
+): boolean {
+  const mcpSessionId = input.mcpSessionId?.trim();
+  if (!mcpSessionId) {
+    return false;
+  }
+  const existing = registry.get(mcpSessionId);
+  if (!existing) {
+    return false;
+  }
+  registry.upsert({
+    mcpSessionId,
+    workspaceRoot: existing.workspaceRoot ?? input.workspaceRoot,
+    deckId: input.deckId,
+    deckName: input.deckName,
+    source: existing.source,
+    clientName: existing.clientName,
+    cardCounts: input.cardCounts,
+    updatedAt: input.updatedAt,
+  });
+  return true;
 }
 
 /** Resolve bound-deck display from live MCP session registry only (no sidecar/manifest guessing). */
@@ -91,7 +149,9 @@ export async function resolveDeckDisplay(
       mcpOnline,
       updatedAt: live.updatedAt,
       liveDeckName: live.deckName,
+      liveDeckId: live.deckId,
       liveCardCounts: live.cardCounts,
+      liveBadge: live.badge,
     });
   }
 

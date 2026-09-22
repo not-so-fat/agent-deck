@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   DeckSwitchResolveBodySchema,
   type RuntimeSession,
+  countDeckCards,
 } from '@agent-deck/shared';
 import {
   AGENT_DECK_DASHBOARD_COOKIE,
@@ -14,6 +15,8 @@ import {
 } from '@agent-deck/shared';
 
 import { resolveDeckRef } from '../lib/deck-resolve';
+import { refreshLiveDisplayAfterDeckSwitch } from '../scope/display';
+import type { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { parseBearerToken } from '../lib/http-auth';
 import {
   requireTrustedWriterBearer,
@@ -574,6 +577,27 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             });
           case 'resolved': {
             const deck = await fastify.db.getDeck(result.request.requestedDeckId);
+            // NOT-233: the commit rebound the runtime session, but the
+            // live-display entry the statusline reads still names the prior
+            // deck. Refresh it to the newly-active deck (both session and
+            // workspace-default decisions rebind the session) so the next
+            // statusline render names it. Session-scope commits still leave
+            // use.json untouched — only the in-memory live entry moves.
+            const liveRegistry = fastify.liveDisplayRegistry as
+              | LiveDisplayRegistry
+              | undefined;
+            if (deck && liveRegistry) {
+              refreshLiveDisplayAfterDeckSwitch(liveRegistry, {
+                mcpSessionId: result.request.mcpSessionId,
+                deckId: deck.id,
+                deckName: deck.name,
+                cardCounts: countDeckCards(deck),
+                ...(result.request.workspaceRoot
+                  ? { workspaceRoot: result.request.workspaceRoot }
+                  : {}),
+                updatedAt: new Date().toISOString(),
+              });
+            }
             return reply.send({
               success: true,
               data: {
