@@ -180,7 +180,7 @@ function registerRuntimeTools(host: McpToolHost): void {
   r('bind_workspace', {
     title: 'Bind Workspace',
     description:
-      'Bootstrap this MCP session to a workspace root and deck. deckId accepts a UUID or exact deck name. Use get_decks to list decks. Already bound to another deck? Call switch_deck instead — bind_workspace never moves a bound session.',
+      'Bootstrap this MCP session to a workspace root and deck. deckId accepts a UUID or exact deck name. Already bound to another deck? Call switch_deck instead — bind_workspace never moves a bound session.',
     inputSchema: {
       workspaceRoot: z.string(),
       deckId: z.string().min(1),
@@ -392,7 +392,7 @@ function registerRuntimeTools(host: McpToolHost): void {
 
   r('get_decks', {
     title: 'Get Decks',
-    description: 'List all decks (metadata only). Use deck id with bind_workspace.',
+    description: "Show only this session's active deck (metadata only). This is not a directory of decks: a deck the user names that is not listed here may still exist — reach it with switch_deck by exact name.",
     inputSchema: {},
   }, async () => {
     try {
