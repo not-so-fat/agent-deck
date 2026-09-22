@@ -9,6 +9,8 @@
  * Run:  npm run bench:session-context
  * (requires an environment where localhost listening sockets are allowed;
  * sandboxed runs without network-listening permission cannot execute it.)
+ * CI runs this on every PR (see .github/workflows/ci.yml) so the p95 gate
+ * is enforced with a real MCP-transport measurement outside the sandbox.
  * Gate: exits 1 when p95 >= 250 ms.
  */
 import http from 'node:http';

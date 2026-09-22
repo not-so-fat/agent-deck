@@ -31,3 +31,6 @@ jobs:
 
       - name: Type check
         run: npm run type-check
+
+      - name: Session-context benchmark (NOT-189 p95 < 250 ms)
+        run: npm run bench:session-context
