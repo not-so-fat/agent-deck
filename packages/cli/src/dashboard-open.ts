@@ -70,15 +70,63 @@ export function shouldOpenDashboardByDefault(env: NodeJS.ProcessEnv = process.en
   return !(raw === '1' || raw === 'true' || raw === 'yes');
 }
 
-export function openUrlInSystemBrowser(url: string): void {
-  const open = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-  spawn(open, [url], { stdio: 'ignore', shell: process.platform === 'win32' }).unref();
+/** System opener binary for this platform (`open`/`start`/`xdg-open`). */
+export function resolveSystemBrowserOpener(platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'darwin') {
+    return 'open';
+  }
+  if (platform === 'win32') {
+    return 'start';
+  }
+  return 'xdg-open';
+}
+
+export type OpenUrlResult =
+  | { ok: true }
+  | { ok: false; opener: string; error: string };
+
+type SpawnFn = typeof spawn;
+
+/**
+ * NOT-237: ask the OS to open a URL and report detectable spawn failures.
+ * `spawn` emits `error` when the opener binary cannot start (e.g. ENOENT) —
+ * previously nobody listened, so the CLI printed success for an open nobody
+ * saw. Limit: the opener returns before the browser finishes launching, so a
+ * success here only means the opener command was accepted, not that a window
+ * appeared.
+ */
+export function openUrlInSystemBrowser(url: string, spawnFn: SpawnFn = spawn): Promise<OpenUrlResult> {
+  const opener = resolveSystemBrowserOpener();
+  let child: ReturnType<SpawnFn>;
+  try {
+    child = spawnFn(opener, [url], { stdio: 'ignore', shell: process.platform === 'win32' });
+  } catch (error) {
+    return Promise.resolve({
+      ok: false as const,
+      opener,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  child.unref();
+  return new Promise<OpenUrlResult>((resolve) => {
+    child.once('error', (error: unknown) => {
+      resolve({
+        ok: false,
+        opener,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    child.once('spawn', () => {
+      resolve({ ok: true });
+    });
+  });
 }
 
 /** Mint bootstrap URL and open the system browser. Returns 0 on success. */
 export async function openDashboardInBrowser(
   backendUrl: string,
   pathAndQuery = '/',
+  spawnFn: SpawnFn = spawn,
 ): Promise<{ code: number; url?: string; message?: string }> {
   const minted = await mintDashboardBootstrapUrl(backendUrl, pathAndQuery);
   if (!minted.ok) {
@@ -90,7 +138,16 @@ export async function openDashboardInBrowser(
       message: `Could not create a secure dashboard session (${minted.reason})`,
     };
   }
-  openUrlInSystemBrowser(minted.url);
+  const opened = await openUrlInSystemBrowser(minted.url, spawnFn);
+  if (!opened.ok) {
+    return {
+      code: 1,
+      message:
+        `Could not open the dashboard in your browser (${opened.opener} failed: ${opened.error}). ` +
+        `Open this URL manually: ${minted.url} — or approve from the menubar Pending approvals inbox, ` +
+        `or retry with: agent-deck open --path "${pathAndQuery}"`,
+    };
+  }
   return { code: 0, url: minted.url };
 }
 
