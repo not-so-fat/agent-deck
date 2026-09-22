@@ -46,7 +46,7 @@ describe('agent-harness templates', () => {
     expect(file).toContain('agent-deck mcp-launch');
     expect(file).toContain('agent-deck setup --client codex');
     expect(file).toContain('does not install the plugin');
-    expect(file).toContain('These calls verify an existing connection; they do not create it');
+    expect(file).toContain('This call verifies an existing connection; it does not create it');
     expect(file).toContain('Genesis case');
     expect(file).toContain('signal_only');
     expect(file).toContain('signal_ids');
@@ -314,6 +314,44 @@ alwaysApply: false
   it('only touches agent-deck.mdc filename (not other rules)', () => {
     expect(CURSOR_RULE_FILENAME).toBe('agent-deck.mdc');
     expect(buildCursorHarnessFile('global')).toContain(HARNESS_MARKER_START);
+  });
+});
+
+describe('NOT-189 one-call session context bootstrap', () => {
+  const texts = () => [
+    buildClaudeHarnessBlock('global'),
+    buildClaudeHarnessBlock('project'),
+    buildCodexHarnessBlock('global'),
+    buildCursorHarnessFile('global'),
+    buildCursorHarnessFile('project'),
+  ];
+
+  it('opener calls get_session_context once and prints display_summary', () => {
+    for (const text of texts()) {
+      expect(text).toContain('get_session_context');
+      expect(text).toContain('call `get_session_context` once');
+      expect(text).toContain('display_summary');
+      expect(text).toContain('call `get_playbook` for every match');
+    }
+  });
+
+  it('hard gate requires the one-call bootstrap', () => {
+    for (const text of texts()) {
+      expect(text).toContain('require `get_session_context` to succeed');
+    }
+  });
+
+  it('does not instruct a first-turn get_session_binding → get_bound_deck sequence', () => {
+    for (const text of texts()) {
+      expect(text).not.toContain('call `get_session_binding` then `get_bound_deck`');
+      expect(text).not.toContain('require `get_session_binding` and `get_bound_deck`');
+    }
+  });
+
+  it('keeps the retired tools named only as compatibility, never as the opener', () => {
+    for (const text of texts()) {
+      expect(text).toContain('the opener needs only `get_session_context`');
+    }
   });
 });
 

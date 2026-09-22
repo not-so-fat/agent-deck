@@ -157,21 +157,113 @@ export function registerMcpTools(host: McpToolHost): void {
   }
 }
 
-/** NOT-50: only get_session_binding, with the fix-it GRANT_REQUIRED body. */
+/** NOT-50: only bootstrap reads, with the fix-it GRANT_REQUIRED body. */
 function registerUnassignedTools(host: McpToolHost): void {
   const { registerTool: r } = host;
-  r('get_session_binding', {
-    title: 'Get Session Binding',
-    description:
-      'Show workspace and effective deck for this MCP session (session override or env default).',
-    inputSchema: {},
-  }, async () => ({
+  const grantRequired = async () => ({
     content: [{
       type: 'text',
       text: JSON.stringify(unassignedDeckBinding(), null, 2),
     }],
     isError: true,
-  }));
+  });
+  r('get_session_binding', {
+    title: 'Get Session Binding',
+    description:
+      'Show workspace and effective deck for this MCP session (session override or env default).',
+    inputSchema: {},
+  }, grantRequired);
+  // NOT-189: the one-call bootstrap is also available (as GRANT_REQUIRED)
+  // on unassigned sessions so the opener needs no second tool to fail on.
+  r('get_session_context', {
+    title: 'Get Session Context',
+    description:
+      'One-call session bootstrap: workspace, effective deck, display_summary, services, credential metadata, and playbook summaries (no bodies).',
+    inputSchema: {},
+  }, grantRequired);
+}
+
+type AuthorizedBoundDeck = {
+  id?: string;
+  name?: string;
+  services?: Array<{ type?: string }>;
+  credentials?: unknown[];
+  playbooks?: unknown[];
+  [key: string]: unknown;
+};
+
+/**
+ * NOT-189: the single authorization path for session bootstrap.
+ * Every bootstrap read resolves deck authority through GET /api/scope/deck,
+ * so launch-deck errors (invalid/revoked deck, missing grant) surface here —
+ * via host.toolError — before any deck data is serialized.
+ */
+async function loadAuthorizedBoundDeck(host: McpToolHost): Promise<AuthorizedBoundDeck> {
+  return (await host.callBackendAPI('/api/scope/deck')) as AuthorizedBoundDeck;
+}
+
+function toPlaybookSummaries(playbooks: unknown): Array<{ id: string; title: string; triggers: string[] }> {
+  if (!Array.isArray(playbooks)) {
+    return [];
+  }
+  return playbooks.map((entry) => {
+    const playbook = entry as Record<string, unknown>;
+    const triggers = Array.isArray(playbook.triggers)
+      ? playbook.triggers.map((trigger) => String(trigger))
+      : [];
+    return {
+      id: String(playbook.id ?? ''),
+      title: String(playbook.title ?? ''),
+      triggers,
+    };
+  });
+}
+
+/**
+ * NOT-189: binding display shared by get_session_binding and
+ * get_session_context. Same snapshot, same source resolution, same
+ * display_summary composition — one backend call, no duplicated auth.
+ */
+function describeBindingDisplay(
+  host: McpToolHost,
+  sessionId: string,
+  deck: AuthorizedBoundDeck | null,
+  badge: string | undefined,
+): {
+  snapshot: ReturnType<McpToolHost['sessionBinding']['getBinding']>;
+  displaySummary: string;
+  workspaceDefault: { deckId: string; deckName: string } | null;
+  activeDeckId: string | null;
+  activeDeckName: string | null;
+  activeSource: ReturnType<typeof resolveBindingActiveSource>;
+} {
+  const snapshot = host.sessionBinding.getBinding(sessionId);
+  const cardCounts = deck ? countDeckCards(deck) : { mcp: 0, credentials: 0, playbooks: 0 };
+  // Persistent workspace default from the folder assignment file (NOT-211).
+  // Null covers both "no assignment file" and "present but unreadable"
+  // (corrupt JSON or a pre-v3 manifest): either way there is no usable
+  // saved default to report, so it stays explicit as null.
+  const workspaceDefault = snapshot.workspaceRoot
+    ? readUseManifest(snapshot.workspaceRoot)
+    : null;
+  const activeDeckId: string | null = deck?.id ?? null;
+  const activeDeckName: string | null = deck?.name ?? null;
+  const activeSource = resolveBindingActiveSource({
+    isLaunchSession: host.sessionBinding.isLaunchSession(sessionId),
+    activeDeckId,
+    workspaceDefaultDeckId: workspaceDefault?.deckId ?? null,
+  });
+  // The override marker follows the id-based source, never the display
+  // names: use.json deckName goes stale after a deck rename (heal only
+  // runs on bind/switch), and two decks can share a name. Passing the
+  // explicit sessionOverride keeps display_summary and active_source from
+  // contradicting each other.
+  const displaySummary = formatDisplayLine(activeDeckName, cardCounts, {
+    badge,
+    workspaceDefaultName: workspaceDefault?.deckName ?? null,
+    sessionOverride: activeSource === 'session',
+  });
+  return { snapshot, displaySummary, workspaceDefault, activeDeckId, activeDeckName, activeSource };
 }
 
 function registerRuntimeTools(host: McpToolHost): void {
@@ -337,34 +429,10 @@ function registerRuntimeTools(host: McpToolHost): void {
   }, async () => {
     try {
       const sessionId = host.getSessionId();
-      const snapshot = host.sessionBinding.getBinding(sessionId);
-      const deck = await host.callBackendAPI('/api/scope/deck');
+      const deck = await loadAuthorizedBoundDeck(host);
       const badge = host.badgeBySession.get(sessionId);
-      const cardCounts = deck ? countDeckCards(deck) : { mcp: 0, credentials: 0, playbooks: 0 };
-      // Persistent workspace default from the folder assignment file (NOT-211).
-      // Null covers both "no assignment file" and "present but unreadable"
-      // (corrupt JSON or a pre-v3 manifest): either way there is no usable
-      // saved default to report, so it stays explicit as null.
-      const workspaceDefault = snapshot.workspaceRoot
-        ? readUseManifest(snapshot.workspaceRoot)
-        : null;
-      const activeDeckId: string | null = deck?.id ?? null;
-      const activeDeckName: string | null = deck?.name ?? null;
-      const activeSource = resolveBindingActiveSource({
-        isLaunchSession: host.sessionBinding.isLaunchSession(sessionId),
-        activeDeckId,
-        workspaceDefaultDeckId: workspaceDefault?.deckId ?? null,
-      });
-      // The override marker follows the id-based source, never the display
-      // names: use.json deckName goes stale after a deck rename (heal only
-      // runs on bind/switch), and two decks can share a name. Passing the
-      // explicit sessionOverride keeps display_summary and active_source from
-      // contradicting each other.
-      const displaySummary = formatDisplayLine(activeDeckName, cardCounts, {
-        badge,
-        workspaceDefaultName: workspaceDefault?.deckName ?? null,
-        sessionOverride: activeSource === 'session',
-      });
+      const { snapshot, displaySummary, workspaceDefault, activeDeckId, activeDeckName, activeSource } =
+        describeBindingDisplay(host, sessionId, deck, badge);
       return {
         content: [{
           type: 'text',
@@ -423,6 +491,37 @@ function registerRuntimeTools(host: McpToolHost): void {
       return host.toolResult({
         ...deck,
         display_summary: displaySummary,
+      });
+    } catch (error) {
+      return host.toolError(error);
+    }
+  });
+
+  // NOT-189: one-call bootstrap. Same single authorized deck read as the
+  // two-call sequence (get_session_binding + get_bound_deck), so one call
+  // returns binding identity plus deck cards. Playbooks stay summaries —
+  // bodies load lazily through get_playbook.
+  r('get_session_context', {
+    title: 'Get Session Context',
+    description:
+      'One-call session bootstrap: workspace, effective deck, display_summary, services, credential metadata, and playbook summaries (id/title/triggers only — fetch bodies with get_playbook). Prefer this over get_session_binding + get_bound_deck.',
+    inputSchema: {},
+  }, async () => {
+    try {
+      const sessionId = host.getSessionId();
+      const deck = await loadAuthorizedBoundDeck(host);
+      const badge = host.badgeBySession.get(sessionId);
+      const { snapshot, displaySummary } = describeBindingDisplay(host, sessionId, deck, badge);
+      return host.toolResult({
+        workspaceRoot: snapshot.workspaceRoot,
+        effective_deck_id: deck?.id,
+        effective_deck_name: deck?.name,
+        effective_deck_source: resolveDeckBindingSource(snapshot as Parameters<typeof resolveDeckBindingSource>[0]),
+        badge,
+        display_summary: displaySummary,
+        services: deck?.services ?? [],
+        credentials: deck?.credentials ?? [],
+        playbooks: toPlaybookSummaries(deck?.playbooks),
       });
     } catch (error) {
       return host.toolError(error);
