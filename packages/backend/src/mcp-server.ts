@@ -1165,6 +1165,7 @@ export class AgentDeckMCPServer {
           console.log(`📋 Available tools:`);
           console.log(`   - bind_workspace: Bind session to workspace + deck (deckId required)`);
           console.log(`   - switch_deck: Request a human-approved deck switch (session or workspace default)`);
+          console.log(`   - get_session_context: One-call session bootstrap (workspace + deck + cards)`);
           console.log(`   - get_session_binding: Show session workspace + effective deck`);
           console.log(`   - get_bound_deck: Get session-bound deck`);
           console.log(`   - list_service_tools: List tools for a specific service`);
