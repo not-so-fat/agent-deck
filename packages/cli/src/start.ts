@@ -44,6 +44,7 @@ import {
   shouldOpenDashboardByDefault,
 } from './dashboard-open';
 import { readLastReindex } from './backend-runtime';
+import { checkPathForStaleCli } from './stale-cli-check';
 import { formatLastReindex } from './store';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
 import { runCodexPluginDoctor } from './codex-plugin';
@@ -889,6 +890,23 @@ export async function runDoctor(): Promise<number> {
     }
   } else {
     console.log('Tip: agent-deck install  # managed CLI + auto-updates (decks/data unchanged)');
+  }
+
+  // NOT-236: `install`/`upgrade` repoint ~/.agent-deck/current but never
+  // touch other copies (e.g. Homebrew) earlier on PATH, so the launcher
+  // behind each MCP connection can silently predate the backend. Warn only.
+  if (kind === 'managed') {
+    try {
+      const staleWarning = checkPathForStaleCli({
+        currentDir: resolveCurrentVersionDir(),
+        currentVersion: readCurrentManagedVersion(),
+      });
+      if (staleWarning) {
+        console.warn(staleWarning);
+      }
+    } catch {
+      // Version probing must never break doctor.
+    }
   }
 
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
