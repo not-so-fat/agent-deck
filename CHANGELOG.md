@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.11.2 — 2026-09-21
+
+### Fix: `switch_deck` guidance for an unbound MCP session (NOT-234)
+
+- An unbound session calling `switch_deck` used to throw a bare, unguided `GRANT_REQUIRED` — agent guidance wrongly sent the human to `agent-deck use` instead of just retrying the bind. `GRANT_REQUIRED` now carries a structured, bind-first message that branches between "not yet bound" (retry the bind) and "no deck assigned" (run `agent-deck use`).
+
+### Fix: warn on a stale `agent-deck` earlier on PATH (NOT-236)
+
+- If an older `agent-deck` CLI sits earlier on `PATH`, it silently runs `mcp-launch` and hides newer launcher features (e.g. the NOT-212 browser auto-open). `doctor` and `mcp-launch` startup now detect and warn about a stale CLI shadowing the current one.
+
+### Fix: report detectable browser-open failures (NOT-237)
+
+- `agent-deck open` no longer prints "Opened dashboard in your browser" when the open detectably failed (e.g. a missing opener binary raises `ENOENT`). Failures now surface an actionable message — opener binary, URL, and the menubar / `agent-deck open --path` fallback. Deck-switch and admin-elevation auto-open paths get the same handling. Note: the opener returns before the browser finishes launching, so success still only means the opener command was accepted, not that a window appeared.
+
+### Fix: MCP client refreshes its tool list after bridge recovery (NOT-235)
+
+- After a silent server re-initialize, the bridge now sends one `notifications/tools/list_changed` to the client so a session that outlives a backend upgrade re-fetches `tools/list` instead of calling tools the new backend lacks. Sent only when the client declared `capabilities.tools.listChanged` at initialize; overlapping recoveries share one notification.
+
+### Fix: statusline follows the session-active deck after a switch (NOT-233)
+
+- The statusline is fed by a live-display registry that a deck-switch approval didn't refresh, so it kept naming the previous deck even though `get_session_binding` already reported the new one. A resolved switch (session or workspace-default) now refreshes the live-display entry too, so the statusline and `get_session_binding` agree.
+
+### Fix: `get_decks` / `bind_workspace` tool text scoped to the active deck (NOT-232)
+
+- `get_decks` said "List all decks" while actually returning only the session deck, leading agents to conclude named decks didn't exist. Both tool descriptions now state the active-deck limit and point at `switch_deck` by exact name; `bind_workspace` no longer directs callers to `get_decks`.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Reload MCP in your IDE (or restart the agent session) to pick up the updated tool descriptions and bridge recovery notification.
+
 ## 1.11.1 — 2026-09-21
 
 ### UI: Avenir-first dashboard labels
