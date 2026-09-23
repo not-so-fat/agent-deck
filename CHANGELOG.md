@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.11.3 — 2026-09-23
+
+### Feature: one-call `get_session_context` bootstrap (NOT-189)
+
+- Adds a read-only `get_session_context` MCP tool that replaces the two-call `get_session_binding` + `get_bound_deck` opener sequence with a single `/api/scope/deck` read: workspace root, effective deck id/name/source, badge, `display_summary`, services, credentials, and id/title/triggers playbook summaries (bodies stay lazy via `get_playbook`). The generated harness opener, checked-in `CLAUDE.md`/Cursor rule blocks, and session skill/docs now point at the one-call opener; `get_session_binding`/`get_bound_deck` remain registered for compatibility only. Adds `scripts/bench-session-context.mjs`, gating a 100-call p95 < 250ms benchmark in CI.
+
+### Fix: "Get MCP URL" copies the correct Agent Deck endpoint (NOT-257)
+
+- "Get MCP URL" derived the URL from the dashboard's own origin, which is wrong whenever MCP runs on a different host/port than the dashboard. The backend now serves the canonical endpoint from `GET /api/mcp/endpoint` (`AGENT_DECK_HOST` / `AGENT_DECK_MCP_PORT`, default `127.0.0.1:1110`), and the button copies that value verbatim to the clipboard and toast.
+
+### UI: more compact Agent Deck top bar (NOT-256)
+
+- Tightens the top bar's spacing using existing layout tokens, with a regression test covering the new layout.
+
+### UI: "Add Deck" label uses the shared display font token (NOT-259)
+
+- Routes the "Add Deck" label through `--font-ui-display`, matching the rest of the dashboard chrome.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+- Reload MCP in your IDE (or restart the agent session) to pick up the new `get_session_context` tool.
+- Run `agent-deck setup --client <client>` (or `agent-deck use <deck>`) from each folder to refresh its checked-in harness guidance (`CLAUDE.md` / `.cursor/rules/agent-deck.mdc`) to the one-call `get_session_context` opener — otherwise that folder's guidance still teaches the old two-call `get_session_binding` + `get_bound_deck` sequence.
+
 ## 1.11.2 — 2026-09-21
 
 ### Fix: `switch_deck` guidance for an unbound MCP session (NOT-234)
