@@ -206,7 +206,7 @@ export default function DeckManagementPanel({
             data-testid="create-deck-button"
           >
             <Plus className="w-3 h-3 mr-2" />
-            Add Deck
+            <span className="font-ui-display">Add Deck</span>
           </Button>
         </div>
 
