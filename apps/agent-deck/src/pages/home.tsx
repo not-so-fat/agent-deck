@@ -19,8 +19,8 @@ import CredentialDetailsModal from "@/components/credential-details-modal";
 import ServiceDetailsModal from "@/components/service-details-modal";
 import ImportBundleModal from "@/components/import-bundle-modal";
 import McpToolsPanel from "@/components/mcp-tools-panel";
-import { useWebSocket } from "@/hooks/use-websocket";
 import { useDragAndDrop } from "@/hooks/use-drag-and-drop";
+import McpUrlCopyButton from "@/components/mcp-url-copy-button";
 import { useEditingDeck } from "@/hooks/use-editing-deck";
 import { MCP_CARD_COLOR, API_KEY_CARD_COLOR, PLAYBOOK_CARD_COLOR, CARD_FACE_CLASS, cardAccentStyle } from "@/lib/card-colors";
 import { downloadBundleJson, exportBundle } from "@/lib/export-import";
@@ -32,7 +32,6 @@ import { Link } from "wouter";
 import { listPlaybookPatches } from "@/lib/playbook-patches";
 import { getFeedbackSignalCount } from "@/lib/feedback-signals";
 import { isDashboardAuthError } from "@/lib/queryClient";
-import { buildMcpEndpointUrl } from "@/lib/mcp-endpoint";
 import AgentDeckLogo from "@/assets/AgentDeckLogo3.png";
 import { useToast } from "@/hooks/use-toast";
 
@@ -84,9 +83,6 @@ export default function Home() {
       setExportingAll(false);
     }
   };
-  
-  // WebSocket connection for real-time updates
-  const { connectionStatus } = useWebSocket();
   
   // Fetch decks
   const { data: decksResponse, isLoading: decksLoading, error: decksError } = useQuery<{success: boolean, data: Deck[]}>({
@@ -321,33 +317,7 @@ export default function Home() {
             
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               {/* Connection Status */}
-              <div className={`flex items-center space-x-2 px-3 py-1 rounded-full border ${
-                connectionStatus === 'connected' 
-                  ? 'bg-emerald-500/20 border-emerald-500/30' 
-                  : 'bg-red-500/20 border-red-500/30'
-              }`}>
-                <div className={`w-2 h-2 rounded-full animate-pulse ${
-                  connectionStatus === 'connected' ? 'bg-emerald-400' : 'bg-red-400'
-                }`}></div>
-                <button
-                  className={`font-ui-display text-sm hover:underline cursor-pointer ${
-                    connectionStatus === 'connected' ? 'text-emerald-300' : 'text-red-300'
-                  }`} 
-                  data-testid="button-copy-mcp-url"
-                  onClick={() => {
-                    const mcpUrl = buildMcpEndpointUrl();
-                    navigator.clipboard.writeText(mcpUrl).then(() => {
-                      toast({
-                        title: "MCP URL copied!",
-                        description: mcpUrl,
-                      });
-                    });
-                  }}
-                  title="Click to copy MCP URL"
-                >
-                  Get MCP URL
-                </button>
-              </div>
+              <McpUrlCopyButton />
               
               {/* Live MCP sessions (replaces editing-deck name/cards chip) */}
               <LiveSessionBadges highlightDeckId={editingDeckId ?? undefined} />
