@@ -43,3 +43,29 @@ export async function fetchMcpEndpointUrl(): Promise<string> {
   }
   return url;
 }
+
+type ToastFn = (args: { title: string; description: string; variant?: 'destructive' }) => void;
+
+/**
+ * Copy interaction for "Get MCP URL" (NOT-257).
+ *
+ * Copies the canonical endpoint verbatim — no labels, no surrounding text —
+ * then shows that same value in the success feedback so the displayed URL
+ * always agrees with the clipboard.
+ */
+export async function copyMcpEndpointToClipboard(showToast: ToastFn): Promise<void> {
+  try {
+    const mcpUrl = await fetchMcpEndpointUrl();
+    await navigator.clipboard.writeText(mcpUrl);
+    showToast({
+      title: 'MCP URL copied!',
+      description: mcpUrl,
+    });
+  } catch (error) {
+    showToast({
+      title: 'Failed to copy MCP URL',
+      description: error instanceof Error ? error.message : 'Unknown error',
+      variant: 'destructive',
+    });
+  }
+}
