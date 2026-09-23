@@ -142,7 +142,7 @@ export default function LiveSessionBadges({ highlightDeckId }: LiveSessionBadges
           type="button"
           variant="outline"
           size="sm"
-          className="h-7 shrink-0 border-white/20 bg-black/30 px-2 text-xs text-gray-200 hover:bg-white/10 hover:text-white"
+          className="h-9 shrink-0 whitespace-nowrap border-white/20 bg-black/30 px-2 text-xs text-gray-200 hover:bg-white/10 hover:text-white"
           data-testid="live-session-badges-trigger"
           title="Live MCP session binds — click for badges"
         >
