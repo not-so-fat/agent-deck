@@ -22,6 +22,7 @@
 
 - Upgrade the CLI, then `agent-deck stop && agent-deck start`.
 - Reload MCP in your IDE (or restart the agent session) to pick up the new `get_session_context` tool.
+- Run `agent-deck setup --client <client>` (or `agent-deck use <deck>`) from each folder to refresh its checked-in harness guidance (`CLAUDE.md` / `.cursor/rules/agent-deck.mdc`) to the one-call `get_session_context` opener — otherwise that folder's guidance still teaches the old two-call `get_session_binding` + `get_bound_deck` sequence.
 
 ## 1.11.2 — 2026-09-21
 
