@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ServiceManager } from '../services/service-manager';
 import { MCPDiscoveryService } from '../services/mcp-discovery-service';
 import { ApiResponse, Service, ServiceTool } from '@agent-deck/shared';
+import { resolveMcpEndpoint } from '../mcp-endpoint';
 
 // OAuth discovery functions
 async function extractUrlsFromWWWAuthenticate(headerValue: string): Promise<string[]> {
@@ -158,6 +159,15 @@ type DiscoverMCPRequestType = z.infer<typeof DiscoverMCPRequest>;
 
 export default async function mcpRoutes(fastify: FastifyInstance) {
   const discoveryService = new MCPDiscoveryService();
+
+  // NOT-257: canonical MCP client connection endpoint for the current
+  // environment. The dashboard copies this value verbatim into MCP client
+  // configuration — it is the MCP server origin (AGENT_DECK_HOST /
+  // AGENT_DECK_MCP_PORT), never the dashboard origin.
+  fastify.get('/endpoint', async (_request, reply) => {
+    const { url } = resolveMcpEndpoint();
+    return reply.send({ success: true, data: { url } } satisfies ApiResponse<{ url: string }>);
+  });
   
   // Discover and analyze an MCP server
   fastify.post<{ Body: DiscoverMCPRequestType }>('/discover', async (request, reply) => {

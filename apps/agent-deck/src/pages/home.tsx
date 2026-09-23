@@ -32,6 +32,7 @@ import { Link } from "wouter";
 import { listPlaybookPatches } from "@/lib/playbook-patches";
 import { getFeedbackSignalCount } from "@/lib/feedback-signals";
 import { isDashboardAuthError } from "@/lib/queryClient";
+import { copyMcpEndpointToClipboard } from "@/lib/mcp-endpoint";
 import AgentDeckLogo from "@/assets/AgentDeckLogo3.png";
 import { useToast } from "@/hooks/use-toast";
 
@@ -53,6 +54,9 @@ export default function Home() {
   const [hoveredCardId, setHoveredCardId] = useState<string | null>(null);
   
   const { toast } = useToast();
+
+  // WebSocket connection for real-time updates
+  const { connectionStatus } = useWebSocket();
 
   const { data: proposedPatches = [] } = useQuery({
     queryKey: ["/api/playbook-patches", "proposed"],
@@ -83,9 +87,6 @@ export default function Home() {
       setExportingAll(false);
     }
   };
-  
-  // WebSocket connection for real-time updates
-  const { connectionStatus } = useWebSocket();
   
   // Fetch decks
   const { data: decksResponse, isLoading: decksLoading, error: decksError } = useQuery<{success: boolean, data: Deck[]}>({
@@ -320,9 +321,10 @@ export default function Home() {
             
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               {/* Connection Status */}
+              {/* Connection Status */}
               <div className={`flex items-center space-x-2 px-3 py-1 rounded-full border ${
-                connectionStatus === 'connected' 
-                  ? 'bg-emerald-500/20 border-emerald-500/30' 
+                connectionStatus === 'connected'
+                  ? 'bg-emerald-500/20 border-emerald-500/30'
                   : 'bg-red-500/20 border-red-500/30'
               }`}>
                 <div className={`w-2 h-2 rounded-full animate-pulse ${
@@ -331,16 +333,10 @@ export default function Home() {
                 <button
                   className={`font-ui-display text-sm hover:underline cursor-pointer ${
                     connectionStatus === 'connected' ? 'text-emerald-300' : 'text-red-300'
-                  }`} 
+                  }`}
                   data-testid="button-copy-mcp-url"
                   onClick={() => {
-                    const mcpUrl = 'http://localhost:3001/mcp';
-                    navigator.clipboard.writeText(mcpUrl).then(() => {
-                      toast({
-                        title: "MCP URL copied!",
-                        description: "The MCP server URL has been copied to your clipboard.",
-                      });
-                    });
+                    void copyMcpEndpointToClipboard(toast);
                   }}
                   title="Click to copy MCP URL"
                 >
