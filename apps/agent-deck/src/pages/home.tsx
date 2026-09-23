@@ -304,51 +304,49 @@ export default function Home() {
         data-testid="top-bar"
       >
         <div className="container mx-auto px-4 py-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+            <div className="flex items-center gap-2">
               <img
                 src={AgentDeckLogo}
                 alt="Agent Deck Logo"
-                className="h-8 w-8 shrink-0 object-contain sm:h-10 sm:w-10"
+                className="h-9 w-9 shrink-0 object-contain"
               />
-              <div className="min-w-0">
-                <h1 className="text-xl font-bold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent sm:text-2xl" style={{background: 'linear-gradient(to right, #C4B643, #D4C760)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text'}}>
-                  AgentDeck
-                </h1>
-                <p className="text-xs sm:text-sm" style={{color: '#92E4DD'}}>Build tool deck for your agent</p>
-              </div>
+              <h1 className="whitespace-nowrap text-xl font-bold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent" style={{background: 'linear-gradient(to right, #C4B643, #D4C760)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text'}}>
+                AgentDeck
+              </h1>
+              <p className="sr-only">Build tool deck for your agent</p>
             </div>
-            
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+
+            <div className="flex flex-nowrap items-center gap-2 overflow-x-auto -my-1 py-1 sm:gap-3">
               {/* Connection Status */}
-              {/* Connection Status */}
-              <div className={`flex items-center space-x-2 px-3 py-1 rounded-full border ${
-                connectionStatus === 'connected'
-                  ? 'bg-emerald-500/20 border-emerald-500/30'
-                  : 'bg-red-500/20 border-red-500/30'
-              }`}>
-                <div className={`w-2 h-2 rounded-full animate-pulse ${
+              <button
+                type="button"
+                className={`flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-sm ${
+                  connectionStatus === 'connected'
+                    ? 'bg-emerald-500/20 border-emerald-500/30'
+                    : 'bg-red-500/20 border-red-500/30'
+                }`}
+                data-testid="button-copy-mcp-url"
+                onClick={() => {
+                  void copyMcpEndpointToClipboard(toast);
+                }}
+                title="Click to copy MCP URL"
+              >
+                <span className={`h-2 w-2 shrink-0 rounded-full animate-pulse ${
                   connectionStatus === 'connected' ? 'bg-emerald-400' : 'bg-red-400'
-                }`}></div>
-                <button
-                  className={`font-ui-display text-sm hover:underline cursor-pointer ${
-                    connectionStatus === 'connected' ? 'text-emerald-300' : 'text-red-300'
-                  }`}
-                  data-testid="button-copy-mcp-url"
-                  onClick={() => {
-                    void copyMcpEndpointToClipboard(toast);
-                  }}
-                  title="Click to copy MCP URL"
-                >
+                }`} aria-hidden />
+                <span className={`font-ui-display hover:underline ${
+                  connectionStatus === 'connected' ? 'text-emerald-300' : 'text-red-300'
+                }`}>
                   Get MCP URL
-                </button>
-              </div>
+                </span>
+              </button>
               
               {/* Live MCP sessions (replaces editing-deck name/cards chip) */}
               <LiveSessionBadges highlightDeckId={editingDeckId ?? undefined} />
 
               <Link href="/feedback-signals">
-                <Button variant="outline" size="sm" className="relative border-white/20 bg-white/5 text-[#E8F6F4]">
+                <Button variant="outline" size="sm" className="relative shrink-0 border-white/20 bg-white/5 text-[#E8F6F4]">
                   <span className="font-ui-display">Feedback</span>
                   {openSignalCount > 0 && (
                     <span
@@ -363,7 +361,7 @@ export default function Home() {
               </Link>
 
               <Link href="/playbook-patches">
-                <Button variant="outline" size="sm" className="relative border-white/20 bg-white/5 text-[#E8F6F4]">
+                <Button variant="outline" size="sm" className="relative shrink-0 border-white/20 bg-white/5 text-[#E8F6F4]">
                   <GitPullRequest className="mr-2 h-4 w-4" />
                   <span className="font-ui-display">Review</span>
                   {proposedPatches.length > 0 && (
