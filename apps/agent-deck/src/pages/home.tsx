@@ -298,14 +298,17 @@ export default function Home() {
       }}
     >
       {/* Header */}
-      <header className="relative z-20 shrink-0 bg-black/30 backdrop-blur-md border-b border-white/10">
-        <div className="container mx-auto px-4 py-3 sm:py-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+      <header
+        className="relative z-20 shrink-0 bg-black/30 backdrop-blur-md border-b border-white/10"
+        data-testid="top-bar"
+      >
+        <div className="container mx-auto px-4 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <img
                 src={AgentDeckLogo}
                 alt="Agent Deck Logo"
-                className="h-12 w-12 shrink-0 object-contain sm:h-16 sm:w-16"
+                className="h-8 w-8 shrink-0 object-contain sm:h-10 sm:w-10"
               />
               <div className="min-w-0">
                 <h1 className="text-xl font-bold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent sm:text-2xl" style={{background: 'linear-gradient(to right, #C4B643, #D4C760)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text'}}>
@@ -315,7 +318,7 @@ export default function Home() {
               </div>
             </div>
             
-            <div className="flex flex-wrap items-center gap-3 sm:gap-6">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               {/* Connection Status */}
               <div className={`flex items-center space-x-2 px-3 py-1 rounded-full border ${
                 connectionStatus === 'connected' 
