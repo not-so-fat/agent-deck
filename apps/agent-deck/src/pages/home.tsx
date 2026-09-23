@@ -317,7 +317,7 @@ export default function Home() {
               <p className="sr-only">Build tool deck for your agent</p>
             </div>
 
-            <div className="flex flex-nowrap items-center gap-2 overflow-x-auto sm:gap-3">
+            <div className="flex flex-nowrap items-center gap-2 overflow-x-auto -my-1 py-1 sm:gap-3">
               {/* Connection Status */}
               <button
                 type="button"
