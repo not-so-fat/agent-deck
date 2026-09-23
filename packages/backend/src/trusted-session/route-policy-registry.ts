@@ -27,6 +27,8 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/bootstrap\/session$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/api\/launch\/decks$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/api\/launch\/decks\/[^/]+\/playbooks$/, policy: 'allowPublic' },
+  // NOT-257: canonical MCP client connection endpoint (no secrets — host/port only).
+  { methods: ['GET'], pattern: /^\/api\/mcp\/endpoint$/, policy: 'allowPublic' },
 
   // Trusted writer (admin secret bearer only — enforced in policy hook)
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/bootstrap\/nonce$/, policy: 'requireTrustedWriter' },
