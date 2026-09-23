@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.4 — 2026-09-23
+
+### UI: rebalance the compact top bar (NOT-256)
+
+- Rebalances the 1.11.3 compact top bar into a single, evenly balanced `h-9` row, and keeps focus rings on the Feedback/Review/session buttons visible inside the scrollable action row (`-my-1 py-1` bleed room, no layout height change).
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start` to load the updated dashboard.
+
 ## 1.11.3 — 2026-09-23
 
 ### Feature: one-call `get_session_context` bootstrap (NOT-189)
