@@ -32,6 +32,7 @@ import { Link } from "wouter";
 import { listPlaybookPatches } from "@/lib/playbook-patches";
 import { getFeedbackSignalCount } from "@/lib/feedback-signals";
 import { isDashboardAuthError } from "@/lib/queryClient";
+import { buildMcpEndpointUrl } from "@/lib/mcp-endpoint";
 import AgentDeckLogo from "@/assets/AgentDeckLogo3.png";
 import { useToast } from "@/hooks/use-toast";
 
@@ -334,11 +335,11 @@ export default function Home() {
                   }`} 
                   data-testid="button-copy-mcp-url"
                   onClick={() => {
-                    const mcpUrl = 'http://localhost:3001/mcp';
+                    const mcpUrl = buildMcpEndpointUrl();
                     navigator.clipboard.writeText(mcpUrl).then(() => {
                       toast({
                         title: "MCP URL copied!",
-                        description: "The MCP server URL has been copied to your clipboard.",
+                        description: mcpUrl,
                       });
                     });
                   }}
