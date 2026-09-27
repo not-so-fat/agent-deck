@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.5 — 2026-09-27
+
+### Fix: self-heal a stale better-sqlite3 native module after a Node upgrade
+
+- `agent-deck start`/`doctor` used to hard-fail with "better-sqlite3 native module does not match this Node.js version" whenever the CLI's install picked up a newer Node major (e.g. a Homebrew Node bump) than the one its native SQLite binding was last built for — a self-inflicted staleness issue, not an intentional Node-version limitation (Agent Deck still supports Node 20+). The preflight check now retries once with an automatic `npm rebuild better-sqlite3` (which refetches a matching prebuilt binary) before reporting a failure, and the fallback remediation hint no longer hardcodes the monorepo-only `-w @agent-deck/backend` flag, which failed for every global/Homebrew/managed install.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`.
+
 ## 1.11.4 — 2026-09-23
 
 ### UI: rebalance the compact top bar (NOT-256)
