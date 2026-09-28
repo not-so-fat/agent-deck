@@ -8,7 +8,7 @@
 
 | Mode | Who runs it | Dashboard | OAuth callback | Best for |
 |------|-------------|-----------|----------------|----------|
-| **Local (default)** | User’s machine (`agent-deck start` or `npm run dev:all`) | `http://127.0.0.1:1111` (npx) or `http://localhost:3000` (dev) | `http://localhost:8000/api/oauth/callback` unless env overrides | Linear, Notion, dev, power users |
+| **Local (default)** | User’s machine (`agent-deck start` or `npm run dev:all`) | Open via `agent-deck open` (listens on `127.0.0.1:1111`) or `http://localhost:3000` (dev) | `http://localhost:8000/api/oauth/callback` unless env overrides | Linear, Notion, dev, power users |
 | **Hosted (archive — not product path)** | Agent Deck team on HTTPS | `https://your-domain` | `https://your-domain/api/oauth/callback` | Shared Slack/Google apps, non-technical users |
 
 Agent Deck is **primarily a local MCP proxy**. OAuth for easy providers (Linear, Notion) works on localhost. **Slack public distribution** requires an **HTTPS** redirect on **your** server — not tunnels as the product design; you deploy Agent Deck (or at least its backend) on HTTPS.

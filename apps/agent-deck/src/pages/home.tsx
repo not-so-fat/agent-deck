@@ -27,7 +27,7 @@ import { downloadBundleJson, exportBundle } from "@/lib/export-import";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Settings, Layers, Bolt, Server, KeyRound, BookOpen, Copy, Plus, Filter, AlertTriangle, LayoutGrid, Download, Upload, GitPullRequest } from "lucide-react";
+import { Search, Layers, Bolt, Server, KeyRound, BookOpen, Plus, Filter, AlertTriangle, LayoutGrid, Download, Upload, GitPullRequest } from "lucide-react";
 import { Link } from "wouter";
 import { listPlaybookPatches } from "@/lib/playbook-patches";
 import { getFeedbackSignalCount } from "@/lib/feedback-signals";
@@ -35,6 +35,7 @@ import { isDashboardAuthError } from "@/lib/queryClient";
 import { copyMcpEndpointToClipboard } from "@/lib/mcp-endpoint";
 import AgentDeckLogo from "@/assets/AgentDeckLogo3.png";
 import { useToast } from "@/hooks/use-toast";
+import DashboardRecovery, { DECK_DEALER_LINE } from "@/components/dashboard-recovery";
 
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -221,8 +222,9 @@ export default function Home() {
   const hasFatalError = servicesError || decksError;
   
   if (hasFatalError) {
-    const dashboardAccessExpired =
-      isDashboardAuthError(decksError) || isDashboardAuthError(servicesError);
+    if (isDashboardAuthError(decksError) || isDashboardAuthError(servicesError)) {
+      return <DashboardRecovery />;
+    }
     const errorMessage =
       (decksError instanceof Error ? decksError.message : null) ??
       (servicesError instanceof Error ? servicesError.message : null) ??
@@ -231,44 +233,18 @@ export default function Home() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-900">
         <div className="text-center max-w-lg px-4">
-          <h2 className="text-2xl font-bold text-red-400 mb-4">
-            {dashboardAccessExpired ? "Dashboard Access Expired" : "Error Loading Data"}
-          </h2>
-          {dashboardAccessExpired ? (
-            <>
-              <p className="text-gray-300 mb-2">Dashboard access has expired.</p>
-              <p className="text-gray-400 text-sm mb-4">
-                Reopen it securely from your terminal or the Agent Deck menubar.
-              </p>
-              <code className="mb-6 block rounded bg-black/30 px-3 py-2 text-gray-200">
-                agent-deck open
-              </code>
-              <button
-                onClick={() => {
-                  void navigator.clipboard.writeText("agent-deck open").then(() => {
-                    toast({ title: "Command copied", description: "Run it in your terminal." });
-                  });
-                }}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                Copy Command
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="text-gray-300 mb-2">There was an error loading the application data.</p>
-              <p className="text-gray-400 text-sm mb-4">{errorMessage}</p>
-              <p className="text-gray-500 text-xs mb-6">
-                Is the API running? Try <code className="text-gray-300">agent-deck stop &amp;&amp; agent-deck start</code>
-              </p>
-              <button
-                onClick={() => window.location.reload()}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                Reload Page
-              </button>
-            </>
-          )}
+          <h2 className="text-2xl font-bold text-red-400 mb-4">Error Loading Data</h2>
+          <p className="text-gray-300 mb-2">There was an error loading the application data.</p>
+          <p className="text-gray-400 text-sm mb-4">{errorMessage}</p>
+          <p className="text-gray-500 text-xs mb-6">
+            Is the API running? Try <code className="text-gray-300">agent-deck stop &amp;&amp; agent-deck start</code>
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            Reload Page
+          </button>
         </div>
       </div>
     );
@@ -780,6 +756,13 @@ export default function Home() {
           </div>
         </div>
       </main>
+
+      <footer
+        className="shrink-0 border-t border-white/5 py-2 text-center text-xs text-gray-500"
+        data-testid="deck-dealer-note"
+      >
+        {DECK_DEALER_LINE}
+      </footer>
 
       {/* Cyberpunk Background Effects — wrapper positions, inner orb animates */}
       <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
