@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.11.6 — 2026-09-28
+
+### Fix: friend-path cold open and bare-URL recovery (NOT-286)
+
+- `agent-deck open` now handles a cold start (backend not yet running) instead of failing, and the dashboard recovers gracefully when someone lands on the bare URL without a deck/session context, with cleaner dashboard HTML.
+- Docs: one-page Deck → Dealer friend-path guide (`docs/FRIEND_PATH.md`) and README landing refresh (NOT-282, NOT-289).
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start` to load the updated dashboard.
+
 ## 1.11.5 — 2026-09-27
 
 ### Fix: self-heal a stale better-sqlite3 native module after a Node upgrade
