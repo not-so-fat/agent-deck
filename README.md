@@ -11,6 +11,8 @@ A governed way of working that travels with every new agent worker — playbooks
 
 [Why](#why) · [Quick Start](#quick-start) · [Reference](#reference) · [Docs](#documentation)
 
+> **Bringing a friend (or starting cold)?** Follow the [one-page friend path](docs/FRIEND_PATH.md): cold machine → first deck switch → first Dealer issue.
+
 ## Why
 
 You lean on one agent for everything — client code, triage, releases, research. Each kind of work needs its own MCP servers, API keys, and procedures. Wire them all into the agent at once and the tool list balloons: the agent slows down, picks the wrong integration, or leaks one client's context into another's. And the procedures you carefully explained live in old chat threads — you re-explain the same release checklist every session.
@@ -48,7 +50,7 @@ agent-deck start --daemon
 
 Compat: `npm install -g @agent-deck/cli` still works; `agent-deck install` switches only the CLI binary (no data migration).
 
-`start` opens the dashboard with a one-shot bootstrap cookie (do **not** type bare `http://127.0.0.1:1111` — that shows a dashboard login error). Day to day: `agent-deck start --daemon` / `agent-deck open` / `agent-deck stop` · `agent-deck status` if something fails. Use plain `agent-deck start` when you want a foreground process (logs to stdout). Headless: `--no-open` or `AGENT_DECK_NO_OPEN=1`.
+`start` opens the dashboard with a one-shot bootstrap cookie (do **not** type bare `http://127.0.0.1:1111` — that shows the dashboard recovery view). Day to day: `agent-deck start --daemon` / `agent-deck open` / `agent-deck stop` · `agent-deck status` if something fails. Use plain `agent-deck start` when you want a foreground process (logs to stdout). Headless: `--no-open` or `AGENT_DECK_NO_OPEN=1`.
 
 ### 2. Register Agent Deck in your agent
 
@@ -169,6 +171,7 @@ Port conflicts: `agent-deck status` · `agent-deck start --force`
 
 | Guide | Description |
 |-------|-------------|
+| [Friend path](docs/FRIEND_PATH.md) | Cold machine → first deck switch → first Dealer issue |
 | [Direction](docs/DIRECTION.md) | Cross-product direction — agent_deck + agent-dealer |
 | [Setup](docs/SETUP.md) | Ports, env vars, secrets, troubleshooting |
 | [MVP](docs/MVP.md) | Source of truth — decks, vault, playbooks, MCP tools |
