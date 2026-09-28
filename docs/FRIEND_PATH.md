@@ -49,27 +49,29 @@ agent-deck use friend
 ```
 
 Restart the host after `setup` so it picks up the Agent Deck connection.
-Verify: open a session in that workspace and confirm the terminal footer shows `◆ friend · …`.
+Verify: terminal agents show `◆ friend · …` in the footer.
+Cursor IDE chat has no status-line badge (terminal status line only) — there, ask the agent which deck is bound to this workspace and confirm it answers `friend`.
 
-## 5. Install and open Dealer, configure agents
-
-Install Agent Dealer following [its README](https://github.com/not-so-fat/agent-dealer), then:
+## 5. Install Dealer, check `gh`, configure agents
 
 ```bash
+npx agent-dealer@latest install
+export PATH="$HOME/.local/bin:$PATH"
+gh auth status
 agent-dealer setup
 ```
 
-In Dealer, connect the **developer** and **reviewer** agents and choose a GitHub repository.
-A fresh Dealer home shows a compact **First issue** strip that points at whichever of these is still missing — follow it until it stops pointing at Agents.
-Verify: Dealer shows its developer/reviewer agents as connected.
+(Managed install, same shape as Deck — existing `~/.agent-dealer` data is kept.
+`agent-dealer --version` confirms the install; `agent-dealer doctor` reports install state.
+Exact launch flags live in [the Dealer README](https://github.com/not-so-fat/agent-dealer).)
 
-## 6. Authenticate `gh`, create one small issue
+`setup` walks you to the Dealer Issues home. There, connect the **developer** and **reviewer** agents and choose a GitHub repository.
+A fresh home shows a compact **First issue** strip pointing at the next missing step (**Agents** or **New issue**) — follow it until it stops pointing at Agents.
+Verify: Dealer agent health is ready before moving on.
 
-```bash
-gh auth status
-```
+## 6. Create one small issue
 
-Then in Dealer: **New issue**, pick the repository, and write one small task.
+In Dealer: **New issue**, pick the repository, and write one small task.
 Verify: the issue appears in the Dealer queue — open it to see it in the timeline.
 
 ## If you get stuck (two notes, nothing more)
