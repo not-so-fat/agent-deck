@@ -50,7 +50,7 @@ agent-deck start --daemon
 
 Compat: `npm install -g @agent-deck/cli` still works; `agent-deck install` switches only the CLI binary (no data migration).
 
-`start` opens the dashboard with a one-shot bootstrap cookie (do **not** type bare `http://127.0.0.1:1111` — that shows a dashboard login error). Day to day: `agent-deck start --daemon` / `agent-deck open` / `agent-deck stop` · `agent-deck status` if something fails. Use plain `agent-deck start` when you want a foreground process (logs to stdout). Headless: `--no-open` or `AGENT_DECK_NO_OPEN=1`.
+`start` opens the dashboard with a one-shot bootstrap cookie (do **not** type bare `http://127.0.0.1:1111` — that shows the dashboard recovery view). Day to day: `agent-deck start --daemon` / `agent-deck open` / `agent-deck stop` · `agent-deck status` if something fails. Use plain `agent-deck start` when you want a foreground process (logs to stdout). Headless: `--no-open` or `AGENT_DECK_NO_OPEN=1`.
 
 ### 2. Register Agent Deck in your agent
 
