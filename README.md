@@ -11,6 +11,8 @@ A governed way of working that travels with every new agent worker — playbooks
 
 [Why](#why) · [Quick Start](#quick-start) · [Reference](#reference) · [Docs](#documentation)
 
+> **Bringing a friend (or starting cold)?** Follow the [one-page friend path](docs/FRIEND_PATH.md): cold machine → first deck switch → first Dealer issue.
+
 ## Why
 
 You lean on one agent for everything — client code, triage, releases, research. Each kind of work needs its own MCP servers, API keys, and procedures. Wire them all into the agent at once and the tool list balloons: the agent slows down, picks the wrong integration, or leaks one client's context into another's. And the procedures you carefully explained live in old chat threads — you re-explain the same release checklist every session.
@@ -169,6 +171,7 @@ Port conflicts: `agent-deck status` · `agent-deck start --force`
 
 | Guide | Description |
 |-------|-------------|
+| [Friend path](docs/FRIEND_PATH.md) | Cold machine → first deck switch → first Dealer issue |
 | [Direction](docs/DIRECTION.md) | Cross-product direction — agent_deck + agent-dealer |
 | [Setup](docs/SETUP.md) | Ports, env vars, secrets, troubleshooting |
 | [MVP](docs/MVP.md) | Source of truth — decks, vault, playbooks, MCP tools |
