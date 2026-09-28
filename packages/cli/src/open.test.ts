@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readAdminSecret } from './admin-secret';
 import { resolveSystemBrowserOpener } from './dashboard-open';
 import { runOpenCommand } from './open';
+import type { OpenCommandDeps } from './open';
 import { probeAgentDeck } from './ports';
 
 const mockSpawn = vi.hoisted(() => vi.fn());
@@ -59,6 +60,103 @@ afterEach(() => {
   vi.mocked(probeAgentDeck).mockReset();
   vi.mocked(readAdminSecret).mockReset();
   vi.restoreAllMocks();
+});
+
+describe('runOpenCommand cold open (NOT-286)', () => {
+  function captureOutput() {
+    const logs: string[] = [];
+    const errors: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((message: string) => {
+      logs.push(String(message));
+    });
+    vi.spyOn(console, 'error').mockImplementation((message: string) => {
+      errors.push(String(message));
+    });
+    return { logs, errors };
+  }
+
+  function stoppedProbe() {
+    return { backendUp: false, backendUrl: 'http://127.0.0.1:1111' } as Awaited<
+      ReturnType<typeof probeAgentDeck>
+    >;
+  }
+
+  function runningProbe() {
+    return { backendUp: true, backendUrl: 'http://127.0.0.1:1111' } as Awaited<
+      ReturnType<typeof probeAgentDeck>
+    >;
+  }
+
+  it('starts a stopped backend once, then opens a fresh bootstrapped dashboard', async () => {
+    vi.mocked(probeAgentDeck)
+      .mockResolvedValueOnce(stoppedProbe())
+      .mockResolvedValueOnce(runningProbe());
+    vi.mocked(readAdminSecret).mockResolvedValue('admin-secret-for-tests');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ data: { nonce: 'nonce_fresh' } }),
+      })),
+    );
+    spawnSuccess();
+    const started: Array<{ backendPort: number; mcpPort: number }> = [];
+    const deps: OpenCommandDeps = {
+      startBackend: async (options) => {
+        started.push(options);
+        return 0;
+      },
+    };
+    const { logs, errors } = captureOutput();
+
+    const code = await runOpenCommand([], deps);
+
+    expect(code).toBe(0);
+    expect(started).toHaveLength(1);
+    expect(logs).toContain('Opened dashboard in your browser.');
+    expect(errors).toHaveLength(0);
+    // The opened URL carries a fresh bootstrap nonce — never a bare origin.
+    const openedUrl = mockSpawn.mock.calls[0]?.[1] as string[];
+    expect(openedUrl[0]).toContain('bootstrap=nonce_fresh');
+  });
+
+  it('does not start a second backend when one is already running', async () => {
+    backendReady();
+    spawnSuccess();
+    const startBackend = vi.fn(async () => 0);
+    const { logs } = captureOutput();
+
+    const code = await runOpenCommand([], { startBackend });
+
+    expect(code).toBe(0);
+    expect(startBackend).not.toHaveBeenCalled();
+    expect(logs).toContain('Opened dashboard in your browser.');
+  });
+
+  it('reports a next step — never a bare URL — when the cold start fails', async () => {
+    vi.mocked(probeAgentDeck).mockResolvedValueOnce(stoppedProbe());
+    const { logs, errors } = captureOutput();
+
+    const code = await runOpenCommand([], { startBackend: async () => 1 });
+
+    expect(code).toBe(1);
+    expect(errors.join('\n')).toContain('agent-deck status');
+    expect(logs).not.toContain('Opened dashboard in your browser.');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('reports a next step — never a bare URL — when bootstrap minting fails', async () => {
+    vi.mocked(probeAgentDeck).mockResolvedValueOnce(runningProbe());
+    vi.mocked(readAdminSecret).mockResolvedValueOnce(null);
+    const { logs, errors } = captureOutput();
+
+    const code = await runOpenCommand([], { startBackend: vi.fn(async () => 0) });
+
+    expect(code).toBe(1);
+    expect(errors.join('\n')).toContain('agent-deck open');
+    expect(logs).not.toContain('Opened dashboard in your browser.');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
 });
 
 describe('runOpenCommand browser reporting (NOT-237)', () => {

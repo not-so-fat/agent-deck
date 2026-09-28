@@ -31,12 +31,31 @@ function printOpenUsage(): void {
   console.log(`Usage:
   agent-deck open [--path /admin/approve?...]
 
-Mints a short-lived dashboard bootstrap URL and opens the system browser.
+Starts the local backend when it is stopped, then mints a short-lived
+dashboard bootstrap URL and opens the system browser.
 The bare dashboard origin remains unauthorized without an existing session;
 run agent-deck open whenever access needs to be restored.`);
 }
 
-export async function runOpenCommand(args: string[]): Promise<number> {
+export type OpenCommandDeps = {
+  probeBackend?: typeof probeAgentDeck;
+  startBackend?: (options: { backendPort: number; mcpPort: number }) => Promise<number>;
+  openDashboard?: typeof openDashboardInBrowser;
+};
+
+/**
+ * NOT-286: cold-open starter. Reuses the existing `runStart` daemon path so
+ * `agent-deck open` never grows its own supervisor — it just asks for a
+ * background deck without opening a second browser tab (`openBrowser: false`;
+ * this command mints and opens its own bootstrap URL below). Lazily imported
+ * so `open --help` and unit tests stay light.
+ */
+async function defaultStartBackend(options: { backendPort: number; mcpPort: number }): Promise<number> {
+  const { runStart } = await import('./start');
+  return runStart({ daemon: true, openBrowser: false, ...options });
+}
+
+export async function runOpenCommand(args: string[], deps: OpenCommandDeps = {}): Promise<number> {
   const parsed = parseOpenArgs(args);
   if ('error' in parsed) {
     if (parsed.error === 'help') {
@@ -51,13 +70,30 @@ export async function runOpenCommand(args: string[]): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const backendPort = readCliBackendPort();
   const mcpPort = Number.parseInt(process.env.AGENT_DECK_MCP_PORT ?? '1110', 10) || 1110;
-  const probe = await probeAgentDeck(host, backendPort, mcpPort);
+  const probeBackend = deps.probeBackend ?? probeAgentDeck;
+  const startBackend = deps.startBackend ?? defaultStartBackend;
+  const openDashboard = deps.openDashboard ?? openDashboardInBrowser;
+
+  let probe = await probeBackend(host, backendPort, mcpPort);
   if (!probe.backendUp) {
-    console.error('[agent-deck] Backend is not running. Start it first: agent-deck start');
-    return 1;
+    console.log('[agent-deck] Backend is not running. Starting it now ...');
+    const startCode = await startBackend({ backendPort, mcpPort });
+    if (startCode !== 0) {
+      console.error(
+        '[agent-deck] Could not start the backend. Run `agent-deck status` for the cause, then retry `agent-deck open`.',
+      );
+      return startCode;
+    }
+    probe = await probeBackend(host, backendPort, mcpPort);
+    if (!probe.backendUp) {
+      console.error(
+        '[agent-deck] The backend started but is not answering yet. Run `agent-deck status`, then retry `agent-deck open`.',
+      );
+      return 1;
+    }
   }
 
-  const result = await openDashboardInBrowser(probe.backendUrl, parsed.path);
+  const result = await openDashboard(probe.backendUrl, parsed.path);
   if (result.code !== 0) {
     console.error(`[agent-deck] ${result.message ?? 'Failed to open dashboard'}`);
     return result.code;
