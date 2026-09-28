@@ -3,15 +3,13 @@
 [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Switch what your agent knows — decks of tools, keys, and self-improving playbooks.**
+A governed way of working that travels with every new agent worker — playbooks, tools, and credentials in a deck; queue the issues and only show up for real decisions.
+
+[![Agent Deck + Agent Dealer](https://img.youtube.com/vi/zkQcCT0tZeo/maxresdefault.jpg)](https://www.youtube.com/watch?v=zkQcCT0tZeo)
+
+[Watch the 2-min overview](https://www.youtube.com/watch?v=zkQcCT0tZeo) — portable decks, then a governed issue queue.
 
 [Why](#why) · [Quick Start](#quick-start) · [Reference](#reference) · [Docs](#documentation)
-
-<!-- DEMO VIDEO/GIF — drop the demo here.
-     On github.com, drag the .mp4 into the README editor to get a user-attachments URL,
-     then paste it on its own line. GIF fallback:
-<img src="misc/demo.gif" alt="Switch decks mid-session; the agent's tools and playbooks follow" width="80%" />
--->
 
 ## Why
 
