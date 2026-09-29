@@ -38,7 +38,9 @@ export function runCodexCommand(args: string[]): Promise<CodexRunResult> {
     child.on('error', (error) => {
       resolve({ code: 127, stdout: '', stderr: error instanceof Error ? error.message : String(error) });
     });
-    child.on('exit', (code) => {
+    // Resolve on 'close', not 'exit': 'exit' can fire before piped stdio is
+    // fully flushed, which drops JSON output under load and breaks parsing.
+    child.on('close', (code) => {
       resolve({ code: code ?? 1, stdout, stderr });
     });
   });
