@@ -424,7 +424,9 @@ function printManualSyncBlock(selector: string, marketplaceName?: string): void 
 }
 
 /**
- * Reconcile the installed Agent Deck plugin after a successful CLI upgrade.
+ * Reconcile the installed Agent Deck plugin after a CLI upgrade.
+ * Pass `{ alreadyCurrent: true }` when the CLI was already current so
+ * failure lines stay truthful (no "upgrade complete" claim).
  *
  * Only acts when exactly one installed selector and one source root resolve
  * from a successful marketplace listing. For a Git marketplace the
@@ -438,17 +440,19 @@ function printManualSyncBlock(selector: string, marketplaceName?: string): void 
 export async function reconcileCodexPluginAfterUpgrade(
   expectedVersion: string,
   runner: CodexRunner = runCodexCommand,
+  options: { alreadyCurrent?: boolean } = {},
 ): Promise<number> {
+  const prefix = options.alreadyCurrent ? 'CLI already current' : 'CLI upgrade complete';
   const state = await inspectCodexPlugin(expectedVersion, runner);
   const selector = state.selector ?? DEFAULT_PLUGIN_SELECTOR;
 
   if (!state.available) {
-    console.log('CLI upgrade complete; Codex plugin unchanged (codex CLI not found).');
+    console.log(`${prefix}; Codex plugin unchanged (codex CLI not found).`);
     printManualSyncBlock(selector);
     return 1;
   }
   if (state.error && !state.classification) {
-    console.log(`CLI upgrade complete; Codex plugin unchanged (${state.error}).`);
+    console.log(`${prefix}; Codex plugin unchanged (${state.error}).`);
     printManualSyncBlock(selector);
     return 1;
   }
@@ -459,20 +463,20 @@ export async function reconcileCodexPluginAfterUpgrade(
   }
 
   if (state.classification === 'missing') {
-    console.log('CLI upgrade complete; Codex plugin unchanged (plugin not installed).');
+    console.log(`${prefix}; Codex plugin unchanged (plugin not installed).`);
     printManualSyncBlock(selector);
     return 1;
   }
 
   if (state.classification === 'disabled') {
-    console.log('CLI upgrade complete; Codex plugin unchanged (plugin is disabled; leaving it as-is).');
+    console.log(`${prefix}; Codex plugin unchanged (plugin is disabled; leaving it as-is).`);
     printManualSyncBlock(selector, state.marketplaceName);
     return 1;
   }
 
   if (state.classification === 'ambiguous-source' || !state.selector || !state.root) {
     console.log(
-      'CLI upgrade complete; Codex plugin unchanged (multiple sources could supply the installed plugin).',
+      `${prefix}; Codex plugin unchanged (multiple sources could supply the installed plugin).`,
     );
     printManualSyncBlock(selector, state.marketplaceName);
     console.log('See: codex plugin list --available --json');
@@ -481,7 +485,7 @@ export async function reconcileCodexPluginAfterUpgrade(
 
   if (state.marketplaceListError) {
     console.log(
-      `CLI upgrade complete; Codex plugin unchanged (marketplace list failed: ${state.marketplaceListError}).`,
+      `${prefix}; Codex plugin unchanged (marketplace list failed: ${state.marketplaceListError}).`,
     );
     printManualSyncBlock(selector, state.marketplaceName);
     console.log('See: codex plugin marketplace list --json');
@@ -490,7 +494,7 @@ export async function reconcileCodexPluginAfterUpgrade(
 
   if (state.sourceKind === 'unknown') {
     console.log(
-      'CLI upgrade complete; Codex plugin unchanged (could not resolve a single marketplace source for the installed plugin).',
+      `${prefix}; Codex plugin unchanged (could not resolve a single marketplace source for the installed plugin).`,
     );
     printManualSyncBlock(selector, state.marketplaceName);
     console.log('See: codex plugin marketplace list --json');
@@ -504,7 +508,7 @@ export async function reconcileCodexPluginAfterUpgrade(
     const refreshed = await runner(['plugin', 'marketplace', 'upgrade', marketplaceName]);
     if (refreshed.code !== 0) {
       console.log(
-        `CLI upgrade complete; Codex plugin unchanged (marketplace refresh failed: ${(refreshed.stderr.trim() || refreshed.stdout.trim() || `exit ${refreshed.code}`)}).`,
+        `${prefix}; Codex plugin unchanged (marketplace refresh failed: ${(refreshed.stderr.trim() || refreshed.stdout.trim() || `exit ${refreshed.code}`)}).`,
       );
       printManualSyncBlock(targetSelector, marketplaceName);
       return 1;
@@ -514,7 +518,7 @@ export async function reconcileCodexPluginAfterUpgrade(
   const removed = await runner(['plugin', 'remove', targetSelector]);
   if (removed.code !== 0) {
     console.log(
-      `CLI upgrade complete; Codex plugin unchanged (remove failed: ${(removed.stderr.trim() || removed.stdout.trim() || `exit ${removed.code}`)}).`,
+      `${prefix}; Codex plugin unchanged (remove failed: ${(removed.stderr.trim() || removed.stdout.trim() || `exit ${removed.code}`)}).`,
     );
     printManualSyncBlock(targetSelector, marketplaceName);
     return 1;
@@ -525,7 +529,7 @@ export async function reconcileCodexPluginAfterUpgrade(
     // `remove` already succeeded, so the plugin is uninstalled — not
     // "unchanged". Say so and print only the recovery commands.
     console.log(
-      `CLI upgrade complete; Codex plugin removed but reinstall failed (add failed: ${(added.stderr.trim() || added.stdout.trim() || `exit ${added.code}`)}).`,
+      `${prefix}; Codex plugin removed but reinstall failed (add failed: ${(added.stderr.trim() || added.stdout.trim() || `exit ${added.code}`)}).`,
     );
     console.log('To restore the plugin manually, run:');
     if (state.sourceKind === 'git' && marketplaceName) {
@@ -542,7 +546,7 @@ export async function reconcileCodexPluginAfterUpgrade(
   }
 
   console.log(
-    `CLI upgrade complete; Codex plugin still ${reread.classification ?? 'unreadable'} (installed ${reread.installedVersion ?? '(unknown)'}, expected ${expectedVersion}).`,
+    `${prefix}; Codex plugin still ${reread.classification ?? 'unreadable'} (installed ${reread.installedVersion ?? '(unknown)'}, expected ${expectedVersion}).`,
   );
   printManualSyncBlock(targetSelector, marketplaceName);
   return 1;
