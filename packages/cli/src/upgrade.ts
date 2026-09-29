@@ -141,7 +141,10 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
 
     if (!toVersion && compareSemver(latest, current) <= 0) {
       console.log('Already on the latest version.');
-      return 0;
+      if (checkOnly) {
+        return 0;
+      }
+      return reconcileCodexPluginAfterUpgrade(current, deps.codexRunner, { alreadyCurrent: true });
     }
 
     if (checkOnly) {
@@ -182,7 +185,10 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
 
   if (!toVersion && !result.updateAvailable) {
     console.log('Already on the latest version.');
-    return 0;
+    if (checkOnly) {
+      return 0;
+    }
+    return reconcileCodexPluginAfterUpgrade(result.current, deps.codexRunner, { alreadyCurrent: true });
   }
 
   if (checkOnly) {

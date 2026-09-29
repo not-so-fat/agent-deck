@@ -409,3 +409,250 @@ describe('upgrade codex plugin reconciliation (NOT-188)', () => {
     expect(text).toContain(`codex plugin add ${SELECTOR}`);
   });
 });
+
+describe('upgrade no-op reconciliation (NOT-291)', () => {
+  let deckHome = '';
+  let savedDeckHome: string | undefined;
+  let savedFetch: typeof globalThis.fetch | undefined;
+  let cliInstalls = 0;
+
+  beforeEach(() => {
+    savedDeckHome = process.env.AGENT_DECK_HOME;
+    savedFetch = globalThis.fetch;
+    cliInstalls = 0;
+  });
+
+  afterEach(() => {
+    if (savedDeckHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = savedDeckHome;
+    }
+    globalThis.fetch = savedFetch as typeof globalThis.fetch;
+    if (deckHome) {
+      fs.rmSync(deckHome, { recursive: true, force: true });
+      deckHome = '';
+    }
+  });
+
+  function stubFetchLatest(version: string): void {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({ version }),
+    })) as typeof globalThis.fetch;
+  }
+
+  function trackInstall(): Promise<{ ok: boolean }> {
+    cliInstalls += 1;
+    return Promise.resolve({ ok: true });
+  }
+
+  /** npm-global/unknown kind: no `current` symlink under AGENT_DECK_HOME. */
+  function seedNpmHome(): void {
+    deckHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-deck-npm-'));
+    process.env.AGENT_DECK_HOME = deckHome;
+    stubFetchLatest(CLI_VERSION);
+  }
+
+  /** Managed kind pinned at the current CLI version. */
+  function seedManagedHome(): void {
+    deckHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-deck-managed-'));
+    const target = path.join(deckHome, 'versions', CLI_VERSION);
+    fs.mkdirSync(target, { recursive: true });
+    fs.symlinkSync(target, path.join(deckHome, 'current'));
+    process.env.AGENT_DECK_HOME = deckHome;
+    stubFetchLatest(CLI_VERSION);
+  }
+
+  function seedCompatiblePlugin(): void {
+    fs.writeFileSync(
+      path.join(codexHome, 'plugin-list.json'),
+      `${JSON.stringify(
+        {
+          plugins: [
+            {
+              name: 'agent-deck',
+              version: CLI_VERSION,
+              selector: SELECTOR,
+              enabled: true,
+              marketplace: 'agent-deck',
+              install_root: pluginRoot,
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`);
+  }
+
+  it('managed no-op reconciles a stale local plugin without a CLI install', async () => {
+    seedManagedHome();
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+
+    const code = await runUpgrade([], { performCliUpgrade: trackInstall });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(0);
+    expect(cliInstalls).toBe(0);
+    const removeIdx = calls.findIndex((line) => line === `codex plugin remove ${SELECTOR}`);
+    const addIdx = calls.findIndex((line) => line === `codex plugin add ${SELECTOR}`);
+    expect(removeIdx).toBeGreaterThanOrEqual(0);
+    expect(addIdx).toBeGreaterThan(removeIdx);
+    expect(text).toContain('Already on the latest version.');
+    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(text).not.toContain('Upgrade complete');
+    expect(text).not.toContain('CLI upgrade complete');
+  });
+
+  it('npm-global no-op reconciles a stale local plugin without npm install', async () => {
+    seedNpmHome();
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+
+    const code = await runUpgrade([], { performCliUpgrade: trackInstall });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(0);
+    expect(cliInstalls).toBe(0);
+    const removeIdx = calls.findIndex((line) => line === `codex plugin remove ${SELECTOR}`);
+    const addIdx = calls.findIndex((line) => line === `codex plugin add ${SELECTOR}`);
+    expect(removeIdx).toBeGreaterThanOrEqual(0);
+    expect(addIdx).toBeGreaterThan(removeIdx);
+    expect(text).toContain('Already on the latest version.');
+    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(text).not.toContain('Upgrade complete');
+    expect(text).not.toContain('CLI upgrade complete');
+  });
+
+  it('no-op with a compatible plugin performs no remove/add', async () => {
+    seedNpmHome();
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    seedCompatiblePlugin();
+
+    const code = await runUpgrade([], { performCliUpgrade: trackInstall });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(0);
+    expect(cliInstalls).toBe(0);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('Already on the latest version.');
+    expect(output.filter((line) => line.includes('Codex plugin: OK (')).length).toBe(1);
+    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+  });
+
+  it('no-op refreshes a git marketplace before remove/add', async () => {
+    seedManagedHome();
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'git' }]);
+
+    const code = await runUpgrade([], { performCliUpgrade: trackInstall });
+    const calls = readCalls();
+
+    expect(code).toBe(0);
+    expect(cliInstalls).toBe(0);
+    const upgradeIdx = calls.findIndex((line) => line === 'codex plugin marketplace upgrade agent-deck');
+    const removeIdx = calls.findIndex((line) => line === `codex plugin remove ${SELECTOR}`);
+    const addIdx = calls.findIndex((line) => line === `codex plugin add ${SELECTOR}`);
+    expect(upgradeIdx).toBeGreaterThanOrEqual(0);
+    expect(removeIdx).toBeGreaterThan(upgradeIdx);
+    expect(addIdx).toBeGreaterThan(removeIdx);
+  });
+
+  it('no-op with duplicate sources leaves the CLI untouched and exits 1', async () => {
+    seedNpmHome();
+    seedUpgradeHome();
+    const rootA = path.join(codexHome, 'roots', 'a');
+    const rootB = path.join(codexHome, 'roots', 'b');
+    for (const root of [rootA, rootB]) {
+      fs.mkdirSync(root, { recursive: true });
+      fs.writeFileSync(path.join(root, '.mcp.json'), `${JSON.stringify(LEGACY_MCP, null, 2)}\n`);
+    }
+    writeMarketplaces([
+      { name: 'agent-deck', root: rootA, source: 'local' },
+      { name: 'agent-deck', root: rootB, source: 'local' },
+    ]);
+    const before = hashLiveFixtures(['roots/a', 'roots/b']);
+
+    const code = await runUpgrade([], { performCliUpgrade: trackInstall });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(cliInstalls).toBe(0);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('Already on the latest version.');
+    expect(text).toContain('CLI already current');
+    expect(text).not.toContain('CLI upgrade complete');
+    expect(text).toContain(`codex plugin remove ${SELECTOR}`);
+    expect(text).toContain(`codex plugin add ${SELECTOR}`);
+    expect(hashLiveFixtures(['roots/a', 'roots/b'])).toBe(before);
+  });
+
+  it('no-op leaves a disabled plugin installed and exits 1', async () => {
+    seedManagedHome();
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    fs.writeFileSync(
+      path.join(codexHome, 'plugin-list.json'),
+      `${JSON.stringify(
+        {
+          plugins: [
+            {
+              name: 'agent-deck',
+              version: '1.4.4',
+              selector: SELECTOR,
+              enabled: false,
+              marketplace: 'agent-deck',
+              install_root: pluginRoot,
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const before = hashLiveFixtures();
+
+    const code = await runUpgrade([], { performCliUpgrade: trackInstall });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(cliInstalls).toBe(0);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('Already on the latest version.');
+    expect(text).toContain('CLI already current');
+    expect(text).toContain('disabled');
+    expect(hashLiveFixtures()).toBe(before);
+  });
+
+  it('--check with a stale plugin runs no mutating codex command', async () => {
+    seedNpmHome();
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'git' }]);
+    const before = hashLiveFixtures();
+
+    const code = await runUpgrade(['--check'], { performCliUpgrade: trackInstall });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(0);
+    expect(cliInstalls).toBe(0);
+    expect(calls.some((line) => line.includes('marketplace upgrade'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('Already on the latest version.');
+    expect(text).not.toContain('Codex plugin: OK (');
+    expect(hashLiveFixtures()).toBe(before);
+  });
+});
