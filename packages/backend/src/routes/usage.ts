@@ -1,9 +1,16 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
 import {
   ApiResponse,
+  CardUsageCardsResponse,
   CardUsageEventResponse,
   CardUsageEventsResponse,
 } from '@agent-deck/shared';
+import {
+  CARD_USAGE_WINDOW_MS,
+  classifyCardUsage,
+  CardUsageClassifierAggregate,
+  CardUsageClassifierCard,
+} from '../services/card-usage-classifier';
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 250;
@@ -35,6 +42,62 @@ function isStrictIsoTimestamp(value: string): boolean {
  * (occurredAt ASC, id ASC); both time bounds are inclusive.
  */
 export async function registerUsageRoutes(fastify: FastifyInstance) {
+  /**
+   * GET /api/usage/cards — one classification row for every current
+   * service, credential, and playbook card over the fixed trailing 30-day
+   * window `[windowStart, windowEnd)`. No custom range is accepted.
+   * Authentication follows the app's normal route policy
+   * (requireAgentOrDashboard in the HTTP route-policy registry).
+   */
+  fastify.get('/cards', async (_request, reply) => {
+    const windowEnd = new Date(Date.now()).toISOString();
+    const windowStart = new Date(Date.parse(windowEnd) - CARD_USAGE_WINDOW_MS).toISOString();
+
+    const [services, credentials, playbooks, observationStarts, summary] = await Promise.all([
+      fastify.db.getAllServices(),
+      fastify.db.getAllCredentials(),
+      fastify.db.getAllPlaybooks(),
+      fastify.db.getUsageObservationStarts(),
+      fastify.db.getSuccessfulCardUsageSummary({ windowStart, windowEnd }),
+    ]);
+
+    const cards: CardUsageClassifierCard[] = [
+      ...services.map((service) => ({
+        cardType: 'service' as const,
+        cardId: service.id,
+        createdAt: service.registeredAt,
+      })),
+      ...credentials.map((credential) => ({
+        cardType: 'credential' as const,
+        cardId: credential.id,
+        createdAt: credential.createdAt,
+      })),
+      ...playbooks.map((playbook) => ({
+        cardType: 'playbook' as const,
+        cardId: playbook.id,
+        createdAt: playbook.createdAt,
+      })),
+    ];
+    const usage: CardUsageClassifierAggregate[] = summary.map((row) => ({
+      cardType: row.cardType,
+      cardId: row.cardId,
+      count: row.usageCount,
+      lastUsedAt: row.lastUsedAt,
+    }));
+
+    const data: CardUsageCardsResponse = {
+      cards: classifyCardUsage({
+        now: windowEnd,
+        windowStart,
+        windowEnd,
+        cards,
+        usage,
+        observationStarts,
+      }),
+    };
+    return reply.send({ success: true, data } satisfies ApiResponse<CardUsageCardsResponse>);
+  });
+
   fastify.get<{ Querystring: UsageEventsQuery }>('/events', async (request, reply) => {
     const now = Date.now();
 
