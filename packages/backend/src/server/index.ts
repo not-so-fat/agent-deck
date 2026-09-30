@@ -25,6 +25,7 @@ import { registerCollectionRoutes } from '../routes/collection';
 import { registerExportImportRoutes } from '../routes/export-import';
 import { registerTrustedSessionRoutes, registerDashboardAuthRoutes } from '../routes/trusted-session';
 import { registerLaunchRoutes } from '../routes/launch';
+import { registerUsageRoutes } from '../routes/usage';
 import { PlaybookManager } from '../playbooks/playbook-manager';
 import { PatchManager } from '../playbooks/patch-manager';
 import { registerPlaybookPatchRoutes } from '../routes/playbook-patches';
@@ -143,6 +144,7 @@ export async function createServer() {
   await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
   await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
   await fastify.register(registerLaunchRoutes, { prefix: '/api/launch' });
+  await fastify.register(registerUsageRoutes, { prefix: '/api/usage' });
 
   // Health check endpoint
   fastify.get('/health', async (request, reply) => {

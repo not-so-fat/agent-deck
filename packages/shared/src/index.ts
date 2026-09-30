@@ -11,6 +11,7 @@ export * from './schemas/export-bundle';
 export * from './schemas/store';
 export * from './schemas/session-bootstrap';
 export * from './schemas/trusted-session';
+export * from './schemas/card-usage';
 
 // Additional types not covered by schemas
 export * from './types/api';

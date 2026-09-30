@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { 
   Service, 
   CreateServiceInput, 
@@ -24,6 +25,8 @@ import {
   PlaybookPatch,
   PlaybookVersion,
   PlaybookEvent,
+  CardUsageCardType,
+  CardUsageEvent,
   FeedbackSignal,
   FeedbackSignalSource,
   FeedbackSignalStatus,
@@ -41,6 +44,26 @@ import {
 export const STORE_CONTENT_HASH = 'store_content_hash';
 export const STORE_LAST_REINDEX = 'store_last_reindex';
 
+/**
+ * One-way hash for card-usage session correlation (NOT-292).
+ *
+ * The `x-agent-deck-session-id` header value is a live runtime-session
+ * bearer: presenting it alone authenticates as that agent. It must never be
+ * persisted verbatim nor exposed via the usage API, which any agent session
+ * or notebook credential can call. SHA-256 keeps per-session correlation for
+ * analysis while making the stored value unusable as a credential.
+ */
+export function hashCardUsageSessionId(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return createHash('sha256').update(trimmed, 'utf8').digest('hex');
+}
+
 export type StoreSnapshot = {
   services: StoreService[];
   credentials: StoreCredentialMeta[];
@@ -56,6 +79,7 @@ export class DatabaseManager {
     this.createTables();
     this.migrate();
     this.createIndexes();
+    this.seedUsageObservationStarts();
   }
 
   private tableExists(tableName: string): boolean {
@@ -378,6 +402,22 @@ export class DatabaseManager {
       )
     `);
 
+    // Normalized, privacy-safe card-usage events (NOT-292). No payloads,
+    // arguments, results, URLs, headers, or secrets are stored here.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS card_usage_events (
+        id TEXT PRIMARY KEY,
+        card_type TEXT NOT NULL,
+        card_id TEXT NOT NULL,
+        deck_id TEXT,
+        action TEXT NOT NULL,
+        success INTEGER,
+        source TEXT NOT NULL,
+        session_id TEXT,
+        created_at TEXT NOT NULL
+      )
+    `);
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS feedback_signals (
         id TEXT PRIMARY KEY,
@@ -650,6 +690,8 @@ export class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_playbook_patches_status ON playbook_patches(status);
       CREATE INDEX IF NOT EXISTS idx_playbook_versions_playbook ON playbook_versions(playbook_id);
       CREATE INDEX IF NOT EXISTS idx_playbook_events_playbook ON playbook_events(playbook_id);
+      CREATE INDEX IF NOT EXISTS idx_card_usage_card ON card_usage_events(card_type, card_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_card_usage_time ON card_usage_events(created_at, id);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_status ON feedback_signals(status);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_playbook ON feedback_signals(candidate_playbook_id);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_linked_patch ON feedback_signals(linked_patch_id);
@@ -1435,6 +1477,21 @@ export class DatabaseManager {
       VALUES (@exec_run_id, @credential_id)
     `);
 
+    // NOT-292: credential-backed exec runs count as credential use. Only
+    // credential ids are recorded — never command contents or secrets.
+    // Recorded inside the same transaction so a committed exec run always
+    // has its usage events and vice versa.
+    const execSuccess =
+      input.exitCode === undefined ? null : input.exitCode === 0;
+    const execOccurredAt = input.finishedAt ?? input.startedAt;
+    const insertUsageEvent = this.db.prepare(`
+      INSERT INTO card_usage_events (
+        id, card_type, card_id, deck_id, action, success, source, session_id, created_at
+      ) VALUES (
+        @id, @card_type, @card_id, @deck_id, @action, @success, @source, @session_id, @created_at
+      )
+    `);
+
     const transaction = this.db.transaction(() => {
       insertRun.run({
         id: execRun.id,
@@ -1452,9 +1509,27 @@ export class DatabaseManager {
           credential_id: credentialId,
         });
       }
+
+      for (const credentialId of input.credentialIds) {
+        insertUsageEvent.run({
+          id: generateId(),
+          card_type: 'credential',
+          card_id: credentialId,
+          deck_id: execRun.deckId ?? null,
+          action: 'exec_run',
+          success: execSuccess === null ? null : execSuccess ? 1 : 0,
+          source: 'exec',
+          session_id: null,
+          created_at: execOccurredAt,
+        });
+      }
+      if (input.credentialIds.length > 0) {
+        this.ensureUsageObservationStart('credential', execOccurredAt);
+      }
     });
 
     transaction();
+
     return execRun;
   }
 
@@ -1926,6 +2001,185 @@ export class DatabaseManager {
       .prepare('SELECT COUNT(*) as count FROM playbook_events WHERE playbook_id = ? AND event = ?')
       .get(playbookId, event) as { count: number };
     return row.count;
+  }
+
+  private static readonly CARD_USAGE_CARD_TYPES: readonly string[] = [
+    'service',
+    'credential',
+    'playbook',
+  ];
+
+  private static usageObservationKey(cardType: string): string {
+    return `card_usage_observed_from:${cardType}`;
+  }
+
+  /**
+   * Mark the moment usage tracking began for every card type, so a fully
+   * observed zero-use window (timestamp set, no events) stays
+   * distinguishable from a store that predates tracking. INSERT OR IGNORE
+   * keeps the earliest start across restarts and upgrades.
+   */
+  private seedUsageObservationStarts(): void {
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO store_meta (key, value) VALUES (?, ?)');
+    for (const cardType of DatabaseManager.CARD_USAGE_CARD_TYPES) {
+      stmt.run(DatabaseManager.usageObservationKey(cardType), now);
+    }
+  }
+
+  /**
+   * Observation start for a card type: when tracking began. A timestamp with
+   * no events in the window is a fully observed zero-use window; null only
+   * means the store predates usage tracking. Lets downstream classification
+   * distinguish "no evidence yet" (null) from observed zero use.
+   */
+  async getUsageObservationStart(cardType: CardUsageCardType): Promise<string | null> {
+    return this.getStoreMeta(DatabaseManager.usageObservationKey(cardType));
+  }
+
+  async getUsageObservationStarts(): Promise<Record<CardUsageCardType, string | null>> {
+    return {
+      service: await this.getUsageObservationStart('service'),
+      credential: await this.getUsageObservationStart('credential'),
+      playbook: await this.getUsageObservationStart('playbook'),
+    };
+  }
+
+  private ensureUsageObservationStart(cardType: CardUsageCardType, at: string): void {
+    this.db
+      .prepare('INSERT OR IGNORE INTO store_meta (key, value) VALUES (?, ?)')
+      .run(DatabaseManager.usageObservationKey(cardType), at);
+  }
+
+  private mapCardUsageEventRow(row: any): CardUsageEvent {
+    return {
+      id: row.id,
+      cardType: row.card_type as CardUsageCardType,
+      cardId: row.card_id,
+      deckId: row.deck_id ?? null,
+      action: row.action,
+      success: row.success === null || row.success === undefined ? null : row.success === 1,
+      source: row.source,
+      sessionId: row.session_id ?? null,
+      createdAt: row.created_at,
+    };
+  }
+
+  async recordCardUsageEvent(input: {
+    id?: string;
+    cardType: CardUsageCardType;
+    cardId: string;
+    deckId?: string | null;
+    action: string;
+    success?: boolean | null;
+    source: string;
+    sessionId?: string | null;
+    occurredAt?: string;
+  }): Promise<CardUsageEvent> {
+    if (!DatabaseManager.CARD_USAGE_CARD_TYPES.includes(input.cardType)) {
+      throw new Error(`Unknown card usage card type: ${input.cardType}`);
+    }
+    const event: CardUsageEvent = {
+      id: input.id ?? generateId(),
+      cardType: input.cardType,
+      cardId: input.cardId,
+      deckId: input.deckId ?? null,
+      action: input.action,
+      success: input.success ?? null,
+      source: input.source,
+      // Never persist the raw runtime-session bearer — only its one-way hash.
+      sessionId: hashCardUsageSessionId(input.sessionId ?? null),
+      createdAt: input.occurredAt ?? new Date().toISOString(),
+    };
+    this.db.prepare(`
+      INSERT INTO card_usage_events (
+        id, card_type, card_id, deck_id, action, success, source, session_id, created_at
+      ) VALUES (
+        @id, @card_type, @card_id, @deck_id, @action, @success, @source, @session_id, @created_at
+      )
+    `).run({
+      id: event.id,
+      card_type: event.cardType,
+      card_id: event.cardId,
+      deck_id: event.deckId,
+      action: event.action,
+      success: event.success === null ? null : event.success ? 1 : 0,
+      source: event.source,
+      session_id: event.sessionId,
+      created_at: event.createdAt,
+    });
+    this.ensureUsageObservationStart(event.cardType, event.createdAt);
+    return event;
+  }
+
+  static encodeCardUsageCursor(createdAt: string, id: string): string {
+    return Buffer.from(JSON.stringify({ c: createdAt, i: id }), 'utf8').toString('base64url');
+  }
+
+  static decodeCardUsageCursor(cursor: string): { createdAt: string; id: string } {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    } catch {
+      throw new Error('Invalid cursor');
+    }
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      typeof (parsed as { c?: unknown }).c !== 'string' ||
+      typeof (parsed as { i?: unknown }).i !== 'string' ||
+      Number.isNaN(Date.parse((parsed as { c: string }).c))
+    ) {
+      throw new Error('Invalid cursor');
+    }
+    return {
+      createdAt: (parsed as { c: string }).c,
+      id: (parsed as { i: string }).i,
+    };
+  }
+
+  /**
+   * Chronological, cursor-paginated raw usage events. Ordering is
+   * deterministic: (created_at ASC, id ASC). Both bounds are inclusive.
+   */
+  async listCardUsageEvents(input: {
+    from: string;
+    to: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<{ events: CardUsageEvent[]; nextCursor: string | null }> {
+    let after: { createdAt: string; id: string } | null = null;
+    if (input.cursor) {
+      after = DatabaseManager.decodeCardUsageCursor(input.cursor);
+    }
+    const rows = this.db.prepare(`
+      SELECT * FROM card_usage_events
+      WHERE created_at >= @from
+        AND created_at <= @to
+        AND (
+          @after_created_at IS NULL
+          OR created_at > @after_created_at
+          OR (created_at = @after_created_at AND id > @after_id)
+        )
+      ORDER BY created_at ASC, id ASC
+      LIMIT @limit
+    `).all({
+      from: input.from,
+      to: input.to,
+      after_created_at: after?.createdAt ?? null,
+      after_id: after?.id ?? null,
+      limit: input.limit + 1,
+    }) as any[];
+    const page = rows.slice(0, input.limit);
+    const events = page.map((row) => this.mapCardUsageEventRow(row));
+    const nextCursor =
+      rows.length > input.limit && events.length > 0
+        ? DatabaseManager.encodeCardUsageCursor(
+            events[events.length - 1].createdAt,
+            events[events.length - 1].id,
+          )
+        : null;
+    return { events, nextCursor };
   }
 
   private mapFeedbackSignalRow(row: any): FeedbackSignal {
