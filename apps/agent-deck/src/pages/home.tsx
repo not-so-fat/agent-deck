@@ -10,6 +10,12 @@ import {
   cardUsageKey,
   useCardUsage,
 } from "@/lib/card-usage";
+import {
+  buildDefaultOrderedCollection,
+  sortCollectionItems,
+  type CollectionSortItem,
+  type CollectionSortMode,
+} from "@/lib/collection-sort";
 import CardComponent from "@/components/card-component";
 import CredentialCardComponent from "@/components/credential-card-component";
 import PlaybookCardComponent from "@/components/playbook-card-component";
@@ -32,7 +38,7 @@ import { downloadBundleJson, exportBundle } from "@/lib/export-import";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Layers, Bolt, Server, KeyRound, BookOpen, Plus, Filter, AlertTriangle, LayoutGrid, Download, Upload, GitPullRequest } from "lucide-react";
+import { Search, Layers, Bolt, Server, KeyRound, BookOpen, Plus, Filter, ArrowUpDown, AlertTriangle, LayoutGrid, Download, Upload, GitPullRequest } from "lucide-react";
 import { Link } from "wouter";
 import { listPlaybookPatches } from "@/lib/playbook-patches";
 import { getFeedbackSignalCount } from "@/lib/feedback-signals";
@@ -42,10 +48,24 @@ import AgentDeckLogo from "@/assets/AgentDeckLogo3.png";
 import { useToast } from "@/hooks/use-toast";
 import DashboardRecovery, { DECK_DEALER_LINE } from "@/components/dashboard-recovery";
 
+/** One visible Collection card: Default order plus its raw 30-day count. */
+interface CollectionCardEntry extends CollectionSortItem {
+  playbook?: Playbook;
+  credential?: Credential;
+  service?: Service;
+}
+
+// Stable empty lists so the memoized maps and collection below keep their
+// references while a query is still unresolved (no fresh `[]` per render).
+const EMPTY_SERVICES: Service[] = [];
+const EMPTY_CREDENTIALS: Credential[] = [];
+const EMPTY_PLAYBOOKS: Playbook[] = [];
+
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [warningsOnlyFilter, setWarningsOnlyFilter] = useState(false);
+  const [sortMode, setSortMode] = useState<CollectionSortMode>("default");
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
   const [serviceDetailsModalOpen, setServiceDetailsModalOpen] = useState(false);
@@ -141,63 +161,88 @@ export default function Home() {
     [cardUsageResponse?.data?.cards],
   );
 
-  const servicesArray = servicesResponse?.data || [];
-  const credentialsArray = credentialsResponse?.data || [];
-  const playbooksArray = playbooksResponse?.data || [];
+  const servicesArray = servicesResponse?.data ?? EMPTY_SERVICES;
+  const credentialsArray = credentialsResponse?.data ?? EMPTY_CREDENTIALS;
+  const playbooksArray = playbooksResponse?.data ?? EMPTY_PLAYBOOKS;
 
   const collectionWarnings = useMemo(
     () => toCollectionWarningsView(collectionWarningsResponse?.data),
     [collectionWarningsResponse?.data],
   );
 
-  const matchesWarningsFilter = (
-    cardType: "service" | "credential" | "playbook",
-    id: string,
-  ) => {
-    if (!warningsOnlyFilter) {
-      return true;
-    }
-    if (cardType === "service") {
-      return collectionWarnings.serviceWarnings.has(id);
-    }
-    if (cardType === "credential") {
-      return collectionWarnings.credentialWarnings.has(id);
-    }
-    return collectionWarnings.playbookWarnings.has(id);
-  };
+  // Usage rows are unknown — never zero — while loading or on error, so
+  // usage sorting stays off and Default order is preserved until rows arrive.
+  const usageAvailable = Array.isArray(cardUsageResponse?.data?.cards);
 
-  // Filter services based on search and filters
-  const filteredServices = servicesArray.filter(service => {
-    if (!matchesWarningsFilter("service", service.id)) return false;
-    if (typeFilter === 'api-key' || typeFilter === 'playbook') return false;
+  // Payloads by id for the unified grid render below. The search/type/
+  // warnings filtering plus Default ordering lives in the pure
+  // `buildDefaultOrderedCollection` helper (unit-tested) so the page only
+  // reattaches the card payloads here.
+  const serviceById = useMemo(
+    () => new Map(servicesArray.map((service) => [service.id, service])),
+    [servicesArray],
+  );
+  const credentialById = useMemo(
+    () => new Map(credentialsArray.map((credential) => [credential.id, credential])),
+    [credentialsArray],
+  );
+  const playbookById = useMemo(
+    () => new Map(playbooksArray.map((playbook) => [playbook.id, playbook])),
+    [playbooksArray],
+  );
 
-    const matchesSearch = service.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         service.description?.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesType = !typeFilter || typeFilter === 'all' || service.type === typeFilter;
-    
-    return matchesSearch && matchesType;
-  });
+  // Default order is exactly the pre-ticket grouped order (playbooks, then
+  // credentials, then services) after the search/type/warnings filters.
+  // Usage modes reorder this one mixed list by raw 30-day usageCount and
+  // render through the existing card components below — never per group and
+  // without duplicating card markup. Memo inputs are all stable (query data,
+  // memoized lookups, state primitives), so this only recomputes when one of
+  // them actually changes.
+  const defaultOrderedCollection: CollectionCardEntry[] = useMemo(
+    () =>
+      buildDefaultOrderedCollection(
+        {
+          services: servicesArray,
+          credentials: credentialsArray,
+          playbooks: playbooksArray,
+        },
+        {
+          searchQuery,
+          typeFilter,
+          warningsOnly: warningsOnlyFilter,
+          warnings: collectionWarnings,
+          getUsageCount: (kind, id) => cardUsageLookup.get(cardUsageKey(kind, id))?.usageCount,
+        },
+      ).map((entry): CollectionCardEntry => {
+        if (entry.kind === "playbook") {
+          return { ...entry, playbook: playbookById.get(entry.id) };
+        }
+        if (entry.kind === "credential") {
+          return { ...entry, credential: credentialById.get(entry.id) };
+        }
+        return { ...entry, service: serviceById.get(entry.id) };
+      }),
+    [
+      servicesArray,
+      credentialsArray,
+      playbooksArray,
+      searchQuery,
+      typeFilter,
+      warningsOnlyFilter,
+      collectionWarnings,
+      cardUsageLookup,
+      serviceById,
+      credentialById,
+      playbookById,
+    ],
+  );
 
-  const filteredCredentials = credentialsArray.filter(credential => {
-    if (!matchesWarningsFilter("credential", credential.id)) return false;
-    if (typeFilter && typeFilter !== 'all' && typeFilter !== 'api-key') return false;
+  const collectionCount = defaultOrderedCollection.length;
 
-    const matchesSearch = credential.label.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch;
-  });
-
-  const filteredPlaybooks = playbooksArray.filter((playbook) => {
-    if (!matchesWarningsFilter("playbook", playbook.id)) return false;
-    if (typeFilter && typeFilter !== 'all' && typeFilter !== 'playbook') return false;
-
-    const matchesSearch =
-      playbook.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      playbook.body.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch;
-  });
-
-  const collectionCount =
-    filteredServices.length + filteredCredentials.length + filteredPlaybooks.length;
+  const sortedCollection = useMemo(
+    () => sortCollectionItems(defaultOrderedCollection, sortMode, usageAvailable),
+    [defaultOrderedCollection, sortMode, usageAvailable],
+  );
 
   if (servicesError) console.error('Services error:', servicesError);
   if (decksError) console.error('Decks error:', decksError);
@@ -575,6 +620,35 @@ export default function Home() {
                       <SelectItem value="playbook">Playbook</SelectItem>
                     </SelectContent>
                   </Select>
+
+                  {/* Usage Sort */}
+                  <Select
+                    // While usage is unavailable the grid is in Default order,
+                    // so show Default too; the retained sortMode resumes once
+                    // usage rows arrive.
+                    value={usageAvailable ? sortMode : "default"}
+                    onValueChange={(v) => setSortMode(v as CollectionSortMode)}
+                    disabled={!usageAvailable}
+                  >
+                    <SelectTrigger
+                      className="w-[7.5rem] h-8 bg-white/10 border-white/20 text-white text-xs shrink-0"
+                      data-testid="select-sort"
+                      title={
+                        usageAvailable
+                          ? "Sort collection by 30-day use"
+                          : "Usage data unavailable — showing Default order"
+                      }
+                      aria-label="Sort collection"
+                    >
+                      <ArrowUpDown className="w-3 h-3 mr-1 shrink-0" />
+                      <SelectValue placeholder="Sort" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">Default</SelectItem>
+                      <SelectItem value="most-used">Most used</SelectItem>
+                      <SelectItem value="least-used">Least used</SelectItem>
+                    </SelectContent>
+                  </Select>
                   
                   {(searchQuery || typeFilter || warningsOnlyFilter) && (
                     <Button
@@ -689,84 +763,65 @@ export default function Home() {
                   style={{ isolation: "isolate" }}
                   data-testid="collection-card-grid"
                 >
-                  {filteredPlaybooks.map((playbook, index) => (
-                    <div
-                      key={playbook.id}
-                      className="relative group"
-                      style={{
-                        zIndex: hoveredCardId === playbook.id ? 999999 : collectionCount - index,
-                      }}
-                    >
-                      <PlaybookCardComponent
-                        playbook={playbook}
-                        isInActiveDeck={editingDeckPlaybookIds.has(playbook.id)}
-                        activeDeck={editingDeck ?? undefined}
-                        isInCollection
-                        onDragStart={handlePlaybookDragStart}
-                        onDragEnd={handleDragEnd}
-                        onCardClick={handlePlaybookClick}
-                        onMouseEnter={() => handleCardHover(playbook.id)}
-                        onMouseLeave={() => handleCardHover(null)}
-                        warnings={collectionWarnings.playbookWarnings.get(playbook.id)}
-                        usage={cardUsageLookup.get(cardUsageKey("playbook", playbook.id))}
-                      />
-                    </div>
-                  ))}
-                  {filteredCredentials.map((credential, index) => (
-                    <div
-                      key={credential.id}
-                      className="relative group"
-                      style={{
-                        zIndex:
-                          hoveredCardId === credential.id
-                            ? 999999
-                            : collectionCount - filteredPlaybooks.length - index,
-                      }}
-                    >
-                      <CredentialCardComponent
-                        credential={credential}
-                        isInActiveDeck={editingDeckCredentialIds.has(credential.id)}
-                        activeDeck={editingDeck ?? undefined}
-                        isInCollection
-                        onDragStart={handleCredentialDragStart}
-                        onDragEnd={handleDragEnd}
-                        onMouseEnter={() => handleCardHover(credential.id)}
-                        onMouseLeave={() => handleCardHover(null)}
-                        onCardClick={handleCredentialClick}
-                        warnings={collectionWarnings.credentialWarnings.get(credential.id)}
-                        usage={cardUsageLookup.get(cardUsageKey("credential", credential.id))}
-                      />
-                    </div>
-                  ))}
-                  {filteredServices.map((service, index) => (
-                    <div
-                      key={service.id}
-                      className="relative group"
-                      style={{
-                        zIndex:
-                          hoveredCardId === service.id
-                            ? 999999
-                            : collectionCount -
-                              filteredPlaybooks.length -
-                              filteredCredentials.length -
-                              index,
-                      }}
-                    >
-                      <CardComponent
-                        service={service}
-                        onDragStart={handleDragStart}
-                        onDragEnd={handleDragEnd}
-                        isInActiveDeck={editingDeck?.services?.some((s) => s.id === service.id) || false}
-                        onCardClick={handleCardClick}
-                        isInCollection={true}
-                        onMouseEnter={() => handleCardHover(service.id)}
-                        onMouseLeave={() => handleCardHover(null)}
-                        activeDeck={editingDeck ?? undefined}
-                        warnings={collectionWarnings.serviceWarnings.get(service.id)}
-                        usage={cardUsageLookup.get(cardUsageKey("service", service.id))}
-                      />
-                    </div>
-                  ))}
+                  {sortedCollection.map((entry, index) => {
+                    const { playbook, credential, service } = entry;
+                    return (
+                      <div
+                        key={`${entry.kind}:${entry.id}`}
+                        className="relative group"
+                        style={{
+                          zIndex:
+                            hoveredCardId === entry.id ? 999999 : collectionCount - index,
+                        }}
+                      >
+                        {entry.kind === "playbook" && playbook ? (
+                          <PlaybookCardComponent
+                            playbook={playbook}
+                            isInActiveDeck={editingDeckPlaybookIds.has(playbook.id)}
+                            activeDeck={editingDeck ?? undefined}
+                            isInCollection
+                            onDragStart={handlePlaybookDragStart}
+                            onDragEnd={handleDragEnd}
+                            onCardClick={handlePlaybookClick}
+                            onMouseEnter={() => handleCardHover(playbook.id)}
+                            onMouseLeave={() => handleCardHover(null)}
+                            warnings={collectionWarnings.playbookWarnings.get(playbook.id)}
+                            usage={cardUsageLookup.get(cardUsageKey("playbook", playbook.id))}
+                          />
+                        ) : null}
+                        {entry.kind === "credential" && credential ? (
+                          <CredentialCardComponent
+                            credential={credential}
+                            isInActiveDeck={editingDeckCredentialIds.has(credential.id)}
+                            activeDeck={editingDeck ?? undefined}
+                            isInCollection
+                            onDragStart={handleCredentialDragStart}
+                            onDragEnd={handleDragEnd}
+                            onMouseEnter={() => handleCardHover(credential.id)}
+                            onMouseLeave={() => handleCardHover(null)}
+                            onCardClick={handleCredentialClick}
+                            warnings={collectionWarnings.credentialWarnings.get(credential.id)}
+                            usage={cardUsageLookup.get(cardUsageKey("credential", credential.id))}
+                          />
+                        ) : null}
+                        {entry.kind === "service" && service ? (
+                          <CardComponent
+                            service={service}
+                            onDragStart={handleDragStart}
+                            onDragEnd={handleDragEnd}
+                            isInActiveDeck={editingDeck?.services?.some((s) => s.id === service.id) || false}
+                            onCardClick={handleCardClick}
+                            isInCollection={true}
+                            onMouseEnter={() => handleCardHover(service.id)}
+                            onMouseLeave={() => handleCardHover(null)}
+                            activeDeck={editingDeck ?? undefined}
+                            warnings={collectionWarnings.serviceWarnings.get(service.id)}
+                            usage={cardUsageLookup.get(cardUsageKey("service", service.id))}
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               </div>

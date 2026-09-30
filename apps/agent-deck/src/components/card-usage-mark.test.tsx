@@ -123,6 +123,8 @@ describe("CardUsageMark (NOT-294)", () => {
     expect(mark.querySelectorAll("svg")).toHaveLength(0);
     expect(mark).toHaveAttribute("aria-label", "New · tracking for 10 days");
     expect(mark).toHaveAttribute("title", "New · tracking for 10 days");
+    // NOT-302 leaves NEW untouched at its 7px treatment.
+    expect(mark.className).toMatch(/text-\[7px\]/);
   });
 
   it("keeps the mark subtle and smaller than the top-left type label", () => {
@@ -133,8 +135,8 @@ describe("CardUsageMark (NOT-294)", () => {
     const mark = screen.getByTestId("card-usage-mark");
     // Low visual emphasis via muted opacity on the existing card palette.
     expect(mark.className).toMatch(/opacity-60/);
-    // 8px glyphs scaled to ~56% (~4.5px apparent), pinned top-right.
-    expect(mark.style.transform).toBe("scale(0.56)");
+    // 8px glyphs scaled to ~75% (~6px apparent), pinned top-right.
+    expect(mark.style.transform).toBe("scale(0.75)");
     expect(mark.style.transformOrigin).toBe("top right");
     expect(container.querySelectorAll("svg")[0]).toHaveClass("h-2", "w-2");
   });
