@@ -48,19 +48,20 @@ export function sortCollectionItems<T extends CollectionSortItem>(
     .sort((a, b) => {
       const aCount = a.item.usageCount;
       const bCount = b.item.usageCount;
-      // Unknown rows trail every measured row in both directions — they are
-      // not zero, so they never mingle with measured rows.
-      if (typeof aCount !== "number" && typeof bCount !== "number") {
+      if (typeof aCount === "number" && typeof bCount === "number") {
+        if (aCount !== bCount) {
+          return descending ? bCount - aCount : aCount - bCount;
+        }
         return a.index - b.index;
       }
-      if (typeof aCount !== "number") {
-        return 1;
-      }
-      if (typeof bCount !== "number") {
+      // At least one side is unknown. Unknown rows trail every measured row
+      // in both directions — they are not zero, so they never mingle with
+      // measured rows. Two unknowns keep their Default relative order.
+      if (typeof aCount === "number") {
         return -1;
       }
-      if (aCount !== bCount) {
-        return descending ? bCount - aCount : aCount - bCount;
+      if (typeof bCount === "number") {
+        return 1;
       }
       return a.index - b.index;
     })
