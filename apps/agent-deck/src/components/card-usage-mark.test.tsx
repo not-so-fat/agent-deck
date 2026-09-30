@@ -133,8 +133,8 @@ describe("CardUsageMark (NOT-294)", () => {
     const mark = screen.getByTestId("card-usage-mark");
     // Low visual emphasis via muted opacity on the existing card palette.
     expect(mark.className).toMatch(/opacity-60/);
-    // 8px glyphs scaled to ~56% (~4.5px apparent), pinned top-right.
-    expect(mark.style.transform).toBe("scale(0.56)");
+    // 8px glyphs scaled to ~75% (~6px apparent), pinned top-right.
+    expect(mark.style.transform).toBe("scale(0.75)");
     expect(mark.style.transformOrigin).toBe("top right");
     expect(container.querySelectorAll("svg")[0]).toHaveClass("h-2", "w-2");
   });

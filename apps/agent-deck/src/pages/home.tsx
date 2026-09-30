@@ -10,6 +10,11 @@ import {
   cardUsageKey,
   useCardUsage,
 } from "@/lib/card-usage";
+import {
+  sortCollectionItems,
+  type CollectionSortItem,
+  type CollectionSortMode,
+} from "@/lib/collection-sort";
 import CardComponent from "@/components/card-component";
 import CredentialCardComponent from "@/components/credential-card-component";
 import PlaybookCardComponent from "@/components/playbook-card-component";
@@ -32,7 +37,7 @@ import { downloadBundleJson, exportBundle } from "@/lib/export-import";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Layers, Bolt, Server, KeyRound, BookOpen, Plus, Filter, AlertTriangle, LayoutGrid, Download, Upload, GitPullRequest } from "lucide-react";
+import { Search, Layers, Bolt, Server, KeyRound, BookOpen, Plus, Filter, ArrowUpDown, AlertTriangle, LayoutGrid, Download, Upload, GitPullRequest } from "lucide-react";
 import { Link } from "wouter";
 import { listPlaybookPatches } from "@/lib/playbook-patches";
 import { getFeedbackSignalCount } from "@/lib/feedback-signals";
@@ -42,10 +47,18 @@ import AgentDeckLogo from "@/assets/AgentDeckLogo3.png";
 import { useToast } from "@/hooks/use-toast";
 import DashboardRecovery, { DECK_DEALER_LINE } from "@/components/dashboard-recovery";
 
+/** One visible Collection card: Default order plus its raw 30-day count. */
+interface CollectionCardEntry extends CollectionSortItem {
+  playbook?: Playbook;
+  credential?: Credential;
+  service?: Service;
+}
+
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [warningsOnlyFilter, setWarningsOnlyFilter] = useState(false);
+  const [sortMode, setSortMode] = useState<CollectionSortMode>("default");
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
   const [serviceDetailsModalOpen, setServiceDetailsModalOpen] = useState(false);
@@ -198,6 +211,53 @@ export default function Home() {
 
   const collectionCount =
     filteredServices.length + filteredCredentials.length + filteredPlaybooks.length;
+
+  // Usage rows are unknown — never zero — while loading or on error, so
+  // usage sorting stays off and Default order is preserved until rows arrive.
+  const usageAvailable = Array.isArray(cardUsageResponse?.data?.cards);
+
+  // Default order is exactly the pre-ticket grouped order (playbooks, then
+  // credentials, then services) after the search/type/warnings filters.
+  // Usage modes reorder this one mixed list by raw 30-day usageCount and
+  // render through the existing card components below — never per group and
+  // without duplicating card markup.
+  const defaultOrderedCollection: CollectionCardEntry[] = useMemo(
+    () => [
+      ...filteredPlaybooks.map(
+        (playbook): CollectionCardEntry => ({
+          kind: "playbook",
+          id: playbook.id,
+          usageCount: cardUsageLookup.get(cardUsageKey("playbook", playbook.id))
+            ?.usageCount,
+          playbook,
+        }),
+      ),
+      ...filteredCredentials.map(
+        (credential): CollectionCardEntry => ({
+          kind: "credential",
+          id: credential.id,
+          usageCount: cardUsageLookup.get(cardUsageKey("credential", credential.id))
+            ?.usageCount,
+          credential,
+        }),
+      ),
+      ...filteredServices.map(
+        (service): CollectionCardEntry => ({
+          kind: "service",
+          id: service.id,
+          usageCount: cardUsageLookup.get(cardUsageKey("service", service.id))
+            ?.usageCount,
+          service,
+        }),
+      ),
+    ],
+    [filteredPlaybooks, filteredCredentials, filteredServices, cardUsageLookup],
+  );
+
+  const sortedCollection = useMemo(
+    () => sortCollectionItems(defaultOrderedCollection, sortMode, usageAvailable),
+    [defaultOrderedCollection, sortMode, usageAvailable],
+  );
 
   if (servicesError) console.error('Services error:', servicesError);
   if (decksError) console.error('Decks error:', decksError);
@@ -575,6 +635,32 @@ export default function Home() {
                       <SelectItem value="playbook">Playbook</SelectItem>
                     </SelectContent>
                   </Select>
+
+                  {/* Usage Sort */}
+                  <Select
+                    value={sortMode}
+                    onValueChange={(v) => setSortMode(v as CollectionSortMode)}
+                    disabled={!usageAvailable}
+                  >
+                    <SelectTrigger
+                      className="w-[7.5rem] h-8 bg-white/10 border-white/20 text-white text-xs shrink-0"
+                      data-testid="select-sort"
+                      title={
+                        usageAvailable
+                          ? "Sort collection by 30-day use"
+                          : "Usage data unavailable"
+                      }
+                      aria-label="Sort collection"
+                    >
+                      <ArrowUpDown className="w-3 h-3 mr-1 shrink-0" />
+                      <SelectValue placeholder="Sort" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="default">Default</SelectItem>
+                      <SelectItem value="most-used">Most used</SelectItem>
+                      <SelectItem value="least-used">Least used</SelectItem>
+                    </SelectContent>
+                  </Select>
                   
                   {(searchQuery || typeFilter || warningsOnlyFilter) && (
                     <Button
@@ -689,84 +775,65 @@ export default function Home() {
                   style={{ isolation: "isolate" }}
                   data-testid="collection-card-grid"
                 >
-                  {filteredPlaybooks.map((playbook, index) => (
-                    <div
-                      key={playbook.id}
-                      className="relative group"
-                      style={{
-                        zIndex: hoveredCardId === playbook.id ? 999999 : collectionCount - index,
-                      }}
-                    >
-                      <PlaybookCardComponent
-                        playbook={playbook}
-                        isInActiveDeck={editingDeckPlaybookIds.has(playbook.id)}
-                        activeDeck={editingDeck ?? undefined}
-                        isInCollection
-                        onDragStart={handlePlaybookDragStart}
-                        onDragEnd={handleDragEnd}
-                        onCardClick={handlePlaybookClick}
-                        onMouseEnter={() => handleCardHover(playbook.id)}
-                        onMouseLeave={() => handleCardHover(null)}
-                        warnings={collectionWarnings.playbookWarnings.get(playbook.id)}
-                        usage={cardUsageLookup.get(cardUsageKey("playbook", playbook.id))}
-                      />
-                    </div>
-                  ))}
-                  {filteredCredentials.map((credential, index) => (
-                    <div
-                      key={credential.id}
-                      className="relative group"
-                      style={{
-                        zIndex:
-                          hoveredCardId === credential.id
-                            ? 999999
-                            : collectionCount - filteredPlaybooks.length - index,
-                      }}
-                    >
-                      <CredentialCardComponent
-                        credential={credential}
-                        isInActiveDeck={editingDeckCredentialIds.has(credential.id)}
-                        activeDeck={editingDeck ?? undefined}
-                        isInCollection
-                        onDragStart={handleCredentialDragStart}
-                        onDragEnd={handleDragEnd}
-                        onMouseEnter={() => handleCardHover(credential.id)}
-                        onMouseLeave={() => handleCardHover(null)}
-                        onCardClick={handleCredentialClick}
-                        warnings={collectionWarnings.credentialWarnings.get(credential.id)}
-                        usage={cardUsageLookup.get(cardUsageKey("credential", credential.id))}
-                      />
-                    </div>
-                  ))}
-                  {filteredServices.map((service, index) => (
-                    <div
-                      key={service.id}
-                      className="relative group"
-                      style={{
-                        zIndex:
-                          hoveredCardId === service.id
-                            ? 999999
-                            : collectionCount -
-                              filteredPlaybooks.length -
-                              filteredCredentials.length -
-                              index,
-                      }}
-                    >
-                      <CardComponent
-                        service={service}
-                        onDragStart={handleDragStart}
-                        onDragEnd={handleDragEnd}
-                        isInActiveDeck={editingDeck?.services?.some((s) => s.id === service.id) || false}
-                        onCardClick={handleCardClick}
-                        isInCollection={true}
-                        onMouseEnter={() => handleCardHover(service.id)}
-                        onMouseLeave={() => handleCardHover(null)}
-                        activeDeck={editingDeck ?? undefined}
-                        warnings={collectionWarnings.serviceWarnings.get(service.id)}
-                        usage={cardUsageLookup.get(cardUsageKey("service", service.id))}
-                      />
-                    </div>
-                  ))}
+                  {sortedCollection.map((entry, index) => {
+                    const { playbook, credential, service } = entry;
+                    return (
+                      <div
+                        key={`${entry.kind}:${entry.id}`}
+                        className="relative group"
+                        style={{
+                          zIndex:
+                            hoveredCardId === entry.id ? 999999 : collectionCount - index,
+                        }}
+                      >
+                        {entry.kind === "playbook" && playbook ? (
+                          <PlaybookCardComponent
+                            playbook={playbook}
+                            isInActiveDeck={editingDeckPlaybookIds.has(playbook.id)}
+                            activeDeck={editingDeck ?? undefined}
+                            isInCollection
+                            onDragStart={handlePlaybookDragStart}
+                            onDragEnd={handleDragEnd}
+                            onCardClick={handlePlaybookClick}
+                            onMouseEnter={() => handleCardHover(playbook.id)}
+                            onMouseLeave={() => handleCardHover(null)}
+                            warnings={collectionWarnings.playbookWarnings.get(playbook.id)}
+                            usage={cardUsageLookup.get(cardUsageKey("playbook", playbook.id))}
+                          />
+                        ) : null}
+                        {entry.kind === "credential" && credential ? (
+                          <CredentialCardComponent
+                            credential={credential}
+                            isInActiveDeck={editingDeckCredentialIds.has(credential.id)}
+                            activeDeck={editingDeck ?? undefined}
+                            isInCollection
+                            onDragStart={handleCredentialDragStart}
+                            onDragEnd={handleDragEnd}
+                            onMouseEnter={() => handleCardHover(credential.id)}
+                            onMouseLeave={() => handleCardHover(null)}
+                            onCardClick={handleCredentialClick}
+                            warnings={collectionWarnings.credentialWarnings.get(credential.id)}
+                            usage={cardUsageLookup.get(cardUsageKey("credential", credential.id))}
+                          />
+                        ) : null}
+                        {entry.kind === "service" && service ? (
+                          <CardComponent
+                            service={service}
+                            onDragStart={handleDragStart}
+                            onDragEnd={handleDragEnd}
+                            isInActiveDeck={editingDeck?.services?.some((s) => s.id === service.id) || false}
+                            onCardClick={handleCardClick}
+                            isInCollection={true}
+                            onMouseEnter={() => handleCardHover(service.id)}
+                            onMouseLeave={() => handleCardHover(null)}
+                            activeDeck={editingDeck ?? undefined}
+                            warnings={collectionWarnings.serviceWarnings.get(service.id)}
+                            usage={cardUsageLookup.get(cardUsageKey("service", service.id))}
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               </div>
