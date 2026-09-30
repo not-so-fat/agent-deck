@@ -62,7 +62,8 @@ async function sendPlaybookWithOpenPatches(
     source: playbookEventSource(request),
   });
   // NOT-292: only agent/IDE fetches count as playbook use — dashboard
-  // detail inspection must not emit a usage event.
+  // detail inspection must not emit a usage event. The raw session header
+  // is passed through; only its one-way hash is stored.
   if (!isDashboardClient(request)) {
     try {
       const deckId = await resolveAgentDeckId(request, fastify.db).catch(() => null);

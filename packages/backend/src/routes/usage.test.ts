@@ -1,8 +1,12 @@
+import { createHash } from 'node:crypto';
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { DatabaseManager } from '../models/database';
 import { registerUsageRoutes } from './usage';
+
+const RAW_SESSION_ID = 'ses_live_bearer_for_usage_api';
+const HASHED_SESSION_ID = createHash('sha256').update(RAW_SESSION_ID, 'utf8').digest('hex');
 
 const PUBLIC_KEYS = [
   'action',
@@ -42,7 +46,7 @@ describe('GET /api/usage/events (NOT-292)', () => {
       action: 'tool_call',
       success: true,
       source: 'ide',
-      sessionId: 'sess-1',
+      sessionId: RAW_SESSION_ID,
       occurredAt: '2026-09-10T10:00:00.000Z',
     });
     await db.recordCardUsageEvent({
@@ -84,7 +88,7 @@ describe('GET /api/usage/events (NOT-292)', () => {
         action: 'tool_call',
         success: true,
         source: 'ide',
-        sessionId: 'sess-1',
+        sessionId: HASHED_SESSION_ID,
       },
       {
         occurredAt: '2026-09-10T10:00:01.000Z',
@@ -112,6 +116,23 @@ describe('GET /api/usage/events (NOT-292)', () => {
     }
     const serialized = JSON.stringify(body.data.events);
     expect(serialized).not.toMatch(/argument|result|command|url|header|oauth|secret|key/i);
+  });
+
+  it('never exposes the raw session bearer — only its one-way hash', async () => {
+    const { fastify, db } = await buildApp();
+    await seed(db);
+
+    const response = await fastify.inject({
+      method: 'GET',
+      url: '/api/usage/events?from=2026-09-01T00:00:00.000Z&to=2026-09-30T00:00:00.000Z',
+    });
+    expect(response.statusCode).toBe(200);
+    const serialized = response.body;
+    // The live bearer must not appear anywhere: not verbatim, and the
+    // stored hash must not be reusable as the bearer itself.
+    expect(serialized).not.toContain(RAW_SESSION_ID);
+    expect(serialized).toContain(HASHED_SESSION_ID);
+    expect(HASHED_SESSION_ID).not.toBe(RAW_SESSION_ID);
   });
 
   it('defaults to the trailing 30 days', async () => {
@@ -166,6 +187,9 @@ describe('GET /api/usage/events (NOT-292)', () => {
   it.each([
     ['bad from', '/api/usage/events?from=not-a-date'],
     ['bad to', '/api/usage/events?to=2026-13-99'],
+    ['loose date string', '/api/usage/events?from=Sep%201%202026'],
+    ['year only', '/api/usage/events?from=2026'],
+    ['date without time', '/api/usage/events?from=2026-09-01'],
     ['from after to', '/api/usage/events?from=2026-09-30T00:00:00.000Z&to=2026-09-01T00:00:00.000Z'],
     ['limit zero', '/api/usage/events?limit=0'],
     ['limit too large', '/api/usage/events?limit=251'],

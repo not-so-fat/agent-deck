@@ -175,8 +175,16 @@ export async function registerPlaybookPatchRoutes(fastify: FastifyInstance) {
   });
 }
 
+/** Known usage-event sources; anything else normalizes to 'rest'. */
+const KNOWN_USAGE_SOURCES = new Set(['ide', 'agent', 'rest', 'exec']);
+
 export function playbookEventSource(request: { headers: Record<string, unknown> }): string {
   const client = request.headers[AGENT_DECK_CLIENT_HEADER];
-  if (typeof client === 'string' && client.length > 0) return client;
+  if (typeof client === 'string') {
+    const normalized = client.trim().toLowerCase();
+    if (KNOWN_USAGE_SOURCES.has(normalized)) {
+      return normalized;
+    }
+  }
   return 'rest';
 }

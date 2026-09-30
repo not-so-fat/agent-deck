@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { AGENT_DECK_SESSION_HEADER, generateId } from '@agent-deck/shared';
 
-import { DatabaseManager } from '../models/database';
+import { DatabaseManager, hashCardUsageSessionId } from '../models/database';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import { TrustedSessionStore } from '../trusted-session/store';
 import { registerPlaybookRoutes } from './playbooks';
@@ -85,8 +85,11 @@ describe('playbook fetch usage events (NOT-292)', () => {
       deckId: boundDeck.id,
       action: 'fetch',
       success: true,
-      sessionId: session.sessionId,
+      sessionId: hashCardUsageSessionId(session.sessionId),
     });
+    // The raw bearer is never stored — only its one-way hash.
+    expect(events[0].sessionId).not.toBe(session.sessionId);
+    expect(JSON.stringify(events)).not.toContain(session.sessionId);
     await expect(db.getUsageObservationStart('playbook')).resolves.not.toBeNull();
   });
 
@@ -102,7 +105,9 @@ describe('playbook fetch usage events (NOT-292)', () => {
 
     // Dashboard inspection leaves the normalized stream untouched …
     await expect(usageEvents(db)).resolves.toHaveLength(0);
-    await expect(db.getUsageObservationStart('playbook')).resolves.toBeNull();
+    // … but the seeded observation start still marks a fully observed
+    // zero-use window for classification.
+    await expect(db.getUsageObservationStart('playbook')).resolves.not.toBeNull();
     // … while the legacy all-time fetch counter keeps working.
     await expect(db.countPlaybookEvents(playbook.id)).resolves.toBe(1);
   });

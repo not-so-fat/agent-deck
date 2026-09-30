@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { 
   Service, 
   CreateServiceInput, 
@@ -43,6 +44,26 @@ import {
 export const STORE_CONTENT_HASH = 'store_content_hash';
 export const STORE_LAST_REINDEX = 'store_last_reindex';
 
+/**
+ * One-way hash for card-usage session correlation (NOT-292).
+ *
+ * The `x-agent-deck-session-id` header value is a live runtime-session
+ * bearer: presenting it alone authenticates as that agent. It must never be
+ * persisted verbatim nor exposed via the usage API, which any agent session
+ * or notebook credential can call. SHA-256 keeps per-session correlation for
+ * analysis while making the stored value unusable as a credential.
+ */
+export function hashCardUsageSessionId(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return createHash('sha256').update(trimmed, 'utf8').digest('hex');
+}
+
 export type StoreSnapshot = {
   services: StoreService[];
   credentials: StoreCredentialMeta[];
@@ -58,6 +79,7 @@ export class DatabaseManager {
     this.createTables();
     this.migrate();
     this.createIndexes();
+    this.seedUsageObservationStarts();
   }
 
   private tableExists(tableName: string): boolean {
@@ -1455,6 +1477,21 @@ export class DatabaseManager {
       VALUES (@exec_run_id, @credential_id)
     `);
 
+    // NOT-292: credential-backed exec runs count as credential use. Only
+    // credential ids are recorded — never command contents or secrets.
+    // Recorded inside the same transaction so a committed exec run always
+    // has its usage events and vice versa.
+    const execSuccess =
+      input.exitCode === undefined ? null : input.exitCode === 0;
+    const execOccurredAt = input.finishedAt ?? input.startedAt;
+    const insertUsageEvent = this.db.prepare(`
+      INSERT INTO card_usage_events (
+        id, card_type, card_id, deck_id, action, success, source, session_id, created_at
+      ) VALUES (
+        @id, @card_type, @card_id, @deck_id, @action, @success, @source, @session_id, @created_at
+      )
+    `);
+
     const transaction = this.db.transaction(() => {
       insertRun.run({
         id: execRun.id,
@@ -1472,26 +1509,27 @@ export class DatabaseManager {
           credential_id: credentialId,
         });
       }
+
+      for (const credentialId of input.credentialIds) {
+        insertUsageEvent.run({
+          id: generateId(),
+          card_type: 'credential',
+          card_id: credentialId,
+          deck_id: execRun.deckId ?? null,
+          action: 'exec_run',
+          success: execSuccess === null ? null : execSuccess ? 1 : 0,
+          source: 'exec',
+          session_id: null,
+          created_at: execOccurredAt,
+        });
+      }
+      if (input.credentialIds.length > 0) {
+        this.ensureUsageObservationStart('credential', execOccurredAt);
+      }
     });
 
     transaction();
 
-    // NOT-292: credential-backed exec runs count as credential use. Only
-    // credential ids are recorded — never command contents or secrets.
-    const execSuccess =
-      input.exitCode === undefined ? null : input.exitCode === 0;
-    const execOccurredAt = input.finishedAt ?? input.startedAt;
-    for (const credentialId of input.credentialIds) {
-      await this.recordCardUsageEvent({
-        cardType: 'credential',
-        cardId: credentialId,
-        deckId: input.deckId ?? null,
-        action: 'exec_run',
-        success: execSuccess,
-        source: 'exec',
-        occurredAt: execOccurredAt,
-      });
-    }
     return execRun;
   }
 
@@ -1976,10 +2014,24 @@ export class DatabaseManager {
   }
 
   /**
-   * First observation time for a card type, or null when nothing has been
-   * observed yet. Lets downstream classification distinguish "no evidence
-   * yet" (null) from a fully observed zero-use window (timestamp set but
-   * no events in the window).
+   * Mark the moment usage tracking began for every card type, so a fully
+   * observed zero-use window (timestamp set, no events) stays
+   * distinguishable from a store that predates tracking. INSERT OR IGNORE
+   * keeps the earliest start across restarts and upgrades.
+   */
+  private seedUsageObservationStarts(): void {
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO store_meta (key, value) VALUES (?, ?)');
+    for (const cardType of DatabaseManager.CARD_USAGE_CARD_TYPES) {
+      stmt.run(DatabaseManager.usageObservationKey(cardType), now);
+    }
+  }
+
+  /**
+   * Observation start for a card type: when tracking began. A timestamp with
+   * no events in the window is a fully observed zero-use window; null only
+   * means the store predates usage tracking. Lets downstream classification
+   * distinguish "no evidence yet" (null) from observed zero use.
    */
   async getUsageObservationStart(cardType: CardUsageCardType): Promise<string | null> {
     return this.getStoreMeta(DatabaseManager.usageObservationKey(cardType));
@@ -2035,7 +2087,8 @@ export class DatabaseManager {
       action: input.action,
       success: input.success ?? null,
       source: input.source,
-      sessionId: input.sessionId ?? null,
+      // Never persist the raw runtime-session bearer — only its one-way hash.
+      sessionId: hashCardUsageSessionId(input.sessionId ?? null),
       createdAt: input.occurredAt ?? new Date().toISOString(),
     };
     this.db.prepare(`

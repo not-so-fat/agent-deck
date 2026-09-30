@@ -398,6 +398,8 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
     // NOT-292: every tool-call attempt persists one privacy-safe service
     // event; a successful call on a credential-backed service additionally
     // persists one credential-use event (credential id only, never secrets).
+    // The raw session header is passed through — recordCardUsageEvent stores
+    // only its one-way hash, never the live bearer.
     const usageSource = playbookEventSource(request);
     const sessionHeader = request.headers[AGENT_DECK_SESSION_HEADER];
     const usageSessionId = typeof sessionHeader === 'string' ? sessionHeader : null;

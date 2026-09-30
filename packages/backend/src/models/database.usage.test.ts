@@ -1,25 +1,28 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
-import { DatabaseManager } from './database';
+import { DatabaseManager, hashCardUsageSessionId } from './database';
 
 const FROM = '2026-09-01T00:00:00.000Z';
 const TO = '2026-09-30T00:00:00.000Z';
 
 describe('card usage events (NOT-292)', () => {
-  it('starts with no observation evidence for any card type', async () => {
+  it('seeds observation starts for every card type even with zero events', async () => {
     const db = new DatabaseManager(':memory:');
-    await expect(db.getUsageObservationStart('service')).resolves.toBeNull();
-    await expect(db.getUsageObservationStart('credential')).resolves.toBeNull();
-    await expect(db.getUsageObservationStart('playbook')).resolves.toBeNull();
-    await expect(db.getUsageObservationStarts()).resolves.toEqual({
-      service: null,
-      credential: null,
-      playbook: null,
-    });
+    // A fully observed zero-use window: starts are set, but no events exist.
+    const starts = await db.getUsageObservationStarts();
+    for (const start of Object.values(starts)) {
+      expect(start).toBeTruthy();
+      expect(Number.isNaN(Date.parse(start!))).toBe(false);
+    }
+    const { events } = await db.listCardUsageEvents({ from: FROM, to: TO, limit: 10 });
+    expect(events).toHaveLength(0);
   });
 
-  it('records the first observation time per card type independently', async () => {
+  it('never moves observation starts once seeded, per card type independently', async () => {
     const db = new DatabaseManager(':memory:');
+    const seeded = await db.getUsageObservationStarts();
+
     const first = await db.recordCardUsageEvent({
       cardType: 'service',
       cardId: 'svc-1',
@@ -31,7 +34,7 @@ describe('card usage events (NOT-292)', () => {
     expect(first.deckId).toBeNull();
     expect(first.sessionId).toBeNull();
 
-    // A later event must not move the observation start.
+    // Later events must not move the observation start.
     await db.recordCardUsageEvent({
       cardType: 'service',
       cardId: 'svc-1',
@@ -41,11 +44,31 @@ describe('card usage events (NOT-292)', () => {
       occurredAt: '2026-09-11T12:00:00.000Z',
     });
 
-    await expect(db.getUsageObservationStart('service')).resolves.toBe(
-      '2026-09-10T12:00:00.000Z',
-    );
-    await expect(db.getUsageObservationStart('credential')).resolves.toBeNull();
-    await expect(db.getUsageObservationStart('playbook')).resolves.toBeNull();
+    await expect(db.getUsageObservationStarts()).resolves.toEqual(seeded);
+  });
+
+  it('stores only a one-way hash of the session id, never the raw bearer', async () => {
+    const db = new DatabaseManager(':memory:');
+    const raw = 'ses_live_bearer_value';
+    const event = await db.recordCardUsageEvent({
+      cardType: 'service',
+      cardId: 'svc-1',
+      action: 'tool_call',
+      success: true,
+      source: 'ide',
+      sessionId: raw,
+      occurredAt: '2026-09-10T12:00:00.000Z',
+    });
+    const expected = createHash('sha256').update(raw, 'utf8').digest('hex');
+    expect(event.sessionId).toBe(expected);
+    expect(event.sessionId).not.toContain(raw);
+
+    const { events } = await db.listCardUsageEvents({ from: FROM, to: TO, limit: 10 });
+    expect(events[0].sessionId).toBe(expected);
+    expect(JSON.stringify(events)).not.toContain(raw);
+
+    expect(hashCardUsageSessionId(null)).toBeNull();
+    expect(hashCardUsageSessionId('   ')).toBeNull();
   });
 
   it('rejects unknown card types', async () => {
@@ -103,10 +126,11 @@ describe('card usage events (NOT-292)', () => {
     ]);
     expect(events[0].deckId).toBe(deck.id);
     expect(events[0].createdAt).toBe('2026-09-10T10:00:01.000Z');
-    // Exec-run observation time is available for classification.
-    await expect(db.getUsageObservationStart('credential')).resolves.toBe(
-      '2026-09-10T10:00:01.000Z',
-    );
+    // Exec-run usage keeps the credential observation start available for
+    // classification (seeded when tracking begins; events never move it).
+    const credentialStart = await db.getUsageObservationStart('credential');
+    expect(credentialStart).toBeTruthy();
+    expect(Number.isNaN(Date.parse(credentialStart!))).toBe(false);
   });
 
   it('treats timestamp boundaries as inclusive', async () => {

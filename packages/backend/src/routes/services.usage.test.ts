@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { AGENT_DECK_CLIENT_HEADER, AGENT_DECK_SESSION_HEADER } from '@agent-deck/shared';
 
-import { DatabaseManager } from '../models/database';
+import { DatabaseManager, hashCardUsageSessionId } from '../models/database';
 import { TrustedSessionStore } from '../trusted-session/store';
 import type { ServiceManager } from '../services/service-manager';
 import { registerServiceRoutes } from './services';
@@ -118,10 +118,45 @@ describe('service tool-call usage events (NOT-292)', () => {
       action: 'tool_call',
       success: true,
       source: 'ide',
-      sessionId: session.sessionId,
+      sessionId: hashCardUsageSessionId(session.sessionId),
     });
     // The persisted event carries no request payload.
     expect(JSON.stringify(events[0])).not.toContain('secret query');
+  });
+
+  it('never persists the raw session bearer — only its one-way hash', async () => {
+    const { fastify, db, headers, session, plainService } =
+      await buildApp({ kind: 'success' });
+
+    await fastify.inject({
+      method: 'POST',
+      url: `/api/services/${plainService.id}/call`,
+      headers,
+      payload: { toolName: 'search', arguments: {} },
+    });
+
+    const events = await usageEvents(db);
+    expect(events).toHaveLength(1);
+    // The live bearer could authenticate as the agent on its own, so it
+    // must never be stored verbatim where the usage API can return it.
+    expect(events[0].sessionId).not.toBe(session.sessionId);
+    expect(events[0].sessionId).toBe(hashCardUsageSessionId(session.sessionId));
+    expect(JSON.stringify(events)).not.toContain(session.sessionId);
+  });
+
+  it('normalizes unknown client sources instead of storing them verbatim', async () => {
+    const { fastify, db, headers, plainService } = await buildApp({ kind: 'success' });
+
+    await fastify.inject({
+      method: 'POST',
+      url: `/api/services/${plainService.id}/call`,
+      headers: { ...headers, [AGENT_DECK_CLIENT_HEADER]: '<script>evil</script>' },
+      payload: { toolName: 'search', arguments: {} },
+    });
+
+    const events = await usageEvents(db);
+    expect(events).toHaveLength(1);
+    expect(events[0].source).toBe('rest');
   });
 
   it('persists one unsuccessful service event for a failed tool call', async () => {
@@ -206,9 +241,10 @@ describe('service tool-call usage events (NOT-292)', () => {
     expect(events[0].cardType).toBe('service');
   });
 
-  it('exposes the service observation start after the first call', async () => {
+  it('keeps the seeded service observation start across calls', async () => {
     const { fastify, db, headers, plainService } = await buildApp({ kind: 'success' });
-    await expect(db.getUsageObservationStart('service')).resolves.toBeNull();
+    const before = await db.getUsageObservationStart('service');
+    expect(before).toBeTruthy();
 
     await fastify.inject({
       method: 'POST',
@@ -218,7 +254,7 @@ describe('service tool-call usage events (NOT-292)', () => {
     });
 
     const start = await db.getUsageObservationStart('service');
-    expect(start).toBeTruthy();
+    expect(start).toBe(before);
     expect(Number.isNaN(Date.parse(start!))).toBe(false);
   });
 });

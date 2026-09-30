@@ -20,6 +20,15 @@ function sendBadRequest(reply: FastifyReply, message: string) {
   return reply.status(400).send({ success: false, error: message } satisfies ApiResponse);
 }
 
+// Strict ISO-8601 datetime: a date plus a `T`-separated time. Loose inputs
+// that Date.parse accepts ("Sep 1 2026", "2026", "2026-09-01") are rejected.
+const ISO_DATETIME_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?$/;
+
+function isStrictIsoTimestamp(value: string): boolean {
+  return ISO_DATETIME_RE.test(value) && !Number.isNaN(Date.parse(value));
+}
+
 /**
  * GET /api/usage/events — raw, privacy-safe card-usage events for
  * pandas/Jupyter analysis. Stable chronological cursor pagination over
@@ -31,10 +40,10 @@ export async function registerUsageRoutes(fastify: FastifyInstance) {
 
     let from = request.query.from ?? new Date(now - TRAILING_WINDOW_MS).toISOString();
     let to = request.query.to ?? new Date(now).toISOString();
-    if (Number.isNaN(Date.parse(from))) {
+    if (!isStrictIsoTimestamp(from)) {
       return sendBadRequest(reply, 'Invalid `from` timestamp — expected ISO 8601');
     }
-    if (Number.isNaN(Date.parse(to))) {
+    if (!isStrictIsoTimestamp(to)) {
       return sendBadRequest(reply, 'Invalid `to` timestamp — expected ISO 8601');
     }
     // Canonicalize so string comparison matches chronological order.
