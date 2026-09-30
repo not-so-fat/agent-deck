@@ -84,10 +84,12 @@ interface CardActionAreaProps extends CardUsageMarkProps {
 /**
  * Top-right card action slot shared by all Collection card types. Shows the
  * subtle usage mark by default and swaps it for the delete action on
- * pointer hover or keyboard focus within the card (group-hover /
- * group-focus-within), restoring the mark afterwards. Absolute positioning
- * keeps card content unshifted; omitting `usage` leaves existing delete
- * behavior untouched.
+ * pointer hover or keyboard focus within the action area itself
+ * (named `group/action`, so hovering elsewhere on the card leaves the mark
+ * — and its tooltip — alone), restoring the mark afterwards. The delete
+ * button's tooltip carries the usage copy too, so the classification stays
+ * pointer-reachable after the swap. Absolute positioning keeps card content
+ * unshifted; omitting `usage` leaves existing delete behavior untouched.
  */
 export function CardActionArea({
   usage,
@@ -96,26 +98,35 @@ export function CardActionArea({
   onDelete,
   deleteTitle,
 }: CardActionAreaProps) {
+  const usageLabel = usage ? cardUsageLabel(usage, createdAt) : null;
+  // Keep the usage classification reachable once the mark swaps out: the
+  // delete control's visible tooltip (title) carries the same copy that the
+  // mark exposes via its own title/aria-label.
+  const deleteTooltip = usageLabel ? `${usageLabel} · ${deleteTitle}` : deleteTitle;
   return (
-    <div className="absolute top-1 right-1 z-10 flex h-5 min-w-5 items-start justify-end">
+    <div
+      data-testid="card-action-area"
+      className="absolute top-1 right-1 z-10 flex h-5 min-w-5 items-start justify-end group/action"
+    >
       {usage ? (
         <span
           data-testid="card-usage-slot"
-          className="transition-opacity duration-200 group-hover:opacity-0 group-focus-within:opacity-0"
+          className="transition-opacity duration-200 group-hover/action:opacity-0 group-focus-within/action:opacity-0 group-hover/action:pointer-events-none"
         >
           <CardUsageMark usage={usage} createdAt={createdAt} color={color} />
         </span>
       ) : null}
       <span
         data-testid="card-delete-slot"
-        className="absolute right-0 top-0 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100"
+        className="absolute right-0 top-0 opacity-0 pointer-events-none transition-opacity duration-200 group-hover/action:opacity-100 group-hover/action:pointer-events-auto group-focus-within/action:opacity-100 group-focus-within/action:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto"
       >
         <Button
           size="sm"
           variant="destructive"
           className="h-5 w-5 p-0 bg-red-500/80 hover:bg-red-500 border-red-400"
           onClick={onDelete}
-          title={deleteTitle}
+          title={deleteTooltip}
+          aria-label={deleteTooltip}
         >
           <Trash2 className="w-3 h-3" />
         </Button>

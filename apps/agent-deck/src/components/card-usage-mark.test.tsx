@@ -168,21 +168,47 @@ describe("CardActionArea hover/focus swap (NOT-294)", () => {
   it("hides the mark on hover/focus-within and reveals delete without shifting layout", () => {
     renderArea(row({ category: "used", usageCount: 2 }));
 
+    // Swap is scoped to the action area itself, not the whole card, so
+    // hovering elsewhere on the card leaves the mark (and its tooltip) alone.
+    const actionArea = screen.getByTestId("card-action-area");
+    expect(actionArea.className).toMatch(/group\/action/);
+
     const usageSlot = screen.getByTestId("card-usage-slot");
-    expect(usageSlot.className).toMatch(/group-hover:opacity-0/);
-    expect(usageSlot.className).toMatch(/group-focus-within:opacity-0/);
+    expect(usageSlot.className).toMatch(/group-hover\/action:opacity-0/);
+    expect(usageSlot.className).toMatch(/group-focus-within\/action:opacity-0/);
+    expect(usageSlot.className).not.toMatch(/(?<!\/action:)group-hover:opacity-0/);
 
     const deleteSlot = screen.getByTestId("card-delete-slot");
     expect(deleteSlot.className).toMatch(/absolute/);
     expect(deleteSlot.className).toMatch(/(^|\s)opacity-0(\s|$)/);
-    expect(deleteSlot.className).toMatch(/group-hover:opacity-100/);
-    expect(deleteSlot.className).toMatch(/group-focus-within:opacity-100/);
+    expect(deleteSlot.className).toMatch(/group-hover\/action:opacity-100/);
+    expect(deleteSlot.className).toMatch(/group-focus-within\/action:opacity-100/);
+    // Hidden delete slot must not cover the mark and steal its tooltip.
+    expect(deleteSlot.className).toMatch(/pointer-events-none/);
+    expect(deleteSlot.className).toMatch(/group-hover\/action:pointer-events-auto/);
+  });
+
+  it("keeps the usage copy pointer-reachable on the delete control after the swap", () => {
+    renderArea(row({ category: "popular", usageCount: 5 }));
+
+    // The mark keeps its own accessible label/tooltip...
+    expect(screen.getByTestId("card-usage-mark")).toHaveAttribute(
+      "title",
+      "Popular · 5 uses in 30 days",
+    );
+    // ...and the swapped-in delete control surfaces the same copy where the
+    // pointer can reach it (its title wins once it covers the mark area).
+    const deleteButton = screen.getByTitle("Popular · 5 uses in 30 days · Delete thing");
+    expect(deleteButton).toHaveAttribute(
+      "aria-label",
+      "Popular · 5 uses in 30 days · Delete thing",
+    );
   });
 
   it("keeps the delete action working and restores the mark slot", () => {
     const { onDelete } = renderArea(row({ category: "popular", usageCount: 5 }));
 
-    const deleteButton = screen.getByTitle("Delete thing");
+    const deleteButton = screen.getByTitle("Popular · 5 uses in 30 days · Delete thing");
     fireEvent.click(deleteButton);
     expect(onDelete).toHaveBeenCalledTimes(1);
     // The mark is still in the DOM behind the hover state.
