@@ -4,10 +4,12 @@ import { Deck, Playbook } from "@agent-deck/shared";
 import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { BookOpen, Trash2 } from "lucide-react";
+import { BookOpen } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { PLAYBOOK_CARD_COLOR } from "@/lib/card-colors";
 import CardWarningBadge from "@/components/card-warning-badge";
+import { CardActionArea } from "@/components/card-usage-mark";
+import { CARD_USAGE_QUERY_KEY, type CardUsageCardSummary } from "@/lib/card-usage";
 import { inDeckCollectionClass, InDeckCornerBadge } from "@/lib/in-deck-card-style";
 
 interface PlaybookCardComponentProps {
@@ -21,6 +23,7 @@ interface PlaybookCardComponentProps {
   onMouseLeave?: () => void;
   onCardClick?: (playbook: Playbook) => void;
   warnings?: CollectionCardWarning[];
+  usage?: CardUsageCardSummary | null;
 }
 
 function PlaybookCardComponent({
@@ -34,6 +37,7 @@ function PlaybookCardComponent({
   onMouseLeave,
   onCardClick,
   warnings,
+  usage,
 }: PlaybookCardComponentProps) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -71,6 +75,7 @@ function PlaybookCardComponent({
     mutationFn: async () => apiRequest("DELETE", `/api/playbooks/${playbook.id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/playbooks/vault"] });
+      queryClient.invalidateQueries({ queryKey: [...CARD_USAGE_QUERY_KEY] });
       queryClient.invalidateQueries({ queryKey: ["/api/decks"] });
       toast({
         title: "Playbook deleted",
@@ -85,6 +90,13 @@ function PlaybookCardComponent({
       });
     },
   });
+
+  const handleDeletePlaybook = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm(`Delete playbook "${playbook.title}"?`)) {
+      deletePlaybookMutation.mutate();
+    }
+  };
 
   return (
     <div
@@ -122,22 +134,13 @@ function PlaybookCardComponent({
           <div className="leading-none" style={{ color: cardColor }}>PB</div>
         </div>
 
-        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
-          <Button
-            size="sm"
-            variant="destructive"
-            className="h-5 w-5 p-0 bg-red-500/80 hover:bg-red-500 border-red-400"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (window.confirm(`Delete playbook "${playbook.title}"?`)) {
-                deletePlaybookMutation.mutate();
-              }
-            }}
-            title={`Delete ${playbook.title}`}
-          >
-            <Trash2 className="w-3 h-3" />
-          </Button>
-        </div>
+        <CardActionArea
+          usage={usage}
+          createdAt={playbook.createdAt}
+          color={cardColor}
+          onDelete={handleDeletePlaybook}
+          deleteTitle={`Delete ${playbook.title}`}
+        />
 
         <div className="absolute inset-x-2 top-6 bottom-8 flex flex-col items-center justify-center text-center">
           <div className="mb-2" style={{ color: cardColor }}>

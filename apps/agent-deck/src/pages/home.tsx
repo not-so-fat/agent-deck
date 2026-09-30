@@ -5,6 +5,11 @@ import {
   toCollectionWarningsView,
   type CollectionWarningsPayload,
 } from "@/lib/collection-warnings";
+import {
+  buildCardUsageLookup,
+  cardUsageKey,
+  useCardUsage,
+} from "@/lib/card-usage";
 import CardComponent from "@/components/card-component";
 import CredentialCardComponent from "@/components/credential-card-component";
 import PlaybookCardComponent from "@/components/playbook-card-component";
@@ -125,6 +130,16 @@ export default function Home() {
     queryKey: ["/api/collection/warnings"],
     staleTime: 60_000,
   });
+
+  // One shared trailing-30-day usage classification for the whole grid —
+  // never one request per card. Loading/error yields no rows, so cards
+  // omit the mark instead of showing a misleading category.
+  const { data: cardUsageResponse } = useCardUsage();
+
+  const cardUsageLookup = useMemo(
+    () => buildCardUsageLookup(cardUsageResponse?.data?.cards),
+    [cardUsageResponse?.data?.cards],
+  );
 
   const servicesArray = servicesResponse?.data || [];
   const credentialsArray = credentialsResponse?.data || [];
@@ -693,6 +708,7 @@ export default function Home() {
                         onMouseEnter={() => handleCardHover(playbook.id)}
                         onMouseLeave={() => handleCardHover(null)}
                         warnings={collectionWarnings.playbookWarnings.get(playbook.id)}
+                        usage={cardUsageLookup.get(cardUsageKey("playbook", playbook.id))}
                       />
                     </div>
                   ))}
@@ -718,6 +734,7 @@ export default function Home() {
                         onMouseLeave={() => handleCardHover(null)}
                         onCardClick={handleCredentialClick}
                         warnings={collectionWarnings.credentialWarnings.get(credential.id)}
+                        usage={cardUsageLookup.get(cardUsageKey("credential", credential.id))}
                       />
                     </div>
                   ))}
@@ -746,6 +763,7 @@ export default function Home() {
                         onMouseLeave={() => handleCardHover(null)}
                         activeDeck={editingDeck ?? undefined}
                         warnings={collectionWarnings.serviceWarnings.get(service.id)}
+                        usage={cardUsageLookup.get(cardUsageKey("service", service.id))}
                       />
                     </div>
                   ))}
