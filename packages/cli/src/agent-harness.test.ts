@@ -8,7 +8,11 @@ import {
   buildClaudeHarnessBlock,
   buildCodexHarnessBlock,
   buildCursorHarnessFile,
+  buildCursorHarnessInner,
   CURSOR_RULE_FILENAME,
+  diagnoseAllHarnesses,
+  diagnoseHarness,
+  formatHarnessDiagnosis,
   HARNESS_MARKER_END,
   HARNESS_MARKER_START,
   HARNESS_RULE_DESCRIPTION,
@@ -524,5 +528,178 @@ describe('installAgentHarness on-disk byte preservation', () => {
     const repeat = installAgentHarness('cursor', 'project');
     expect(repeat.action).toBe('unchanged');
     expect(fs.readFileSync(target as string, 'utf8')).toBe(written);
+  });
+});
+
+describe('NOT-295 canonical session receipt', () => {
+  const firstTurnTexts = (): Array<[string, string]> => [
+    ['cursor/global', buildCursorHarnessFile('global')],
+    ['cursor/project', buildCursorHarnessFile('project')],
+    ['claude/global', buildClaudeHarnessBlock('global')],
+    ['claude/project', buildClaudeHarnessBlock('project')],
+    ['codex/global', buildCodexHarnessBlock('global')],
+    ['codex/project', buildCodexHarnessBlock('project')],
+  ];
+
+  it('requires get_session_context before repo reads/task commands with exactly one verbatim display_summary line', () => {
+    for (const [label, text] of firstTurnTexts()) {
+      expect(text, label).toContain('Before reading repo files, running task commands');
+      expect(text, label).toContain('require `get_session_context` to succeed');
+      expect(text, label).toContain('call `get_session_context` once');
+      expect(text, label).toContain('exactly one transcript line');
+      expect(text, label).toContain('rendering `display_summary`');
+      expect(text, label).toContain('Render it verbatim');
+      // The hard gate precedes the receipt: bootstrap before task action.
+      expect(text.indexOf('Before reading repo files'), label).toBeLessThan(
+        text.indexOf('exactly one transcript line'),
+      );
+    }
+  });
+
+  it('keeps one source string: no reconstruction, override suffix printed exactly as returned', () => {
+    for (const [label, text] of firstTurnTexts()) {
+      expect(text, label).toContain('do not reconstruct the deck name, counts, badge');
+      expect(text, label).toContain('session (default …)');
+      expect(text, label).toContain(
+        'print the suffix exactly as returned when the session deck differs from the workspace default',
+      );
+      // No invented concrete suffix an agent could copy instead of the
+      // backend string (the NOT-211 fixture owns real suffix values).
+      expect(text, label).not.toMatch(/session \(default [A-Za-z0-9_-]+\)/);
+    }
+  });
+
+  it('later turns: no repeat when unchanged, one new receipt on confirmed change', () => {
+    for (const [label, text] of firstTurnTexts()) {
+      expect(text, label).toContain(
+        'Do not re-show the session receipt on later turns when the binding is unchanged',
+      );
+      expect(text, label).toContain(
+        'after a confirmed binding change, show exactly one new receipt line',
+      );
+      expect(text, label).not.toContain('repeat the status line every turn');
+    }
+  });
+
+  it('calls the transcript receipt authoritative and status lines secondary', () => {
+    for (const [label, text] of firstTurnTexts()) {
+      expect(text, label).toContain('authoritative binding record for the session');
+      expect(text, label).toContain('optional secondary context');
+    }
+  });
+
+  it('cursor inner builder feeds the same receipt contract as the file', () => {
+    for (const scope of ['global', 'project'] as const) {
+      const inner = buildCursorHarnessInner(scope);
+      expect(inner).toContain('exactly one transcript line');
+      expect(inner).toContain('Render it verbatim');
+      expect(buildCursorHarnessFile(scope)).toContain(inner);
+    }
+  });
+});
+
+describe('NOT-295 harness freshness diagnostic', () => {
+  let tmpHome: string | undefined;
+  let previousCodexHome: string | undefined;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+    previousCodexHome = undefined;
+    if (tmpHome) {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      tmpHome = undefined;
+    }
+  });
+
+  function useTmpHome(): string {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-diagnose-'));
+    previousCodexHome = process.env.CODEX_HOME;
+    delete process.env.CODEX_HOME;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    return tmpHome;
+  }
+
+  const clients = ['cursor', 'claude', 'codex'] as const;
+
+  it.each(clients)('missing %s harness names the client/file and the exact repair command', (client) => {
+    useTmpHome();
+    const diagnosis = diagnoseHarness(client, 'global');
+    expect(diagnosis.status).toBe('missing');
+    expect(diagnosis.client).toBe(client);
+    expect(diagnosis.path.length).toBeGreaterThan(0);
+    expect(diagnosis.repairCommand).toBe(`agent-deck setup --client ${client}`);
+    // Read-only: the diagnostic must not create the file.
+    expect(fs.existsSync(diagnosis.path)).toBe(false);
+    const joined = formatHarnessDiagnosis([diagnosis]).join('\n');
+    expect(joined).toContain(`MISSING: ${client} → ${diagnosis.path}`);
+    expect(joined).toContain(`repair: agent-deck setup --client ${client}`);
+  });
+
+  it.each(clients)('stale %s harness names the client/file and the exact repair command', (client) => {
+    useTmpHome();
+    const installed = installAgentHarness(client, 'global');
+    expect(installed.installed).toBe(true);
+    const target = installed.path as string;
+    // Installed file carries the first-turn receipt expectation.
+    const written = fs.readFileSync(target, 'utf8');
+    expect(written).toContain('exactly one transcript line');
+    expect(written).toContain('display_summary');
+    // Pre-NOT-295 managed block with user notes alongside: still stale,
+    // and the report still names the exact recovery command.
+    const stale = `# My notes\n\n${HARNESS_MARKER_START}\nold harness body\n${HARNESS_MARKER_END}\n`;
+    fs.writeFileSync(target, stale, 'utf8');
+    const diagnosis = diagnoseHarness(client, 'global');
+    expect(diagnosis.status).toBe('stale');
+    expect(diagnosis.path).toBe(target);
+    expect(diagnosis.repairCommand).toBe(`agent-deck setup --client ${client}`);
+    const joined = formatHarnessDiagnosis([diagnosis]).join('\n');
+    expect(joined).toContain(`STALE: ${client} → ${target}`);
+    expect(joined).toContain(`repair: agent-deck setup --client ${client}`);
+  });
+
+  it.each(clients)('current %s harness after install, ignoring user notes outside the markers', (client) => {
+    useTmpHome();
+    const installed = installAgentHarness(client, 'global');
+    expect(installed.installed).toBe(true);
+    const target = installed.path as string;
+    expect(diagnoseHarness(client, 'global').status).toBe('current');
+    fs.writeFileSync(
+      target,
+      `${fs.readFileSync(target, 'utf8')}\n# My notes\n`,
+      'utf8',
+    );
+    expect(diagnoseHarness(client, 'global').status).toBe('current');
+  });
+
+  it('diagnoseAllHarnesses reports every client in one read-only pass', () => {
+    useTmpHome();
+    const all = diagnoseAllHarnesses('global');
+    expect(all.map((diagnosis) => diagnosis.client)).toEqual(['cursor', 'claude', 'codex']);
+    expect(all.every((diagnosis) => diagnosis.status === 'missing')).toBe(true);
+    expect(all.map((diagnosis) => diagnosis.repairCommand)).toEqual([
+      'agent-deck setup --client cursor',
+      'agent-deck setup --client claude',
+      'agent-deck setup --client codex',
+    ]);
+    const joined = formatHarnessDiagnosis(all).join('\n');
+    expect(joined).toContain('First-turn receipt requires the harness above');
+  });
+
+  it('release path: install each harness into a temporary home, then diagnose current', () => {
+    useTmpHome();
+    for (const client of clients) {
+      const installed = installAgentHarness(client, 'global');
+      expect(installed.installed).toBe(true);
+      expect(installed.action).toBe('created');
+      const diagnosis = diagnoseHarness(client, 'global');
+      expect(diagnosis.status).toBe('current');
+      expect(fs.readFileSync(installed.path as string, 'utf8')).toContain(
+        'exactly one transcript line',
+      );
+    }
+    const joined = formatHarnessDiagnosis(diagnoseAllHarnesses('global')).join('\n');
+    expect(joined).toContain('All harnesses current');
   });
 });

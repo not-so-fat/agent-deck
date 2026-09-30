@@ -272,6 +272,43 @@ describe('setup statusline defaults', () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
+  it('setup completion text states the first-turn receipt expectation (NOT-295)', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-receipt-'));
+    const previousCodexHome = process.env.CODEX_HOME;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    delete process.env.CODEX_HOME;
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let code = -1;
+    let logged = '';
+    try {
+      code = await runSetup([
+        '--client',
+        'codex',
+        '--scope',
+        'global',
+        '--no-statusline',
+        '--no-menubar',
+      ]);
+    } finally {
+      logged = log.mock.calls.flat().join('\n');
+      log.mockRestore();
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      vi.restoreAllMocks();
+    }
+    expect(code).toBe(0);
+    // Users learn what the first turn shows and that the transcript
+    // receipt — not a workspace badge — is authoritative.
+    expect(logged).toContain('First turn: the agent calls get_session_context once and shows exactly one');
+    expect(logged).toContain('verbatim display_summary line');
+    expect(logged).toContain('authoritative');
+    expect(logged).toContain('terminal status lines are optional secondary context');
+    // The installed guidance carries the same receipt contract.
+    const agents = fs.readFileSync(path.join(tmpHome, '.codex', 'AGENTS.md'), 'utf8');
+    expect(agents).toContain('exactly one transcript line');
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
   it.skipIf(process.platform !== 'darwin')(
     'setup --menubar alone installs only the SwiftBar plugin',
     async () => {
