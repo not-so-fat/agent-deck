@@ -5,10 +5,11 @@ import { getServiceCardColor } from "@/lib/card-colors";
 import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Trash2 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import CardWarningBadge from "@/components/card-warning-badge";
 import ServiceCardIcon from "@/components/service-card-icon";
+import { CardActionArea } from "@/components/card-usage-mark";
+import { CARD_USAGE_QUERY_KEY, type CardUsageCardSummary } from "@/lib/card-usage";
 import { inDeckCollectionClass, InDeckCornerBadge } from "@/lib/in-deck-card-style";
 
 interface CardComponentProps {
@@ -22,6 +23,7 @@ interface CardComponentProps {
   onMouseLeave?: () => void;
   activeDeck?: Deck;
   warnings?: CollectionCardWarning[];
+  usage?: CardUsageCardSummary | null;
 }
 
 function CardComponent({
@@ -35,6 +37,7 @@ function CardComponent({
   onMouseLeave,
   activeDeck,
   warnings,
+  usage,
 }: CardComponentProps) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -72,6 +75,7 @@ function CardComponent({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/collection/warnings"] });
+      queryClient.invalidateQueries({ queryKey: [...CARD_USAGE_QUERY_KEY] });
       queryClient.invalidateQueries({ queryKey: ["/api/decks"] });
       toast({
         title: "Service deleted",
@@ -139,17 +143,13 @@ function CardComponent({
           </div>
         </div>
 
-        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
-          <Button
-            size="sm"
-            variant="destructive"
-            className="h-5 w-5 p-0 bg-red-500/80 hover:bg-red-500 border-red-400"
-            onClick={handleDeleteService}
-            title={`Delete ${service.name}`}
-          >
-            <Trash2 className="w-3 h-3" />
-          </Button>
-        </div>
+        <CardActionArea
+          usage={usage}
+          createdAt={service.registeredAt}
+          color={cardColor}
+          onDelete={handleDeleteService}
+          deleteTitle={`Delete ${service.name}`}
+        />
 
         <div className="absolute inset-x-2 top-6 bottom-8 flex flex-col items-center justify-center text-center">
           <div className="mb-2" style={{ color: cardColor }}>

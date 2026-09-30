@@ -4,10 +4,11 @@ import { Credential, Deck } from "@agent-deck/shared";
 import { Button } from "@/components/ui/button";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Trash2 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { API_KEY_CARD_COLOR } from "@/lib/card-colors";
 import CardWarningBadge from "@/components/card-warning-badge";
+import { CardActionArea } from "@/components/card-usage-mark";
+import { CARD_USAGE_QUERY_KEY, type CardUsageCardSummary } from "@/lib/card-usage";
 import { inDeckCollectionClass, InDeckCornerBadge } from "@/lib/in-deck-card-style";
 import CredentialCardIcon from "@/components/credential-card-icon";
 
@@ -22,6 +23,7 @@ interface CredentialCardComponentProps {
   onMouseLeave?: () => void;
   onCardClick?: (credential: Credential) => void;
   warnings?: CollectionCardWarning[];
+  usage?: CardUsageCardSummary | null;
 }
 
 function CredentialCardComponent({
@@ -35,6 +37,7 @@ function CredentialCardComponent({
   onMouseLeave,
   onCardClick,
   warnings,
+  usage,
 }: CredentialCardComponentProps) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -71,6 +74,7 @@ function CredentialCardComponent({
     mutationFn: async () => apiRequest("DELETE", `/api/credentials/${credential.id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/credentials/vault"] });
+      queryClient.invalidateQueries({ queryKey: [...CARD_USAGE_QUERY_KEY] });
       queryClient.invalidateQueries({ queryKey: ["/api/decks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/decks"] });
       toast({
@@ -86,6 +90,13 @@ function CredentialCardComponent({
       });
     },
   });
+
+  const handleDeleteCredential = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm(`Remove ${credential.label} from your vault?`)) {
+      deleteCredentialMutation.mutate();
+    }
+  };
 
   return (
     <div
@@ -127,22 +138,13 @@ function CredentialCardComponent({
           </div>
         </div>
 
-        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
-          <Button
-            size="sm"
-            variant="destructive"
-            className="h-5 w-5 p-0 bg-red-500/80 hover:bg-red-500 border-red-400"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (window.confirm(`Remove ${credential.label} from your vault?`)) {
-                deleteCredentialMutation.mutate();
-              }
-            }}
-            title={`Remove ${credential.label}`}
-          >
-            <Trash2 className="w-3 h-3" />
-          </Button>
-        </div>
+        <CardActionArea
+          usage={usage}
+          createdAt={credential.createdAt}
+          color={cardColor}
+          onDelete={handleDeleteCredential}
+          deleteTitle={`Remove ${credential.label}`}
+        />
 
         <div className="absolute inset-x-2 top-6 bottom-8 flex flex-col items-center justify-center text-center">
           <div className="mb-2" style={{ color: cardColor }}>
