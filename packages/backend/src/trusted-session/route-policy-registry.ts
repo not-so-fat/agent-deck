@@ -150,6 +150,8 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/playbooks$/, policy: 'requireAgentOrDashboard' },
   { methods: ['GET'], pattern: /^\/api\/playbooks\/[^/]+$/, policy: 'requireAgentOrDashboard' },
   { methods: ['POST'], pattern: /^\/api\/playbook-patches$/, policy: 'requireAgentOrDashboard' },
+  // NOT-292: raw usage events for local pandas/Jupyter analysis.
+  { methods: ['GET'], pattern: /^\/api\/usage\/events$/, policy: 'requireAgentOrDashboard' },
 ];
 
 export function shouldApplyHttpPolicy(pathname: string): boolean {

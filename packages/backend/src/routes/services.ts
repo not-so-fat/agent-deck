@@ -5,6 +5,7 @@ import {
   CreateServiceInput, 
   UpdateServiceInput,
   ServiceCallInput,
+  AGENT_DECK_SESSION_HEADER,
   ApiResponse,
   Service,
   ServiceTool,
@@ -26,6 +27,7 @@ import {
   sendRoutePolicyError,
 } from '../lib/route-policy';
 import { resolveAgentDeckId } from '../lib/agent-deck-context';
+import { playbookEventSource } from './playbook-patches';
 
 let lastBackgroundHealthProbeAt = 0;
 const BACKGROUND_HEALTH_PROBE_COOLDOWN_MS = 30_000;
@@ -384,13 +386,62 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
   fastify.post<ServiceCallRequest>('/:id/call', async (request, reply) => {
     try {
       await requireServiceOnBoundDeck(request, fastify.db, request.params.id);
+    } catch (error) {
+      const scoped = boundDeckScopeResponse(error);
+      return reply.status(scoped.status).send({
+        success: false,
+        error: scoped.message,
+        error_code: scoped.error_code,
+      } satisfies ApiResponse);
+    }
 
+    // NOT-292: every tool-call attempt persists one privacy-safe service
+    // event; a successful call on a credential-backed service additionally
+    // persists one credential-use event (credential id only, never secrets).
+    const usageSource = playbookEventSource(request);
+    const sessionHeader = request.headers[AGENT_DECK_SESSION_HEADER];
+    const usageSessionId = typeof sessionHeader === 'string' ? sessionHeader : null;
+    const usageDeckId = await resolveAgentDeckId(request, fastify.db).catch(() => null);
+
+    const recordCallUsage = async (success: boolean): Promise<void> => {
+      try {
+        await fastify.db.recordCardUsageEvent({
+          cardType: 'service',
+          cardId: request.params.id,
+          deckId: usageDeckId,
+          action: 'tool_call',
+          success,
+          source: usageSource,
+          sessionId: usageSessionId,
+        });
+        if (success) {
+          const service = await fastify.db.getService(request.params.id);
+          if (service?.credentialId) {
+            await fastify.db.recordCardUsageEvent({
+              cardType: 'credential',
+              cardId: service.credentialId,
+              deckId: usageDeckId,
+              action: 'service_call',
+              success: true,
+              source: usageSource,
+              sessionId: usageSessionId,
+            });
+          }
+        }
+      } catch (error) {
+        fastify.log.warn({ err: error }, 'card usage event recording failed');
+      }
+    };
+
+    try {
       const result = await fastify.serviceManager.callServiceTool({
         serviceId: request.params.id,
         toolName: request.body.toolName,
         arguments: request.body.arguments,
       });
-      
+
+      await recordCallUsage(result.success);
+
       const response: ApiResponse = {
         success: result.success,
         data: result.result,
@@ -398,9 +449,10 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
         error_code: result.error_code,
         details: result.details,
       };
-      
+
       return reply.send(response);
     } catch (error) {
+      await recordCallUsage(false);
       const scoped = boundDeckScopeResponse(error);
       return reply.status(scoped.status).send({
         success: false,
