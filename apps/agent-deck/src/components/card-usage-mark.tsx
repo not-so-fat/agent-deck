@@ -17,8 +17,8 @@ interface CardUsageMarkProps {
  * Shared Collection-card usage mark (NOT-294). One semantic mapping for
  * service, credential, and playbook cards:
  * popular = 3 filled stars, used = 1 filled star, unused = 1 outline star,
- * new = restrained uppercase NEW. Glyphs render at 8px scaled to 56%
- * (~4.5px apparent) so the group stays clearly smaller than the card's
+ * new = restrained uppercase NEW. Glyphs render at 8px scaled to 75%
+ * (~6px apparent) so the group stays clearly smaller than the card's
  * top-left type label; NEW is ~7px. Meaning is carried by shape + the
  * accessible label/tooltip, never by color alone.
  */
@@ -57,9 +57,9 @@ export function CardUsageMark({ usage, createdAt, color }: CardUsageMarkProps) {
       className="inline-flex items-center gap-[1px] opacity-60"
       style={{
         color,
-        // Render at 8px for glyph quality, scale the whole group to ~56%
-        // (~4.5px apparent). Origin top-right preserves the alignment.
-        transform: "scale(0.56)",
+        // Render at 8px for glyph quality, scale the whole group to ~75%
+        // (~6px apparent). Origin top-right preserves the alignment.
+        transform: "scale(0.75)",
         transformOrigin: "top right",
       }}
     >
