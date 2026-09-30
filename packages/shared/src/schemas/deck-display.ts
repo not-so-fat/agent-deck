@@ -137,6 +137,19 @@ export type DisplayLineOptions = {
   updatedAt?: string;
   badge?: string;
   /**
+   * Multi-session agreement (NOT-296): when several live sessions for one
+   * workspace resolve to the same effective deck, the line names the common
+   * deck and reports the session count instead of picking a "latest" session.
+   * Rendered only for counts >= 2.
+   */
+  sessionCount?: number;
+  /**
+   * Workspace-default label (NOT-296): the line names a saved assignment
+   * without claiming it is the active session deck. Never combined with a
+   * per-session badge or override marker.
+   */
+  workspaceDefault?: boolean;
+  /**
    * Saved workspace-default deck name (NOT-211). The override marker is
    * decided by `sessionOverride` when defined (id-based decision made by the
    * caller); otherwise it falls back to the name comparison, so callers that
@@ -208,6 +221,9 @@ export function formatDisplayLine(
   const separator = ' · ';
   const badgeSuffix = options?.badge ? ` · ⌘${options.badge}` : '';
   const mcpSuffix = options?.mcpOffline ? ' · MCP offline' : '';
+  const sessionCount = options?.sessionCount ?? 0;
+  const sessionsSuffix = sessionCount >= 2 ? ` · ${sessionCount} sessions` : '';
+  const workspaceDefaultSuffix = options?.workspaceDefault ? ' · workspace default' : '';
   // Room for the override marker is reserved before truncating the active
   // name, so a real session override stays visible within the budget.
   const overrideDefault = resolveSessionOverrideDefault(
@@ -219,7 +235,14 @@ export function formatDisplayLine(
   if (overrideDefault !== null) {
     const fullMarker = `${SESSION_OVERRIDE_MARKER_PREFIX}${overrideDefault}${SESSION_OVERRIDE_MARKER_SUFFIX}`;
     const otherFixedLength =
-      prefix.length + separator.length + countsPart.length + updatedSuffix.length + mcpSuffix.length + badgeSuffix.length;
+      prefix.length +
+      separator.length +
+      countsPart.length +
+      updatedSuffix.length +
+      mcpSuffix.length +
+      badgeSuffix.length +
+      sessionsSuffix.length +
+      workspaceDefaultSuffix.length;
     const maxMarkerLength = DISPLAY_LINE_MAX_LENGTH - otherFixedLength - 1;
     if (fullMarker.length <= maxMarkerLength) {
       marker = fullMarker;
@@ -230,7 +253,13 @@ export function formatDisplayLine(
       }
     }
   }
-  const suffixLength = updatedSuffix.length + mcpSuffix.length + badgeSuffix.length + marker.length;
+  const suffixLength =
+    updatedSuffix.length +
+    mcpSuffix.length +
+    badgeSuffix.length +
+    sessionsSuffix.length +
+    workspaceDefaultSuffix.length +
+    marker.length;
   const fixedLength = prefix.length + separator.length + countsPart.length + suffixLength;
   const maxNameLength = DISPLAY_LINE_MAX_LENGTH - fixedLength;
 
@@ -238,7 +267,7 @@ export function formatDisplayLine(
   if (maxNameLength < 1) {
     // No room for the active name: drop it, then shrink the marker's default
     // name to fit rather than losing the override entirely.
-    const lineless = `${prefix}${countsPart}${badgeSuffix}${mcpSuffix}${updatedSuffix}`;
+    const lineless = `${prefix}${countsPart}${badgeSuffix}${mcpSuffix}${sessionsSuffix}${workspaceDefaultSuffix}${updatedSuffix}`;
     if (!marker) {
       return boundDisplayLine(lineless);
     }
@@ -259,7 +288,20 @@ export function formatDisplayLine(
         : name.slice(0, Math.max(0, maxNameLength));
   }
 
-  return `${prefix}${name}${separator}${countsPart}${badgeSuffix}${mcpSuffix}${updatedSuffix}${marker}`;
+  return `${prefix}${name}${separator}${countsPart}${badgeSuffix}${mcpSuffix}${sessionsSuffix}${workspaceDefaultSuffix}${updatedSuffix}${marker}`;
+}
+
+/**
+ * Neutral ambiguity line (NOT-296): several live sessions for one workspace
+ * disagree on the effective deck, so the status line must not present any one
+ * deck name as the deck of the current session. Points at the per-session
+ * chat receipt (NOT-295), which remains the authoritative session identity.
+ */
+export const MULTIPLE_SESSION_DECKS_LINE =
+  '◆ Agent Deck · multiple session decks · see chat receipt';
+
+export function formatAmbiguousSessionDisplayLine(): string {
+  return MULTIPLE_SESSION_DECKS_LINE;
 }
 
 /**

@@ -1732,6 +1732,23 @@ export class DatabaseManager {
     });
   }
 
+  /**
+   * NOT-296: latest saved deck assignment for a workspace root (stub-sync
+   * registry). Used only when no live MCP session matches, so the status
+   * line can label the saved deck as a workspace default instead of
+   * implying it is the current session deck.
+   */
+  async getLatestDeckIdForWorkspace(workspaceRoot: string): Promise<string | null> {
+    const row = this.db.prepare(`
+      SELECT deck_id
+      FROM deck_workspaces
+      WHERE workspace_root = ?
+      ORDER BY last_bound_at DESC
+      LIMIT 1
+    `).get(workspaceRoot) as { deck_id: string } | undefined;
+    return row?.deck_id ?? null;
+  }
+
   async listDeckWorkspaces(deckId: string): Promise<Array<{ workspaceRoot: string; lastBoundAt: string }>> {
     const rows = this.db.prepare(`
       SELECT workspace_root, last_bound_at

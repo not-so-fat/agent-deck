@@ -27,11 +27,15 @@ describe('LiveDisplayRegistry', () => {
       updatedAt: '2026-09-10T22:19:05.000Z',
     });
 
-    expect(registry.findForWorkspace(workspace)?.deckName).toBe('personal-dev');
+    const match = registry.resolveWorkspaceSessions(workspace);
+    expect(match.kind).toBe('single');
+    if (match.kind === 'single') {
+      expect(match.entries[0].deckName).toBe('personal-dev');
+    }
     expect(registry.list()[0].workspaceRoot).toBe(workspace);
   });
 
-  it('finds the newest bind for an exact workspace', () => {
+  it('returns both sessions in deterministic order instead of newest-wins', () => {
     const registry = new LiveDisplayRegistry();
     const workspace = path.resolve('/repo');
 
@@ -54,7 +58,13 @@ describe('LiveDisplayRegistry', () => {
       updatedAt: '2026-07-02T15:33:00.000Z',
     });
 
-    expect(registry.findForWorkspace(workspace)?.deckName).toBe('Newer');
+    // NOT-296: no latest-updated guess — both matches come back in
+    // deterministic mcpSessionId order for the caller to adjudicate.
+    const match = registry.resolveWorkspaceSessions(workspace);
+    expect(match.kind).toBe('multiple');
+    if (match.kind === 'multiple') {
+      expect(match.entries.map((entry) => entry.mcpSessionId)).toEqual(['newer', 'older']);
+    }
   });
 
   it('lists a workspace-less (auto-bound) entry but never matches it to a folder', () => {
@@ -71,7 +81,7 @@ describe('LiveDisplayRegistry', () => {
     // Appears in the dashboard list…
     expect(registry.list().map((e) => e.deckName)).toEqual(['Dev']);
     // …but has no folder, so the per-workspace statusline never picks it up.
-    expect(registry.findForWorkspace(path.resolve('/repo'))).toBeNull();
+    expect(registry.resolveWorkspaceSessions(path.resolve('/repo')).kind).toBe('none');
   });
 
   it('walks up to parent workspace binds', () => {
@@ -88,9 +98,11 @@ describe('LiveDisplayRegistry', () => {
       updatedAt: '2026-07-02T15:33:00.000Z',
     });
 
-    expect(registry.findForWorkspace(path.join(workspace, 'packages', 'app'))?.deckName).toBe(
-      'Root Deck',
-    );
+    const match = registry.resolveWorkspaceSessions(path.join(workspace, 'packages', 'app'));
+    expect(match.kind).toBe('single');
+    if (match.kind === 'single') {
+      expect(match.entries[0].deckName).toBe('Root Deck');
+    }
   });
 
   it('removes entries when MCP session closes', () => {
@@ -108,7 +120,7 @@ describe('LiveDisplayRegistry', () => {
     });
     registry.remove('session-1');
 
-    expect(registry.findForWorkspace(workspace)).toBeNull();
+    expect(registry.resolveWorkspaceSessions(workspace)).toEqual({ kind: 'none', entries: [] });
   });
 
   it('assigns distinct badges and preserves a session badge across re-upsert', () => {

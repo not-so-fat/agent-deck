@@ -40,4 +40,14 @@ describe('statusline-setup', () => {
     expect(settings.statusLine?.command).toBe(result.scriptPath);
     expect(settings.statusLine?.refreshInterval).toBeUndefined();
   });
+
+  it('merges statusLine into Cursor cli-config.json (NOT-296: command hook stays on Claude + Cursor only)', () => {
+    const result = installStatusline('cursor');
+    expect(result.installed).toBe(true);
+    const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {
+      statusLine?: { type?: string; command?: string };
+    };
+    expect(config.statusLine?.type).toBe('command');
+    expect(config.statusLine?.command).toBe(result.scriptPath);
+  });
 });

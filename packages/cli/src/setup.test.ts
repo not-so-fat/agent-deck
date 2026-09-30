@@ -123,6 +123,37 @@ describe('setup statusline defaults', () => {
     }
   });
 
+  it('NOT-296: Codex setup installs no status-line hook even with explicit --statusline', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-codex-nostatus-'));
+    const codexDir = path.join(tmpHome, '.codex');
+    const previousCodexHome = process.env.CODEX_HOME;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    delete process.env.CODEX_HOME;
+    fs.mkdirSync(codexDir, { recursive: true });
+
+    try {
+      const code = await runSetup([
+        '--client',
+        'codex',
+        '--scope',
+        'global',
+        '--statusline',
+        '--no-menubar',
+      ]);
+      expect(code).toBe(0);
+      // No command hook for Codex: the script is never written and no
+      // statusLine/HUD integration is added (Codex exposes built-in fields only).
+      expect(fs.existsSync(path.join(tmpHome, '.agent-deck', 'bin', 'statusline.sh'))).toBe(
+        false,
+      );
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
   it('merges Codex guidance into the global AGENTS.md without replacing existing instructions', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-codex-'));
     const codexDir = path.join(tmpHome, '.codex');

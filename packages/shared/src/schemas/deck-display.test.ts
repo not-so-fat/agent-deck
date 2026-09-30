@@ -5,8 +5,10 @@ import {
   DISPLAY_LINE_MAX_LENGTH,
   DeckDisplaySchema,
   LiveBindingSchema,
+  MULTIPLE_SESSION_DECKS_LINE,
   appendSessionOverrideSuffix,
   countDeckCards,
+  formatAmbiguousSessionDisplayLine,
   formatDisplayLine,
   formatDisplayUpdatedSuffix,
   resolveStatusLineSessionId,
@@ -240,6 +242,38 @@ describe('deck-display', () => {
       expect(marked.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
       expect(marked).toContain('session (default ');
       expect(marked.endsWith(')')).toBe(true);
+    });
+  });
+
+  describe('formatDisplayLine multi-session (NOT-296)', () => {
+    const counts = { mcp: 1, credentials: 0, playbooks: 2 };
+
+    it('renders the neutral ambiguity line without any deck name', () => {
+      const line = formatAmbiguousSessionDisplayLine();
+      expect(line).toBe(MULTIPLE_SESSION_DECKS_LINE);
+      expect(line).toBe('◆ Agent Deck · multiple session decks · see chat receipt');
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+    });
+
+    it('names the common deck with a session count', () => {
+      const line = formatDisplayLine('Shared', counts, { sessionCount: 2 });
+      expect(line).toContain('Shared');
+      expect(line).toContain('2 sessions');
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+    });
+
+    it('omits the session count for a single session', () => {
+      expect(formatDisplayLine('Solo', counts)).toBe(
+        formatDisplayLine('Solo', counts, { sessionCount: 1 }),
+      );
+    });
+
+    it('labels a saved assignment as workspace default', () => {
+      const line = formatDisplayLine('Saved', counts, { workspaceDefault: true });
+      expect(line).toContain('Saved');
+      expect(line).toContain('workspace default');
+      expect(line).not.toContain('session (default');
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
     });
   });
 
