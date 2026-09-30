@@ -237,7 +237,7 @@ If `claude mcp list` shows agent-deck as **Connected** but the agent cannot call
 
 **Workaround:** Call the MCP JSON-RPC endpoint directly (`initialize` → `tools/call`) or use `curl` against `http://127.0.0.1:1110/mcp` (port may differ — check `claude mcp list`).
 
-The terminal status line reflects the live MCP bind on the backend API; it stays **unbound** until `bind_workspace` and does not prove the harness can reach agent-deck when MCP is disconnected.
+The terminal status line (Claude Code / Cursor CLI footer, installed by `setup`) reflects live MCP sessions on the backend API — never a workspace-wide guess. One live session shows that session's deck; two sessions on the same deck show the common deck plus a session count; two sessions on different decks show `◆ Agent Deck · multiple session decks · see chat receipt` (the per-session chat receipt stays authoritative). With no live session, a saved assignment is labeled `workspace default`, otherwise the line stays **unbound** until `bind_workspace`. The line does not prove the harness can reach agent-deck when MCP is disconnected.
 
 ### Slack distribution requires HTTPS
 

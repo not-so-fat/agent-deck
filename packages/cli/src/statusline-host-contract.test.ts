@@ -175,6 +175,67 @@ describe('statusline host contract (subprocess POC)', () => {
     assertHostContract(result);
   });
 
+  describe('NOT-296 multi-session display in the real child process', () => {
+    // No loopback bind: a NODE_OPTIONS --import preload answers the display
+    // fetch inside the spawned CLI, so the full host contract (spawn, open
+    // stdin, one ◆ line, exit 0, budget) is exercised without sockets.
+    function writeDisplayPreload(displayLine: string): string {
+      const preloadPath = path.join(tmpHome, 'stub-display-fetch.mjs');
+      fs.writeFileSync(
+        preloadPath,
+        `const displayLine = ${JSON.stringify(displayLine)};
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  if (String(input).includes('/api/scope/display')) {
+    return new Response(JSON.stringify({ success: true, data: { displayLine } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  return originalFetch(input, init);
+};
+`,
+      );
+      return preloadPath;
+    }
+
+    it('disagreeing sessions render the neutral line with neither deck name', async () => {
+      const preload = writeDisplayPreload(
+        '◆ Agent Deck · multiple session decks · see chat receipt',
+      );
+      const payload = JSON.stringify({
+        session_id: 'cursor-session-1',
+        cwd: '/Users/dev/my-repo',
+        workspace: { project_dir: '/Users/dev/my-repo', current_dir: '/Users/dev/my-repo' },
+      });
+      const result = await spawnStatuslineHost(payload, {
+        closeStdin: false,
+        env: { HOME: tmpHome, NODE_OPTIONS: `--import=${preload}` },
+      });
+
+      assertHostContract(result);
+      expect(result.stdout).toContain('multiple session decks');
+      expect(result.stdout).toContain('chat receipt');
+      expect(result.stdout).not.toContain('Alpha Deck');
+      expect(result.stdout).not.toContain('Beta Deck');
+    });
+
+    it('agreeing sessions render the common deck with a session count', async () => {
+      const preload = writeDisplayPreload(
+        '◆ Shared Deck · 1 MCP · 0 keys · 0 playbooks · 2 sessions',
+      );
+      const payload = JSON.stringify({ cwd: '/Users/dev/my-repo' });
+      const result = await spawnStatuslineHost(payload, {
+        closeStdin: false,
+        env: { HOME: tmpHome, NODE_OPTIONS: `--import=${preload}` },
+      });
+
+      assertHostContract(result);
+      expect(result.stdout).toContain('Shared Deck');
+      expect(result.stdout).toContain('2 sessions');
+    });
+  });
+
   it('shows offline when API port is dead (no sidecar fallback)', async () => {
     const workspace = path.join(tmpHome, 'bound-repo');
     fs.mkdirSync(workspace, { recursive: true });
