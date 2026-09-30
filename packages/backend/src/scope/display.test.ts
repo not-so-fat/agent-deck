@@ -225,4 +225,72 @@ describe('resolveDeckDisplay', () => {
     expect(display.displayLine).toContain('workspace default');
     expect(display.displayLine).not.toContain('session (default');
   });
+
+  it('NOT-296 repair: subdirectory cwd resolves the parent use.json default, not a stale deck_workspaces row', async () => {
+    // Cursor sends only the cwd (/repo/pkg); the workspace-default switch
+    // wrote /repo/.agent-deck/use.json. deck_workspaces still names the
+    // pre-switch deck and must not win.
+    const workspace = path.join(tempDir, 'repo');
+    const subdir = path.join(workspace, 'pkg');
+    await fs.mkdir(subdir, { recursive: true });
+    const deckA = await db.createDeck({ name: 'Stale Deck' });
+    const deckB = await db.createDeck({ name: 'Current Default Deck' });
+    await db.upsertDeckWorkspace(workspace, deckA.id);
+    writeUseManifest(workspace, { version: 3, deckId: deckB.id, deckName: deckB.name });
+
+    const display = await resolveDeckDisplay({ workspaceRoot: subdir }, db, registry);
+    expect(display.deckId).toBe(deckB.id);
+    expect(display.deckName).toBe('Current Default Deck');
+    expect(display.displayLine).toContain('Current Default Deck');
+    expect(display.displayLine).toContain('workspace default');
+    expect(display.displayLine).not.toContain('Stale Deck');
+  });
+
+  it('NOT-296 repair: use.json pointing at a deleted deck resolves unbound, not an unrelated row', async () => {
+    const workspace = path.join(tempDir, 'dangling');
+    await fs.mkdir(workspace, { recursive: true });
+    const unrelated = await db.createDeck({ name: 'Unrelated Deck' });
+    await db.upsertDeckWorkspace(workspace, unrelated.id);
+    writeUseManifest(workspace, {
+      version: 3,
+      deckId: '00000000-0000-4000-8000-000000000000',
+      deckName: 'Deleted Deck',
+    });
+
+    const display = await resolveDeckDisplay({ workspaceRoot: workspace }, db, registry);
+    expect(display.deckId).toBeNull();
+    expect(display.source).toBe('unbound');
+    expect(display.displayLine).not.toContain('Unrelated Deck');
+    expect(display.displayLine).not.toContain('Deleted Deck');
+  });
+
+  it('NOT-296 repair: same deck with different bind sources agrees instead of staying neutral', async () => {
+    const workspace = path.join(tempDir, 'mixed-source');
+    const deck = await db.createDeck({ name: 'Shared Deck' });
+    const fresh = new LiveDisplayRegistry();
+    fresh.upsert({
+      mcpSessionId: 'mcp-launched',
+      workspaceRoot: workspace,
+      deckId: deck.id,
+      deckName: deck.name,
+      source: 'launch',
+      updatedAt: '2026-09-28T00:00:00.000Z',
+      cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+    });
+    fresh.upsert({
+      mcpSessionId: 'mcp-bound',
+      workspaceRoot: workspace,
+      deckId: deck.id,
+      deckName: deck.name,
+      source: 'session_override',
+      updatedAt: '2026-09-28T01:00:00.000Z',
+      cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+    });
+
+    const display = await resolveDeckDisplay({ workspaceRoot: workspace }, db, fresh);
+    expect(display.deckId).toBe(deck.id);
+    expect(display.displayLine).toContain('Shared Deck');
+    expect(display.displayLine).toContain('2 sessions');
+    expect(display.displayLine).not.toContain('multiple session decks');
+  });
 });

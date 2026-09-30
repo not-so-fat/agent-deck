@@ -213,6 +213,52 @@ describe('statusline follows the session-active deck (NOT-233)', () => {
     expect(display.displayLine).not.toContain('session (default');
   });
 
+  it('NOT-296 repair: two live sessions disagreeing on deck stay neutral through the real display route', async () => {
+    const { fastify, store, registry, deckA, deckB } = await buildApp();
+    const workspaceRoot = makeWorkspaceRoot();
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-route-alpha',
+      workspaceRoot,
+      deckId: deckA.id,
+      deckName: DECK_A_NAME,
+    });
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-route-beta',
+      workspaceRoot,
+      deckId: deckB.id,
+      deckName: DECK_B_NAME,
+    });
+
+    const display = await getDisplay(fastify, workspaceRoot);
+    expect(display.deckId).toBeNull();
+    expect(display.displayLine).toContain('multiple session decks');
+    expect(display.displayLine).toContain('chat receipt');
+    expect(display.displayLine).not.toContain(DECK_A_NAME);
+    expect(display.displayLine).not.toContain(DECK_B_NAME);
+  });
+
+  it('NOT-296 repair: two live sessions agreeing on deck name it with a count through the real display route', async () => {
+    const { fastify, store, registry, deckA } = await buildApp();
+    const workspaceRoot = makeWorkspaceRoot();
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-route-agree-1',
+      workspaceRoot,
+      deckId: deckA.id,
+      deckName: DECK_A_NAME,
+    });
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-route-agree-2',
+      workspaceRoot,
+      deckId: deckA.id,
+      deckName: DECK_A_NAME,
+    });
+
+    const display = await getDisplay(fastify, workspaceRoot);
+    expect(display.deckId).toBe(deckA.id);
+    expect(display.displayLine).toContain(DECK_A_NAME);
+    expect(display.displayLine).toContain('2 sessions');
+  });
+
   it('workspace-default switch moves the statusline to the new deck', async () => {
     const { fastify, store, registry, deckA, deckB } = await buildApp();
     const workspaceRoot = makeWorkspaceRoot();

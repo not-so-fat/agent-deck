@@ -69,7 +69,7 @@ function buildDisplay(
   // override marker follows the id comparison against the saved workspace
   // default (use.json), never the display names. The flag stays explicit so
   // a stale default name after a deck rename cannot imply an override.
-  const workspaceDefault = readUseManifest(input.workspaceRoot);
+  const workspaceDefault = readNearestUseManifest(input.workspaceRoot);
   const activeDeckId = deck?.id ?? options?.liveDeckId ?? null;
   const sessionOverride = Boolean(
     workspaceDefault && activeDeckId && workspaceDefault.deckId !== activeDeckId,
@@ -138,18 +138,43 @@ export function refreshLiveDisplayAfterDeckSwitch(
 }
 
 /**
+ * NOT-296: nearest saved workspace default (`use.json` walk-up). Hosts such
+ * as Cursor report only the cwd (e.g. `/repo/pkg`) while the assignment file
+ * lives at the repository root (`/repo`), so the exact-level read alone
+ * would miss it and either fall back to a stale `deck_workspaces` row or
+ * miscompute the id-based override flag. The nearest manifest found walking
+ * toward the filesystem root wins; absent everywhere yields null.
+ */
+function readNearestUseManifest(workspaceRoot: string): { deckId: string; deckName: string } | null {
+  let current = normalizeWorkspaceRoot(workspaceRoot);
+  while (true) {
+    const manifest = readUseManifest(current);
+    if (manifest) {
+      return manifest;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+/**
  * NOT-296: effective-deck identity of one live entry for agreement checks.
- * Two entries agree only on the same deck id, the same bind source, and the
- * same id-based override meaning against the saved workspace default — any
- * doubt stays neutral instead of guessing.
+ * Two entries agree only on the same deck id and the same id-based override
+ * meaning against the saved workspace default — any doubt stays neutral
+ * instead of guessing. The bind source (`launch` vs `session_override` vs
+ * `env`) is deliberately excluded: a launched session and a
+ * `bind_workspace` session on the same deck with the same override meaning
+ * are one effective deck, not an ambiguity.
  */
 function liveEntryIdentity(
   entry: LiveDisplayEntry,
   workspaceDefaultDeckId: string | null,
-): { deckId: string; source: LiveDisplayEntry['source']; sessionOverride: boolean } {
+): { deckId: string; sessionOverride: boolean } {
   return {
     deckId: entry.deckId,
-    source: entry.source,
     sessionOverride: Boolean(
       workspaceDefaultDeckId && workspaceDefaultDeckId !== entry.deckId,
     ),
@@ -161,14 +186,12 @@ async function resolveMultiSessionDisplay(
   db: DatabaseManager,
   entries: LiveDisplayEntry[],
 ): Promise<DeckDisplay> {
-  const workspaceDefault = readUseManifest(input.workspaceRoot);
+  const workspaceDefault = readNearestUseManifest(input.workspaceRoot);
   const first = liveEntryIdentity(entries[0], workspaceDefault?.deckId ?? null);
   const agree = entries.every((entry) => {
     const identity = liveEntryIdentity(entry, workspaceDefault?.deckId ?? null);
     return (
-      identity.deckId === first.deckId &&
-      identity.source === first.source &&
-      identity.sessionOverride === first.sessionOverride
+      identity.deckId === first.deckId && identity.sessionOverride === first.sessionOverride
     );
   });
 
@@ -187,8 +210,11 @@ async function resolveMultiSessionDisplay(
 
   // Agreement: name the common deck with a session count. Counts come from
   // the database (deterministic and fresh); the deterministic-order first
-  // entry is only a fallback when the deck row is gone. No badge or
-  // updatedAt is shown — either would single out one session.
+  // entry is only a fallback when the deck row is gone. The reported source
+  // is the deterministic-order first entry's — it never reaches the
+  // displayLine, which carries only the common deck, the session count, and
+  // the shared override meaning. No badge or updatedAt is shown — either
+  // would single out one session.
   const deck = await db.getDeck(first.deckId);
   const cardCounts = deck ? countDeckCards(deck) : { ...entries[0].cardCounts };
   const deckName = deck?.name ?? entries[0].deckName;
@@ -196,7 +222,7 @@ async function resolveMultiSessionDisplay(
     workspaceRoot: input.workspaceRoot,
     deckId: deck?.id ?? first.deckId,
     deckName,
-    source: first.source,
+    source: entries[0].source,
     cardCounts,
     agentDeckOnline: true,
     mcpOnline: true,
@@ -218,19 +244,24 @@ type SavedWorkspaceDeck = {
 
 /**
  * NOT-296: saved assignment for a workspace with no live session. The
- * `use.json` assignment file is the source of truth; the database stub-sync
- * registry is a fallback (nearest level first, monorepo walk-up).
+ * `use.json` assignment file is the source of truth: the nearest manifest
+ * found walking toward the filesystem root wins (hosts such as Cursor
+ * report only the cwd, e.g. `/repo/pkg`, while the file lives at `/repo`),
+ * and it is trusted absolutely — when its deck row is gone the result is
+ * unbound, never an unrelated `deck_workspaces` row. The database
+ * stub-sync registry (`deck_workspaces`, which only records folders that
+ * received stub syncs and is never touched by workspace-default switches)
+ * is consulted only when no manifest exists at any level.
  */
 async function resolveSavedWorkspaceDeck(
   workspaceRoot: string,
   db: DatabaseManager,
 ): Promise<SavedWorkspaceDeck | null> {
-  const manifest = readUseManifest(workspaceRoot);
+  const manifest = readNearestUseManifest(workspaceRoot);
   if (manifest) {
-    const deck = await db.getDeck(manifest.deckId);
-    if (deck) {
-      return deck;
-    }
+    // Trusted absolutely: a manifest pointing at a deleted deck resolves to
+    // unbound (null) rather than falling through to an unrelated row.
+    return (await db.getDeck(manifest.deckId)) ?? null;
   }
 
   const seen = new Set<string>();
