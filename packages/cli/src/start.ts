@@ -423,8 +423,13 @@ async function maybeOpenDashboard(backendUrl: string, openBrowser: boolean | und
   }
 }
 
-function buildSupervisorArgs(options: StartOptions): string[] {
-  const args = ['start', '--_supervisor'];
+/**
+ * NOT-297: the launcher owns the one user-facing dashboard open after the API
+ * health check, so the detached supervisor must never auto-open — otherwise
+ * one cold `start --daemon` invokes the browser opener twice.
+ */
+export function buildSupervisorArgs(options: StartOptions): string[] {
+  const args = ['start', '--_supervisor', '--no-open'];
   if (options.skipUi) {
     args.push('--no-ui');
   }
@@ -528,6 +533,8 @@ async function runDaemonLauncher(
   console.log('  Stop       agent-deck stop');
   console.log('');
 
+  // NOT-297: the launcher is the sole opener for daemon startup; the
+  // detached supervisor was spawned with --no-open above.
   if (options.openBrowser ?? shouldOpenDashboardByDefault()) {
     const result = await openDashboardInBrowser(backendUrl);
     if (result.code !== 0) {
