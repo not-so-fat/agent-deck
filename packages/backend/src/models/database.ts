@@ -2182,6 +2182,41 @@ export class DatabaseManager {
     return { events, nextCursor };
   }
 
+  /**
+   * Successful usage per card in `[windowStart, windowEnd)`. Only
+   * `success = 1` events count; failures, unknowns, and out-of-window
+   * events are ignored. Cards without in-window successes are absent.
+   */
+  async getSuccessfulCardUsageSummary(input: {
+    windowStart: string;
+    windowEnd: string;
+  }): Promise<
+    Array<{
+      cardType: CardUsageCardType;
+      cardId: string;
+      usageCount: number;
+      lastUsedAt: string;
+    }>
+  > {
+    const rows = this.db.prepare(`
+      SELECT card_type, card_id, COUNT(*) AS usage_count, MAX(created_at) AS last_used_at
+      FROM card_usage_events
+      WHERE success = 1
+        AND created_at >= @windowStart
+        AND created_at < @windowEnd
+      GROUP BY card_type, card_id
+    `).all({
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+    }) as any[];
+    return rows.map((row) => ({
+      cardType: row.card_type as CardUsageCardType,
+      cardId: row.card_id as string,
+      usageCount: Number(row.usage_count),
+      lastUsedAt: row.last_used_at as string,
+    }));
+  }
+
   private mapFeedbackSignalRow(row: any): FeedbackSignal {
     return {
       id: row.id,
