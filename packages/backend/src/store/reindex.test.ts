@@ -176,12 +176,6 @@ describe('reindexStoreToSqlite', () => {
       patchId: 'pp_keep',
       actor: 'agent',
     });
-    await fixture.database.recordPlaybookEvent({
-      id: 'pe_keep',
-      playbookId: fixture.playbook.id,
-      event: 'fetched',
-      source: 'test',
-    });
     await fixture.database.createFeedbackSignal({
       id: 'fs_keep',
       source: 'ide',
@@ -218,7 +212,6 @@ describe('reindexStoreToSqlite', () => {
     for (const table of [
       'playbook_patches',
       'playbook_versions',
-      'playbook_events',
       'feedback_signals',
       'exec_runs',
       'deck_workspaces',

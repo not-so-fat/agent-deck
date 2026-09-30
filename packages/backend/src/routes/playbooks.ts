@@ -8,7 +8,6 @@ import {
   Playbook,
   PlaybookSummary,
   PlaybookWithDependencies,
-  generateId,
   trustedSessionError,
 } from '@agent-deck/shared';
 import { ZodError } from 'zod';
@@ -55,15 +54,9 @@ async function sendPlaybookWithOpenPatches(
   reply: FastifyReply,
   playbook: PlaybookWithDependencies,
 ) {
-  await fastify.db.recordPlaybookEvent({
-    id: generateId(),
-    playbookId: playbook.id,
-    event: 'fetched',
-    source: playbookEventSource(request),
-  });
-  // NOT-292: only agent/IDE fetches count as playbook use — dashboard
-  // detail inspection must not emit a usage event. The raw session header
-  // is passed through; only its one-way hash is stored.
+  // Only agent/IDE fetches count as playbook use — dashboard detail
+  // inspection must not emit a usage event. The raw session header is
+  // passed through; only its one-way hash is stored.
   if (!isDashboardClient(request)) {
     try {
       const deckId = await resolveAgentDeckId(request, fastify.db).catch(() => null);
@@ -256,7 +249,7 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { id: string } }>('/:id/events/count', async (request, reply) => {
     try {
       requireDashboardClient(request);
-      const count = await fastify.db.countPlaybookEvents(request.params.id);
+      const count = await fastify.db.countSuccessfulPlaybookFetches(request.params.id);
       return reply.send({ success: true, data: count } satisfies ApiResponse<number>);
     } catch (error) {
       return reply.status(403).send({

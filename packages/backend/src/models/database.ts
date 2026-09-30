@@ -24,7 +24,6 @@ import {
   DeckPlaybook,
   PlaybookPatch,
   PlaybookVersion,
-  PlaybookEvent,
   CardUsageCardType,
   CardUsageEvent,
   FeedbackSignal,
@@ -391,17 +390,6 @@ export class DatabaseManager {
       )
     `);
 
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS playbook_events (
-        id TEXT PRIMARY KEY,
-        playbook_id TEXT NOT NULL,
-        event TEXT NOT NULL,
-        source TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (playbook_id) REFERENCES playbooks (id) ON DELETE CASCADE
-      )
-    `);
-
     // Normalized, privacy-safe card-usage events (NOT-292). No payloads,
     // arguments, results, URLs, headers, or secrets are stored here.
     this.db.exec(`
@@ -689,7 +677,6 @@ export class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_exec_runs_started_at ON exec_runs(started_at);
       CREATE INDEX IF NOT EXISTS idx_playbook_patches_status ON playbook_patches(status);
       CREATE INDEX IF NOT EXISTS idx_playbook_versions_playbook ON playbook_versions(playbook_id);
-      CREATE INDEX IF NOT EXISTS idx_playbook_events_playbook ON playbook_events(playbook_id);
       CREATE INDEX IF NOT EXISTS idx_card_usage_card ON card_usage_events(card_type, card_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_card_usage_time ON card_usage_events(created_at, id);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_status ON feedback_signals(status);
@@ -1987,39 +1974,6 @@ export class DatabaseManager {
     }));
   }
 
-  async recordPlaybookEvent(input: {
-    id: string;
-    playbookId: string;
-    event: 'fetched';
-    source: string;
-  }): Promise<PlaybookEvent> {
-    const now = new Date().toISOString();
-    this.db.prepare(`
-      INSERT INTO playbook_events (id, playbook_id, event, source, created_at)
-      VALUES (@id, @playbook_id, @event, @source, @created_at)
-    `).run({
-      id: input.id,
-      playbook_id: input.playbookId,
-      event: input.event,
-      source: input.source,
-      created_at: now,
-    });
-    return {
-      id: input.id,
-      playbookId: input.playbookId,
-      event: input.event,
-      source: input.source,
-      createdAt: now,
-    };
-  }
-
-  async countPlaybookEvents(playbookId: string, event: 'fetched' = 'fetched'): Promise<number> {
-    const row = this.db
-      .prepare('SELECT COUNT(*) as count FROM playbook_events WHERE playbook_id = ? AND event = ?')
-      .get(playbookId, event) as { count: number };
-    return row.count;
-  }
-
   private static readonly CARD_USAGE_CARD_TYPES: readonly string[] = [
     'service',
     'credential',
@@ -2232,6 +2186,19 @@ export class DatabaseManager {
       usageCount: Number(row.usage_count),
       lastUsedAt: row.last_used_at as string,
     }));
+  }
+
+  /** All-time successful agent/IDE fetches for the playbook details signal. */
+  async countSuccessfulPlaybookFetches(playbookId: string): Promise<number> {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM card_usage_events
+      WHERE card_type = 'playbook'
+        AND card_id = ?
+        AND action = 'fetch'
+        AND success = 1
+    `).get(playbookId) as { count: number };
+    return row.count;
   }
 
   private mapFeedbackSignalRow(row: any): FeedbackSignal {

@@ -68,7 +68,7 @@ describe('playbook fetch usage events (NOT-292)', () => {
   }
 
   it('persists a playbook-use event for an agent/IDE fetch', async () => {
-    const { fastify, db, session, playbook, boundDeck } = await buildApp();
+    const { fastify, db, store, session, playbook, boundDeck } = await buildApp();
 
     const response = await fastify.inject({
       method: 'GET',
@@ -91,6 +91,15 @@ describe('playbook fetch usage events (NOT-292)', () => {
     expect(events[0].sessionId).not.toBe(session.sessionId);
     expect(JSON.stringify(events)).not.toContain(session.sessionId);
     await expect(db.getUsageObservationStart('playbook')).resolves.not.toBeNull();
+    await expect(db.countSuccessfulPlaybookFetches(playbook.id)).resolves.toBe(1);
+
+    const countResponse = await fastify.inject({
+      method: 'GET',
+      url: `/api/playbooks/${playbook.id}/events/count`,
+      headers: dashboardAuthHeaders(store),
+    });
+    expect(countResponse.statusCode).toBe(200);
+    expect(countResponse.json()).toMatchObject({ success: true, data: 1 });
   });
 
   it('persists no playbook-use event for a dashboard details read', async () => {
@@ -108,7 +117,15 @@ describe('playbook fetch usage events (NOT-292)', () => {
     // … but the seeded observation start still marks a fully observed
     // zero-use window for classification.
     await expect(db.getUsageObservationStart('playbook')).resolves.not.toBeNull();
-    // … while the legacy all-time fetch counter keeps working.
-    await expect(db.countPlaybookEvents(playbook.id)).resolves.toBe(1);
+    // Dashboard inspection must not inflate the all-time usage signal.
+    await expect(db.countSuccessfulPlaybookFetches(playbook.id)).resolves.toBe(0);
+
+    const countResponse = await fastify.inject({
+      method: 'GET',
+      url: `/api/playbooks/${playbook.id}/events/count`,
+      headers: dashboardAuthHeaders(store),
+    });
+    expect(countResponse.statusCode).toBe(200);
+    expect(countResponse.json()).toMatchObject({ success: true, data: 0 });
   });
 });
