@@ -1,13 +1,16 @@
+import path from 'node:path';
 import {
   DeckDisplay,
   DeckDisplaySource,
   type DeckCardCounts,
   countDeckCards,
+  formatAmbiguousSessionDisplayLine,
   formatDisplayLine,
+  normalizeWorkspaceRoot,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
 import { readUseManifest } from '../playbooks/stub-sync';
-import { LiveDisplayRegistry } from './live-display-registry';
+import { LiveDisplayEntry, LiveDisplayRegistry } from './live-display-registry';
 
 const EMPTY_COUNTS = { mcp: 0, credentials: 0, playbooks: 0 };
 const DEFAULT_MCP_PORT = 1110;
@@ -134,25 +137,181 @@ export function refreshLiveDisplayAfterDeckSwitch(
   return true;
 }
 
-/** Resolve bound-deck display from live MCP session registry only (no sidecar/manifest guessing). */
+/**
+ * NOT-296: effective-deck identity of one live entry for agreement checks.
+ * Two entries agree only on the same deck id, the same bind source, and the
+ * same id-based override meaning against the saved workspace default — any
+ * doubt stays neutral instead of guessing.
+ */
+function liveEntryIdentity(
+  entry: LiveDisplayEntry,
+  workspaceDefaultDeckId: string | null,
+): { deckId: string; source: LiveDisplayEntry['source']; sessionOverride: boolean } {
+  return {
+    deckId: entry.deckId,
+    source: entry.source,
+    sessionOverride: Boolean(
+      workspaceDefaultDeckId && workspaceDefaultDeckId !== entry.deckId,
+    ),
+  };
+}
+
+async function resolveMultiSessionDisplay(
+  input: ResolveDeckDisplayInput,
+  db: DatabaseManager,
+  entries: LiveDisplayEntry[],
+): Promise<DeckDisplay> {
+  const workspaceDefault = readUseManifest(input.workspaceRoot);
+  const first = liveEntryIdentity(entries[0], workspaceDefault?.deckId ?? null);
+  const agree = entries.every((entry) => {
+    const identity = liveEntryIdentity(entry, workspaceDefault?.deckId ?? null);
+    return (
+      identity.deckId === first.deckId &&
+      identity.source === first.source &&
+      identity.sessionOverride === first.sessionOverride
+    );
+  });
+
+  if (!agree) {
+    return {
+      workspaceRoot: input.workspaceRoot,
+      deckId: null,
+      deckName: null,
+      source: 'unbound',
+      cardCounts: { ...EMPTY_COUNTS },
+      agentDeckOnline: true,
+      mcpOnline: true,
+      displayLine: formatAmbiguousSessionDisplayLine(),
+    };
+  }
+
+  // Agreement: name the common deck with a session count. Counts come from
+  // the database (deterministic and fresh); the deterministic-order first
+  // entry is only a fallback when the deck row is gone. No badge or
+  // updatedAt is shown — either would single out one session.
+  const deck = await db.getDeck(first.deckId);
+  const cardCounts = deck ? countDeckCards(deck) : { ...entries[0].cardCounts };
+  const deckName = deck?.name ?? entries[0].deckName;
+  return {
+    workspaceRoot: input.workspaceRoot,
+    deckId: deck?.id ?? first.deckId,
+    deckName,
+    source: first.source,
+    cardCounts,
+    agentDeckOnline: true,
+    mcpOnline: true,
+    displayLine: formatDisplayLine(deckName, cardCounts, {
+      sessionCount: entries.length,
+      workspaceDefaultName: workspaceDefault?.deckName ?? null,
+      sessionOverride: first.sessionOverride,
+    }),
+  };
+}
+
+type SavedWorkspaceDeck = {
+  id: string;
+  name: string;
+  services?: Array<{ type?: string }>;
+  credentials?: unknown[];
+  playbooks?: unknown[];
+};
+
+/**
+ * NOT-296: saved assignment for a workspace with no live session. The
+ * `use.json` assignment file is the source of truth; the database stub-sync
+ * registry is a fallback (nearest level first, monorepo walk-up).
+ */
+async function resolveSavedWorkspaceDeck(
+  workspaceRoot: string,
+  db: DatabaseManager,
+): Promise<SavedWorkspaceDeck | null> {
+  const manifest = readUseManifest(workspaceRoot);
+  if (manifest) {
+    const deck = await db.getDeck(manifest.deckId);
+    if (deck) {
+      return deck;
+    }
+  }
+
+  const seen = new Set<string>();
+  const candidates = [workspaceRoot.trim(), normalizeWorkspaceRoot(workspaceRoot)];
+  let current: string | undefined;
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    const deckId = await db.getLatestDeckIdForWorkspace(candidate);
+    if (deckId) {
+      const deck = await db.getDeck(deckId);
+      if (deck) {
+        return deck;
+      }
+    }
+  }
+  current = normalizeWorkspaceRoot(workspaceRoot);
+  while (true) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+    if (seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    const deckId = await db.getLatestDeckIdForWorkspace(current);
+    if (deckId) {
+      const deck = await db.getDeck(deckId);
+      if (deck) {
+        return deck;
+      }
+    }
+  }
+  return null;
+}
+
+/** Resolve bound-deck display from live MCP sessions, falling back to an explicitly labeled workspace default. */
 export async function resolveDeckDisplay(
   input: ResolveDeckDisplayInput,
   db: DatabaseManager,
   registry: LiveDisplayRegistry,
 ): Promise<DeckDisplay> {
   const normalizedRoot = input.workspaceRoot.trim();
-  const live = registry.findForWorkspace(normalizedRoot);
-  const mcpOnline = live ? true : await isMcpServerUp();
-  if (live) {
+  const match = registry.resolveWorkspaceSessions(normalizedRoot);
+  if (match.kind === 'single') {
+    const live = match.entries[0];
     const deck = await db.getDeck(live.deckId);
     return buildDisplay({ workspaceRoot: normalizedRoot }, live.source, deck, {
-      mcpOnline,
+      mcpOnline: true,
       updatedAt: live.updatedAt,
       liveDeckName: live.deckName,
       liveDeckId: live.deckId,
       liveCardCounts: live.cardCounts,
       liveBadge: live.badge,
     });
+  }
+  if (match.kind === 'multiple') {
+    return resolveMultiSessionDisplay({ workspaceRoot: normalizedRoot }, db, match.entries);
+  }
+
+  const mcpOnline = await isMcpServerUp();
+  const saved = await resolveSavedWorkspaceDeck(normalizedRoot, db);
+  if (saved) {
+    const cardCounts = countDeckCards(saved);
+    return {
+      workspaceRoot: normalizedRoot,
+      deckId: saved.id,
+      deckName: saved.name,
+      source: 'unbound',
+      cardCounts,
+      agentDeckOnline: true,
+      mcpOnline,
+      displayLine: formatDisplayLine(saved.name, cardCounts, {
+        mcpOffline: !mcpOnline,
+        workspaceDefault: true,
+      }),
+    };
   }
 
   return buildDisplay({ workspaceRoot: normalizedRoot }, 'unbound', null, { mcpOnline });

@@ -22,6 +22,17 @@ export type LiveDisplayEntry = {
 
 export type LiveDisplayUpsert = Omit<LiveDisplayEntry, 'badge' | 'lastActivityAt'>;
 
+/**
+ * NOT-296: explicit ambiguity-aware workspace match. `single` keeps the one
+ * live session's exact display; `multiple` carries every match in
+ * deterministic order so the caller can agree on a common deck or stay
+ * neutral instead of guessing latest-wins.
+ */
+export type WorkspaceSessionMatch =
+  | { kind: 'none'; entries: [] }
+  | { kind: 'single'; entries: [LiveDisplayEntry] }
+  | { kind: 'multiple'; entries: LiveDisplayEntry[] };
+
 /** In-memory registry of live MCP session binds (status line reads reality only). */
 export class LiveDisplayRegistry {
   private bySessionId = new Map<string, LiveDisplayEntry>();
@@ -65,23 +76,31 @@ export class LiveDisplayRegistry {
     );
   }
 
-  /** Nearest workspace bind walking up from workspaceRoot (monorepo walk-up). */
-  findForWorkspace(workspaceRoot: string): LiveDisplayEntry | null {
+  /**
+   * NOT-296: ambiguity-aware workspace lookup. Returns every live session
+   * bound at the nearest workspace level (monorepo walk-up) in deterministic
+   * `mcpSessionId` order — never a latest-updated-wins guess, so two
+   * concurrent sessions in one repository cannot both display whichever deck
+   * was updated last.
+   */
+  resolveWorkspaceSessions(workspaceRoot: string): WorkspaceSessionMatch {
     let current = normalizeWorkspaceRoot(workspaceRoot);
     while (true) {
-      let best: LiveDisplayEntry | null = null;
+      const matches: LiveDisplayEntry[] = [];
       for (const entry of this.bySessionId.values()) {
         // Header/auto-bound sessions have no folder — they never match a workspace,
         // so they only appear in the dashboard list, never the per-folder statusline.
         if (!entry.workspaceRoot || normalizeWorkspaceRoot(entry.workspaceRoot) !== current) {
           continue;
         }
-        if (!best || entry.updatedAt > best.updatedAt) {
-          best = entry;
-        }
+        matches.push(entry);
       }
-      if (best) {
-        return best;
+      if (matches.length > 0) {
+        matches.sort((a, b) => (a.mcpSessionId < b.mcpSessionId ? -1 : a.mcpSessionId > b.mcpSessionId ? 1 : 0));
+        if (matches.length === 1) {
+          return { kind: 'single', entries: [matches[0]] };
+        }
+        return { kind: 'multiple', entries: matches };
       }
 
       const parent = path.dirname(current);
@@ -90,6 +109,6 @@ export class LiveDisplayRegistry {
       }
       current = parent;
     }
-    return null;
+    return { kind: 'none', entries: [] };
   }
 }
