@@ -1,3 +1,4 @@
+import { diagnoseAllHarnesses, formatHarnessDiagnosis } from './agent-harness';
 import { formatMcpSessionStatus, formatPortConflict, isTcpPortOpen, probeAgentDeck } from './ports';
 import { isProcessAlive, readRunState } from './runtime-state';
 import { getAgentDeckVersion } from './version';
@@ -100,6 +101,13 @@ export async function runStatus(): Promise<number> {
   });
   console.log('');
   console.log(formatCursorMcpInspection(inspection));
+
+  // NOT-295: read-only harness freshness (missing/stale managed block) with
+  // the exact setup recovery command per client. Never writes.
+  console.log('');
+  for (const line of formatHarnessDiagnosis(diagnoseAllHarnesses('global'))) {
+    console.log(line);
+  }
 
   return probe.backendUp && probe.mcpUp ? 0 : 1;
 }
