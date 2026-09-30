@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.11.8 — 2026-09-30
+
+### Feature: canonical first-turn session receipt (NOT-295)
+
+- Generated Cursor, Claude and Codex guidance now names the first-turn `display_summary` line as the canonical session receipt: one verbatim transcript line, authoritative over workspace badges and terminal status lines, and not repeated while the binding is unchanged.
+- `agent-deck status` and `doctor` report a missing or stale harness block per client, with the exact `setup` command to fix it.
+
+### Fix: status lines with concurrent session decks (NOT-296)
+
+- Claude and Cursor terminal status lines no longer show whichever session started last. When several live sessions in a workspace disagree on the deck, the line goes neutral. When they agree, it shows the shared deck plus a count if there are two or more sessions.
+
+### Fix: dashboard opened twice on `start --daemon` (NOT-297)
+
+- A cold `agent-deck start --daemon` now opens the browser once, from the launcher after the API health check, instead of twice.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`. Run `agent-deck setup --client <claude|cursor|codex>` to refresh generated guidance if `doctor` reports a stale harness block.
+
 ## 1.11.7 — 2026-09-29
 
 ### Feature: card usage marks on Collection cards (NOT-292, NOT-293, NOT-294)
