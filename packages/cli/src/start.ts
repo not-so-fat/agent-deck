@@ -7,6 +7,7 @@ import { runStop } from './stop';
 import { maybeAutoUpgradeOnStart, notifyIfUpdateAvailable } from './upgrade';
 import { getAgentDeckVersion } from './version';
 import { readCliBackendPort, parseCliMcpPort } from './defaults';
+import { diagnoseAllHarnesses, formatHarnessDiagnosis } from './agent-harness';
 import {
   detectInstallKind,
   localBinLauncherPath,
@@ -941,6 +942,13 @@ export async function runDoctor(): Promise<number> {
   });
   console.log('');
   console.log(formatCursorMcpInspection(inspection));
+
+  // NOT-295: read-only harness freshness (missing/stale managed block) with
+  // the exact setup recovery command per client. Never writes.
+  console.log('');
+  for (const line of formatHarnessDiagnosis(diagnoseAllHarnesses('global'))) {
+    console.log(line);
+  }
 
   // Read-only Codex plugin compatibility check (NOT-188): never mutates Codex
   // state, only reports it. A stale/disabled/ambiguous plugin fails doctor.

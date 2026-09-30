@@ -18,9 +18,9 @@ const GLOBAL_BODY = `**Connect first:** Connection has three layers: host transp
 
 **Agent Deck hard gate:** When Agent Deck MCP is configured for the current session, or \`.agent-deck/use.json\` indicates that it is expected, bootstrap is mandatory. This includes launch-selected sessions that deliberately have no assignment file. Before reading repo files, running task commands, or answering the task, require \`get_session_context\` to succeed. If the tool is unavailable, disconnected, returns \`GRANT_REQUIRED\`, or otherwise fails, stop and report the connection problem — do not improvise without the deck. Checking for the optional assignment signal, checking whether Agent Deck is configured, and other read-only connection diagnostics are allowed before the gate passes.
 
-**Session opener (first turn only):** This call verifies an existing connection; it does not create it. The folder's deck comes from \`.agent-deck/use.json\`, which \`agent-deck use <deck>\` writes — the connection carries it; the agent does **not** pick a deck and must **not** call \`get_decks\`. When Agent Deck MCP is configured for the session, call \`get_session_context\` once, and tell the user **exactly one line** using \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Match the task against the returned playbook triggers and call \`get_playbook\` for every match before taking task action. If tools are unavailable, repair the host transport first. On \`GRANT_REQUIRED\`, match the message before acting. "No deck assigned to this folder…" means the folder itself has no assignment — tell the user to run \`agent-deck use <deck>\` in the folder and reload MCP, then stop. "This MCP session has not bound yet…" means the session only needs its first bind — call \`bind_workspace\` (or \`get_session_binding\`) once, then retry \`switch_deck\`; no CLI step, no reload, and stop only if that retry also fails. For an unattended session, fix \`x-agent-deck-deck-id\` / the launch config instead. If \`.agent-deck/use.json\` already assigns the deck and only the project MCP pin is missing, that \`use\` can succeed from a host agent sandbox; creating a new assignment needs an unsandboxed terminal (home store write). Do **not** repeat the status line every turn unless the user asks or the bind changes. (\`get_session_binding\` and \`get_bound_deck\` remain available for compatibility; the opener needs only \`get_session_context\`.)
+**Session opener (first turn only) — the canonical session receipt:** This call verifies an existing connection; it does not create it. The folder's deck comes from \`.agent-deck/use.json\`, which \`agent-deck use <deck>\` writes — the connection carries it; the agent does **not** pick a deck and must **not** call \`get_decks\`. When Agent Deck MCP is configured for the session, call \`get_session_context\` once, and show the session binding as **exactly one transcript line** rendering \`display_summary\` (e.g. \`◆ dev · 2 MCP · 0 keys · 1 playbooks\`). Render it verbatim: the string is the one source for the receipt — do not reconstruct the deck name, counts, badge, or the session (default …) override suffix, and print the suffix exactly as returned when the session deck differs from the workspace default. This transcript receipt is the authoritative binding record for the session; workspace badges and terminal status lines are optional secondary context and never override it. Match the task against the returned playbook triggers and call \`get_playbook\` for every match before taking task action. If tools are unavailable, repair the host transport first. On \`GRANT_REQUIRED\`, match the message before acting. "No deck assigned to this folder…" means the folder itself has no assignment — tell the user to run \`agent-deck use <deck>\` in the folder and reload MCP, then stop. "This MCP session has not bound yet…" means the session only needs its first bind — call \`bind_workspace\` (or \`get_session_binding\`) once, then retry \`switch_deck\`; no CLI step, no reload, and stop only if that retry also fails. For an unattended session, fix \`x-agent-deck-deck-id\` / the launch config instead. If \`.agent-deck/use.json\` already assigns the deck and only the project MCP pin is missing, that \`use\` can succeed from a host agent sandbox; creating a new assignment needs an unsandboxed terminal (home store write). Do **not** repeat the receipt on later turns when the binding is unchanged. A confirmed binding change allows exactly one new receipt line. (\`get_session_binding\` and \`get_bound_deck\` remain available for compatibility; the opener needs only \`get_session_context\`.)
 
-**Later turns:** Deck scope comes from the launch-selected connection (folder assignment or launch header). Do not re-bind unless the user asks for deck administration. To move to another deck, call \`switch_deck\` and wait — the user approves it as This session only or This workspace by default; the active deck is unchanged until approval and no reload is needed. A rejected move (\`DECK_FIXED\` / \`ADMIN_REQUIRED\`) means the agent cannot change the connection itself — tell the user instead of retrying.
+**Later turns:** Deck scope comes from the launch-selected connection (folder assignment or launch header). Do not re-bind unless the user asks for deck administration. Do not re-show the session receipt on later turns when the binding is unchanged; after a confirmed binding change, show exactly one new receipt line and then stop repeating it. To move to another deck, call \`switch_deck\` and wait — the user approves it as This session only or This workspace by default; the active deck is unchanged until approval and no reload is needed. A rejected move (\`DECK_FIXED\` / \`ADMIN_REQUIRED\`) means the agent cannot change the connection itself — tell the user instead of retrying.
 
 Before declining for missing tools (Slack, Linear, GitHub, etc.), use agent-deck MCP: \`get_bound_deck\`, \`call_service_tool\`. Don't hardcode deck IDs.
 
@@ -79,7 +79,7 @@ export function buildCodexHarnessBlock(scope: SetupScope): string {
   return buildClaudeHarnessBlock(scope);
 }
 
-function buildCursorHarnessInner(scope: SetupScope): string {
+export function buildCursorHarnessInner(scope: SetupScope): string {
   const body =
     scope === 'project' ? `${GLOBAL_BODY}\n\n${PROJECT_BODY_EXTRA}` : GLOBAL_BODY;
   return `# Agent Deck\n\n${body}`;
@@ -238,4 +238,83 @@ export function installAgentHarness(client: HarnessClient, scope: SetupScope): H
         ? `Agent harness already current → ${harnessPath}`
         : `Installed agent harness → ${harnessPath} (rest of ${client === 'codex' ? 'AGENTS.md' : 'CLAUDE.md'} untouched)`,
   };
+}
+
+export type HarnessDiagnosisStatus = 'current' | 'missing' | 'stale';
+
+export interface HarnessDiagnosis {
+  client: HarnessClient;
+  path: string;
+  status: HarnessDiagnosisStatus;
+  repairCommand: string;
+}
+
+function expectedHarnessInner(client: HarnessClient, scope: SetupScope): string {
+  if (client === 'cursor') {
+    return buildCursorHarnessInner(scope);
+  }
+  return client === 'codex' ? buildCodexHarnessBlock(scope) : buildClaudeHarnessBlock(scope);
+}
+
+function extractManagedHarnessBlock(content: string): string | null {
+  const start = content.indexOf(HARNESS_MARKER_START);
+  const end = content.indexOf(HARNESS_MARKER_END);
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+  return content.slice(start + HARNESS_MARKER_START.length, end).trim();
+}
+
+/**
+ * NOT-295: read-only harness freshness check. Never writes; compares only the
+ * managed block between the harness markers so user notes, custom Cursor
+ * frontmatter, and other rules/skills cannot flag a file as stale.
+ */
+export function diagnoseHarness(client: HarnessClient, scope: SetupScope): HarnessDiagnosis {
+  const harnessPath = resolveHarnessPath(client, scope);
+  const repairCommand = `agent-deck setup --client ${client}`;
+  if (!harnessPath) {
+    return { client, path: '', status: 'missing', repairCommand };
+  }
+  if (!fs.existsSync(harnessPath)) {
+    return { client, path: harnessPath, status: 'missing', repairCommand };
+  }
+  const managed = extractManagedHarnessBlock(fs.readFileSync(harnessPath, 'utf8'));
+  if (managed === null || managed !== expectedHarnessInner(client, scope).trim()) {
+    return {
+      client,
+      path: harnessPath,
+      status: managed === null ? 'missing' : 'stale',
+      repairCommand,
+    };
+  }
+  return { client, path: harnessPath, status: 'current', repairCommand };
+}
+
+/** Read-only freshness check for every supported harness client. */
+export function diagnoseAllHarnesses(scope: SetupScope = 'global'): HarnessDiagnosis[] {
+  const clients: HarnessClient[] = ['cursor', 'claude', 'codex'];
+  return clients.map((client) => diagnoseHarness(client, scope));
+}
+
+/** Human-readable lines naming the affected client/file and the exact repair command. */
+export function formatHarnessDiagnosis(diagnoses: HarnessDiagnosis[]): string[] {
+  const lines = ['Agent harness:'];
+  let problems = 0;
+  for (const diagnosis of diagnoses) {
+    if (diagnosis.status === 'current') {
+      lines.push(`  OK: ${diagnosis.client} → ${diagnosis.path}`);
+      continue;
+    }
+    problems += 1;
+    const label = diagnosis.status === 'missing' ? 'MISSING' : 'STALE';
+    lines.push(`  ${label}: ${diagnosis.client} → ${diagnosis.path || '(no path)'}`);
+    lines.push(`    repair: ${diagnosis.repairCommand}`);
+  }
+  if (problems === 0) {
+    lines.push('  All harnesses current — first turns show one verbatim display_summary receipt.');
+  } else {
+    lines.push('  First-turn receipt requires the harness above; re-run the repair command, then restart the host.');
+  }
+  return lines;
 }

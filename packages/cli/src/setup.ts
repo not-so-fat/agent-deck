@@ -382,6 +382,10 @@ function printNextSteps(
     step += 1;
   }
   console.log('');
+  console.log('First turn: the agent calls get_session_context once and shows exactly one');
+  console.log('verbatim display_summary line. That transcript receipt is the authoritative');
+  console.log('binding record for the session — terminal status lines are optional secondary context.');
+  console.log('');
   console.log('Updates: managed install auto-updates by default (agent-deck install). Opt out: AGENT_DECK_DISABLE_AUTOUPDATER=1');
 }
 
