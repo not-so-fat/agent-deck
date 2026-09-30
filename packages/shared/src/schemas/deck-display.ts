@@ -222,8 +222,7 @@ export function formatDisplayLine(
   const badgeSuffix = options?.badge ? ` · ⌘${options.badge}` : '';
   const mcpSuffix = options?.mcpOffline ? ' · MCP offline' : '';
   const sessionCount = options?.sessionCount ?? 0;
-  const sessionsSuffix =
-    sessionCount >= 2 ? ` · ${sessionCount} sessions` : sessionCount === 1 ? ' · 1 session' : '';
+  const sessionsSuffix = sessionCount >= 2 ? ` · ${sessionCount} sessions` : '';
   const workspaceDefaultSuffix = options?.workspaceDefault ? ' · workspace default' : '';
   // Room for the override marker is reserved before truncating the active
   // name, so a real session override stays visible within the budget.
