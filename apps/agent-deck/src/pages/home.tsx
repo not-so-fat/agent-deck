@@ -11,6 +11,7 @@ import {
   useCardUsage,
 } from "@/lib/card-usage";
 import {
+  buildDefaultOrderedCollection,
   sortCollectionItems,
   type CollectionSortItem,
   type CollectionSortMode,
@@ -163,96 +164,74 @@ export default function Home() {
     [collectionWarningsResponse?.data],
   );
 
-  const matchesWarningsFilter = (
-    cardType: "service" | "credential" | "playbook",
-    id: string,
-  ) => {
-    if (!warningsOnlyFilter) {
-      return true;
-    }
-    if (cardType === "service") {
-      return collectionWarnings.serviceWarnings.has(id);
-    }
-    if (cardType === "credential") {
-      return collectionWarnings.credentialWarnings.has(id);
-    }
-    return collectionWarnings.playbookWarnings.has(id);
-  };
-
-  // Filter services based on search and filters
-  const filteredServices = servicesArray.filter(service => {
-    if (!matchesWarningsFilter("service", service.id)) return false;
-    if (typeFilter === 'api-key' || typeFilter === 'playbook') return false;
-
-    const matchesSearch = service.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         service.description?.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesType = !typeFilter || typeFilter === 'all' || service.type === typeFilter;
-    
-    return matchesSearch && matchesType;
-  });
-
-  const filteredCredentials = credentialsArray.filter(credential => {
-    if (!matchesWarningsFilter("credential", credential.id)) return false;
-    if (typeFilter && typeFilter !== 'all' && typeFilter !== 'api-key') return false;
-
-    const matchesSearch = credential.label.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch;
-  });
-
-  const filteredPlaybooks = playbooksArray.filter((playbook) => {
-    if (!matchesWarningsFilter("playbook", playbook.id)) return false;
-    if (typeFilter && typeFilter !== 'all' && typeFilter !== 'playbook') return false;
-
-    const matchesSearch =
-      playbook.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      playbook.body.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch;
-  });
-
-  const collectionCount =
-    filteredServices.length + filteredCredentials.length + filteredPlaybooks.length;
-
   // Usage rows are unknown — never zero — while loading or on error, so
   // usage sorting stays off and Default order is preserved until rows arrive.
   const usageAvailable = Array.isArray(cardUsageResponse?.data?.cards);
+
+  // Payloads by id for the unified grid render below. The search/type/
+  // warnings filtering plus Default ordering lives in the pure
+  // `buildDefaultOrderedCollection` helper (unit-tested) so the page only
+  // reattaches the card payloads here.
+  const serviceById = useMemo(
+    () => new Map(servicesArray.map((service) => [service.id, service])),
+    [servicesArray],
+  );
+  const credentialById = useMemo(
+    () => new Map(credentialsArray.map((credential) => [credential.id, credential])),
+    [credentialsArray],
+  );
+  const playbookById = useMemo(
+    () => new Map(playbooksArray.map((playbook) => [playbook.id, playbook])),
+    [playbooksArray],
+  );
 
   // Default order is exactly the pre-ticket grouped order (playbooks, then
   // credentials, then services) after the search/type/warnings filters.
   // Usage modes reorder this one mixed list by raw 30-day usageCount and
   // render through the existing card components below — never per group and
-  // without duplicating card markup.
+  // without duplicating card markup. Memo inputs are all stable (query data,
+  // memoized lookups, state primitives), so this only recomputes when one of
+  // them actually changes.
   const defaultOrderedCollection: CollectionCardEntry[] = useMemo(
-    () => [
-      ...filteredPlaybooks.map(
-        (playbook): CollectionCardEntry => ({
-          kind: "playbook",
-          id: playbook.id,
-          usageCount: cardUsageLookup.get(cardUsageKey("playbook", playbook.id))
-            ?.usageCount,
-          playbook,
-        }),
-      ),
-      ...filteredCredentials.map(
-        (credential): CollectionCardEntry => ({
-          kind: "credential",
-          id: credential.id,
-          usageCount: cardUsageLookup.get(cardUsageKey("credential", credential.id))
-            ?.usageCount,
-          credential,
-        }),
-      ),
-      ...filteredServices.map(
-        (service): CollectionCardEntry => ({
-          kind: "service",
-          id: service.id,
-          usageCount: cardUsageLookup.get(cardUsageKey("service", service.id))
-            ?.usageCount,
-          service,
-        }),
-      ),
+    () =>
+      buildDefaultOrderedCollection(
+        {
+          services: servicesArray,
+          credentials: credentialsArray,
+          playbooks: playbooksArray,
+        },
+        {
+          searchQuery,
+          typeFilter,
+          warningsOnly: warningsOnlyFilter,
+          warnings: collectionWarnings,
+          getUsageCount: (kind, id) => cardUsageLookup.get(cardUsageKey(kind, id))?.usageCount,
+        },
+      ).map((entry): CollectionCardEntry => {
+        if (entry.kind === "playbook") {
+          return { ...entry, playbook: playbookById.get(entry.id) };
+        }
+        if (entry.kind === "credential") {
+          return { ...entry, credential: credentialById.get(entry.id) };
+        }
+        return { ...entry, service: serviceById.get(entry.id) };
+      }),
+    [
+      servicesArray,
+      credentialsArray,
+      playbooksArray,
+      searchQuery,
+      typeFilter,
+      warningsOnlyFilter,
+      collectionWarnings,
+      cardUsageLookup,
+      serviceById,
+      credentialById,
+      playbookById,
     ],
-    [filteredPlaybooks, filteredCredentials, filteredServices, cardUsageLookup],
   );
+
+  const collectionCount = defaultOrderedCollection.length;
 
   const sortedCollection = useMemo(
     () => sortCollectionItems(defaultOrderedCollection, sortMode, usageAvailable),
@@ -638,7 +617,10 @@ export default function Home() {
 
                   {/* Usage Sort */}
                   <Select
-                    value={sortMode}
+                    // While usage is unavailable the grid is in Default order,
+                    // so show Default too; the retained sortMode resumes once
+                    // usage rows arrive.
+                    value={usageAvailable ? sortMode : "default"}
                     onValueChange={(v) => setSortMode(v as CollectionSortMode)}
                     disabled={!usageAvailable}
                   >
@@ -648,7 +630,7 @@ export default function Home() {
                       title={
                         usageAvailable
                           ? "Sort collection by 30-day use"
-                          : "Usage data unavailable"
+                          : "Usage data unavailable — showing Default order"
                       }
                       aria-label="Sort collection"
                     >
