@@ -55,6 +55,12 @@ interface CollectionCardEntry extends CollectionSortItem {
   service?: Service;
 }
 
+// Stable empty lists so the memoized maps and collection below keep their
+// references while a query is still unresolved (no fresh `[]` per render).
+const EMPTY_SERVICES: Service[] = [];
+const EMPTY_CREDENTIALS: Credential[] = [];
+const EMPTY_PLAYBOOKS: Playbook[] = [];
+
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
@@ -155,9 +161,9 @@ export default function Home() {
     [cardUsageResponse?.data?.cards],
   );
 
-  const servicesArray = servicesResponse?.data || [];
-  const credentialsArray = credentialsResponse?.data || [];
-  const playbooksArray = playbooksResponse?.data || [];
+  const servicesArray = servicesResponse?.data ?? EMPTY_SERVICES;
+  const credentialsArray = credentialsResponse?.data ?? EMPTY_CREDENTIALS;
+  const playbooksArray = playbooksResponse?.data ?? EMPTY_PLAYBOOKS;
 
   const collectionWarnings = useMemo(
     () => toCollectionWarningsView(collectionWarningsResponse?.data),

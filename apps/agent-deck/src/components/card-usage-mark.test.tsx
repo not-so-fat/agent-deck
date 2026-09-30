@@ -123,6 +123,8 @@ describe("CardUsageMark (NOT-294)", () => {
     expect(mark.querySelectorAll("svg")).toHaveLength(0);
     expect(mark).toHaveAttribute("aria-label", "New · tracking for 10 days");
     expect(mark).toHaveAttribute("title", "New · tracking for 10 days");
+    // NOT-302 leaves NEW untouched at its 7px treatment.
+    expect(mark.className).toMatch(/text-\[7px\]/);
   });
 
   it("keeps the mark subtle and smaller than the top-left type label", () => {
