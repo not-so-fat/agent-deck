@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.11.7 — 2026-09-29
+
+### Feature: card usage marks on Collection cards (NOT-292, NOT-293, NOT-294)
+
+- Agent Deck now records normalized card-usage events for services, credentials and playbooks (no payloads or secrets; session ids are stored hashed) and exposes them through `GET /api/usage/events` and `GET /api/usage/cards`.
+- Cards are classified over the trailing 30 days as Popular, Used, Unused or New. Collection cards show a subtle mark for each: 3 stars, 1 star, an outline star, or NEW.
+
+### Fix: Codex plugin reconcile on a no-op upgrade (NOT-291)
+
+- `agent-deck upgrade` now reconciles the Codex plugin even when the CLI is already current, and reads Codex output on process close so `codex plugin list` JSON is no longer truncated under load.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start` to load the updated dashboard.
+
 ## 1.11.6 — 2026-09-28
 
 ### Fix: friend-path cold open and bare-URL recovery (NOT-286)
