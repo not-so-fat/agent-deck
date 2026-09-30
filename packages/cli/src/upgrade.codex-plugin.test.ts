@@ -410,6 +410,136 @@ describe('upgrade codex plugin reconciliation (NOT-188)', () => {
   });
 });
 
+describe('current-contract reconciliation (NOT-301)', () => {
+  /**
+   * Sanitized Codex 0.157.1 shape: `installed[]` carries pluginId /
+   * marketplaceName / installed / enabled / nested source.path, with a stale
+   * discovery-only `available[]` row. The stub promotes to the post-upgrade
+   * current shape on `plugin add`. Fixture home is isolated temp.
+   */
+  function seedCurrentShapeUpgradeHome(opts: { enabled?: boolean; installedFlag?: boolean } = {}): void {
+    const { enabled = true, installedFlag = true } = opts;
+    codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-cur-up-'));
+    pluginRoot = path.join(codexHome, 'roots', 'agent-deck');
+    fs.mkdirSync(pluginRoot, { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(LEGACY_MCP, null, 2)}\n`);
+    const pluginList = {
+      installed: [
+        {
+          pluginId: SELECTOR,
+          name: 'agent-deck',
+          marketplaceName: 'agent-deck',
+          version: '1.11.7',
+          installed: installedFlag,
+          enabled,
+          source: { source: 'local', path: pluginRoot },
+          marketplaceSource: { sourceType: 'local', source: pluginRoot },
+        },
+      ],
+      available: [
+        {
+          pluginId: 'agent-deck@agent-deck-dev',
+          name: 'agent-deck',
+          marketplaceName: 'agent-deck-dev',
+          version: '1.4.4',
+          installed: false,
+          enabled: false,
+        },
+      ],
+    };
+    fs.writeFileSync(path.join(codexHome, 'plugin-list.json'), `${JSON.stringify(pluginList, null, 2)}\n`);
+    fs.writeFileSync(
+      path.join(codexHome, 'marketplace-list.json'),
+      `${JSON.stringify({ marketplaces: [] }, null, 2)}\n`,
+    );
+    const after = path.join(codexHome, 'after');
+    fs.mkdirSync(after, { recursive: true });
+    fs.writeFileSync(
+      path.join(after, 'plugin-list.json'),
+      `${JSON.stringify(
+        {
+          installed: [
+            {
+              pluginId: SELECTOR,
+              name: 'agent-deck',
+              marketplaceName: 'agent-deck',
+              version: CLI_VERSION,
+              installed: true,
+              enabled: true,
+              source: { source: 'local', path: pluginRoot },
+              marketplaceSource: { sourceType: 'local', source: pluginRoot },
+            },
+          ],
+          available: [],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`);
+    writeStub();
+  }
+
+  it('reconciles installed[] 1.11.7 through remove/add and verifies 1.11.8 plus mcp-launch', async () => {
+    seedCurrentShapeUpgradeHome();
+    // One unambiguous local marketplace; the stale available[] dev row
+    // must not create source ambiguity.
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    expect(process.env.CODEX_HOME).toBe(codexHome);
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+    });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(0);
+    const removeIdx = calls.findIndex((line) => line === `codex plugin remove ${SELECTOR}`);
+    const addIdx = calls.findIndex((line) => line === `codex plugin add ${SELECTOR}`);
+    expect(removeIdx).toBeGreaterThanOrEqual(0);
+    expect(addIdx).toBeGreaterThan(removeIdx);
+    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+  });
+
+  it('leaves an installed[] entry with enabled:false without remove/add', async () => {
+    seedCurrentShapeUpgradeHome({ enabled: false });
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    const before = hashLiveFixtures();
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+    });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('CLI upgrade complete; Codex plugin unchanged');
+    expect(text).toContain('disabled');
+    expect(hashLiveFixtures()).toBe(before);
+  });
+
+  it('treats an installed[] entry with installed:false as not installed without remove/add', async () => {
+    seedCurrentShapeUpgradeHome({ installedFlag: false });
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    const before = hashLiveFixtures();
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+    });
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    expect(calls.some((line) => line.includes('plugin remove'))).toBe(false);
+    expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
+    expect(text).toContain('CLI upgrade complete; Codex plugin unchanged');
+    expect(text).toContain('plugin not installed');
+    expect(hashLiveFixtures()).toBe(before);
+  });
+});
+
 describe('upgrade no-op reconciliation (NOT-291)', () => {
   let deckHome = '';
   let savedDeckHome: string | undefined;

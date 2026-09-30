@@ -205,6 +205,146 @@ describe('doctor codex plugin state (NOT-188)', () => {
   });
 });
 
+describe('current Codex plugin-list contract (NOT-301)', () => {
+  /**
+   * Sanitized capture matching `codex plugin list --available --json` from
+   * Codex CLI 0.157.1: `installed[]` carries pluginId / marketplaceName /
+   * installed / enabled / nested source.path, while `available[]` is
+   * discovery-only. Fixture home is isolated temp; never the real CODEX_HOME.
+   */
+  function seedCurrentShapeHome(opts: {
+    installedVersion?: string;
+    enabled?: boolean;
+    installedFlag?: boolean;
+    includeInstalledEntry?: boolean;
+    mcp?: unknown;
+  }): void {
+    const {
+      installedVersion = '1.11.7',
+      enabled = true,
+      installedFlag = true,
+      includeInstalledEntry = true,
+      mcp = LAUNCH_MCP,
+    } = opts;
+    codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-current-'));
+    pluginRoot = path.join(codexHome, 'roots', 'agent-deck');
+    fs.mkdirSync(pluginRoot, { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(mcp, null, 2)}\n`);
+    const installed = includeInstalledEntry
+      ? [
+          {
+            pluginId: SELECTOR,
+            name: 'agent-deck',
+            marketplaceName: 'agent-deck',
+            version: installedVersion,
+            installed: installedFlag,
+            enabled,
+            source: { source: 'local', path: pluginRoot },
+            marketplaceSource: { sourceType: 'local', source: pluginRoot },
+          },
+        ]
+      : [];
+    fs.writeFileSync(
+      path.join(codexHome, 'plugin-list.json'),
+      `${JSON.stringify(
+        {
+          installed,
+          available: [
+            {
+              pluginId: 'agent-deck@agent-deck-dev',
+              name: 'agent-deck',
+              marketplaceName: 'agent-deck-dev',
+              version: '1.4.4',
+              installed: false,
+              enabled: false,
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    fs.writeFileSync(
+      path.join(codexHome, 'marketplace-list.json'),
+      `${JSON.stringify(
+        { marketplaces: [{ name: 'agent-deck', root: pluginRoot, source: 'local' }] },
+        null,
+        2,
+      )}\n`,
+    );
+    const stub = path.join(codexHome, 'codex');
+    fs.writeFileSync(stub, LIST_STUB.replaceAll('$CODEX_HOME', codexHome));
+    fs.chmodSync(stub, 0o755);
+    process.env.CODEX_HOME = codexHome;
+    process.env.CODEX_BIN = stub;
+  }
+
+  it('classifies installed[] agent-deck@agent-deck 1.11.7 as version-mismatch, not missing', async () => {
+    seedCurrentShapeHome({});
+    // Isolated fixture home: never the developer's real ~/.codex.
+    expect(process.env.CODEX_HOME).toBe(codexHome);
+    expect(path.dirname(codexHome)).toBe(path.resolve(os.tmpdir()));
+    const before = hashFixtures();
+
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.classification).toBe('version-mismatch');
+    expect(state.selector).toBe(SELECTOR);
+    expect(state.installedVersion).toBe('1.11.7');
+    expect(state.root).toBe(pluginRoot);
+
+    output.length = 0;
+    expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(1);
+    expect(output.join('\n')).toContain(SELECTOR);
+
+    // Read-only: no fixture file changed and no mutating Codex command ran.
+    expect(hashFixtures()).toBe(before);
+    const calls = fs.readFileSync(path.join(codexHome, 'calls.log'), 'utf8');
+    expect(calls).not.toContain('plugin remove');
+    expect(calls).not.toContain('plugin add');
+  });
+
+  it('ignores an available[]-only stale agent-deck@agent-deck-dev entry', async () => {
+    seedCurrentShapeHome({ includeInstalledEntry: false });
+    const before = hashFixtures();
+
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    // Discovery-only rows must never classify as installed or ambiguous.
+    expect(state.classification).toBe('missing');
+
+    expect(hashFixtures()).toBe(before);
+  });
+
+  it('leaves an installed[] entry with enabled:false untouched', async () => {
+    seedCurrentShapeHome({ enabled: false });
+    const before = hashFixtures();
+
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.classification).toBe('disabled');
+    expect(state.selector).toBe(SELECTOR);
+
+    output.length = 0;
+    expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(1);
+
+    expect(hashFixtures()).toBe(before);
+    const calls = fs.readFileSync(path.join(codexHome, 'calls.log'), 'utf8');
+    expect(calls).not.toContain('plugin remove');
+    expect(calls).not.toContain('plugin add');
+  });
+
+  it('treats an installed[] entry with installed:false as not installed', async () => {
+    seedCurrentShapeHome({ installedFlag: false });
+    const before = hashFixtures();
+
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.classification).toBe('missing');
+
+    expect(hashFixtures()).toBe(before);
+    const calls = fs.readFileSync(path.join(codexHome, 'calls.log'), 'utf8');
+    expect(calls).not.toContain('plugin remove');
+    expect(calls).not.toContain('plugin add');
+  });
+});
+
 describe('pre-publish release sync (NOT-188)', () => {
   const script = path.join(__dirname, '..', '..', '..', 'scripts', 'pre-publish-check.mjs');
 

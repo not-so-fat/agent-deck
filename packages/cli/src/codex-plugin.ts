@@ -54,13 +54,28 @@ function asArray(value: unknown): unknown[] {
   }
   if (value && typeof value === 'object') {
     const record = value as JsonRecord;
-    for (const key of ['plugins', 'marketplaces', 'items', 'data', 'results']) {
+    for (const key of ['installed', 'plugins', 'marketplaces', 'items', 'data', 'results']) {
       if (Array.isArray(record[key])) {
         return record[key] as unknown[];
       }
     }
   }
   return [];
+}
+
+/**
+ * Installed-plugin entries eligible for classification. The current
+ * `codex plugin list --available --json` contract reports two distinct sets:
+ * `installed[]` (eligible) and `available[]` (discovery-only, never
+ * installed). Legacy shapes without an `installed` key fall back to the
+ * historical `plugins[]`-style keys via {@link asArray}.
+ */
+function extractInstalledEntries(parsed: unknown): unknown[] {
+  const record = asRecord(parsed);
+  if (record && Array.isArray(record.installed)) {
+    return record.installed as unknown[];
+  }
+  return asArray(parsed);
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -104,14 +119,62 @@ function marketplacePart(selector: string): string | undefined {
   return selector.slice(at + 1);
 }
 
+/**
+ * Local source root from the current nested `source.path` /
+ * `marketplaceSource` shape, e.g.
+ * `{ source: { source: 'local', path: '<root>' } }` or
+ * `{ marketplaceSource: { sourceType: 'local', source: '<root>' } }`.
+ * The kind strings (`source: 'local'`) are never roots.
+ */
+function nestedSourcePath(record: JsonRecord): string | undefined {
+  const source = asRecord(record.source);
+  if (source) {
+    const fromSource = firstString(source, [
+      'path',
+      'root',
+      'location',
+      'dir',
+      'install_root',
+      'installRoot',
+    ]);
+    if (fromSource) {
+      return fromSource;
+    }
+  }
+  const marketplaceSource = asRecord(record.marketplaceSource ?? record.marketplace_source);
+  if (marketplaceSource) {
+    const direct = firstString(marketplaceSource, ['path', 'root', 'location', 'dir']);
+    if (direct) {
+      return direct;
+    }
+    const candidate = asString(marketplaceSource.source);
+    if (candidate && /[/\\]/.test(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 function parseInstalledPlugin(entry: unknown): CodexInstalledPlugin | null {
   const record = asRecord(entry);
   if (!record) {
     return null;
   }
-  const name = firstString(record, ['name', 'plugin', 'id']) ?? '';
-  const selectorFromField = firstString(record, ['selector']);
-  const marketplace = firstString(record, ['marketplace', 'marketplace_name', 'registry']);
+  // An entry explicitly marked not-installed (e.g. a discovery-only
+  // `available[]` row) is never eligible for installed classification.
+  if (record.installed === false) {
+    return null;
+  }
+  if (typeof record.installed === 'string' && ['false', 'no', 'off', '0'].includes(record.installed.toLowerCase())) {
+    return null;
+  }
+  const selectorFromField = firstString(record, ['selector', 'pluginId', 'plugin_id']);
+  let name = firstString(record, ['name', 'plugin', 'id']) ?? '';
+  if ((!name || name.includes('@')) && selectorFromField) {
+    const at = selectorFromField.indexOf('@');
+    name = at > 0 ? selectorFromField.slice(0, at) : selectorFromField;
+  }
+  const marketplace = firstString(record, ['marketplace', 'marketplace_name', 'marketplaceName', 'registry']);
   const selector = selectorFromField ?? (marketplace ? `${name}@${marketplace}` : name);
   if (!name && !selector) {
     return null;
@@ -133,7 +196,9 @@ function parseInstalledPlugin(entry: unknown): CodexInstalledPlugin | null {
     selector,
     enabled,
     marketplace,
-    root: firstString(record, ['install_root', 'root', 'path', 'location', 'dir', 'installRoot']),
+    root:
+      firstString(record, ['install_root', 'root', 'path', 'location', 'dir', 'installRoot']) ??
+      nestedSourcePath(record),
   };
 }
 
@@ -264,7 +329,7 @@ export async function inspectCodexPlugin(
 
   let pluginEntries: unknown[];
   try {
-    pluginEntries = asArray(JSON.parse(listOut.stdout));
+    pluginEntries = extractInstalledEntries(JSON.parse(listOut.stdout));
   } catch {
     return { ...base, error: `could not parse \`codex plugin list --available --json\` output as JSON` };
   }
