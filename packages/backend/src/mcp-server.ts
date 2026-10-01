@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
+  AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_RECOVERED_SESSION_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
@@ -47,6 +48,18 @@ function readWorkspaceRootHeader(req: Request): string | undefined {
 
 function readLaunchDeckHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_DECK_ID_HEADER];
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  return value || undefined;
+}
+
+/**
+ * Opaque run-correlation id for launch-selected sessions (NOT-304).
+ * Returned unvalidated — the binding store normalizes and adopt-once
+ * semantics keep it observability-only: it can never select a deck, grant
+ * access, change mode, or participate in authorization.
+ */
+function readCorrelationIdHeader(req: Request): string | undefined {
+  const raw = req.headers[AGENT_DECK_CORRELATION_HEADER];
   const value = typeof raw === 'string' ? raw.trim() : '';
   return value || undefined;
 }
@@ -887,6 +900,12 @@ export class AgentDeckMCPServer {
       if (workspaceRoot) {
         this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
       }
+      // Adopt-once: a launch that arrived without correlation can still
+      // attach one; an established value never moves (NOT-304).
+      const followUpCorrelation = readCorrelationIdHeader(req);
+      if (followUpCorrelation) {
+        this.sessionBinding.setCorrelationId(sessionId, followUpCorrelation);
+      }
       return;
     }
 
@@ -925,6 +944,14 @@ export class AgentDeckMCPServer {
       workspaceRoot,
       mode: body.data.mode,
     });
+
+    // Attach the opaque run-correlation id to this launch-selected session
+    // (NOT-304). Adopt-once and validated inside the store: an invalid or
+    // later-changed value can never affect deck, workspace, mode, or auth.
+    const correlationId = readCorrelationIdHeader(req);
+    if (correlationId) {
+      this.sessionBinding.setCorrelationId(sessionId, correlationId);
+    }
   }
 
   private async disconnectTrustedSession(sessionId: string, _req: Request): Promise<void> {

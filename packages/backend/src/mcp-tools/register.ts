@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
-import { countDeckCards, formatDisplayLine, PatchOpSchema } from '@agent-deck/shared';
+import { countDeckCards, formatDisplayLine, normalizeCorrelationId, PatchOpSchema } from '@agent-deck/shared';
 import type { ElicitationResult } from './elicitation';
 import { presentDeckSwitchApproval, submitDeckSwitchApprovalViaBackend } from './elicitation';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
@@ -536,6 +536,55 @@ function registerRuntimeTools(host: McpToolHost): void {
     try {
       const playbook = await host.callBackendAPI(`/api/playbooks/${encodeURIComponent(playbook_id)}`);
       return host.toolResult(playbook);
+    } catch (error) {
+      return host.toolError(error);
+    }
+  });
+
+  // NOT-304: coordinator read surface. A normal launch-selected, bound Deck
+  // session retrieves the privacy-safe card-usage events for one opaque
+  // run-correlation id. Scoped twice: the caller supplies only the
+  // correlation id, and the bound deck id comes from the session binding —
+  // events from another deck are never observable. No dashboard auth.
+  r('get_card_usage_events', {
+    title: 'Get Card Usage Events',
+    description:
+      'Privacy-safe card-usage events for one opaque run-correlation id, scoped to the bound deck. Returns only events matching both the correlation id and this session\u2019s deck.',
+    inputSchema: {
+      correlation_id: z.string(),
+      from: z.string().optional(),
+      to: z.string().optional(),
+      limit: z.number().optional(),
+      cursor: z.string().optional(),
+    },
+  }, async ({ correlation_id, from, to, limit, cursor }) => {
+    try {
+      const normalized = normalizeCorrelationId(correlation_id);
+      if (!normalized) {
+        return host.toolError(
+          new Error('Invalid correlation_id — expected opaque UUID or token'),
+        );
+      }
+      // Bound-deck authority first: without a bound deck there is nothing
+      // this session may observe.
+      const boundDeckId = await host.getBoundDeckId();
+      const params = new URLSearchParams();
+      if (from !== undefined) {
+        params.set('from', from);
+      }
+      if (to !== undefined) {
+        params.set('to', to);
+      }
+      if (limit !== undefined) {
+        params.set('limit', String(limit));
+      }
+      if (cursor !== undefined) {
+        params.set('cursor', cursor);
+      }
+      params.set('correlationId', normalized);
+      params.set('deckId', boundDeckId);
+      const result = await host.callBackendAPI(`/api/usage/events?${params.toString()}`);
+      return host.toolResult(result);
     } catch (error) {
       return host.toolError(error);
     }
