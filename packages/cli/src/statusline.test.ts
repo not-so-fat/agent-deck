@@ -142,7 +142,8 @@ describe('statusline', () => {
       const workspace = path.join(tmpHome, 'repo');
       const deckA = await db.createDeck({ name: 'Alpha Deck' });
       const deckB = await db.createDeck({ name: 'Beta Deck' });
-      const stamp = '2026-09-28T00:00:00.000Z';
+      // NOT-309: fixtures model live sessions, so they stay inside the stale bound.
+      const stamp = new Date().toISOString();
       registry.upsert({
         mcpSessionId: 'mcp-e2e-1',
         workspaceRoot: workspace,
@@ -210,7 +211,8 @@ describe('statusline', () => {
       registry = new LiveDisplayRegistry();
       const workspace = path.join(tmpHome, 'repo');
       const deck = await db.createDeck({ name: 'Shared Deck' });
-      const stamp = '2026-09-28T00:00:00.000Z';
+      // NOT-309: fixtures model live sessions, so they stay inside the stale bound.
+      const stamp = new Date().toISOString();
       for (const mcpSessionId of ['mcp-e2e-agree-1', 'mcp-e2e-agree-2']) {
         registry.upsert({
           mcpSessionId,
