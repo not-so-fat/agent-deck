@@ -222,7 +222,7 @@ describe('service tool-call usage events (NOT-292)', () => {
     });
     // Only the credential id is stored — no secret, header, URL, or key material.
     expect(Object.keys(credentialEvent!).sort()).toEqual(
-      ['action', 'cardId', 'cardType', 'createdAt', 'deckId', 'id', 'sessionId', 'source', 'success'].sort(),
+      ['action', 'cardId', 'cardType', 'correlationId', 'createdAt', 'deckId', 'id', 'sessionId', 'source', 'success'].sort(),
     );
   });
 

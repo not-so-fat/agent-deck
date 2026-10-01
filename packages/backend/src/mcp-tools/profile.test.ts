@@ -25,7 +25,10 @@ describe('tool tiers by profile', () => {
     const names = listToolNamesForProfile('runtime');
     // NOT-209: request-only switch_deck is the 13th runtime tool — safe for the
     // minimal tier (creates a pending request, commits nothing).
-    expect(names.length).toBeLessThanOrEqual(13);
+    // NOT-304: get_card_usage_events is the 14th runtime tool — a read-only,
+    // bound-deck-scoped usage read for the coordinator, no dashboard auth.
+    expect(names.length).toBeLessThanOrEqual(14);
+    expect(names).toContain('get_card_usage_events');
     expect(names).toContain('bind_workspace');
     expect(names).toContain('switch_deck');
     expect(names).toContain('call_service_tool');
@@ -44,7 +47,10 @@ describe('tool tiers by profile', () => {
     expect(names).not.toContain('delete_playbook');
     expect(names).not.toContain('add_service_to_bound_deck');
     expect(names).not.toContain('list_playbooks');
-    expect(names.length).toBeLessThanOrEqual(20);
+    // NOT-304: get_card_usage_events rides the runtime tier, so standard
+    // grows from 20 to 21 with it.
+    expect(names).toContain('get_card_usage_events');
+    expect(names.length).toBeLessThanOrEqual(21);
   });
 
   it('legacy adds deprecated aliases', () => {

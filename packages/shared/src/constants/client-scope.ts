@@ -14,6 +14,15 @@ export const AGENT_DECK_WORKSPACE_HEADER = 'x-agent-deck-workspace';
 export const AGENT_DECK_DECK_ID_HEADER = 'x-agent-deck-deck-id';
 
 /**
+ * Opaque run-correlation id for launch-selected MCP sessions (NOT-304).
+ *
+ * Observability metadata only: it never selects a deck, grants access,
+ * changes mode, or participates in authorization. Validated as an opaque
+ * UUID or equivalently strict bounded token — never free text.
+ */
+export const AGENT_DECK_CORRELATION_HEADER = 'x-agent-deck-correlation-id';
+
+/**
  * Session a client lost to a server restart, named on the handshake it replays
  * (NOT-101). It lets the server mark that session recovered instead of counting
  * the client as stranded forever.

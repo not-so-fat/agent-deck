@@ -34,6 +34,7 @@
 | [MONOREPO_SCOPE.md](./MONOREPO_SCOPE.md) | Session binding in monorepos |
 | [PUBLISHING.md](./PUBLISHING.md) | npm release, distribution |
 | [CODEX_PLUGIN.md](./CODEX_PLUGIN.md) | Codex / Claude / HOL marketplace packaging |
+| [CARD_USAGE_CORRELATION.md](./CARD_USAGE_CORRELATION.md) | Card-usage stream + opaque run-correlation id (coordinator matching) |
 
 ## Proposed features
 

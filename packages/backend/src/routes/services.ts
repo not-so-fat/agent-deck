@@ -5,8 +5,10 @@ import {
   CreateServiceInput, 
   UpdateServiceInput,
   ServiceCallInput,
+  AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_SESSION_HEADER,
   ApiResponse,
+  normalizeCorrelationId,
   Service,
   ServiceTool,
   UpdateServiceToolSettingsSchema,
@@ -403,6 +405,11 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
     const usageSource = playbookEventSource(request);
     const sessionHeader = request.headers[AGENT_DECK_SESSION_HEADER];
     const usageSessionId = typeof sessionHeader === 'string' ? sessionHeader : null;
+    const correlationHeader = request.headers[AGENT_DECK_CORRELATION_HEADER];
+    // Observability metadata only — validated here, never consulted for
+    // authorization, and carried verbatim onto every event from this call.
+    const usageCorrelationId =
+      typeof correlationHeader === 'string' ? normalizeCorrelationId(correlationHeader) : null;
     const usageDeckId = await resolveAgentDeckId(request, fastify.db).catch(() => null);
 
     const recordCallUsage = async (success: boolean): Promise<void> => {
@@ -415,6 +422,7 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
           success,
           source: usageSource,
           sessionId: usageSessionId,
+          correlationId: usageCorrelationId,
         });
         if (success) {
           const service = await fastify.db.getService(request.params.id);
@@ -427,6 +435,7 @@ export async function registerServiceRoutes(fastify: FastifyInstance) {
               success: true,
               source: usageSource,
               sessionId: usageSessionId,
+              correlationId: usageCorrelationId,
             });
           }
         }

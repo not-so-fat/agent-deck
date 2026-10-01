@@ -2,8 +2,10 @@ import path from 'node:path';
 import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
+  AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_SESSION_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
+  normalizeCorrelationId,
   type BindingActiveSource,
 } from '@agent-deck/shared';
 
@@ -18,6 +20,12 @@ export type SessionBindingSnapshot = {
   runtimeSessionId?: string;
   mode?: 'normal' | 'agent-admin';
   deckSource?: DeckBindingSource;
+  /**
+   * Opaque run-correlation id (NOT-304). Observability metadata only —
+   * reported in the snapshot and forwarded to the backend for usage
+   * recording; never consulted for deck, workspace, mode, or auth.
+   */
+  correlationId?: string;
 };
 
 /** Per-MCP-session workspace + trusted runtime session. */
@@ -26,6 +34,12 @@ export class McpSessionBindingStore {
   private deckIdBySession = new Map<string, string>();
   private runtimeSessionByMcp = new Map<string, string>();
   private modeByMcp = new Map<string, 'normal' | 'agent-admin'>();
+  /**
+   * Opaque run-correlation id per MCP session (NOT-304). Adopt-once: the
+   * first valid value seen at launch sticks for the session lifetime, so a
+   * later header change can never move usage attribution or authority.
+   */
+  private correlationByMcp = new Map<string, string>();
   /** MCP session ids authenticated via launch-selected deck (NOT-105). */
   private launchByMcp = new Set<string>();
   /** MCP sessions with no deck header — explain-only, no deck access (NOT-50). */
@@ -79,7 +93,31 @@ export class McpSessionBindingStore {
     this.runtimeSessionByMcp.delete(mcpSessionId);
     this.deckIdBySession.delete(mcpSessionId);
     this.modeByMcp.delete(mcpSessionId);
+    this.correlationByMcp.delete(mcpSessionId);
     this.unassignedByMcp.add(mcpSessionId);
+  }
+
+  /**
+   * Adopt the session's run-correlation id (NOT-304). First valid value
+   * wins; later values — valid or not — are ignored so correlation can
+   * never steer an established session. Invalid input is dropped, never
+   * coerced. Returns the stored value (or undefined when nothing stuck).
+   */
+  setCorrelationId(mcpSessionId: string, raw: unknown): string | undefined {
+    const existing = this.correlationByMcp.get(mcpSessionId);
+    if (existing) {
+      return existing;
+    }
+    const normalized = normalizeCorrelationId(raw);
+    if (normalized) {
+      this.correlationByMcp.set(mcpSessionId, normalized);
+      return normalized;
+    }
+    return undefined;
+  }
+
+  getCorrelationId(mcpSessionId: string): string | undefined {
+    return this.correlationByMcp.get(mcpSessionId);
   }
 
   isUnassigned(mcpSessionId: string): boolean {
@@ -103,6 +141,7 @@ export class McpSessionBindingStore {
     this.deckIdBySession.delete(sessionId);
     this.runtimeSessionByMcp.delete(sessionId);
     this.modeByMcp.delete(sessionId);
+    this.correlationByMcp.delete(sessionId);
     this.launchByMcp.delete(sessionId);
     this.unassignedByMcp.delete(sessionId);
   }
@@ -142,6 +181,7 @@ export class McpSessionBindingStore {
       workspaceRoot: this.getWorkspace(sessionId),
       deckId,
       runtimeSessionId,
+      correlationId: this.correlationByMcp.get(sessionId),
       mode: this.modeByMcp.get(sessionId),
       // Every authenticated MCP session is a launch session (NOT-105/108).
       // Non-launch paths are env defaults or explicit session overrides (tests / skip-header).
@@ -169,6 +209,14 @@ export class McpSessionBindingStore {
     const runtimeSessionId = this.getRuntimeSessionId(sessionId);
     if (runtimeSessionId) {
       headers[AGENT_DECK_SESSION_HEADER] = runtimeSessionId;
+    }
+
+    // Forward the opaque correlation id so backend usage recording can
+    // attribute events to this launch. It carries no authority — the
+    // backend never reads it for deck, workspace, mode, or auth.
+    const correlationId = this.getCorrelationId(sessionId);
+    if (correlationId) {
+      headers[AGENT_DECK_CORRELATION_HEADER] = correlationId;
     }
 
     return headers;

@@ -12,6 +12,7 @@ const PUBLIC_KEYS = [
   'action',
   'cardId',
   'cardType',
+  'correlationId',
   'deckId',
   'occurredAt',
   'sessionId',
@@ -89,6 +90,7 @@ describe('GET /api/usage/events (NOT-292)', () => {
         success: true,
         source: 'ide',
         sessionId: HASHED_SESSION_ID,
+        correlationId: null,
       },
       {
         occurredAt: '2026-09-10T10:00:01.000Z',
@@ -99,6 +101,7 @@ describe('GET /api/usage/events (NOT-292)', () => {
         success: true,
         source: 'ide',
         sessionId: null,
+        correlationId: null,
       },
       {
         occurredAt: '2026-09-10T10:00:02.000Z',
@@ -109,6 +112,7 @@ describe('GET /api/usage/events (NOT-292)', () => {
         success: null,
         source: 'agent',
         sessionId: null,
+        correlationId: null,
       },
     ]);
     for (const event of body.data.events) {
