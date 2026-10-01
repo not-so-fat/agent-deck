@@ -558,6 +558,82 @@ describe('live-display keep-alive (NOT-309)', () => {
       DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
     );
     expect(resolveLiveTouchKeepAliveMs('-3', 30 * 60_000)).toBe(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS);
+    // NOT-309 repair round 2: a tiny stale bound clamps to a 1ms floor instead
+    // of rounding the keep-alive interval down to 0 (disabled).
+    expect(resolveLiveTouchKeepAliveMs(undefined, 2)).toBe(1);
+    expect(resolveLiveTouchKeepAliveMs(undefined, 1)).toBe(1);
+  });
+
+  it('a touch-miss (found:false) re-registers the still-connected session', async () => {
+    // A live session swept during a host sleep must return to the registry
+    // without a reconnect; an explicit found:false is the trigger, while an
+    // older backend answering {} stays a quiet no-op.
+    const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
+    const internals = server as unknown as {
+      sessions: Map<string, unknown>;
+      badgeBySession: Map<string, string>;
+      touchLiveDisplay: (id: string, force?: boolean) => void;
+    };
+    internals.sessions.set('s1', { transport: {}, server: {} });
+    internals.badgeBySession.set('s1', 'fox');
+    const liveDisplayPosts: string[] = [];
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      const target = String(url);
+      const method = init?.method ?? 'GET';
+      if (target.endsWith('/api/scope/deck')) {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: { id: STUB_DECK_ID, name: 'Stub Deck', services: [], credentials: [], playbooks: [] },
+          }),
+        };
+      }
+      if (target.endsWith('/touch')) {
+        return { ok: true, json: async () => ({ success: true, data: { found: false } }) };
+      }
+      if (target.endsWith('/api/scope/live-display') && method === 'POST') {
+        liveDisplayPosts.push(target);
+        return { ok: true, json: async () => ({ success: true, data: { badge: 'fox' } }) };
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    try {
+      internals.touchLiveDisplay('s1', true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(liveDisplayPosts.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a touch answered without found (older backend) does not re-register', async () => {
+    const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
+    const internals = server as unknown as {
+      sessions: Map<string, unknown>;
+      badgeBySession: Map<string, string>;
+      touchLiveDisplay: (id: string, force?: boolean) => void;
+    };
+    internals.sessions.set('s1', { transport: {}, server: {} });
+    internals.badgeBySession.set('s1', 'fox');
+    const liveDisplayPosts: string[] = [];
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      const target = String(url);
+      if (target.endsWith('/touch')) {
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      if (target.endsWith('/api/scope/live-display') && (init?.method ?? 'GET') === 'POST') {
+        liveDisplayPosts.push(target);
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    try {
+      internals.touchLiveDisplay('s1', true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(liveDisplayPosts).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('keep-alive timer touches open sessions and stops with the server (no sockets)', async () => {

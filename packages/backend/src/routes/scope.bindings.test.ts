@@ -118,9 +118,22 @@ describe('scope bindings routes', () => {
       payload: { at: touchAt },
     });
     expect(touched.statusCode).toBe(200);
+    expect(touched.json().data.found).toBe(true);
 
     const rows = (await app.inject({ method: 'GET', url: '/api/scope/bindings' })).json().data;
     expect(rows[0].lastActivityAt).toBe(touchAt);
+  });
+
+  it('NOT-309 repair round 2: touch reports found:false for a swept/unknown session', async () => {
+    app = await buildApp();
+    const miss = await app.inject({
+      method: 'POST',
+      url: '/api/scope/live-display/ghost-session/touch',
+      headers: agentHeaders,
+      payload: { at: new Date().toISOString() },
+    });
+    expect(miss.statusCode).toBe(200);
+    expect(miss.json().data.found).toBe(false);
   });
 
   it('NOT-309: GET /bindings omits entries older than the stale bound', async () => {

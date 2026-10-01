@@ -159,8 +159,10 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
 
         const parsed = LiveDisplayTouchSchema.safeParse(request.body ?? {});
         const at = parsed.success && parsed.data.at ? parsed.data.at : new Date().toISOString();
-        fastify.liveDisplayRegistry.touch(mcpSessionId, at);
-        return reply.send({ success: true } satisfies ApiResponse);
+        // NOT-309 repair round 2: report the miss so a still-connected MCP
+        // session swept during a host sleep can re-register itself.
+        const found = fastify.liveDisplayRegistry.touch(mcpSessionId, at);
+        return reply.send({ success: true, data: { found } } satisfies ApiResponse);
       } catch (error) {
         return reply.status(403).send({
           success: false,

@@ -79,6 +79,11 @@ type McpSession = {
  * `AGENT_DECK_MCP_LIVE_TOUCH_KEEPALIVE_MS` (`0` disables); the default is
  * also clamped under a third of the stale bound so a shortened
  * `LIVE_DISPLAY_STALE_MS` never outruns it.
+ *
+ * Both processes must see the same `LIVE_DISPLAY_STALE_MS`: the MCP server
+ * runs separately (mcp-index) and resolves the bound from its own
+ * environment, so shortening it only on the backend leaves the keep-alive
+ * at 5 minutes and idle sessions expire. Export it for both processes.
  */
 export const DEFAULT_LIVE_TOUCH_KEEPALIVE_MS = 5 * 60_000;
 export const LIVE_TOUCH_KEEPALIVE_ENV_VAR = 'AGENT_DECK_MCP_LIVE_TOUCH_KEEPALIVE_MS';
@@ -86,7 +91,7 @@ export const LIVE_TOUCH_KEEPALIVE_ENV_VAR = 'AGENT_DECK_MCP_LIVE_TOUCH_KEEPALIVE
 export function resolveLiveTouchKeepAliveMs(raw: string | undefined, staleMs: number): number {
   const fallback =
     staleMs > 0
-      ? Math.min(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS, Math.floor(staleMs / 3))
+      ? Math.max(1, Math.min(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS, Math.floor(staleMs / 3)))
       : DEFAULT_LIVE_TOUCH_KEEPALIVE_MS;
   if (raw === undefined || raw.trim() === '') {
     return fallback;
@@ -294,9 +299,17 @@ export class AgentDeckMCPServer {
   private static readonly TOUCH_DEBOUNCE_MS = 5_000;
 
   /**
-   * Fire-and-forget lastActivityAt bump; only for sessions the registry knows.
-   * `force` bypasses the per-request debounce — the keep-alive already runs
-   * on a minutes-long cadence, so debouncing it would only delay proof of life.
+   * Fire-and-forget lastActivityAt bump; only for sessions this process
+   * registered (badge-holding). `force` bypasses the per-request debounce —
+   * the keep-alive already runs on a minutes-long cadence, so debouncing it
+   * would only delay proof of life.
+   *
+   * NOT-309 repair round 2: when the backend reports `found: false` the
+   * entry was swept while this transport stayed open (host sleep longer
+   * than the stale bound, then a status-line read on wake). Re-register so
+   * the live session returns to the status line without a reconnect. An
+   * explicit `found === false` is required — older backends answer `{}` and
+   * must not trigger a re-register storm.
    */
   private touchLiveDisplay(sessionId: string, force = false): void {
     if (!this.badgeBySession.has(sessionId)) {
@@ -318,7 +331,13 @@ export class AgentDeckMCPServer {
         body: JSON.stringify({ at: new Date().toISOString() }),
       },
       sessionId,
-    ).catch(() => {});
+    )
+      .then((result) => {
+        if (result && result.found === false) {
+          void this.registerLiveDisplay(sessionId).catch(() => {});
+        }
+      })
+      .catch(() => {});
   }
 
   private static readonly UNREGISTER_TIMEOUT_MS = 3_000;

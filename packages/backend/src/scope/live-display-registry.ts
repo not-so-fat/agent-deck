@@ -173,11 +173,23 @@ export class LiveDisplayRegistry {
     this.bySessionId.delete(mcpSessionId);
   }
 
-  touch(mcpSessionId: string, at: string): void {
+  /**
+   * NOT-309 repair round 2: report whether the session was known. A live
+   * session swept during a host sleep (or a status-line read on wake) is
+   * still connected, so a `false` here tells the MCP side to re-register
+   * instead of staying silently off the status line until reconnect/rebind.
+   * Returns `true` when the entry exists (bumping `lastActivityAt` when `at`
+   * is newer), `false` for an unknown — including already-swept — id.
+   */
+  touch(mcpSessionId: string, at: string): boolean {
     const entry = this.bySessionId.get(mcpSessionId);
-    if (entry && at > entry.lastActivityAt) {
+    if (!entry) {
+      return false;
+    }
+    if (at > entry.lastActivityAt) {
       entry.lastActivityAt = at;
     }
+    return true;
   }
 
   list(): LiveDisplayEntry[] {

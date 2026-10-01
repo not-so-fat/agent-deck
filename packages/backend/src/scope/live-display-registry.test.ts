@@ -170,9 +170,11 @@ describe('LiveDisplayRegistry', () => {
     });
     expect(entry.lastActivityAt).toBe(iso(0));
 
-    registry.touch('one', iso(5 * 60_000));
-    registry.touch('one', iso(60_000));
-    registry.touch('ghost', iso(5 * 60_000));
+    // NOT-309 repair round 2: touch reports whether the session is known so
+    // the MCP side can re-register a still-connected session the sweep took.
+    expect(registry.touch('one', iso(5 * 60_000))).toBe(true);
+    expect(registry.touch('one', iso(60_000))).toBe(true);
+    expect(registry.touch('ghost', iso(5 * 60_000))).toBe(false);
     expect(registry.list()[0].lastActivityAt).toBe(iso(5 * 60_000));
   });
 
