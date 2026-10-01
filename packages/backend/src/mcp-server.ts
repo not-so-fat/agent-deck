@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
+import { resolveLiveDisplayStaleMs } from './scope/live-display-registry';
 import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error';
 import { formatMcpToolError } from './mcp-tools/policy';
 import {
@@ -70,6 +71,39 @@ type McpSession = {
 };
 
 /**
+ * NOT-309: keep-alive touch cadence for idle-but-connected MCP sessions.
+ * Every MCP tool call already bumps `lastActivityAt` (debounced POST touch),
+ * but a session with an open transport and no tool calls sends no HTTP POSTs
+ * (the SSE stream is a GET), so without a keep-alive it would expire out of
+ * the live-display registry while still connected. Override via
+ * `AGENT_DECK_MCP_LIVE_TOUCH_KEEPALIVE_MS` (`0` disables); the default is
+ * also clamped under a third of the stale bound so a shortened
+ * `LIVE_DISPLAY_STALE_MS` never outruns it.
+ *
+ * Both processes must see the same `LIVE_DISPLAY_STALE_MS`: the MCP server
+ * runs separately (mcp-index) and resolves the bound from its own
+ * environment, so shortening it only on the backend leaves the keep-alive
+ * at 5 minutes and idle sessions expire. Export it for both processes.
+ */
+export const DEFAULT_LIVE_TOUCH_KEEPALIVE_MS = 5 * 60_000;
+export const LIVE_TOUCH_KEEPALIVE_ENV_VAR = 'AGENT_DECK_MCP_LIVE_TOUCH_KEEPALIVE_MS';
+
+export function resolveLiveTouchKeepAliveMs(raw: string | undefined, staleMs: number): number {
+  const fallback =
+    staleMs > 0
+      ? Math.max(1, Math.min(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS, Math.floor(staleMs / 3)))
+      : DEFAULT_LIVE_TOUCH_KEEPALIVE_MS;
+  if (raw === undefined || raw.trim() === '') {
+    return fallback;
+  }
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+/**
  * Clients that were connected to a previous process (NOT-101). Transport sessions
  * live in memory only, so every restart — upgrade, crash, `agent-deck stop/start` —
  * orphans them. We keep a bounded tally so `/health` (and `agent-deck status`) can
@@ -111,6 +145,8 @@ export class AgentDeckMCPServer {
   /** Session badge from the backend registry (POST /api/scope/live-display response). */
   private badgeBySession = new Map<string, string>();
   private lastTouchAtMs = new Map<string, number>();
+  /** NOT-309: keep-alive timer proving idle-but-connected sessions still live. */
+  private liveTouchKeepAliveTimer: NodeJS.Timeout | null = null;
   /** In-flight live-display unregisters so `stop()` can drain them before closing. */
   private unregisterTasks = new Map<string, Promise<void>>();
   /** Changes on every process start — how a client detects it outlived the server. */
@@ -262,13 +298,28 @@ export class AgentDeckMCPServer {
 
   private static readonly TOUCH_DEBOUNCE_MS = 5_000;
 
-  /** Fire-and-forget lastActivityAt bump; only for sessions the registry knows. */
-  private touchLiveDisplay(sessionId: string): void {
+  /**
+   * Fire-and-forget lastActivityAt bump; only for sessions this process
+   * registered (badge-holding). `force` bypasses the per-request debounce —
+   * the keep-alive already runs on a minutes-long cadence, so debouncing it
+   * would only delay proof of life.
+   *
+   * NOT-309 repair round 2: when the backend reports `found: false` the
+   * entry was swept while this transport stayed open (host sleep longer
+   * than the stale bound, then a status-line read on wake). Re-register so
+   * the live session returns to the status line without a reconnect. An
+   * explicit `found === false` is required — older backends answer `{}` and
+   * must not trigger a re-register storm.
+   */
+  private touchLiveDisplay(sessionId: string, force = false): void {
     if (!this.badgeBySession.has(sessionId)) {
       return;
     }
     const now = Date.now();
-    if (now - (this.lastTouchAtMs.get(sessionId) ?? 0) < AgentDeckMCPServer.TOUCH_DEBOUNCE_MS) {
+    if (
+      !force &&
+      now - (this.lastTouchAtMs.get(sessionId) ?? 0) < AgentDeckMCPServer.TOUCH_DEBOUNCE_MS
+    ) {
       return;
     }
     this.lastTouchAtMs.set(sessionId, now);
@@ -280,7 +331,17 @@ export class AgentDeckMCPServer {
         body: JSON.stringify({ at: new Date().toISOString() }),
       },
       sessionId,
-    ).catch(() => {});
+    )
+      .then((result) => {
+        // Guard against the close race: a keep-alive touch in flight when
+        // transport.onclose sends DELETE answers found:false after the entry
+        // is gone. Re-registering then would resurrect a closed session, so
+        // only re-register while the transport is still open.
+        if (result && result.found === false && this.sessions.has(sessionId)) {
+          void this.registerLiveDisplay(sessionId).catch(() => {});
+        }
+      })
+      .catch(() => {});
   }
 
   private static readonly UNREGISTER_TIMEOUT_MS = 3_000;
@@ -295,6 +356,42 @@ export class AgentDeckMCPServer {
     return Number.isFinite(parsed) && parsed > 0
       ? parsed
       : AgentDeckMCPServer.UNREGISTER_TIMEOUT_MS;
+  }
+
+  /**
+   * NOT-309: keep the registry fresh for sessions with an open transport but
+   * no tool calls. Only badge-holding (registered) sessions are touched; the
+   * backend ignores touches for sessions it never saw, so unassigned or
+   * half-initialized sessions are harmless no-ops by construction.
+   */
+  private touchAllLiveDisplays(): void {
+    for (const sessionId of this.sessions.keys()) {
+      this.touchLiveDisplay(sessionId, true);
+    }
+  }
+
+  private startLiveDisplayKeepAlive(): void {
+    this.stopLiveDisplayKeepAlive();
+    const staleMs = resolveLiveDisplayStaleMs(process.env.LIVE_DISPLAY_STALE_MS);
+    const intervalMs = resolveLiveTouchKeepAliveMs(
+      process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR],
+      staleMs,
+    );
+    if (intervalMs <= 0) {
+      return;
+    }
+    const timer = setInterval(() => {
+      this.touchAllLiveDisplays();
+    }, intervalMs);
+    timer.unref?.();
+    this.liveTouchKeepAliveTimer = timer;
+  }
+
+  private stopLiveDisplayKeepAlive(): void {
+    if (this.liveTouchKeepAliveTimer) {
+      clearInterval(this.liveTouchKeepAliveTimer);
+      this.liveTouchKeepAliveTimer = null;
+    }
   }
 
   private async unregisterLiveDisplay(sessionId: string): Promise<void> {
@@ -1212,6 +1309,7 @@ export class AgentDeckMCPServer {
         httpServer.once('error', reject);
         this.httpServer = httpServer;
       });
+      this.startLiveDisplayKeepAlive();
 
       return this.app;
     } catch (error) {
@@ -1223,6 +1321,7 @@ export class AgentDeckMCPServer {
 
   async stop() {
     try {
+      this.stopLiveDisplayKeepAlive();
       for (const [sessionId, session] of this.sessions) {
         try {
           await session.transport.close();

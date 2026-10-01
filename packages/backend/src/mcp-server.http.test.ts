@@ -1,5 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { AgentDeckMCPServer } from './mcp-server';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import {
+  AgentDeckMCPServer,
+  DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
+  LIVE_TOUCH_KEEPALIVE_ENV_VAR,
+  resolveLiveTouchKeepAliveMs,
+} from './mcp-server';
 import { installStrictConsoleCapture } from './mcp-tools/test-harness';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
@@ -531,5 +536,216 @@ describe('session badge flow (stub backend)', () => {
     await callTool(badgePort, sessionId, 'get_session_binding', {}, 202);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(stub.touches.length).toBeGreaterThan(before);
+  });
+});
+
+describe('live-display keep-alive (NOT-309)', () => {
+  it('resolveLiveTouchKeepAliveMs defaults, clamps, and parses', () => {
+    // Default 5 minutes under the default 30-minute stale bound.
+    expect(resolveLiveTouchKeepAliveMs(undefined, 30 * 60_000)).toBe(
+      DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
+    );
+    expect(resolveLiveTouchKeepAliveMs('', 30 * 60_000)).toBe(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS);
+    // Shortened stale bound clamps the default under a third of the bound.
+    expect(resolveLiveTouchKeepAliveMs(undefined, 6_000)).toBe(2_000);
+    // Disabled expiry keeps the plain default.
+    expect(resolveLiveTouchKeepAliveMs(undefined, 0)).toBe(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS);
+    // Explicit values win, including 0 to disable.
+    expect(resolveLiveTouchKeepAliveMs('1000', 30 * 60_000)).toBe(1_000);
+    expect(resolveLiveTouchKeepAliveMs('0', 30 * 60_000)).toBe(0);
+    // Invalid values fall back.
+    expect(resolveLiveTouchKeepAliveMs('nope', 30 * 60_000)).toBe(
+      DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
+    );
+    expect(resolveLiveTouchKeepAliveMs('-3', 30 * 60_000)).toBe(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS);
+    // NOT-309 repair round 2: a tiny stale bound clamps to a 1ms floor instead
+    // of rounding the keep-alive interval down to 0 (disabled).
+    expect(resolveLiveTouchKeepAliveMs(undefined, 2)).toBe(1);
+    expect(resolveLiveTouchKeepAliveMs(undefined, 1)).toBe(1);
+  });
+
+  it('a touch-miss (found:false) re-registers the still-connected session', async () => {
+    // A live session swept during a host sleep must return to the registry
+    // without a reconnect; an explicit found:false is the trigger, while an
+    // older backend answering {} stays a quiet no-op.
+    const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
+    const internals = server as unknown as {
+      sessions: Map<string, unknown>;
+      badgeBySession: Map<string, string>;
+      touchLiveDisplay: (id: string, force?: boolean) => void;
+    };
+    // Fake session mirrors the real McpSession shape closely enough for the
+    // re-register path (`server.server.getClientVersion()`); a bare
+    // `server: {}` throws there and the re-register POST never fires.
+    internals.sessions.set('s1', {
+      transport: {},
+      server: { server: { getClientVersion: () => undefined } },
+    });
+    internals.badgeBySession.set('s1', 'fox');
+    const liveDisplayPosts: string[] = [];
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      const target = String(url);
+      const method = init?.method ?? 'GET';
+      if (target.endsWith('/api/scope/deck')) {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: { id: STUB_DECK_ID, name: 'Stub Deck', services: [], credentials: [], playbooks: [] },
+          }),
+        };
+      }
+      if (target.endsWith('/touch')) {
+        return { ok: true, json: async () => ({ success: true, data: { found: false } }) };
+      }
+      if (target.endsWith('/api/scope/live-display') && method === 'POST') {
+        liveDisplayPosts.push(target);
+        return { ok: true, json: async () => ({ success: true, data: { badge: 'fox' } }) };
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    try {
+      internals.touchLiveDisplay('s1', true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(liveDisplayPosts.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a touch-miss after the transport closed does not resurrect the session', async () => {
+    // Close race: a keep-alive touch in flight when transport.onclose sends
+    // DELETE can answer found:false after the entry is gone. The session is
+    // no longer in the open-transport map, so no re-register may fire.
+    const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
+    const internals = server as unknown as {
+      sessions: Map<string, unknown>;
+      badgeBySession: Map<string, string>;
+      touchLiveDisplay: (id: string, force?: boolean) => void;
+    };
+    // Badge lingers (clearSession runs in the unregister .finally) but the
+    // transport is gone — exactly the in-flight-touch ordering on close.
+    internals.badgeBySession.set('s1', 'fox');
+    const liveDisplayPosts: string[] = [];
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      const target = String(url);
+      if (target.endsWith('/touch')) {
+        return { ok: true, json: async () => ({ success: true, data: { found: false } }) };
+      }
+      if (target.endsWith('/api/scope/live-display') && (init?.method ?? 'GET') === 'POST') {
+        liveDisplayPosts.push(target);
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    try {
+      internals.touchLiveDisplay('s1', true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(liveDisplayPosts).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a touch answered without found (older backend) does not re-register', async () => {
+    const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
+    const internals = server as unknown as {
+      sessions: Map<string, unknown>;
+      badgeBySession: Map<string, string>;
+      touchLiveDisplay: (id: string, force?: boolean) => void;
+    };
+    internals.sessions.set('s1', { transport: {}, server: {} });
+    internals.badgeBySession.set('s1', 'fox');
+    const liveDisplayPosts: string[] = [];
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      const target = String(url);
+      if (target.endsWith('/touch')) {
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      if (target.endsWith('/api/scope/live-display') && (init?.method ?? 'GET') === 'POST') {
+        liveDisplayPosts.push(target);
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    try {
+      internals.touchLiveDisplay('s1', true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(liveDisplayPosts).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keep-alive timer touches open sessions and stops with the server (no sockets)', async () => {
+    vi.useFakeTimers();
+    const previous = process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+    process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = '1000';
+    try {
+      const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
+      const internals = server as unknown as {
+        sessions: Map<string, unknown>;
+        badgeBySession: Map<string, string>;
+        startLiveDisplayKeepAlive: () => void;
+        stopLiveDisplayKeepAlive: () => void;
+      };
+      internals.sessions.set('s1', { transport: {}, server: {} });
+      internals.badgeBySession.set('s1', 'fox');
+      const touched: string[] = [];
+      vi.stubGlobal('fetch', async (url: unknown) => {
+        touched.push(String(url));
+        return { ok: true, json: async () => ({ success: true, data: {} }) };
+      });
+
+      internals.startLiveDisplayKeepAlive();
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(touched.filter((url) => url.endsWith('/touch')).length).toBeGreaterThanOrEqual(3);
+
+      internals.stopLiveDisplayKeepAlive();
+      const frozen = touched.length;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(touched.length).toBe(frozen);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+      if (previous === undefined) {
+        delete process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+      } else {
+        process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = previous;
+      }
+    }
+  });
+
+  it('an idle but connected session keeps touching with no tool calls', async () => {
+    const stub = await startStubBackend();
+    const previous = process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+    process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = '50';
+    const server = new AgentDeckMCPServer(0, `http://127.0.0.1:${stub.port}`);
+    const consoleCapture = installStrictConsoleCapture();
+    await server.start();
+    try {
+      const port = server.getPort();
+      await waitForMcpHealth(port);
+      const init = await postInitialize(port, 300);
+      const sessionId = init.headers.get('mcp-session-id')!;
+      await callTool(port, sessionId, 'bind_workspace', {
+        workspaceRoot: '/tmp/keepalive-repo',
+        deckId: STUB_DECK_ID,
+      }, 301);
+
+      // No further tool calls: the keep-alive alone must prove life.
+      const before = stub.touches.length;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(stub.touches.length).toBeGreaterThan(before);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+      } else {
+        process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = previous;
+      }
+      await server.stop();
+      await stub.close();
+      expect(stub.unhandled, `Unhandled stub routes: ${stub.unhandled.join(', ')}`).toEqual([]);
+      consoleCapture.restore();
+      consoleCapture.assertClean();
+    }
   });
 });

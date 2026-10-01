@@ -126,6 +126,10 @@ export async function createServer() {
   sweepStaleSessions();
   const staleSessionTimer = setInterval(sweepStaleSessions, 60_000);
   staleSessionTimer.unref?.();
+  // NOT-309: drop live-display entries from sessions that died without a
+  // clean MCP disconnect, so dead sessions stop counting toward the status
+  // line. Reads also sweep lazily, so this timer is belt-and-braces.
+  liveDisplayRegistry.startStaleSweep();
 
   // Register routes
   await fastify.register(registerWebSocketRoutes, { prefix: '/api/ws' });

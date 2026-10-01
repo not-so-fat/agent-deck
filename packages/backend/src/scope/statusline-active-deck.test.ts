@@ -31,7 +31,7 @@ import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { TrustedSessionStore } from '../trusted-session/store';
-import { LiveDisplayRegistry } from './live-display-registry';
+import { LiveDisplayRegistry, type LiveDisplayRegistryOptions } from './live-display-registry';
 
 const DECK_A_NAME = 'personal-dev-planning';
 const DECK_B_NAME = 'personal-dev';
@@ -57,7 +57,7 @@ describe('statusline follows the session-active deck (NOT-233)', () => {
     }
   });
 
-  async function buildApp() {
+  async function buildApp(registryOptions: LiveDisplayRegistryOptions = {}) {
     const db = new DatabaseManager(':memory:');
     const deckA = await db.createDeck({ name: DECK_A_NAME });
     const deckB = await db.createDeck({ name: DECK_B_NAME });
@@ -68,7 +68,7 @@ describe('statusline follows the session-active deck (NOT-233)', () => {
     });
     await db.addServiceToDeck({ deckId: deckB.id, serviceId: serviceOnB.id, position: 0 });
     const store = new TrustedSessionStore(db.getSqliteDatabase());
-    const registry = new LiveDisplayRegistry();
+    const registry = new LiveDisplayRegistry(registryOptions);
 
     const fastify = Fastify();
     fastify.decorate('db', db);
@@ -86,7 +86,13 @@ describe('statusline follows the session-active deck (NOT-233)', () => {
   async function bindLiveSession(
     registry: LiveDisplayRegistry,
     store: TrustedSessionStore,
-    input: { mcpSessionId: string; workspaceRoot?: string; deckId: string; deckName: string },
+    input: {
+      mcpSessionId: string;
+      workspaceRoot?: string;
+      deckId: string;
+      deckName: string;
+      updatedAt?: string;
+    },
   ) {
     const session = store.createRuntimeSession({
       deckId: input.deckId,
@@ -99,7 +105,8 @@ describe('statusline follows the session-active deck (NOT-233)', () => {
       deckName: input.deckName,
       source: 'launch',
       cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
-      updatedAt: '2026-09-20T00:00:00.000Z',
+      // NOT-309: fixtures model live sessions, so they default inside the stale bound.
+      updatedAt: input.updatedAt ?? new Date().toISOString(),
     });
     return session;
   }
@@ -257,6 +264,51 @@ describe('statusline follows the session-active deck (NOT-233)', () => {
     expect(display.deckId).toBe(deckA.id);
     expect(display.displayLine).toContain(DECK_A_NAME);
     expect(display.displayLine).toContain('2 sessions');
+  });
+
+  it('NOT-309: a stale other-deck entry does not force multiple — two live sessions name deck A with a count', async () => {
+    // Fake clock: the killed builder session on deck B last touched long ago.
+    const staleMs = 60_000;
+    const t0 = Date.parse('2026-09-15T12:00:00.000Z');
+    const fakeNow = t0;
+    const { fastify, store, registry, deckA, deckB } = await buildApp({
+      nowMs: () => fakeNow,
+      staleMs,
+    });
+    const workspaceRoot = makeWorkspaceRoot();
+    const isoAt = (ms: number) => new Date(ms).toISOString();
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-not309-a1',
+      workspaceRoot,
+      deckId: deckA.id,
+      deckName: DECK_A_NAME,
+      updatedAt: isoAt(t0),
+    });
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-not309-a2',
+      workspaceRoot,
+      deckId: deckA.id,
+      deckName: DECK_A_NAME,
+      updatedAt: isoAt(t0),
+    });
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-not309-dead-b',
+      workspaceRoot,
+      deckId: deckB.id,
+      deckName: DECK_B_NAME,
+      updatedAt: isoAt(t0 - staleMs - 1),
+    });
+
+    const display = await getDisplay(fastify, workspaceRoot);
+    expect(display.deckId).toBe(deckA.id);
+    expect(display.displayLine).toContain(DECK_A_NAME);
+    expect(display.displayLine).toContain('2 sessions');
+    expect(display.displayLine).not.toContain('multiple session decks');
+    // The sweep also removed the dead entry from the registry.
+    expect(registry.list().map((entry) => entry.mcpSessionId).sort()).toEqual([
+      'mcp-not309-a1',
+      'mcp-not309-a2',
+    ]);
   });
 
   it('workspace-default switch moves the statusline to the new deck', async () => {

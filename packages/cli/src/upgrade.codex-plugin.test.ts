@@ -192,7 +192,9 @@ afterEach(() => {
   }
 });
 
-describe('upgrade codex plugin reconciliation (NOT-188)', () => {
+// Each case below shells out to a stub `codex` binary several times; allow
+// headroom under loaded CI runners (default 5s proved flaky there).
+describe('upgrade codex plugin reconciliation (NOT-188)', { timeout: 30_000 }, () => {
   it('reinstalls through remove/add for one unambiguous local source', async () => {
     seedUpgradeHome();
     // Single local marketplace root supplying the installed plugin.
@@ -410,7 +412,7 @@ describe('upgrade codex plugin reconciliation (NOT-188)', () => {
   });
 });
 
-describe('current-contract reconciliation (NOT-301)', () => {
+describe('current-contract reconciliation (NOT-301)', { timeout: 30_000 }, () => {
   /**
    * Sanitized Codex 0.157.1 shape: `installed[]` carries pluginId /
    * marketplaceName / installed / enabled / nested source.path, with a stale
@@ -540,7 +542,7 @@ describe('current-contract reconciliation (NOT-301)', () => {
   });
 });
 
-describe('upgrade no-op reconciliation (NOT-291)', () => {
+describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
   let deckHome = '';
   let savedDeckHome: string | undefined;
   let savedFetch: typeof globalThis.fetch | undefined;
