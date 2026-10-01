@@ -613,6 +613,39 @@ describe('live-display keep-alive (NOT-309)', () => {
     }
   });
 
+  it('a touch-miss after the transport closed does not resurrect the session', async () => {
+    // Close race: a keep-alive touch in flight when transport.onclose sends
+    // DELETE can answer found:false after the entry is gone. The session is
+    // no longer in the open-transport map, so no re-register may fire.
+    const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
+    const internals = server as unknown as {
+      sessions: Map<string, unknown>;
+      badgeBySession: Map<string, string>;
+      touchLiveDisplay: (id: string, force?: boolean) => void;
+    };
+    // Badge lingers (clearSession runs in the unregister .finally) but the
+    // transport is gone — exactly the in-flight-touch ordering on close.
+    internals.badgeBySession.set('s1', 'fox');
+    const liveDisplayPosts: string[] = [];
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      const target = String(url);
+      if (target.endsWith('/touch')) {
+        return { ok: true, json: async () => ({ success: true, data: { found: false } }) };
+      }
+      if (target.endsWith('/api/scope/live-display') && (init?.method ?? 'GET') === 'POST') {
+        liveDisplayPosts.push(target);
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    try {
+      internals.touchLiveDisplay('s1', true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(liveDisplayPosts).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('a touch answered without found (older backend) does not re-register', async () => {
     const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
     const internals = server as unknown as {

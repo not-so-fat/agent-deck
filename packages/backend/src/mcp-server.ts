@@ -333,7 +333,11 @@ export class AgentDeckMCPServer {
       sessionId,
     )
       .then((result) => {
-        if (result && result.found === false) {
+        // Guard against the close race: a keep-alive touch in flight when
+        // transport.onclose sends DELETE answers found:false after the entry
+        // is gone. Re-registering then would resurrect a closed session, so
+        // only re-register while the transport is still open.
+        if (result && result.found === false && this.sessions.has(sessionId)) {
           void this.registerLiveDisplay(sessionId).catch(() => {});
         }
       })
