@@ -15,7 +15,8 @@ const liveDisplayBody = {
   source: 'session_override',
   clientName: 'cursor',
   cardCounts: { mcp: 4, credentials: 0, playbooks: 6 },
-  updatedAt: '2026-07-03T00:00:00.000Z',
+  // NOT-309: fixtures model live sessions, so they stay inside the stale bound.
+  updatedAt: new Date(Date.now() - 60_000).toISOString(),
 };
 
 async function buildApp() {
@@ -89,7 +90,7 @@ describe('scope bindings routes', () => {
     expect(rows[0].deckName).toBe('Product Design');
     expect(rows[0].clientName).toBe('cursor');
     expect(rows[0].badge).toBeTruthy();
-    expect(rows[0].lastActivityAt).toBe('2026-07-03T00:00:00.000Z');
+    expect(rows[0].lastActivityAt).toBe(liveDisplayBody.updatedAt);
     expect(rows[0]).not.toHaveProperty('mcpSessionId');
   });
 
@@ -109,15 +110,44 @@ describe('scope bindings routes', () => {
     });
     expect(forbidden.statusCode).toBe(403);
 
+    const touchAt = new Date().toISOString();
     const touched = await app.inject({
       method: 'POST',
       url: '/api/scope/live-display/session-1/touch',
       headers: agentHeaders,
-      payload: { at: '2026-07-03T00:10:00.000Z' },
+      payload: { at: touchAt },
     });
     expect(touched.statusCode).toBe(200);
 
     const rows = (await app.inject({ method: 'GET', url: '/api/scope/bindings' })).json().data;
-    expect(rows[0].lastActivityAt).toBe('2026-07-03T00:10:00.000Z');
+    expect(rows[0].lastActivityAt).toBe(touchAt);
+  });
+
+  it('NOT-309: GET /bindings omits entries older than the stale bound', async () => {
+    app = await buildApp();
+    await app.inject({
+      method: 'POST',
+      url: '/api/scope/live-display',
+      headers: agentHeaders,
+      payload: liveDisplayBody,
+    });
+    const stale = await app.inject({
+      method: 'POST',
+      url: '/api/scope/live-display',
+      headers: agentHeaders,
+      payload: {
+        ...liveDisplayBody,
+        mcpSessionId: 'session-killed',
+        deckName: 'Killed Deck',
+        updatedAt: new Date(Date.now() - 31 * 60_000).toISOString(),
+      },
+    });
+    expect(stale.statusCode).toBe(200);
+
+    const response = await app.inject({ method: 'GET', url: '/api/scope/bindings' });
+    expect(response.statusCode).toBe(200);
+    const rows = response.json().data as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deckName).toBe('Product Design');
   });
 });

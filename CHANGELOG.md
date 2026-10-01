@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fix: status line counts dead sessions (NOT-309)
+
+- Live-display registry entries now expire after `LIVE_DISPLAY_STALE_MS` without activity (default 30 minutes, `0` disables). Sessions killed without a clean MCP disconnect no longer pin the workspace status line on `multiple session decks` forever.
+- Expired entries are ignored by the status-line resolution, removed by a periodic sweep (plus a lazy sweep on every registry read), and omitted from `GET /api/scope/bindings`.
+- Idle-but-connected sessions send a keep-alive touch every 5 minutes (`AGENT_DECK_MCP_LIVE_TOUCH_KEEPALIVE_MS` overrides), so healthy sessions never expire within the bound.
+
 ## 1.11.8 — 2026-09-30
 
 ### Feature: canonical first-turn session receipt (NOT-295)

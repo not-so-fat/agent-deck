@@ -8,6 +8,9 @@ import { writeUseManifest } from '../playbooks/stub-sync';
 import { LiveDisplayRegistry } from './live-display-registry';
 import { resolveDeckDisplay } from './display';
 
+/** NOT-309: fixtures model live sessions, so they stay inside the stale bound. */
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
 describe('resolveDeckDisplay', () => {
   const originalEnv = { ...process.env };
   let tempDir: string;
@@ -40,7 +43,7 @@ describe('resolveDeckDisplay', () => {
       deckId: boundDeck.id,
       deckName: boundDeck.name,
       source: 'session_override',
-      updatedAt: '2026-07-02T15:33:00.000Z',
+      updatedAt: minutesAgo(1),
       cardCounts: { mcp: 4, credentials: 0, playbooks: 4 },
     });
 
@@ -80,6 +83,7 @@ describe('resolveDeckDisplay', () => {
   it('NOT-296: single live session renders that session exact displayLine', async () => {
     const workspace = path.join(tempDir, 'solo');
     const deck = await db.createDeck({ name: 'Solo Deck' });
+    const updatedAt = minutesAgo(1);
 
     registry.upsert({
       mcpSessionId: 'mcp-solo',
@@ -87,7 +91,7 @@ describe('resolveDeckDisplay', () => {
       deckId: deck.id,
       deckName: deck.name,
       source: 'launch',
-      updatedAt: '2026-09-28T00:00:00.000Z',
+      updatedAt,
       cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
     });
     const badge = registry.get('mcp-solo')?.badge;
@@ -96,7 +100,7 @@ describe('resolveDeckDisplay', () => {
     const display = await resolveDeckDisplay({ workspaceRoot: workspace }, db, registry);
     const expected = formatDisplayLine(deck.name, { mcp: 0, credentials: 0, playbooks: 0 }, {
       badge,
-      updatedAt: '2026-09-28T00:00:00.000Z',
+      updatedAt,
     });
     expect(display.deckId).toBe(deck.id);
     expect(display.displayLine).toBe(expected);
@@ -112,12 +116,12 @@ describe('resolveDeckDisplay', () => {
       const order =
         first === 'a'
           ? [
-              { id: 'mcp-a', deck: deckA, at: '2026-09-28T00:00:00.000Z' },
-              { id: 'mcp-b', deck: deckB, at: '2026-09-28T01:00:00.000Z' },
+              { id: 'mcp-a', deck: deckA, at: minutesAgo(2) },
+              { id: 'mcp-b', deck: deckB, at: minutesAgo(1) },
             ]
           : [
-              { id: 'mcp-b', deck: deckB, at: '2026-09-28T01:00:00.000Z' },
-              { id: 'mcp-a', deck: deckA, at: '2026-09-28T00:00:00.000Z' },
+              { id: 'mcp-b', deck: deckB, at: minutesAgo(1) },
+              { id: 'mcp-a', deck: deckA, at: minutesAgo(2) },
             ];
       for (const row of order) {
         fresh.upsert({
@@ -161,12 +165,12 @@ describe('resolveDeckDisplay', () => {
       const rows = [
         {
           id: 'mcp-aaa',
-          at: '2026-09-28T00:00:00.000Z',
+          at: minutesAgo(2),
           counts: { mcp: 9, credentials: 9, playbooks: 9 },
         },
         {
           id: 'mcp-zzz',
-          at: '2026-09-28T05:00:00.000Z',
+          at: minutesAgo(1),
           counts: { mcp: 8, credentials: 8, playbooks: 8 },
         },
       ];
@@ -274,7 +278,7 @@ describe('resolveDeckDisplay', () => {
       deckId: deck.id,
       deckName: deck.name,
       source: 'launch',
-      updatedAt: '2026-09-28T00:00:00.000Z',
+      updatedAt: minutesAgo(2),
       cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
     });
     fresh.upsert({
@@ -283,7 +287,7 @@ describe('resolveDeckDisplay', () => {
       deckId: deck.id,
       deckName: deck.name,
       source: 'session_override',
-      updatedAt: '2026-09-28T01:00:00.000Z',
+      updatedAt: minutesAgo(1),
       cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
     });
 

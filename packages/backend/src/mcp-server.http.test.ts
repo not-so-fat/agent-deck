@@ -1,5 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { AgentDeckMCPServer } from './mcp-server';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import {
+  AgentDeckMCPServer,
+  DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
+  LIVE_TOUCH_KEEPALIVE_ENV_VAR,
+  resolveLiveTouchKeepAliveMs,
+} from './mcp-server';
 import { installStrictConsoleCapture } from './mcp-tools/test-harness';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
@@ -531,5 +536,101 @@ describe('session badge flow (stub backend)', () => {
     await callTool(badgePort, sessionId, 'get_session_binding', {}, 202);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(stub.touches.length).toBeGreaterThan(before);
+  });
+});
+
+describe('live-display keep-alive (NOT-309)', () => {
+  it('resolveLiveTouchKeepAliveMs defaults, clamps, and parses', () => {
+    // Default 5 minutes under the default 30-minute stale bound.
+    expect(resolveLiveTouchKeepAliveMs(undefined, 30 * 60_000)).toBe(
+      DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
+    );
+    expect(resolveLiveTouchKeepAliveMs('', 30 * 60_000)).toBe(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS);
+    // Shortened stale bound clamps the default under a third of the bound.
+    expect(resolveLiveTouchKeepAliveMs(undefined, 6_000)).toBe(2_000);
+    // Disabled expiry keeps the plain default.
+    expect(resolveLiveTouchKeepAliveMs(undefined, 0)).toBe(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS);
+    // Explicit values win, including 0 to disable.
+    expect(resolveLiveTouchKeepAliveMs('1000', 30 * 60_000)).toBe(1_000);
+    expect(resolveLiveTouchKeepAliveMs('0', 30 * 60_000)).toBe(0);
+    // Invalid values fall back.
+    expect(resolveLiveTouchKeepAliveMs('nope', 30 * 60_000)).toBe(
+      DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
+    );
+    expect(resolveLiveTouchKeepAliveMs('-3', 30 * 60_000)).toBe(DEFAULT_LIVE_TOUCH_KEEPALIVE_MS);
+  });
+
+  it('keep-alive timer touches open sessions and stops with the server (no sockets)', async () => {
+    vi.useFakeTimers();
+    const previous = process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+    process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = '1000';
+    try {
+      const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1');
+      const internals = server as unknown as {
+        sessions: Map<string, unknown>;
+        badgeBySession: Map<string, string>;
+        startLiveDisplayKeepAlive: () => void;
+        stopLiveDisplayKeepAlive: () => void;
+      };
+      internals.sessions.set('s1', { transport: {}, server: {} });
+      internals.badgeBySession.set('s1', 'fox');
+      const touched: string[] = [];
+      vi.stubGlobal('fetch', async (url: unknown) => {
+        touched.push(String(url));
+        return { ok: true, json: async () => ({ success: true, data: {} }) };
+      });
+
+      internals.startLiveDisplayKeepAlive();
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(touched.filter((url) => url.endsWith('/touch')).length).toBeGreaterThanOrEqual(3);
+
+      internals.stopLiveDisplayKeepAlive();
+      const frozen = touched.length;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(touched.length).toBe(frozen);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+      if (previous === undefined) {
+        delete process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+      } else {
+        process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = previous;
+      }
+    }
+  });
+
+  it('an idle but connected session keeps touching with no tool calls', async () => {
+    const stub = await startStubBackend();
+    const previous = process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+    process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = '50';
+    const server = new AgentDeckMCPServer(0, `http://127.0.0.1:${stub.port}`);
+    const consoleCapture = installStrictConsoleCapture();
+    await server.start();
+    try {
+      const port = server.getPort();
+      await waitForMcpHealth(port);
+      const init = await postInitialize(port, 300);
+      const sessionId = init.headers.get('mcp-session-id')!;
+      await callTool(port, sessionId, 'bind_workspace', {
+        workspaceRoot: '/tmp/keepalive-repo',
+        deckId: STUB_DECK_ID,
+      }, 301);
+
+      // No further tool calls: the keep-alive alone must prove life.
+      const before = stub.touches.length;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(stub.touches.length).toBeGreaterThan(before);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+      } else {
+        process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = previous;
+      }
+      await server.stop();
+      await stub.close();
+      expect(stub.unhandled, `Unhandled stub routes: ${stub.unhandled.join(', ')}`).toEqual([]);
+      consoleCapture.restore();
+      consoleCapture.assertClean();
+    }
   });
 });
