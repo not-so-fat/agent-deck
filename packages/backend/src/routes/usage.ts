@@ -4,6 +4,7 @@ import {
   CardUsageCardsResponse,
   CardUsageEventResponse,
   CardUsageEventsResponse,
+  normalizeCorrelationId,
 } from '@agent-deck/shared';
 import {
   CARD_USAGE_WINDOW_MS,
@@ -21,6 +22,10 @@ interface UsageEventsQuery {
   to?: string;
   cursor?: string;
   limit?: string;
+  /** NOT-304: exact opaque run-correlation id. */
+  correlationId?: string;
+  /** Bound-deck scope for the coordinator read path. */
+  deckId?: string;
 }
 
 function sendBadRequest(reply: FastifyReply, message: string) {
@@ -39,7 +44,9 @@ function isStrictIsoTimestamp(value: string): boolean {
 /**
  * GET /api/usage/events — raw, privacy-safe card-usage events for
  * pandas/Jupyter analysis. Stable chronological cursor pagination over
- * (occurredAt ASC, id ASC); both time bounds are inclusive.
+ * (occurredAt ASC, id ASC); both time bounds are inclusive. Optional
+ * exact-match `correlationId` (NOT-304) and `deckId` filters narrow the
+ * stream without disturbing cursor stability.
  */
 export async function registerUsageRoutes(fastify: FastifyInstance) {
   /**
@@ -125,6 +132,22 @@ export async function registerUsageRoutes(fastify: FastifyInstance) {
       limit = parsed;
     }
 
+    // NOT-304: exact correlation match. Anything that is not a UUID or
+    // strict bounded token is a 400 — never a broad match.
+    let correlationId: string | undefined;
+    if (request.query.correlationId !== undefined) {
+      const normalized = normalizeCorrelationId(request.query.correlationId);
+      if (!normalized) {
+        return sendBadRequest(reply, 'Invalid `correlationId` — expected opaque UUID or token');
+      }
+      correlationId = normalized;
+    }
+
+    const deckId =
+      request.query.deckId !== undefined && request.query.deckId.trim()
+        ? request.query.deckId.trim()
+        : undefined;
+
     let events;
     let nextCursor: string | null;
     try {
@@ -133,6 +156,8 @@ export async function registerUsageRoutes(fastify: FastifyInstance) {
         to,
         cursor: request.query.cursor ?? null,
         limit,
+        correlationId,
+        deckId,
       }));
     } catch (error) {
       return sendBadRequest(
@@ -154,6 +179,7 @@ export async function registerUsageRoutes(fastify: FastifyInstance) {
           success: event.success,
           source: event.source,
           sessionId: event.sessionId,
+          correlationId: event.correlationId,
         }),
       ),
       nextCursor,

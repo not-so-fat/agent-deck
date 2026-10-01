@@ -1,9 +1,11 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
+  AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_SESSION_HEADER,
   ApiResponse,
   DashboardRegisterPlaybookSchema,
   DashboardUpdatePlaybookSchema,
+  normalizeCorrelationId,
   OpenPlaybookPatchSummary,
   Playbook,
   PlaybookSummary,
@@ -56,11 +58,13 @@ async function sendPlaybookWithOpenPatches(
 ) {
   // Only agent/IDE fetches count as playbook use — dashboard detail
   // inspection must not emit a usage event. The raw session header is
-  // passed through; only its one-way hash is stored.
+  // passed through; only its one-way hash is stored. The correlation
+  // header is observability metadata only and never affects this fetch.
   if (!isDashboardClient(request)) {
     try {
       const deckId = await resolveAgentDeckId(request, fastify.db).catch(() => null);
       const sessionHeader = request.headers[AGENT_DECK_SESSION_HEADER];
+      const correlationHeader = request.headers[AGENT_DECK_CORRELATION_HEADER];
       await fastify.db.recordCardUsageEvent({
         cardType: 'playbook',
         cardId: playbook.id,
@@ -69,6 +73,10 @@ async function sendPlaybookWithOpenPatches(
         success: true,
         source: playbookEventSource(request),
         sessionId: typeof sessionHeader === 'string' ? sessionHeader : null,
+        correlationId:
+          typeof correlationHeader === 'string'
+            ? normalizeCorrelationId(correlationHeader)
+            : null,
       });
     } catch (error) {
       fastify.log.warn({ err: error }, 'card usage event recording failed');

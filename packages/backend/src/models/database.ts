@@ -26,6 +26,7 @@ import {
   PlaybookVersion,
   CardUsageCardType,
   CardUsageEvent,
+  normalizeCorrelationId,
   FeedbackSignal,
   FeedbackSignalSource,
   FeedbackSignalStatus,
@@ -198,6 +199,10 @@ export class DatabaseManager {
 
     this.addColumnIfMissing('playbook_patches', 'conflicts_json', 'TEXT');
     this.addColumnIfMissing('playbook_patches', 'superseded_by', 'TEXT');
+
+    // NOT-304: opaque run-correlation id on the normalized usage stream.
+    // Nullable so pre-correlation stores stay valid with null.
+    this.addColumnIfMissing('card_usage_events', 'correlation_id', 'TEXT');
 
     // Feedback redesign: unreviewed → open (link-on-propose / actioned-on-accept).
     if (this.tableExists('feedback_signals')) {
@@ -392,6 +397,8 @@ export class DatabaseManager {
 
     // Normalized, privacy-safe card-usage events (NOT-292). No payloads,
     // arguments, results, URLs, headers, or secrets are stored here.
+    // NOT-304 adds the nullable opaque run-correlation id (observability
+    // metadata only — never authority).
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS card_usage_events (
         id TEXT PRIMARY KEY,
@@ -402,6 +409,7 @@ export class DatabaseManager {
         success INTEGER,
         source TEXT NOT NULL,
         session_id TEXT,
+        correlation_id TEXT,
         created_at TEXT NOT NULL
       )
     `);
@@ -679,6 +687,7 @@ export class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_playbook_versions_playbook ON playbook_versions(playbook_id);
       CREATE INDEX IF NOT EXISTS idx_card_usage_card ON card_usage_events(card_type, card_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_card_usage_time ON card_usage_events(created_at, id);
+      CREATE INDEX IF NOT EXISTS idx_card_usage_correlation ON card_usage_events(correlation_id, created_at, id);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_status ON feedback_signals(status);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_playbook ON feedback_signals(candidate_playbook_id);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_linked_patch ON feedback_signals(linked_patch_id);
@@ -1473,9 +1482,9 @@ export class DatabaseManager {
     const execOccurredAt = input.finishedAt ?? input.startedAt;
     const insertUsageEvent = this.db.prepare(`
       INSERT INTO card_usage_events (
-        id, card_type, card_id, deck_id, action, success, source, session_id, created_at
+        id, card_type, card_id, deck_id, action, success, source, session_id, correlation_id, created_at
       ) VALUES (
-        @id, @card_type, @card_id, @deck_id, @action, @success, @source, @session_id, @created_at
+        @id, @card_type, @card_id, @deck_id, @action, @success, @source, @session_id, @correlation_id, @created_at
       )
     `);
 
@@ -1507,6 +1516,8 @@ export class DatabaseManager {
           success: execSuccess === null ? null : execSuccess ? 1 : 0,
           source: 'exec',
           session_id: null,
+          // Local exec runs have no launch-session context (NOT-304).
+          correlation_id: null,
           created_at: execOccurredAt,
         });
       }
@@ -2032,6 +2043,7 @@ export class DatabaseManager {
       success: row.success === null || row.success === undefined ? null : row.success === 1,
       source: row.source,
       sessionId: row.session_id ?? null,
+      correlationId: row.correlation_id ?? null,
       createdAt: row.created_at,
     };
   }
@@ -2045,6 +2057,8 @@ export class DatabaseManager {
     success?: boolean | null;
     source: string;
     sessionId?: string | null;
+    /** Opaque run-correlation id (NOT-304). Invalid values are dropped, never coerced. */
+    correlationId?: string | null;
     occurredAt?: string;
   }): Promise<CardUsageEvent> {
     if (!DatabaseManager.CARD_USAGE_CARD_TYPES.includes(input.cardType)) {
@@ -2060,13 +2074,17 @@ export class DatabaseManager {
       source: input.source,
       // Never persist the raw runtime-session bearer — only its one-way hash.
       sessionId: hashCardUsageSessionId(input.sessionId ?? null),
+      // Observability metadata only. normalizeCorrelationId drops anything
+      // that is not a UUID or strict bounded token — task text, repo paths,
+      // titles, and prompts can never be persisted here.
+      correlationId: normalizeCorrelationId(input.correlationId ?? null),
       createdAt: input.occurredAt ?? new Date().toISOString(),
     };
     this.db.prepare(`
       INSERT INTO card_usage_events (
-        id, card_type, card_id, deck_id, action, success, source, session_id, created_at
+        id, card_type, card_id, deck_id, action, success, source, session_id, correlation_id, created_at
       ) VALUES (
-        @id, @card_type, @card_id, @deck_id, @action, @success, @source, @session_id, @created_at
+        @id, @card_type, @card_id, @deck_id, @action, @success, @source, @session_id, @correlation_id, @created_at
       )
     `).run({
       id: event.id,
@@ -2077,6 +2095,7 @@ export class DatabaseManager {
       success: event.success === null ? null : event.success ? 1 : 0,
       source: event.source,
       session_id: event.sessionId,
+      correlation_id: event.correlationId,
       created_at: event.createdAt,
     });
     this.ensureUsageObservationStart(event.cardType, event.createdAt);
@@ -2112,21 +2131,35 @@ export class DatabaseManager {
   /**
    * Chronological, cursor-paginated raw usage events. Ordering is
    * deterministic: (created_at ASC, id ASC). Both bounds are inclusive.
+   * Optional exact-match filters narrow the stream without disturbing
+   * cursor stability: the cursor still pages (created_at ASC, id ASC)
+   * within the filtered set.
    */
   async listCardUsageEvents(input: {
     from: string;
     to: string;
     cursor?: string | null;
     limit: number;
+    /** NOT-304: exact opaque run-correlation id, or undefined for all. */
+    correlationId?: string | null;
+    /** Bound-deck scope for the coordinator read path, or undefined for all. */
+    deckId?: string | null;
   }): Promise<{ events: CardUsageEvent[]; nextCursor: string | null }> {
     let after: { createdAt: string; id: string } | null = null;
     if (input.cursor) {
       after = DatabaseManager.decodeCardUsageCursor(input.cursor);
     }
+    if (input.correlationId !== undefined && input.correlationId !== null) {
+      if (!normalizeCorrelationId(input.correlationId)) {
+        throw new Error('Invalid correlationId');
+      }
+    }
     const rows = this.db.prepare(`
       SELECT * FROM card_usage_events
       WHERE created_at >= @from
         AND created_at <= @to
+        AND (@correlation_id IS NULL OR correlation_id = @correlation_id)
+        AND (@deck_id IS NULL OR deck_id = @deck_id)
         AND (
           @after_created_at IS NULL
           OR created_at > @after_created_at
@@ -2137,6 +2170,8 @@ export class DatabaseManager {
     `).all({
       from: input.from,
       to: input.to,
+      correlation_id: input.correlationId ?? null,
+      deck_id: input.deckId ?? null,
       after_created_at: after?.createdAt ?? null,
       after_id: after?.id ?? null,
       limit: input.limit + 1,
