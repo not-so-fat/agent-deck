@@ -574,7 +574,13 @@ describe('live-display keep-alive (NOT-309)', () => {
       badgeBySession: Map<string, string>;
       touchLiveDisplay: (id: string, force?: boolean) => void;
     };
-    internals.sessions.set('s1', { transport: {}, server: {} });
+    // Fake session mirrors the real McpSession shape closely enough for the
+    // re-register path (`server.server.getClientVersion()`); a bare
+    // `server: {}` throws there and the re-register POST never fires.
+    internals.sessions.set('s1', {
+      transport: {},
+      server: { server: { getClientVersion: () => undefined } },
+    });
     internals.badgeBySession.set('s1', 'fox');
     const liveDisplayPosts: string[] = [];
     vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
