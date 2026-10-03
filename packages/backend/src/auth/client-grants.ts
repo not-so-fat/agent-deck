@@ -91,27 +91,23 @@ function hashSecret(secret: string): string {
 /**
  * Parse `adg_<grantId>_<secret>`. Returns null for anything else —
  * malformed input is indistinguishable from an unknown grant upstream.
+ *
+ * The split is anchored on the grant-id shape (`ag_<uuid>`), not on a
+ * bare `_`: issued secrets are base64url and may themselves contain `_`,
+ * so first- or last-underscore splitting misroutes roughly half of all
+ * tokens. `issueGrant` is the only id minter, so the shape is closed.
  */
+const GRANT_TOKEN_PATTERN = /^adg_(ag_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_(\S+)$/;
+
 export function parseGrantToken(token: string): { grantId: string; secret: string } | null {
   if (typeof token !== 'string') {
     return null;
   }
-  const trimmed = token.trim();
-  const prefix = `${GRANT_TOKEN_PREFIX}_`;
-  if (!trimmed.startsWith(prefix)) {
+  const match = GRANT_TOKEN_PATTERN.exec(token.trim());
+  if (!match) {
     return null;
   }
-  const rest = trimmed.slice(prefix.length);
-  const separator = rest.indexOf('_');
-  if (separator <= 0 || separator === rest.length - 1) {
-    return null;
-  }
-  const grantId = rest.slice(0, separator);
-  const secret = rest.slice(separator + 1);
-  if (!grantId || !secret || /[\s]/.test(grantId) || /[\s]/.test(secret)) {
-    return null;
-  }
-  return { grantId, secret };
+  return { grantId: match[1], secret: match[2] };
 }
 
 /** True when the principal may serve `deckId`. Local sessions are unconstrained. */
