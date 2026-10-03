@@ -356,15 +356,25 @@ Estimates are T-shirt sizes for planning, not commitments:
 | §3 Grok operator proof | Operator | S | Blocks "Grok supported" claim, not NOT-318 start |
 | §7 OAuth child (conditional) | Separate ticket | L | Only if §3 proof demands it; bounded by the six bullets above |
 
-NOT-318 comparison (attempt recorded): this session's bound deck exposes no
-Linear service (only an unhealthy GitHub MCP service), and task instructions
-forbid web-fetching Linear URLs, so the NOT-318 description and relations
-could **not** be read here. No repo-local NOT-318 spec exists either (only
-this ADR references it). The comparison MUST be completed by the
-coordinator/operator before NOT-318 starts — flagged explicitly here, not
-silently skipped. **Waiver:** AC7 stays open until the coordinator either
-performs that comparison against NOT-318 as written (updating it or
-confirming it matches) or records an explicit human waiver. No update is
+NOT-318 comparison (attempt recorded, repair round 3, 2026-10-03 UTC):
+this session's bound deck (`builder`) exposes no Linear service — only one
+GitHub MCP service, currently unhealthy — and task instructions forbid
+web-fetching Linear URLs, so the NOT-318 description and relations could
+**not** be read here. A repo-wide search confirms no repo-local NOT-318 spec
+exists either (only this ADR references that ticket id). The comparison MUST
+be completed by the coordinator/operator before NOT-318 starts — flagged
+explicitly here, not silently skipped. **AC7 stays open until the coordinator
+either performs that comparison against NOT-318 as written (updating it or
+confirming it matches) or records an explicit human waiver.** Coordinator
+steps (Linear issue `NOT-318`, per-agent remote grants):
+1. open the issue and read its description plus its relations (parent
+   NOT-317, blocked-by/blocks links);
+2. check each assumption (a)–(h) below against the issue as written;
+3. if all match, record "NOT-318 matches ADR §4–§6" with a date; otherwise
+   edit NOT-318 to match before implementation starts;
+4. if the §3 proof has by then shown a required client with no static-header
+   field, split the §7 OAuth bullets into a bounded child ticket — OAuth
+   must not ride inside NOT-318. No update is
 needed *provided* NOT-318
 already assumes (a) opaque per-agent bearer grants, (b) the deck header as
 request-only, (c) loopback launcher compatibility, and (d) single-owner
@@ -385,8 +395,10 @@ split into the §7 child scope, not ride inside NOT-318.
   detail leakage, deck-selection 403 only post-auth, bearer-before-404
   `authOrder` case from §4.3). Run:
   `npm --workspace @agent-deck/backend run test -- personal-cloud-auth-contract`
-- Text integrity: `grep -c REDACTED` returns 0 for this ADR, the test, and
-  the fixture — the nine normative sentences a prior scrubber pass had
+- Text integrity: no scrubber placeholder tokens remain in this ADR, the
+  test, or the fixture — a placeholder-token scan over all three returns 0
+  matches. (The sentence is worded to avoid the literal token so the scan
+  stays at zero.) The nine normative sentences a prior scrubber pass had
   replaced with a literal token now use the hyphenated `bearer-grant …`
   form (§4.3 check order, §4.4 allowlist gate, §4.6 hosted-mode trigger).
 - Docs link check: every relative link in this ADR and the three updated
@@ -406,7 +418,9 @@ split into the §7 child scope, not ride inside NOT-318.
   C3/C4/C9, [2026-09-20-session-deck-switching-redesign.md](../superpowers/specs/2026-09-20-session-deck-switching-redesign.md).
 - Probe evidence: `curl -sI` against the three official doc URLs returned
   empty under sandbox network restriction on 2026-10-03, re-confirmed
-  2026-10-03 (`curl: (6) Could not resolve host`, `curl -sS` exit 6;
+  2026-10-03 UTC in repair round 3
+  (`curl -sS -m 8 -o /dev/null https://code.claude.com/docs/en/mcp.md` →
+  `Could not resolve host`, exit 6;
   escalated execution forbidden by
   launch policy, so no official section-2 URL was inspected in-session.
   The source-status key and the section-2.1 preflight (P1-P4) below carry
