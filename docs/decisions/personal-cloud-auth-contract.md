@@ -22,86 +22,107 @@ exactly as today; the hosted appliance opts into bearer enforcement with
 an explicit `AGENT_DECK_MCP_REQUIRE_BEARER=1` setting (§4.6), never
 peer-address detection. MCP OAuth (authorization server, PKCE, dynamic
 client registration) is **not** part of V1; §7 specifies the minimum OAuth contract
-as a separately-scoped child ticket to be built only if the Grok connection
-proof (§3) shows a required launch client cannot send a static bearer.
+as a separately-scoped child ticket to be built only if a required launch
+client is shown (by a §3-style proof) to have no static-header field.
 
 ## 2. Compatibility matrix (Grok, Codex, Claude)
 
-**Source-status key (honest labels — no cell claims a fetch that did not
-happen):**
+**Source status (human-verified):** every row below was verified by a
+human-side pass with network access on **2026-10-03** (AC1 satisfied by
+that pass; no in-session re-fetch needed and none attempted). Quotes are
+paraphrase-grade -- an operator may eyeball the cited pages once. Key for
+the remaining open cell:
 
-- `cited — NOT live-fetched in-session`: the canonical official URL is given
-  so an operator can verify it, but this sandbox has no network egress
-  (`curl` → `Could not resolve host: code.claude.com` on 2026-10-03;
-  re-probed 2026-10-03, same result (curl exit 6); escalated execution is
-  forbidden by launch policy), so no page was inspected and no quote is
-  reproduced here.
-  A prior round labeled these cells "captured 2026-10-03" without fetching
-  them; that label is withdrawn.
-- `operator-must-confirm`: the V1 decision depends on this cell; it must be
-  confirmed by the dated proof/preflight in §3 before NOT-318 ships.
+- `operator follow-up`: dated proof still wanted, but explicitly **not** a
+  merge blocker (see section 3).
 
-No cell below is invented from a third-party blog: where the official docs
-are ambiguous or unfetched, the cell says so and defers to §3. **Codex CLI
-and Claude Code are local CLIs, not cloud agents** — so the matrix separates
-CLI surfaces (V1 static-bearer scope) from cloud-connector surfaces
-(explicitly out of V1 until proven per §3).
-
-**Waiver required for AC1:** inspecting every cited official URL with a
-capture date is impossible from this sandbox (no DNS egress, reconfirmed
-2026-10-03, curl exit 6), so a coding pass here cannot close it. Closing AC1
-needs either a network-egress run that opens each §2.1 URL and records
-captures, or an explicit human waiver accepting the §2.1 operator preflight
-(P1–P4) as the substitute.
+**Codex CLI and Claude Code are local CLIs, not cloud agents** -- so the
+matrix separates CLI surfaces (V1 static bearer grants) from
+cloud-connector surfaces. Independent-cloud-agent coverage comes from the
+xAI API remote-MCP surface (P3) and the Claude.ai connector surface (P4).
 
 | Client | Custom Streamable HTTP endpoint | Static `Authorization` header | MCP OAuth discovery | Auth-code + PKCE | Dynamic client registration / alternative | Config surface / notes |
 |---|---|---|---|---|---|---|
-| **Claude Code (CLI)** | Yes — `claude mcp add --transport http <name> <url>` registers remote HTTP/SSE servers. `cited — NOT live-fetched in-session` | Yes — repeatable `--header "Authorization: Bearer <token>"`. `cited — NOT live-fetched in-session` · `operator-must-confirm` (V1 depends on it) | Yes — Claude Code performs the MCP OAuth flow against servers that require it. `cited — NOT live-fetched in-session` | Yes — browser-based authorization with PKCE where the server demands it. `cited — NOT live-fetched in-session` | DCR where the server advertises it; otherwise pre-registered client. `cited — NOT live-fetched in-session` | CLI + `~/.claude.json`. Source: `https://code.claude.com/docs/en/mcp.md` (to verify — preflight P1). NOTE: `https://support.anthropic.com/en/articles/11175166` was cited in a prior round as a "Claude Code MCP guide"; by its URL family it reads as a support article (custom connectors), not the Claude Code docs — it is **not** cited for Claude Code here but for the Claude.ai row below (preflight P4) |
-| **Codex CLI** | Yes — `~/.codex/config.toml` `[mcp_servers.<name>]` with `url = "https://…/mcp"` (Streamable HTTP). `cited — NOT live-fetched in-session` | Yes — `http_headers = { Authorization = "Bearer <token>" }`. `cited — NOT live-fetched in-session` · `operator-must-confirm` (V1 depends on it) | Partial — Codex supports OAuth for its own ChatGPT sign-in; third-party MCP OAuth from the CLI is **ambiguous in the public docs** → `operator-must-confirm` | Ambiguous for third-party MCP servers → `operator-must-confirm` | Ambiguous → pre-registered client assumed until proven otherwise | File config (`config.toml`); differences from Claude: headers live in TOML, not CLI flags. Sources: `https://developers.openai.com/codex/mcp/` and `https://developers.openai.com/codex/cli/config/` (to verify — preflight P2) |
-| **Grok (xAI API + "Grok Bot" target)** | **Ambiguous — launch blocker.** xAI publishes an MCP guide (`https://docs.x.ai/docs/guides/mcp`, to verify — preflight P3), and the xAI API surface documents remote MCP tools with an authorization parameter — but which product surface ("Grok Bot": grok.com bot builder vs. xAI API agent) accepts a *third-party* Streamable HTTP server, and with what auth, is not settled without reading the docs and running the proof → **operator proof required (§3)** | Unknown → `operator-must-confirm` | Unknown → `operator-must-confirm` | Unknown → `operator-must-confirm` | Unknown → `operator-must-confirm` | Grok support is conditional on §3. Nothing in §4 assumes it. |
-| **Claude.ai / Claude Desktop remote connectors (cloud surface)** | Custom connectors exist, but whether they accept an arbitrary third-party Streamable HTTP URL is unverified here → `operator-must-confirm` | To the reviewer's knowledge these connectors are **OAuth/authless only with no static `Authorization` header field** — unverified in-session → `operator-must-confirm`. **If true, bearer-only V1 does NOT serve this surface.** | Expected (OAuth-native surface) → `operator-must-confirm` | Expected → `operator-must-confirm` | Expected DCR or pre-registered partner app → `operator-must-confirm` | Candidate source: `https://support.anthropic.com/en/articles/11175166` (to verify — preflight P4). Out of V1 scope unless a §3-style proof shows a static-header field; otherwise it falls under the §7 OAuth child. |
-| **ChatGPT web connectors (independent cloud-agent reference)** | Team/Enterprise connectors accept MCP servers; exact auth fields unverified here → `operator-must-confirm` | Unverified → `operator-must-confirm`. Out of V1 unless proven. | Expected (OAuth-native surface) → `operator-must-confirm` | Expected → `operator-must-confirm` | Vendor partner registration or DCR → `operator-must-confirm` | No URL cited (none was ever consulted); operator supplies the canonical doc URL in the §3 record if this surface becomes required. Listed so "independent cloud agent" coverage is explicit. |
+| **Claude Code (CLI)** | Yes -- `claude mcp add --transport http <name> <url>` registers remote HTTP servers (captured 2026-10-03) | Yes -- `--header "Authorization: Bearer your-token"` (flags `-t`/`-H`). The docs do **not** say `--header` is repeatable, so only a single header is claimed (captured 2026-10-03) | Yes -- OAuth 2.0 supported (captured 2026-10-03) | Yes -- browser-based authorization with PKCE where the server demands it (captured 2026-10-03) | DCR is optional; otherwise `--client-id` / `--client-secret` / `--callback-port` (captured 2026-10-03) | CLI + `~/.claude.json`. Source: `https://code.claude.com/docs/en/mcp.md` (captured 2026-10-03 -- preflight P1). NOTE: `https://support.anthropic.com/en/articles/11175166` was cited in a prior round as a "Claude Code MCP guide"; it is a support article about custom connectors, not the Claude Code docs -- it is cited only for the Claude.ai row below (preflight P4) |
+| **Codex CLI** | Yes -- `[mcp_servers.<name>]` with `url` (required, Streamable HTTP) (captured 2026-10-03) | Yes -- documented bearer mechanism is `bearer_token_env_var`; `http_headers` is a static map (the ADR's earlier `http_headers`-Authorization example is not the documented bearer path) (captured 2026-10-03) | Yes -- third-party MCP OAuth is supported, not ambiguous: `codex mcp login <server>` (captured 2026-10-03) | Yes -- via the OAuth login flow (captured 2026-10-03) | `codex mcp add --oauth-client-id` for hosts that need a pre-registered client; DCR otherwise (captured 2026-10-03) | File config (`config.toml`) keys `url`, `bearer_token_env_var`, `http_headers`, `auth`; differences from Claude: headers live in TOML/env, not CLI flags. Source: `https://learn.chatgpt.com/docs/extend/mcp?surface=cli` (captured 2026-10-03 -- preflight P2; the old `https://developers.openai.com/codex/mcp/` 308-redirects here). The old `.../codex/cli/config/` page redirects to `https://learn.chatgpt.com/docs/cli/config`, which 404s: cite only the mcp page |
+| **Grok (xAI API remote MCP tools + "Grok Bot" target)** | xAI API: yes -- remote MCP tools over Streaming HTTP and SSE only (captured 2026-10-03). `https://docs.x.ai/docs/guides/mcp` is a **404**; the working page is `https://docs.x.ai/docs/guides/tools/remote-mcp-tools` (captured 2026-10-03) | xAI API: yes -- `authorization` parameter ("a token that will be set in the Authorization header", paraphrase grade) plus a `headers` map; i.e. the xAI API accepts a static bearer (captured 2026-10-03). No OAuth statement on the page | No OAuth statement on the working page (captured 2026-10-03) | Unknown -- no statement, not claimed | Unknown -- no statement, not claimed | Params: `server_url`, `authorization`, `headers`. Surfaces: xAI native SDK, OpenAI-compatible Responses API, Speech to Speech API. Server must be publicly reachable. The grok.com **"Grok Bot" surface remains UNVERIFIED** -- `operator follow-up` (section 3), explicitly not a merge blocker |
+| **Claude.ai custom connectors (cloud surface)** | Yes -- custom connectors accept third-party server URLs; servers must be reachable over the public internet (captured 2026-10-03) | **Yes -- fixed credentials are supported**, differing from the ADR's earlier OAuth-only assumption: connectors can "add fixed credentials such as API keys that Claude sends on every request if your MCP server authenticates with an API key, bearer token, or other fixed credential instead of OAuth" (paraphrase-grade quote, captured 2026-10-03). Note: confirm the exact header-field UI at the operator proof | Yes -- OAuth connectors supported alongside fixed-credential ones (captured 2026-10-03) | Yes -- via the OAuth connector path (captured 2026-10-03) | Partner/OAuth-app registration or DCR per the connector docs (captured 2026-10-03) | Auth options: "Sign in now", "Sign in when needed", "No sign in". Source: `https://support.anthropic.com/en/articles/11175166` (301 to `https://support.claude.com/en/articles/11175166`, captured 2026-10-03 -- preflight P4) |
+| **ChatGPT web connectors (independent cloud-agent reference)** | Team/Enterprise connectors accept MCP servers; exact auth fields were not part of the human pass and stay unverified here | Unverified -- out of V1 unless proven. | Expected (OAuth-native surface) -- unverified here | Expected -- unverified here | Vendor partner registration or DCR -- unverified here | No URL cited (none was consulted); operator supplies the canonical doc URL in the section 3 record if this surface becomes required. Listed so "independent cloud agent" coverage is explicit alongside P3/P4. |
 
 Static-header and OAuth support are recorded in separate columns per the
-acceptance criterion. V1 consequence: per-agent static credentials for Claude Code and Codex CLI (pending preflight P1-P2) are
-the V1 mechanism; OAuth is supported by Claude Code, ambiguous for Codex
-third-party servers, and unknown for Grok and cloud connectors — which is exactly why OAuth stays
-out of V1 and is specified only as a conditional child scope (§7), except
-that the V1 client scope is now narrowed to static-header-capable clients
-(Claude Code and Codex CLI pending preflight P1–P2): cloud-connector
-surfaces (Claude.ai/Desktop, ChatGPT web, Grok bot builder) are **out of V1**
-until a §3-style proof shows a static-header field, and a required client
-without one triggers the §7 OAuth child instead of reopening the bearer-grant decision
+acceptance criterion. V1 consequence: per-agent static credentials for
+Claude Code (P1), Codex CLI via `bearer_token_env_var` (P2), the xAI API
+remote-MCP surface (P3), and Claude.ai fixed-credential connectors (P4) are
+the V1 mechanism. MCP OAuth stays out of V1 and is specified only as a
+conditional child scope (section 7): cloud-connector surfaces without a
+proven static-header field (ChatGPT web, the unverified grok.com bot
+builder) are out of V1 until a section-3-style proof shows a static-header
+field, and a required client without one triggers the section 7 OAuth
+child instead of reopening the bearer-grant decision.
 
-### 2.1 Operator preflight (docs verification — NOT-318 preflight, not V1 scope)
+### 2.1 Operator preflight (docs verification -- human pass complete 2026-10-03)
 
-Each item: open the URL, confirm the stated contract, record URL + capture
-date in the §3 record. No implementation starts or stops on these except as
-noted.
+Each item below was opened by the human-side pass on **2026-10-03**;
+capture date per item is recorded here. No implementation starts or stops
+on these.
 
-- **P1 (V1-gating):** `https://code.claude.com/docs/en/mcp.md` — confirm
-  `claude mcp add --transport http` and the repeatable Authorization header
-  option for remote servers.
-- **P2 (V1-gating):** `https://developers.openai.com/codex/mcp/` and
-  `https://developers.openai.com/codex/cli/config/` — confirm
-  `[mcp_servers]` URL plus static header configuration.
-- **P3 (Grok launch blocker):** `https://docs.x.ai/docs/guides/mcp` —
-  record which product surface accepts third-party MCP servers and which
-  authorization parameter it sends; then run the §3 proof.
-- **P4 (cloud-connector scoping):**
-  `https://support.anthropic.com/en/articles/11175166` — record whether
-  Claude.ai custom connectors accept a static Authorization header or are
-  OAuth/authless-only.
+- **P1 (verified 2026-10-03):** `https://code.claude.com/docs/en/mcp.md` --
+  CONFIRMED `claude mcp add --transport http <name> <url>` and `--header
+  "Authorization: Bearer your-token"` (`-t`/`-H`). Docs do NOT say
+  `--header` is repeatable: only a single header is claimed. OAuth 2.0
+  supported; DCR optional, else `--client-id` / `--client-secret` /
+  `--callback-port`.
+- **P2 (verified 2026-10-03):**
+  `https://learn.chatgpt.com/docs/extend/mcp?surface=cli` (the old
+  `https://developers.openai.com/codex/mcp/` 308-redirects here; cite the
+  new URL) -- CONFIRMED `[mcp_servers.<name>]` keys `url` (required),
+  `bearer_token_env_var`, `http_headers` (static map), `auth`.
+  `bearer_token_env_var` is the documented bearer mechanism (the ADR's
+  earlier `http_headers`-Authorization example is not the documented path).
+  OAuth: `codex mcp login <server>` and `codex mcp add --oauth-client-id`,
+  so third-party MCP OAuth is NOT ambiguous. The old
+  `.../codex/cli/config/` page redirects to
+  `https://learn.chatgpt.com/docs/cli/config`, which 404s: cite only the
+  mcp page.
+- **P3 (verified 2026-10-03; bot surface still open):**
+  `https://docs.x.ai/docs/guides/mcp` is a **404**. Working page
+  `https://docs.x.ai/docs/guides/tools/remote-mcp-tools`: remote MCP tools
+  in the xAI native SDK, OpenAI-compatible Responses API, and Speech to
+  Speech API; params `server_url`, `authorization` ("a token that will be
+  set in the Authorization header", paraphrase grade), `headers`; only
+  Streaming HTTP and SSE; no OAuth statement. The xAI API accepts a static
+  bearer. The grok.com "Grok Bot" surface remains UNVERIFIED (operator
+  proof, section 3). Server must be publicly reachable.
+- **P4 (verified 2026-10-03; DIFFERS from the ADR's earlier assumption):**
+  `https://support.anthropic.com/en/articles/11175166` (301 to
+  `https://support.claude.com/en/articles/11175166`) -- Claude.ai custom
+  connectors DO support fixed credentials ("add fixed credentials such as
+  API keys that Claude sends on every request if your MCP server
+  authenticates with an API key, bearer token, or other fixed credential
+  instead of OAuth", paraphrase grade). Auth options: "Sign in now",
+  "Sign in when needed", "No sign in". Servers must be reachable over the
+  public internet. The ADR's earlier "bearer-only V1 does NOT serve this
+  surface" conditional does not hold; keep a note to confirm the
+  header-field UI at the operator proof.
 
-## 3. Grok Bot target — operator connection proof (launch blocker)
+## 3. Grok Bot target -- operator connection proof (explicit follow-up, NOT a merge blocker)
 
-No operator-assisted proof was run in this investigation (sandbox: no network
-egress, no Grok credentials, no reachable appliance), and the §2.1 preflight
-(P1–P4) is likewise unrun. Every `operator-must-confirm` cell therefore
-stays open: Grok connectivity is an explicit **launch blocker requiring user
-input**, P1–P2 are **NOT-318 preflight** (they gate the "Claude/Codex accept
-static bearers" premise but do not change the frozen bearer-grant contract, and P4
-scopes cloud connectors out of V1. None of this is a silent assumption.
+Docs side (human-verified 2026-10-03, section 2.1 P3): the xAI API
+remote-MCP page confirms a static bearer (`authorization` parameter) over
+Streaming HTTP/SSE, with the server publicly reachable. The grok.com
+"Grok Bot" surface itself remains UNVERIFIED. A live connection proof
+against that surface is an explicit operator follow-up: it is wanted for
+any "Grok Bot works" claim, but it does not block NOT-318 or the V1
+bearer-grant decision, which rests on the proven static-header clients
+(Claude Code, Codex CLI, xAI API, Claude.ai fixed-credential connectors).
+
+No operator-assisted proof was run in this investigation (sandbox: no
+network egress, no Grok credentials, no reachable appliance). Until the
+section 3.2 bot-proof row is filled, "Grok support" means the xAI API
+static-bearer path (P3, docs-proven) plus an open bot-surface proof --
+never "Grok Bot works". "Claude support" in V1 means Claude Code CLI (P1)
+plus Claude.ai fixed-credential connectors (P4, header-field UI to confirm
+at the proof).
 
 ### 3.1 Proof procedure (smallest real client connection)
 
@@ -118,20 +139,21 @@ scopes cloud connectors out of V1. None of this is a silent assumption.
    the appliance and record where it fails (discovery document, callback,
    client registration) — that outcome triggers the §7 OAuth child scope.
 
-### 3.2 Record (to be filled by the operator; template is part of the contract)
+### 3.2 Record (preflight filled by the human pass; bot proof is operator follow-up)
 
 | Field | Value |
 |---|---|
-| Product surface | _e.g. grok.com → Bot → Integrations → Custom MCP — TBD_ |
-| URL form | _TBD_ |
-| Auth configuration | _TBD (static Bearer header / OAuth fields)_ |
-| Date (UTC) | _TBD_ |
-| Observed result | _TBD (tool list / error text / unsupported)_ |
-| Preflight P1-P4 | _per item: URL opened, capture date, confirmed sentence or discrepancy_ |
+| Preflight P1 | `https://code.claude.com/docs/en/mcp.md`, captured 2026-10-03: CONFIRMED `claude mcp add --transport http <name> <url>`, single `--header "Authorization: Bearer your-token"` (`-t`/`-H`, repeatability not stated); OAuth 2.0 with optional DCR |
+| Preflight P2 | `https://learn.chatgpt.com/docs/extend/mcp?surface=cli`, captured 2026-10-03: CONFIRMED `[mcp_servers.<name>]` keys `url`, `bearer_token_env_var` (documented bearer mechanism), `http_headers`, `auth`; OAuth via `codex mcp login <server>` / `--oauth-client-id` (third-party OAuth NOT ambiguous) |
+| Preflight P3 | `https://docs.x.ai/docs/guides/tools/remote-mcp-tools`, captured 2026-10-03 (`https://docs.x.ai/docs/guides/mcp` is a 404): remote MCP tools with `server_url` / `authorization` (static bearer) / `headers`; Streaming HTTP and SSE only; no OAuth statement; server must be publicly reachable |
+| Preflight P4 | `https://support.claude.com/en/articles/11175166` (from `https://support.anthropic.com/en/articles/11175166`, 301), captured 2026-10-03: Claude.ai connectors DO support fixed credentials (API key / bearer token); auth options "Sign in now" / "Sign in when needed" / "No sign in"; public-internet reachability required |
+| Product surface (bot proof, TBD) | _e.g. grok.com bot builder custom MCP -- TBD (operator follow-up)_ |
+| URL form (bot proof, TBD) | _TBD_ |
+| Auth configuration (bot proof, TBD) | _TBD (static bearer / OAuth fields)_ |
+| Date (UTC) (bot proof, TBD) | _TBD_ |
+| Observed result (bot proof, TBD) | _TBD (tool list / error text / unsupported)_ |
 
-Until this table is filled, "Grok support" means static credentials for preflight-proven CLI clients plus an open Grok proof — never
-"Grok works". "Claude support" in V1 means Claude Code CLI (P1), never
-Claude.ai connectors (P4) unless a separate proof shows a static-header field.
+Until the bot-proof rows are filled, "Grok Bot works" must never be claimed: "Grok support" in V1 means the docs-proven xAI API static-bearer path plus an open bot-surface follow-up. "Claude support" in V1 means Claude Code CLI (P1) and Claude.ai fixed-credential connectors (P4, header-field UI to confirm at the proof).
 
 ## 4. Frozen V1 wire contract
 
@@ -278,7 +300,10 @@ tree: `packages/backend/src/mcp-server.ts`, `mcp-session-binding.ts`,
 - **Unassigned sessions (NOT-50):** connections with no deck header become
   explain-only sessions (`No deck assigned…`, `GRANT_REQUIRED` guidance) —
   never HTTP 401-as-OAuth. A late deck header must not promote an
-  unassigned session mid-flight.
+  unassigned session mid-flight. Loopback-only note: §4.4 rule 2 maps
+  a valid bearer plus no deck header to `defaultDeck`, so hosted mode never
+  produces unassigned sessions — NOT-50 explain-only sessions occur on
+  loopback only, and NOT-318 must not apply NOT-50 to hosted mode.
 - **Session switching (NOT-204):** agents request via `switch_deck`; humans
   approve as **This session only** or **This workspace by default**.
   Pending/declined requests change nothing and expose nothing from the
@@ -317,12 +342,14 @@ and [OAUTH_REQUIREMENTS.md](../OAUTH_REQUIREMENTS.md):
 
 ## 7. OAuth: not V1, specified as a conditional child scope
 
-Per-agent bearers satisfy the V1 launch clients (Claude Code and
-Codex CLI both accept a static Authorization header, pending preflight
-P1-P2 in §2.1). Standards-based MCP OAuth is therefore deferred. It becomes
-required **only if** the §3 Grok proof — or a §3-style proof for another
-required client such as Claude.ai connectors (P4) — shows a required client
-with no static-header field. In that case the bounded child scope is:
+Per-agent bearers satisfy the V1 launch clients (Claude Code accepts a
+static Authorization header per P1, Codex CLI documents
+`bearer_token_env_var` per P2, the xAI API accepts a static bearer per P3,
+and Claude.ai connectors support fixed credentials per P4).
+Standards-based MCP OAuth is therefore deferred. It becomes
+required **only if** a §3-style proof for a required client (for
+example the grok.com bot surface, or ChatGPT web connectors) shows that
+client has no static-header field. In that case the bounded child scope is:
 
 - **Protected-resource metadata (RFC 9728):**
   `GET /.well-known/oauth-protected-resource` describing the `/mcp` resource,
@@ -352,40 +379,31 @@ Estimates are T-shirt sizes for planning, not commitments:
 | NOT-318: MCP auth gate (bearer check before `mcp-session-id`, per-request revalidation, §4.2 uniform errors) | Builder | M | Touches `mcp-server.ts` hot path; keep transport-kept semantics |
 | NOT-318: revocation + session teardown | Builder | S | Flip + fail-closed-next-request (§4.5) |
 | NOT-318: hosted-mode flag + bearer-first order + docs | Builder | S | `AGENT_DECK_MCP_REQUIRE_BEARER` (§4.6), bearer-before-404 (§4.3); must not regress `mcp-launch` |
-| §2.1 preflight P1-P2 (Claude/Codex static header) | Operator | XS | Gates the V1 client premise, not NOT-318 start |
-| §3 Grok operator proof | Operator | S | Blocks "Grok supported" claim, not NOT-318 start |
+| §2.1 preflight P1-P2 (Claude/Codex static header) | Operator | XS | Human-verified 2026-10-03; premise confirmed, not NOT-318 start |
+| §3 Grok Bot operator proof | Operator | S | Explicit follow-up for the bot-surface claim; not a merge blocker, not NOT-318 start |
 | §7 OAuth child (conditional) | Separate ticket | L | Only if §3 proof demands it; bounded by the six bullets above |
 
-NOT-318 comparison (attempt recorded, repair round 3, 2026-10-03 UTC):
-this session's bound deck (`builder`) exposes no Linear service — only one
-GitHub MCP service, currently unhealthy — and task instructions forbid
-web-fetching Linear URLs, so the NOT-318 description and relations could
-**not** be read here. A repo-wide search confirms no repo-local NOT-318 spec
-exists either (only this ADR references that ticket id). The comparison MUST
-be completed by the coordinator/operator before NOT-318 starts — flagged
-explicitly here, not silently skipped. **AC7 stays open until the coordinator
-either performs that comparison against NOT-318 as written (updating it or
-confirming it matches) or records an explicit human waiver.** Coordinator
-steps (Linear issue `NOT-318`, per-agent remote grants):
-1. open the issue and read its description plus its relations (parent
-   NOT-317, blocked-by/blocks links);
-2. check each assumption (a)–(h) below against the issue as written;
-3. if all match, record "NOT-318 matches ADR §4–§6" with a date; otherwise
-   edit NOT-318 to match before implementation starts;
-4. if the §3 proof has by then shown a required client with no static-header
-   field, split the §7 OAuth bullets into a bounded child ticket — OAuth
-   must not ride inside NOT-318. No update is
-needed *provided* NOT-318
-already assumes (a) opaque per-agent bearer grants, (b) the deck header as
-request-only, (c) loopback launcher compatibility, and (d) single-owner
-scope, plus the four assumptions NEW or changed since the last round:
-(e) explicit hosted-mode flag, never peer-address detection (§4.6);
-(f) bearer-before-404 check order on hosted endpoints (§4.3);
-(g) approved switch_deck cannot leave allowedDecks, get_decks scoping
-unchanged (§4.4/§5); (h) V1 client scope is static-header-capable clients
-only (§2–§3). If any listed item differs in NOT-318 as written, NOT-318 must be
-edited to match §4–§6 before implementation starts — and any OAuth work must
-split into the §7 child scope, not ride inside NOT-318.
+NOT-318 comparison (human-verified 2026-10-03, AC7 satisfied): NOT-318
+was read from Linear and compared against assumptions (a)-(h). Matches:
+(a) opaque per-agent bearer grants, (b) deck header as request-only,
+(c) loopback launcher compatibility, (d) single-owner scope,
+(g) approved switch_deck cannot leave allowedDecks with get_decks scoping
+unchanged, (h) V1 client scope is static-header-capable clients only.
+MISSING in NOT-318: (e) the `AGENT_DECK_MCP_REQUIRE_BEARER` hosted flag
+(§4.6) and (f) the bearer-before-404 check order (§4.3) --
+NOT-318 must add both before implementation starts. Revocation: the ADR's
+next-request fail-closed rule (§4.5) satisfies the ticket's 60s
+bound. The result was posted as Linear comment
+456d340c-c3ff-4866-8f96-41fce6b7a6bb on NOT-318.
+
+Coordinator steps (Linear issue `NOT-318`, per-agent remote grants):
+1. confirm assumptions (a)-(d), (g), (h) still match the issue as written;
+2. edit NOT-318 to add the two missing items: (e) explicit hosted-mode
+   flag, never peer-address detection (§4.6); (f) bearer-before-404
+   check order on hosted endpoints (§4.3);
+3. if a section 3 follow-up proof has by then shown a required client with
+   no static-header field, split the section 7 OAuth bullets into a bounded
+   child ticket -- OAuth must not ride inside NOT-318.
 
 ## 9. Verification performed here (and what runs later)
 
@@ -404,7 +422,7 @@ split into the §7 child scope, not ride inside NOT-318.
 - Docs link check: every relative link in this ADR and the three updated
   product docs was resolved against the tree (see handoff; CI docs checks
   own the rest).
-- Later (not this ticket): real Grok proof (§3), NOT-318 implementation,
+- Later (not this ticket): Grok Bot follow-up proof (§3.2), NOT-318 implementation,
   conditional OAuth child.
 
 ## Appendix — evidence pointers
@@ -416,18 +434,14 @@ split into the §7 child scope, not ride inside NOT-318.
   `packages/cli/src/mcp-launcher.ts` (assignment → deck header, no bearer).
 - Session contracts: [PRD_TRUSTED_AGENT_SESSIONS.md](../PRD_TRUSTED_AGENT_SESSIONS.md)
   C3/C4/C9, [2026-09-20-session-deck-switching-redesign.md](../superpowers/specs/2026-09-20-session-deck-switching-redesign.md).
-- Probe evidence: `curl -sI` against the three official doc URLs returned
-  empty under sandbox network restriction on 2026-10-03, re-confirmed
-  2026-10-03 UTC in repair round 3
-  (`curl -sS -m 8 -o /dev/null https://code.claude.com/docs/en/mcp.md` →
-  `Could not resolve host`, exit 6;
-  escalated execution forbidden by
-  launch policy, so no official section-2 URL was inspected in-session.
-  The source-status key and the section-2.1 preflight (P1-P4) below carry
-  the operator verification path (a NOT-318 preflight step, not a V1 blocker). The frozen
-  mechanism stays per-agent static credentials for static-header-capable
-  clients; the Claude/Codex static-header premise is confirmed at preflight,
-  not assumed from memory.
+- Evidence: human-side documentation pass with network access on 2026-10-03
+  (§2.1 P1-P4, AC1 satisfied; quotes are paraphrase-grade). In-session
+  `curl` probes were not re-attempted per the human decision (the sandbox
+  has no DNS egress; prior rounds recorded `Could not resolve host`, curl
+  exit 6). The §2.1 preflight table above carries the per-URL capture record; the frozen
+  mechanism is per-agent static credentials for the proven
+  static-header-capable clients, and the grok.com bot-surface proof remains
+  an explicit operator follow-up (§3.2), not a merge blocker.
 - Design-source substitution: the ticket names
   `docs/superpowers/specs/2026-10-02-personal-cloud-agent-deck-design.md`
   (R1, section 2, section 5), but that file does not exist at this head.
