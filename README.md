@@ -5,9 +5,9 @@
 
 A governed way of working that travels with every new agent worker — playbooks, tools, and credentials in a deck; queue the issues and only show up for real decisions.
 
-[![Agent Deck + Agent Dealer](https://img.youtube.com/vi/zkQcCT0tZeo/maxresdefault.jpg)](https://www.youtube.com/watch?v=zkQcCT0tZeo)
+[![Agent Deck + Agent Dealer](https://img.youtube.com/vi/DVC70PgMY80/maxresdefault.jpg)](https://www.youtube.com/watch?v=DVC70PgMY80)
 
-[Watch the 2-min overview](https://www.youtube.com/watch?v=zkQcCT0tZeo) — portable decks, then a governed issue queue.
+[Watch the 2-min overview](https://www.youtube.com/watch?v=DVC70PgMY80) — portable decks, then a governed issue queue.
 
 [Why](#why) · [Quick Start](#quick-start) · [Reference](#reference) · [Docs](#documentation)
 
