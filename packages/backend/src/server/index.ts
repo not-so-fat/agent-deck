@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
-import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import { registerCors } from './cors-origins';
 import fastifyStatic from '@fastify/static';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -49,31 +49,7 @@ export async function createServer() {
   });
 
   // Register plugins
-  const allowedOriginsEnv = process.env.AGENT_DECK_DASHBOARD_ORIGIN;
-  const defaultAllowedOrigins = [
-    'http://127.0.0.1:1111',
-    'http://localhost:1111',
-    'http://127.0.0.1:3000',
-    'http://localhost:3000',
-  ];
-
-  const corsOrigins = allowedOriginsEnv
-    ? [allowedOriginsEnv]
-    : defaultAllowedOrigins;
-
-  await fastify.register(cors, {
-    origin: (origin, cb) => {
-      if (!origin) {
-        // Non-browser clients (curl, CLI) — allow.
-        return cb(null, true);
-      }
-      if (corsOrigins.includes(origin)) {
-        return cb(null, true);
-      }
-      cb(new Error('Origin not allowed by CORS'), false);
-    },
-    credentials: true,
-  });
+  await registerCors(fastify, process.env);
 
   await fastify.register(websocket);
 
