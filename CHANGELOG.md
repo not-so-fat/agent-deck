@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.11.9 — 2026-10-03
+
 ### Fix: status line counts dead sessions (NOT-309)
 
 - Live-display registry entries now expire after `LIVE_DISPLAY_STALE_MS` without activity (default 30 minutes, `0` disables). Sessions killed without a clean MCP disconnect no longer pin the workspace status line on `multiple session decks` forever.
