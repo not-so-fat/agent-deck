@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { EncryptedFileSecretStore } from './encrypted-file-secret-store';
 import { getAgentDeckHome } from './yaml-sync';
 
 export interface SecretStore {
@@ -177,6 +178,16 @@ export function createSecretStore(): SecretStore {
     return new DevFileSecretStore();
   }
 
+  if (process.env.AGENT_DECK_SECRET_STORE === 'encrypted-file') {
+    return new EncryptedFileSecretStore();
+  }
+
+  // A separately supplied vault key always selects the encrypted store —
+  // including on macOS — so backup/restore only decrypts with the key.
+  if (process.env.AGENT_DECK_VAULT_KEY) {
+    return new EncryptedFileSecretStore();
+  }
+
   if (process.platform === 'darwin') {
     return new MacOSKeychainStore();
   }
@@ -189,6 +200,10 @@ export function createSecretStore(): SecretStore {
   }
 
   throw new VaultUnsupportedError(
-    'Secret storage is only supported on macOS for now. Set AGENT_DECK_SECRET_STORE=memory to use the dev file store on other platforms.',
+    'No usable secret store on this host. For the single-owner hosted ' +
+      'appliance, set AGENT_DECK_VAULT_KEY to a 32-byte key ' +
+      '(`openssl rand -base64 32`) to select the encrypted file store; ' +
+      'the key must be protected separately from the data volume. ' +
+      'Set AGENT_DECK_SECRET_STORE=memory only for throwaway dev use.',
   );
 }

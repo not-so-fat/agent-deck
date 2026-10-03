@@ -91,7 +91,30 @@ AGENT_DECK_PUBLIC_URL=https://oauth.agent-deck.dev
 AGENT_DECK_DASHBOARD_URL=https://oauth.agent-deck.dev
 AGENT_DECK_SLACK_CLIENT_ID=...
 AGENT_DECK_SLACK_CLIENT_SECRET=...
+AGENT_DECK_MCP_REQUIRE_BEARER=1
+AGENT_DECK_VAULT_KEY=...  # see "Production vault key" below; never in git
 ```
+
+### Production vault key (single-owner hosted appliance)
+
+Linux production has no macOS Keychain, so secrets (OAuth tokens, client
+secrets, service headers, credential payloads) live in an encrypted
+file store (`EncryptedFileSecretStore`, AES-256-GCM, one envelope per
+account, `0600` files under `<home>/secrets/*.enc`). The 32-byte vault key
+is supplied separately from the data volume via `AGENT_DECK_VAULT_KEY`
+(base64 of 32 random bytes, or 64 hex chars; generate with
+`openssl rand -base64 32`). Any `AGENT_DECK_VAULT_KEY` value selects the
+encrypted store (explicit `AGENT_DECK_SECRET_STORE=encrypted-file` does
+the same); production Linux without a key fails closed at startup with a
+`VaultUnsupportedError` instead of storing plaintext.
+
+Backup/restore rule: back up the data volume **and** protect the vault key
+separately (password manager, host secret store — never alongside the
+backup). Restart and clean-restore recover decryptable credentials only
+when the same vault key is supplied again; a volume without its key is
+opaque, and a wrong key fails closed (`VaultDecryptionError`, no secret
+detail) on first credential read. Model usage stays billed by the
+consuming provider, not Agent Deck.
 
 ## Provider quick reference (default preset cards)
 
