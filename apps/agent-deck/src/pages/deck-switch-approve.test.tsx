@@ -103,6 +103,26 @@ describe("DeckSwitchApprovePage", () => {
     );
   });
 
+  it("NOT-298: session-only success omits workspace-default wording without workspaceRoot", async () => {
+    const { workspaceRoot: _omit, ...remoteDetail } = DETAIL;
+    mockPendingDetail(remoteDetail);
+    apiRequestMock.mockImplementation(async (method: string) => {
+      if (method === "GET") {
+        return jsonResponse({ success: true, data: remoteDetail });
+      }
+      return jsonResponse({
+        success: true,
+        data: { requestId: "req_1", decision: "session", status: "consumed", deckId: "deck-b", deckName: "Beta" },
+      });
+    });
+    render(<DeckSwitchApprovePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "This session only" }));
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("agent's configured default was not changed");
+    expect(status.textContent).not.toMatch(/workspace default/i);
+  });
+
   it("says future sessions use the new default after workspace-default approval", async () => {
     mockPendingDetail();
     apiRequestMock.mockImplementation(async (method: string) => {

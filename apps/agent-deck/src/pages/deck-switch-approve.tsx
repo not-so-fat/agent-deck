@@ -51,14 +51,19 @@ function terminalStatusCopy(status: string): string {
 
 function successCopy(resolution: Resolution): string {
   const deck = resolution.deckName ? ` “${resolution.deckName}”` : "";
+  const hasWorkspace = Boolean(resolution.workspaceRoot?.trim());
   if (resolution.decision === "session") {
-    return `Approved for this session only. This session now uses${deck}. The workspace default was not changed.`;
+    return hasWorkspace
+      ? `Approved for this session only. This session now uses${deck}. The workspace default was not changed.`
+      : `Approved for this session only. This session now uses${deck}. The agent's configured default was not changed.`;
   }
   if (resolution.decision === "workspace-default") {
     const where = resolution.workspaceRoot ? ` in ${resolution.workspaceRoot}` : "";
     return `Approved. Future sessions${where} will use${deck} as the new default. This session was switched too.`;
   }
-  return "Declined. Nothing was changed — the session and workspace default are untouched.";
+  return hasWorkspace
+    ? "Declined. Nothing was changed — the session and workspace default are untouched."
+    : "Declined. Nothing was changed — the session and the agent's configured default are untouched.";
 }
 
 export default function DeckSwitchApprovePage() {
