@@ -111,8 +111,11 @@ describe('form elicitation capability gate (NOT-213)', () => {
 });
 
 describe('elicited form shape (NOT-213)', () => {
-  it('offers both scopes and decline with human labels', () => {
-    const input = buildDeckSwitchElicitationInput(CREATION);
+  it('offers both scopes and decline with human labels when a workspace is present', () => {
+    const input = buildDeckSwitchElicitationInput({
+      ...CREATION,
+      workspaceRoot: '/work/ws',
+    });
     const schema = input.requestedSchema as {
       type: string;
       properties: {
@@ -131,6 +134,18 @@ describe('elicited form shape (NOT-213)', () => {
     expect(schema.required).toEqual(expect.arrayContaining(['requestId', 'scope']));
     expect(schema.properties.requestId.default).toBe('req_1');
     expect(input.message).toContain('beta');
+  });
+
+  it('NOT-298: omits workspace-default when the request has no workspaceRoot', () => {
+    const input = buildDeckSwitchElicitationInput(CREATION);
+    const schema = input.requestedSchema as {
+      properties: { scope: { enum: string[]; enumNames: string[]; description: string } };
+    };
+    expect(schema.properties.scope.enum).toEqual(['session', 'decline']);
+    expect(schema.properties.scope.enumNames).toEqual(['This session only', 'Decline']);
+    expect(schema.properties.scope.description).toMatch(/no writable workspace default/i);
+    expect(JSON.stringify(input)).not.toContain('workspace-default');
+    expect(JSON.stringify(input)).not.toContain('This workspace by default');
   });
 
   it('carries only the request id and scope — no secrets or links', () => {
@@ -304,12 +319,19 @@ describe('presentDeckSwitchApproval orchestration (NOT-213)', () => {
   });
 
   it('builds a secret-free, link-free cancel payload', () => {
-    const payload = buildCancelRecoveryPayload(CREATION);
+    const payload = buildCancelRecoveryPayload({ ...CREATION, workspaceRoot: '/work/ws' });
     expect(payload).toMatchObject({ requestId: 'req_1', status: 'pending' });
     const text = JSON.stringify(payload).toLowerCase();
     for (const forbidden of ['http://', 'https://', 'bearer', 'token', 'secret', 'cookie']) {
       expect(text, `cancel payload must not contain ${forbidden}`).not.toContain(forbidden);
     }
+    expect(String(payload.message)).toContain('This workspace by default');
+  });
+
+  it('NOT-298: cancel recovery omits workspace-default when there is no workspaceRoot', () => {
+    const payload = buildCancelRecoveryPayload(CREATION);
+    expect(String(payload.message)).toContain('This session only');
+    expect(String(payload.message)).not.toContain('This workspace by default');
   });
 });
 

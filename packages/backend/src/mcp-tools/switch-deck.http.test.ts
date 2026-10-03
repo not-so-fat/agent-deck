@@ -20,6 +20,7 @@ import { registerServiceRoutes } from '../routes/services';
 import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { TrustedSessionStore } from '../trusted-session/store';
+import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import type { ServiceManager } from '../services/service-manager';
 import {
   callToolMcpResult,
@@ -366,5 +367,104 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
     // No deck payload beyond display-safe id/name labels.
     expect(serialized).not.toContain('services');
     expect(serialized).not.toContain('playbook');
+  });
+
+  it('NOT-298: session-only switch on a launch session without workspaceRoot rebinds without reconnect', async () => {
+    const { backendUrl, deckA, deckB, serviceOnA, serviceOnB, store } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckA.id };
+    const sessionId = await openSession(started.port, 1, headersA);
+
+    const before = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_context',
+      {},
+      2,
+      headersA,
+    );
+    expect(before.isError).toBe(false);
+    expect(before.data.effective_deck_id).toBe(deckA.id);
+    expect(before.data.display_summary).toContain('alpha');
+
+    const requested = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'switch_deck',
+      { target: 'beta' },
+      3,
+      headersA,
+    );
+    expect(requested.isError).toBe(false);
+    expect(requested.data.status).toBe('pending');
+
+    const runtimeSessionId = store.findActiveRuntimeSessionByMcpSessionId(sessionId)?.sessionId;
+    expect(runtimeSessionId).toBeTruthy();
+    const pending = store.listPendingDeckSwitchRequests(runtimeSessionId!);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].workspaceRoot).toBeUndefined();
+
+    const resolve = await fetch(
+      `${backendUrl}/api/trusted-session/deck-switch/${requested.data.requestId}/resolve`,
+      {
+        method: 'POST',
+        headers: {
+          ...dashboardAuthHeaders(store),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ runtimeSessionId, decision: 'session' }),
+      },
+    );
+    expect(resolve.status).toBe(200);
+
+    // Same MCP transport session — no reconnect — now scoped to beta.
+    const after = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_context',
+      {},
+      4,
+      headersA,
+    );
+    expect(after.isError).toBe(false);
+    expect(after.data.effective_deck_id).toBe(deckB.id);
+    expect(after.data.display_summary).toContain('beta');
+
+    const offDeck = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'call_service_tool',
+      { serviceId: serviceOnA.id, toolName: 'ping', arguments: {} },
+      5,
+      headersA,
+    );
+    expect(offDeck.isError).toBe(true);
+    expect(offDeck.data).toMatchObject({ error_code: 'RESOURCE_OUT_OF_SCOPE' });
+
+    const onDeck = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'call_service_tool',
+      { serviceId: serviceOnB.id, toolName: 'ping', arguments: {} },
+      6,
+      headersA,
+    );
+    expect(onDeck.isError).toBe(false);
+
+    // A fresh session with the same launch header returns to the configured default.
+    const freshSession = await openSession(started.port, 20, headersA);
+    const fresh = await callToolMcpResult(
+      started.port,
+      freshSession,
+      'get_session_context',
+      {},
+      21,
+      headersA,
+    );
+    expect(fresh.isError).toBe(false);
+    expect(fresh.data.effective_deck_id).toBe(deckA.id);
+    expect(fresh.data.display_summary).toContain('alpha');
   });
 });

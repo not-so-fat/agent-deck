@@ -167,6 +167,9 @@ export default function DeckSwitchApprovePage() {
   const currentDeck = detail?.currentDeckName ?? detail?.currentDeckId;
   const requestedDeck = detail?.requestedDeckName ?? detail?.requestedDeckId;
   const sessionLabel = runtimeSessionId || detail?.runtimeSessionId;
+  // NOT-298: launch/remote sessions store no workspaceRoot — workspace-default
+  // cannot succeed, so do not offer an unusable action.
+  const canSetWorkspaceDefault = Boolean(detail?.workspaceRoot?.trim());
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-muted/30">
@@ -174,8 +177,9 @@ export default function DeckSwitchApprovePage() {
         <CardHeader>
           <CardTitle>Approve deck switch</CardTitle>
           <CardDescription>
-            Choose whether the requested deck applies to this session only or becomes the workspace
-            default. Declining leaves everything unchanged.
+            {canSetWorkspaceDefault
+              ? "Choose whether the requested deck applies to this session only or becomes the workspace default. Declining leaves everything unchanged."
+              : "Choose whether the requested deck applies to this session only, or decline. This session has no writable workspace default."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -239,14 +243,16 @@ export default function DeckSwitchApprovePage() {
               >
                 {deciding === "session" ? "Approving…" : "This session only"}
               </Button>
-              <Button
-                onClick={() => void resolve("workspace-default")}
-                disabled={busy}
-                variant="secondary"
-                className="w-full"
-              >
-                {deciding === "workspace-default" ? "Approving…" : "This workspace by default"}
-              </Button>
+              {canSetWorkspaceDefault ? (
+                <Button
+                  onClick={() => void resolve("workspace-default")}
+                  disabled={busy}
+                  variant="secondary"
+                  className="w-full"
+                >
+                  {deciding === "workspace-default" ? "Approving…" : "This workspace by default"}
+                </Button>
+              ) : null}
               <Button
                 onClick={() => void resolve("decline")}
                 disabled={busy}

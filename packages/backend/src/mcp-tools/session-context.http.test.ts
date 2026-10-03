@@ -243,6 +243,37 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     expect(JSON.stringify(context.data)).not.toContain('Keep it short');
   });
 
+  it('NOT-298: two concurrent launch sessions keep independent get_session_context defaults', async () => {
+    const { backendUrl, db, deckAlpha } = await buildListeningBackend();
+    const deckBeta = await db.createDeck({ name: 'beta' });
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const headersB = { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id };
+    const sessionA = await openSession(started.port, 1, headersA);
+    const sessionB = await openSession(started.port, 10, headersB);
+
+    const [contextA, contextB] = await Promise.all([
+      callToolMcpResult(started.port, sessionA, 'get_session_context', {}, 2, headersA),
+      callToolMcpResult(started.port, sessionB, 'get_session_context', {}, 12, headersB),
+    ]);
+
+    expect(contextA.isError).toBe(false);
+    expect(contextB.isError).toBe(false);
+    expect(contextA.data.effective_deck_id).toBe(deckAlpha.id);
+    expect(contextA.data.effective_deck_name).toBe('alpha');
+    expect(contextA.data.effective_deck_source).toBe('launch');
+    expect(contextA.data.display_summary).toContain('alpha');
+    expect(contextB.data.effective_deck_id).toBe(deckBeta.id);
+    expect(contextB.data.effective_deck_name).toBe('beta');
+    expect(contextB.data.effective_deck_source).toBe('launch');
+    expect(contextB.data.display_summary).toContain('beta');
+    // Neither launch default leaks into the other concurrent session.
+    expect(contextA.data.effective_deck_id).not.toBe(contextB.data.effective_deck_id);
+    expect(contextA.data.display_summary).not.toBe(contextB.data.display_summary);
+  });
+
   it('unassigned session returns GRANT_REQUIRED with no deck metadata', async () => {
     const { backendUrl } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');

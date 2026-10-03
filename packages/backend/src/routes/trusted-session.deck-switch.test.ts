@@ -104,6 +104,64 @@ describe('trusted-session deck-switch approval routes (NOT-207)', () => {
     expect(readUseJson(workspaceRoot)).toMatchObject({ version: 3, deckId: deckA.id });
   });
 
+  it('NOT-298: session-only approval works for a launch/remote request without workspaceRoot', async () => {
+    const { fastify, store, deckA, deckB } = await buildApp();
+    const session = store.createRuntimeSession({ deckId: deckA.id });
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: deckA.id,
+      requestedDeckId: deckB.id,
+    });
+    expect(request.workspaceRoot).toBeUndefined();
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: `/api/trusted-session/deck-switch/${request.requestId}/resolve`,
+      headers: dashboardAuthHeaders(store),
+      payload: { runtimeSessionId: session.sessionId, decision: 'session' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      data: { requestId: request.requestId, decision: 'session', status: 'consumed', deckId: deckB.id },
+    });
+    expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckB.id);
+
+    const inspect = await fastify.inject({
+      method: 'GET',
+      url: `/api/trusted-session/deck-switch/${request.requestId}`,
+      headers: dashboardAuthHeaders(store),
+    });
+    expect(inspect.statusCode).toBe(200);
+    expect(inspect.json().data).not.toHaveProperty('workspaceRoot');
+  });
+
+  it('NOT-298: workspace-default without workspaceRoot is rejected and changes nothing', async () => {
+    const { fastify, store, deckA, deckB } = await buildApp();
+    const session = store.createRuntimeSession({ deckId: deckA.id });
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      currentDeckId: deckA.id,
+      requestedDeckId: deckB.id,
+    });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: `/api/trusted-session/deck-switch/${request.requestId}/resolve`,
+      headers: dashboardAuthHeaders(store),
+      payload: { runtimeSessionId: session.sessionId, decision: 'workspace-default' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: 'workspace-default requires a workspaceRoot on the request',
+    });
+    expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+    expect(store.getDeckSwitchRequest(request.requestId)?.status).toBe('pending');
+  });
+
   it('workspace-default approval rebinds the session and the assignment without reload', async () => {
     const { fastify, store, deckA, deckB } = await buildApp();
     const workspaceRoot = makeWorkspaceRoot();

@@ -65,6 +65,20 @@ describe("DeckSwitchApprovePage", () => {
     expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
   });
 
+  it("NOT-298: omits workspace-default when the request has no workspaceRoot", async () => {
+    const { workspaceRoot: _omit, ...remoteDetail } = DETAIL;
+    mockPendingDetail(remoteDetail);
+    render(<DeckSwitchApprovePage />);
+
+    expect(await screen.findByRole("button", { name: "This session only" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "This workspace by default" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/no writable workspace default/i)).toBeInTheDocument();
+    expect(screen.queryByText("/work/ws")).not.toBeInTheDocument();
+  });
+
   it("says the workspace default was not changed after session-only approval", async () => {
     mockPendingDetail();
     apiRequestMock.mockImplementation(async (method: string, url: string) => {

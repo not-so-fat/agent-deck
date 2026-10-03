@@ -400,8 +400,22 @@ function registerRuntimeTools(host: McpToolHost): void {
       ) {
         const elicitation = host.elicitation;
         const runtimeSessionId = snapshot.runtimeSessionId;
+        // NOT-298: pass the bound workspace into elicitation so the native
+        // form omits "This workspace by default" for launch/remote sessions
+        // that have no writable assignment target. The creation API body
+        // stays agent-facing without that path; the server already stored
+        // workspaceRoot from the session header when present.
+        const creationForElicitation: Record<string, unknown> = {
+          ...(result as Record<string, unknown>),
+        };
+        const boundWorkspace = snapshot.workspaceRoot?.trim();
+        if (boundWorkspace) {
+          creationForElicitation.workspaceRoot = boundWorkspace;
+        } else {
+          delete creationForElicitation.workspaceRoot;
+        }
         const outcome = await presentDeckSwitchApproval({
-          creation: result,
+          creation: creationForElicitation,
           runtimeSessionId,
           supportsFormElicitation: () => elicitation.supportsFormElicitation(),
           elicitForm: (input) => elicitation.elicitForm(input),
