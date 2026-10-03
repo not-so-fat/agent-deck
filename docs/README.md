@@ -63,6 +63,7 @@
 |------|---------|
 | [examples/playbooks/](./examples/playbooks/) | Sample playbook bodies |
 | [examples/agent-harness/](./examples/agent-harness/) | Harness templates for `setup` |
+| [examples/grok-agent.mcp.json](./examples/grok-agent.mcp.json) | Grok/xAI remote MCP: URL + per-agent `x-agent-deck-deck-id` ([SETUP](./SETUP.md#grok-agents--per-agent-default-deck-not-298)) |
 
 ---
 

@@ -304,12 +304,16 @@ tree: `packages/backend/src/mcp-server.ts`, `mcp-session-binding.ts`,
   a valid bearer plus no deck header to `defaultDeck`, so hosted mode never
   produces unassigned sessions — NOT-50 explain-only sessions occur on
   loopback only, and NOT-318 must not apply NOT-50 to hosted mode.
-- **Session switching (NOT-204):** agents request via `switch_deck`; humans
-  approve as **This session only** or **This workspace by default**.
-  Pending/declined requests change nothing and expose nothing from the
-  target deck. Bearer auth wraps this mechanism; it does not replace it — and an approved
-  switch can never land outside the grant's allowedDecks (see deck-selection
-  rules). Approval scopes (session vs. workspace default) are unchanged.
+- **Session switching (NOT-204 / NOT-298):** agents request via `switch_deck`;
+  humans approve as **This session only** or **This workspace by default**
+  when the request has a writable `workspaceRoot`. Launch/remote sessions
+  without one offer session-only and Decline only — workspace-default is
+  omitted (and rejected if forged). Pending/declined requests change nothing
+  and expose nothing from the target deck. Bearer auth wraps this mechanism;
+  it does not replace it — and an approved switch can never land outside the
+  grant's allowedDecks (see deck-selection rules). Per-agent durable defaults
+  stay in each agent's MCP config (`x-agent-deck-deck-id`); see
+  [SETUP.md — Grok agents](../SETUP.md#grok-agents--per-agent-default-deck-not-298).
 - **Deck enumeration (NOT-203):** `get_decks` stays scoped to the session's
   active deck. The grant allowlist is enforced at session bind, not
   by changing enumeration; there is no cross-deck directory in V1.

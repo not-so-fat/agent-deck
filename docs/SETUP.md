@@ -280,6 +280,20 @@ Credentials and secrets are never included. Import creates cards/decks when name
 
 Card colors are fixed by type (MCP, API key, playbook). Service health and OAuth status update live via WebSocket.
 
+## Grok agents — per-agent default deck (NOT-298)
+
+Each Grok (xAI remote MCP) agent picks its **durable default deck** in that agent's MCP connector config via the existing launch header `x-agent-deck-deck-id`. Agent Deck does not store a remote-client registry for this. A mid-session `switch_deck` approved as **This session only** changes only that runtime session; a fresh session starts from the configured header again.
+
+**Example** (replace URL, bearer, and deck ids): see [examples/grok-agent.mcp.json](./examples/grok-agent.mcp.json). On the xAI API remote-MCP surface the fields map to `server_url`, `authorization`, and `headers` ([personal-cloud auth contract](./decisions/personal-cloud-auth-contract.md) §2–3). Reachability (Tailscale, VPN, public HTTPS) is an ops concern — not an Agent Deck product concept.
+
+**Dogfood check**
+
+1. Configure agent A with Planner's deck id and agent B with Builder's deck id (two connector entries).
+2. Start both; each first turn calls `get_session_context` once and prints exactly one `display_summary` receipt — they must name different decks and must not leak into each other.
+3. From agent A, call `switch_deck` toward Builder; approve **This session only** in the dashboard/menubar inbox (launch/remote sessions without `workspaceRoot` do not offer **This workspace by default**).
+4. Same MCP session: `get_session_context` / tool scope now follow Builder; no reconnect.
+5. End the session and start agent A again — the receipt returns to Planner (configured default unchanged).
+
 ---
 
 ## Development commands

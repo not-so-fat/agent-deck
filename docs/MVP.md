@@ -91,7 +91,7 @@ Each MCP session starts **unbound**. The agent calls `bind_workspace({ workspace
 
 **Agent binding:**
 
-> **Switching contract:** agent-initiated `switch_bound_deck` switching below is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204). Agents may only request a switch; a human approves it as This session only or This workspace by default.
+> **Switching contract:** agent-initiated `switch_bound_deck` switching below is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204). Agents may only request a switch; a human approves it as This session only or This workspace by default. Launch/remote sessions without a writable `workspaceRoot` offer session-only and Decline only (NOT-298) — workspace-default is omitted because it cannot succeed.
 
 1. MCP `bind_workspace({ workspaceRoot, deckId })` — required `deckId`; sets workspace + deck for this session
 2. MCP `switch_bound_deck({ deckId })` — change deck mid-session

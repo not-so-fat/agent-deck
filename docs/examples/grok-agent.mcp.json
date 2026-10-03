@@ -1,0 +1,8 @@
+{
+  "_comment": "NOT-298: one Grok/xAI remote-MCP agent connector. Duplicate the entry per agent with a different x-agent-deck-deck-id for that agent's durable default. Map server_url / authorization / headers to the xAI remote-MCP tool fields. Replace placeholders.",
+  "server_url": "https://agent-deck.example.ts.net/mcp",
+  "authorization": "Bearer <grant-secret>",
+  "headers": {
+    "x-agent-deck-deck-id": "<deck-uuid-for-this-agent>"
+  }
+}
