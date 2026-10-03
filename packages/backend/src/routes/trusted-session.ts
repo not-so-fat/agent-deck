@@ -15,6 +15,7 @@ import {
 } from '@agent-deck/shared';
 
 import { resolveDeckRef } from '../lib/deck-resolve';
+import type { ClientGrantStore } from '../auth/client-grants';
 import { refreshLiveDisplayAfterDeckSwitch } from '../scope/display';
 import type { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { parseBearerToken } from '../lib/http-auth';
@@ -59,6 +60,46 @@ function resolveRuntimeSessionFromHeader(
     throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
   }
   return session;
+}
+
+/**
+ * NOT-318: grant-allowlist gate shared by the deck-switch creation,
+ * approval-commit, and bind-workspace deck-change paths.
+ *
+ * No grant on the session (loopback launcher, tests without a grant
+ * store) means unconstrained — exactly today's behavior. A session bound
+ * to a live grant may only name decks inside the grant allowlist; a
+ * missing, revoked, or expired grant fails closed with GRANT_REQUIRED.
+ * The helper never throws for unconstrained sessions.
+ */
+function grantStoreOf(fastify: FastifyInstance): ClientGrantStore | null {
+  return (fastify as unknown as { grantStore?: ClientGrantStore }).grantStore ?? null;
+}
+
+function requireGrantDeckScope(
+  fastify: FastifyInstance,
+  runtimeSessionId: string,
+  deckId: string,
+): void {
+  const grants = grantStoreOf(fastify);
+  if (!grants) {
+    return;
+  }
+  const row = fastify.trustedSessionStore.getRuntimeSessionRow(runtimeSessionId);
+  const grantId = row?.grant_id;
+  if (!grantId) {
+    return;
+  }
+  const grant = grants.getGrant(grantId);
+  if (!grant || grant.revokedAt || (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())) {
+    throw new TrustedAuthError('GRANT_REQUIRED', 'Grant expired or revoked');
+  }
+  if (!grant.allowedDecks.includes(deckId)) {
+    throw new TrustedAuthError(
+      'RESOURCE_OUT_OF_SCOPE',
+      "Deck is outside this grant's allowed decks",
+    );
+  }
 }
 
 export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
@@ -128,6 +169,8 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           if (session.mode !== 'agent-admin') {
             throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
           }
+          // NOT-318: even an elevated grant session cannot leave its allowlist.
+          requireGrantDeckScope(fastify, session.sessionId, deckId);
           const updated = store.setRuntimeSessionDeck(session.sessionId, deckId);
           if (!updated) {
             throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
@@ -310,7 +353,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.post<{ Body: { deckId: string; mcpSessionId?: string } }>(
+  fastify.post<{ Body: { deckId: string; mcpSessionId?: string; grantId?: string } }>(
     '/mcp/connect-deck',
     async (request, reply) => {
       try {
@@ -325,6 +368,11 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         }
 
         const mcpId = request.body.mcpSessionId?.trim();
+        // NOT-318: owning-grant link for bearer-grant sessions. Verified
+        // grant-side by the MCP bearer gate before this call; stored here
+        // so deck-switch creation/approval can enforce the same allowlist.
+        // Loopback launcher calls omit it and stay unconstrained.
+        const grantId = request.body.grantId?.trim() || undefined;
         let session;
         if (mcpId) {
           const historical = store.findLatestRuntimeSessionByMcpSessionId(mcpId);
@@ -337,6 +385,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           session = store.createRuntimeSession({
             deckId,
             mcpSessionId: mcpId,
+            ...(grantId ? { grantId } : {}),
           });
         }
 
@@ -386,6 +435,10 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         if (!requested) {
           return reply.status(404).send({ success: false, error: 'Deck not found' });
         }
+
+        // NOT-318: a grant session cannot even request a deck outside
+        // its allowlist — the binding stays untouched.
+        requireGrantDeckScope(fastify, session.sessionId, requested.id);
 
         const current = await fastify.db.getDeck(session.deckId);
         if (requested.id === session.deckId) {
@@ -533,10 +586,30 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         // runtimeSessionId against the request's owner. The request's
         // workspace is not compared; the stored workspaceRoot travels with
         // the request itself.
+        //
+        // NOT-318: approval never widens a grant. The allowlist is
+        // re-checked at commit time (it may have narrowed since creation),
+        // and a dead grant fails the approval closed.
+        const grants = grantStoreOf(fastify);
+        const sessionRow = store.getRuntimeSessionRow(runtimeSessionId.trim());
+        const grantId = sessionRow?.grant_id ?? null;
+        const grant = grantId && grants ? grants.getGrant(grantId) : null;
+        if (grantId && grants) {
+          if (
+            !grant ||
+            grant.revokedAt ||
+            (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())
+          ) {
+            throw new TrustedAuthError('GRANT_REQUIRED', 'Grant expired or revoked');
+          }
+        }
         const result = store.applyDeckSwitchResolution(
           requestId,
           runtimeSessionId.trim(),
           decision,
+          grant
+            ? { isDeckAllowed: (deckId) => grant.allowedDecks.includes(deckId) }
+            : undefined,
         );
 
         switch (result.outcome) {
@@ -558,6 +631,11 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             });
           case 'target-missing':
             return reply.status(404).send({ success: false, error: 'Deck not found' });
+          case 'out-of-scope':
+            throw new TrustedAuthError(
+              'RESOURCE_OUT_OF_SCOPE',
+              "Deck is outside this grant's allowed decks",
+            );
           case 'session-invalid':
             throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
           case 'workspace-required':

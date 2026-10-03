@@ -8,6 +8,7 @@ import {
   normalizeCorrelationId,
   type BindingActiveSource,
 } from '@agent-deck/shared';
+import type { ClientPrincipal } from './auth/client-grants';
 
 export type DeckBindingSource =
   | 'session_override'
@@ -28,6 +29,14 @@ export type SessionBindingSnapshot = {
   correlationId?: string;
 };
 
+/** Remote-grant scope held per MCP session (NOT-318). */
+export type GrantSessionScope = {
+  grantId: string;
+  label: string;
+  defaultDeck: string;
+  allowedDecks: string[];
+};
+
 /** Per-MCP-session workspace + trusted runtime session. */
 export class McpSessionBindingStore {
   private workspaceBySession = new Map<string, string>();
@@ -42,6 +51,8 @@ export class McpSessionBindingStore {
   private correlationByMcp = new Map<string, string>();
   /** MCP session ids authenticated via launch-selected deck (NOT-105). */
   private launchByMcp = new Set<string>();
+  /** MCP session ids authenticated via remote bearer grant (NOT-318). */
+  private grantByMcp = new Map<string, GrantSessionScope>();
   /** MCP sessions with no deck header — explain-only, no deck access (NOT-50). */
   private unassignedByMcp = new Set<string>();
   private readonly defaultWorkspace?: string;
@@ -86,6 +97,63 @@ export class McpSessionBindingStore {
 
   isLaunchSession(mcpSessionId: string): boolean {
     return this.launchByMcp.has(mcpSessionId);
+  }
+
+  /**
+   * NOT-318: bind an MCP session to an authenticated remote grant. The
+   * grant scope travels with the session so every follow-up revalidates
+   * against the same allowlist; the deck header can never widen it.
+   */
+  setGrantSession(
+    mcpSessionId: string,
+    input: {
+      grantId: string;
+      label: string;
+      defaultDeck: string;
+      allowedDecks: string[];
+      runtimeSessionId: string;
+      deckId: string;
+      workspaceRoot?: string;
+      mode?: 'normal' | 'agent-admin';
+    },
+  ): void {
+    this.unassignedByMcp.delete(mcpSessionId);
+    this.setTrustedSession(mcpSessionId, input);
+    this.grantByMcp.set(mcpSessionId, {
+      grantId: input.grantId,
+      label: input.label,
+      defaultDeck: input.defaultDeck,
+      allowedDecks: [...input.allowedDecks],
+    });
+  }
+
+  isGrantSession(mcpSessionId: string): boolean {
+    return this.grantByMcp.has(mcpSessionId);
+  }
+
+  getGrantScope(mcpSessionId: string): GrantSessionScope | undefined {
+    const scope = this.grantByMcp.get(mcpSessionId);
+    return scope ? { ...scope, allowedDecks: [...scope.allowedDecks] } : undefined;
+  }
+
+  /**
+   * NOT-318: the unified authorization principal. Loopback launcher
+   * sessions resolve to `local` (unconstrained); remote bearer sessions
+   * resolve to their grant (constrained by the allowlist). Both flow
+   * through the same deck-scope check downstream.
+   */
+  resolveClientPrincipal(mcpSessionId: string): ClientPrincipal {
+    const scope = this.grantByMcp.get(mcpSessionId);
+    if (scope) {
+      return {
+        kind: 'grant',
+        grantId: scope.grantId,
+        label: scope.label,
+        defaultDeck: scope.defaultDeck,
+        allowedDecks: [...scope.allowedDecks],
+      };
+    }
+    return { kind: 'local' };
   }
 
   markUnassigned(mcpSessionId: string): void {
@@ -143,6 +211,7 @@ export class McpSessionBindingStore {
     this.modeByMcp.delete(sessionId);
     this.correlationByMcp.delete(sessionId);
     this.launchByMcp.delete(sessionId);
+    this.grantByMcp.delete(sessionId);
     this.unassignedByMcp.delete(sessionId);
   }
 

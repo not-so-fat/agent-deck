@@ -24,6 +24,8 @@ import { CollectionWarningService } from '../services/collection-warning-service
 import { registerCollectionRoutes } from '../routes/collection';
 import { registerExportImportRoutes } from '../routes/export-import';
 import { registerTrustedSessionRoutes, registerDashboardAuthRoutes } from '../routes/trusted-session';
+import { registerAgentGrantRoutes } from '../routes/agent-grants';
+import { ClientGrantStore } from '../auth/client-grants';
 import { registerLaunchRoutes } from '../routes/launch';
 import { registerUsageRoutes } from '../routes/usage';
 import { PlaybookManager } from '../playbooks/playbook-manager';
@@ -86,6 +88,7 @@ export async function createServer() {
   await ensureStoreReady(db);
   const secretStore = createSecretStore();
   const trustedSessionStore = new TrustedSessionStore(db.getSqliteDatabase());
+  const grantStore = new ClientGrantStore(db.getSqliteDatabase());
   await ensureAdminSecret();
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
   const oauthTokenVault = new OAuthTokenVault(secretStore, db);
@@ -112,6 +115,7 @@ export async function createServer() {
 
   fastify.decorate('db', db);
   fastify.decorate('trustedSessionStore', trustedSessionStore);
+  fastify.decorate('grantStore', grantStore);
   registerHttpPolicyHook(fastify);
 
   const sweepStaleSessions = () => {
@@ -146,6 +150,7 @@ export async function createServer() {
   await fastify.register(mcpRoutes, { prefix: '/api/mcp' });
   await fastify.register(registerLocalMCPRoutes, { prefix: '/api/local-mcp' });
   await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+  await fastify.register(registerAgentGrantRoutes, { prefix: '/api' });
   await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
   await fastify.register(registerLaunchRoutes, { prefix: '/api/launch' });
   await fastify.register(registerUsageRoutes, { prefix: '/api/usage' });

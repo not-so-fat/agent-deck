@@ -13,9 +13,17 @@ import {
 import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
+import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
+import { resolveDatabasePath } from './lib/paths';
 import { resolveLiveDisplayStaleMs } from './scope/live-display-registry';
+import {
+  ClientGrantStore,
+  parseGrantToken,
+  principalAllowsDeck,
+  resolveGrantDeck,
+} from './auth/client-grants';
 import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error';
 import { formatMcpToolError } from './mcp-tools/policy';
 import {
@@ -69,6 +77,32 @@ type McpSession = {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
 };
+
+/**
+ * NOT-318: hosted-mode flag. When `AGENT_DECK_MCP_REQUIRE_BEARER=1`, every
+ * `/mcp` request requires a valid per-agent grant secret, regardless of
+ * peer address. Peer-address detection is explicitly rejected as the
+ * trigger (TLS-terminating proxies forward internet traffic over
+ * loopback), and `X-Forwarded-*` headers are never trusted for auth.
+ * The local launcher never sets this flag, so loopback sessions stay
+ * bearer-free with zero config change.
+ */
+export const MCP_REQUIRE_BEARER_ENV_VAR = 'AGENT_DECK_MCP_REQUIRE_BEARER';
+
+export function isBearerGrantRequired(raw: string | undefined = process.env[MCP_REQUIRE_BEARER_ENV_VAR]): boolean {
+  return raw === '1' || raw?.trim().toLowerCase() === 'true';
+}
+
+/** Extract the bearer secret without ever logging or echoing it. */
+function readBearerToken(req: Request): string | null {
+  const header = req.headers.authorization;
+  if (typeof header !== 'string') {
+    return null;
+  }
+  const match = /^Bearer (.+)$/.exec(header.trim());
+  const token = match?.[1]?.trim();
+  return token || null;
+}
 
 /**
  * NOT-309: keep-alive touch cadence for idle-but-connected MCP sessions.
@@ -173,16 +207,23 @@ export class AgentDeckMCPServer {
     return this.mcpServerForRegistration;
   }
 
+  /** Injected grant store (tests). `undefined` means "resolve lazily". */
+  private grantStoreOverride: ClientGrantStore | null | undefined;
+  /** Lazily opened grant store for hosted mode (shared backend database file). */
+  private grantStoreCache: ClientGrantStore | null = null;
+
   constructor(
     port: number = 3001,
     backendUrl: string = 'http://localhost:8000',
     toolProfile?: McpToolProfile,
     host: string = '127.0.0.1',
+    options?: { grantStore?: ClientGrantStore | null },
   ) {
     this.port = port;
     this.backendUrl = backendUrl;
     this.toolProfile = toolProfile ?? resolveMcpToolProfile();
     this.host = host;
+    this.grantStoreOverride = options?.grantStore;
 
     this.app = express();
     this.app.use(express.json());
@@ -192,6 +233,47 @@ export class AgentDeckMCPServer {
       workspace: process.env.AGENT_DECK_WORKSPACE,
       deckId: process.env.AGENT_DECK_DECK_ID,
     });
+  }
+
+  /**
+   * NOT-318: grant metadata store. An injected store (tests) wins; otherwise
+   * the shared backend database file is opened lazily — only when a bearer
+   * is presented or hosted mode requires one, so loopback-only processes
+   * and existing tests never touch the database file.
+   */
+  private getGrantStore(): ClientGrantStore | null {
+    if (this.grantStoreOverride !== undefined) {
+      return this.grantStoreOverride;
+    }
+    if (this.grantStoreCache) {
+      return this.grantStoreCache;
+    }
+    try {
+      const dbPath = process.env.AGENT_DECK_DB_PATH?.trim() || resolveDatabasePath();
+      this.grantStoreCache = new ClientGrantStore(new Database(dbPath));
+      return this.grantStoreCache;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * NOT-318: authenticate one bearer token to a grant principal. Every
+   * failure mode (missing store, malformed, unknown id, secret mismatch,
+   * expired, revoked) returns null — the caller answers one uniform 401
+   * with no oracle. Touches `lastUsedAt`; never logs or returns the secret.
+   */
+  private authenticateGrant(
+    token: string | null,
+  ): Extract<import('./auth/client-grants').ClientPrincipal, { kind: 'grant' }> | null {
+    if (!token) {
+      return null;
+    }
+    const store = this.getGrantStore();
+    if (!store) {
+      return null;
+    }
+    return store.authenticateToken(token);
   }
 
   /** Actual listening port (resolves OS-assigned `port: 0` after `start()`). */
@@ -979,6 +1061,159 @@ export class AgentDeckMCPServer {
     });
   }
 
+  /**
+   * NOT-318: the single 401 envelope for every credential failure on a
+   * hosted endpoint (missing / malformed / invalid / expired / revoked).
+   * Byte-identical every time — including the constant `WWW-Authenticate:
+   * Bearer` challenge — so probers learn nothing, and generic HTTP
+   * clients stay well-behaved. Never carries grant state or deck detail.
+   */
+  private sendGrantRequired(res: Response): void {
+    res.status(401).set('WWW-Authenticate', 'Bearer').json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'GRANT_REQUIRED' },
+      id: null,
+    });
+  }
+
+  /**
+   * NOT-318: authenticated but outside the grant allowlist. Only reachable
+   * post-auth, so it oracles the allowlist solely to the already-
+   * authenticated owner. Transport kept.
+   */
+  private sendOutOfScope(res: Response): void {
+    res.status(403).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'RESOURCE_OUT_OF_SCOPE' },
+      id: null,
+    });
+  }
+
+  /**
+   * NOT-318: bind a fresh MCP session to an authenticated grant principal.
+   * Mirrors `authenticateLaunchDeck` (workspace + correlation handling) but
+   * resolves through the grant: the deck was already constrained by
+   * `resolveGrantDeck`, and the owning grant id is linked on the runtime
+   * session so deck-switch creation/approval enforces the same allowlist.
+   */
+  private async authenticateGrantDeck(
+    sessionId: string,
+    req: Request,
+    principal: Extract<import('./auth/client-grants').ClientPrincipal, { kind: 'grant' }>,
+    deckId: string,
+  ): Promise<void> {
+    const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        deckId,
+        mcpSessionId: sessionId,
+        grantId: principal.grantId,
+      }),
+    });
+
+    const body = (await response.json()) as {
+      success?: boolean;
+      error?: string;
+      data?: {
+        sessionId: string;
+        deckId: string;
+        deckName?: string;
+        mode: 'normal' | 'agent-admin';
+      };
+    };
+
+    if (!response.ok || !body.success || !body.data) {
+      throw new Error(body.error ?? 'GRANT_DECK_INVALID');
+    }
+
+    const existing = this.sessionBinding.getBinding(sessionId);
+    const workspaceRoot =
+      readWorkspaceRootHeader(req) ??
+      existing.workspaceRoot ??
+      (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
+
+    this.sessionBinding.setGrantSession(sessionId, {
+      grantId: principal.grantId,
+      label: principal.label,
+      defaultDeck: principal.defaultDeck,
+      allowedDecks: principal.allowedDecks,
+      runtimeSessionId: body.data.sessionId,
+      deckId: body.data.deckId,
+      workspaceRoot,
+      mode: body.data.mode,
+    });
+
+    const correlationId = readCorrelationIdHeader(req);
+    if (correlationId) {
+      this.sessionBinding.setCorrelationId(sessionId, correlationId);
+    }
+  }
+
+  /**
+   * NOT-318: revalidate a grant-bound session on every follow-up request.
+   * The grant (not a cached decision) is re-resolved per request, so
+   * revocation and expiry fail the *next* request closed — no grace
+   * window, strictly inside the 60s bound. The deck header is
+   * request-only: a header outside the allowlist is denied with 403 and
+   * the binding is left untouched; a header for another allowed deck is
+   * ignored (deck changes go through human-approved switch_deck, which
+   * re-checks the same allowlist). Transport kept on every denial so a
+   * correct credential on the next attempt can succeed.
+   */
+  private async requireGrantFollowUp(sessionId: string, req: Request, res: Response): Promise<boolean> {
+    const scope = this.sessionBinding.getGrantScope(sessionId);
+    if (!scope) {
+      this.sendGrantRequired(res);
+      return false;
+    }
+    const principal = this.authenticateGrant(readBearerToken(req));
+    if (!principal || principal.grantId !== scope.grantId) {
+      const presented = parseGrantToken(readBearerToken(req) ?? '');
+      console.warn(
+        '[agent-deck] Grant follow-up auth failed (transport kept):',
+        `grantId=${presented?.grantId ?? 'none'}`,
+      );
+      this.sendGrantRequired(res);
+      return false;
+    }
+    // Renew the backend lease and pick up post-approval deck/mode moves,
+    // mirroring the launch follow-up refresh. A backend-revoked session
+    // (grant revoked via the owner API) fails closed here as well.
+    try {
+      await this.refreshRuntimeSession(sessionId);
+    } catch {
+      console.warn(
+        '[agent-deck] Grant session refresh failed (transport kept):',
+        `grantId=${principal.grantId}`,
+      );
+      this.sendGrantRequired(res);
+      return false;
+    }
+    // The unified authorization path: the session principal must allow
+    // the requested deck. `principalAllowsDeck` is the same check local
+    // launch sessions resolve through (local principals allow all).
+    const header = readLaunchDeckHeader(req);
+    const boundDeck = this.sessionBinding.getBinding(sessionId).deckId;
+    if (header && header !== boundDeck && !principalAllowsDeck(principal, header)) {
+      console.warn(
+        '[agent-deck] Grant follow-up deck denied (transport kept):',
+        `grantId=${principal.grantId}`,
+      );
+      this.sendOutOfScope(res);
+      return false;
+    }
+    const workspaceRoot = readWorkspaceRootHeader(req);
+    if (workspaceRoot) {
+      this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
+    }
+    const followUpCorrelation = readCorrelationIdHeader(req);
+    if (followUpCorrelation) {
+      this.sessionBinding.setCorrelationId(sessionId, followUpCorrelation);
+    }
+    return true;
+  }
+
   private async authenticateLaunchDeck(sessionId: string, req: Request): Promise<void> {
     const deckId = readLaunchDeckHeader(req);
     if (!deckId) {
@@ -1052,7 +1287,7 @@ export class AgentDeckMCPServer {
   }
 
   private async disconnectTrustedSession(sessionId: string, _req: Request): Promise<void> {
-    if (this.sessionBinding.isLaunchSession(sessionId)) {
+    if (this.sessionBinding.isLaunchSession(sessionId) || this.sessionBinding.isGrantSession(sessionId)) {
       try {
         await fetch(`${this.backendUrl}/api/trusted-session/mcp/disconnect-deck`, {
           method: 'POST',
@@ -1119,13 +1354,72 @@ export class AgentDeckMCPServer {
     });
   }
 
+  /**
+   * NOT-318: initialize with a bearer grant. Authenticates before
+   * advertising any `mcp-session-id`: failure answers the uniform 401
+   * with no transport or session record created. Success binds the fresh
+   * session to the grant-constrained deck (absent header → default;
+   * out-of-grant header → 403, no session).
+   */
+  private async handleGrantInitialize(req: Request, res: Response, bearer: string): Promise<void> {
+    const principal = this.authenticateGrant(bearer);
+    if (!principal) {
+      const presented = parseGrantToken(bearer);
+      console.warn(
+        '[agent-deck] Grant initialize auth failed (no session created):',
+        `grantId=${presented?.grantId ?? 'none'}`,
+      );
+      this.sendGrantRequired(res);
+      return;
+    }
+    const deckId = resolveGrantDeck(principal, readLaunchDeckHeader(req));
+    if (!deckId) {
+      console.warn(
+        '[agent-deck] Grant initialize deck denied (no session created):',
+        `grantId=${principal.grantId}`,
+      );
+      this.sendOutOfScope(res);
+      return;
+    }
+    const sessionId = randomUUID();
+    try {
+      await this.authenticateGrantDeck(sessionId, req, principal, deckId);
+    } catch (error) {
+      console.warn(
+        '[agent-deck] Grant deck bind failed before MCP init (no session created):',
+        `grantId=${principal.grantId}`,
+        error instanceof Error ? error.message : error,
+      );
+      this.sessionBinding.clearSession(sessionId);
+      this.sendGrantRequired(res);
+      return;
+    }
+    await this.establishTransportSession(req, res, sessionId);
+  }
+
   private async handleMcpPost(req: Request, res: Response): Promise<void> {
     const sessionIdHeader = this.getSessionIdHeader(req);
     const existing = sessionIdHeader ? this.sessions.get(sessionIdHeader) : undefined;
+    const bearerRequired = isBearerGrantRequired();
 
     if (existing && sessionIdHeader) {
-      if (!(await this.requireFollowUpDeckHeader(sessionIdHeader, req, res))) {
-        return;
+      // Grant-bound sessions revalidate the bearer on every request and
+      // never take the trust-the-header launch path: a forged deck header
+      // is denied by the grant allowlist, not trusted into a new deck.
+      if (this.sessionBinding.isGrantSession(sessionIdHeader)) {
+        if (!(await this.requireGrantFollowUp(sessionIdHeader, req, res))) {
+          return;
+        }
+      } else {
+        // Hosted mode has no bearer-free sessions; a non-grant session id
+        // is unusable there — fail closed before touching the transport.
+        if (bearerRequired) {
+          this.sendGrantRequired(res);
+          return;
+        }
+        if (!(await this.requireFollowUpDeckHeader(sessionIdHeader, req, res))) {
+          return;
+        }
       }
       this.touchLiveDisplay(sessionIdHeader);
       await existing.transport.handleRequest(req, res, req.body);
@@ -1140,6 +1434,13 @@ export class AgentDeckMCPServer {
         (Array.isArray(body) && body.some((message) => isInitializeRequest(message))));
 
     if (!isInit) {
+      // Hosted endpoints run the bearer-grant gate before session
+      // existence: an unauthenticated prober gets 401, never the NOT-101
+      // 404 body (which echoes the session id plus instance metadata).
+      if (bearerRequired && !this.authenticateGrant(readBearerToken(req))) {
+        this.sendGrantRequired(res);
+        return;
+      }
       // A session id we don't know is a restart, not a malformed request — 404 so
       // the client re-initializes. An initialize carrying a stale id falls through
       // and gets a fresh session, which is exactly the recovery we want.
@@ -1152,6 +1453,19 @@ export class AgentDeckMCPServer {
         error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
         id: null,
       });
+      return;
+    }
+
+    // A presented bearer always resolves as a remote grant — even in local
+    // mode — while loopback launcher connections without one keep the
+    // existing deck-header path with zero config change.
+    const presentedBearer = readBearerToken(req);
+    if (presentedBearer) {
+      await this.handleGrantInitialize(req, res, presentedBearer);
+      return;
+    }
+    if (bearerRequired) {
+      this.sendGrantRequired(res);
       return;
     }
 
@@ -1183,6 +1497,17 @@ export class AgentDeckMCPServer {
       }
     }
 
+    await this.establishTransportSession(req, res, sessionId);
+  }
+
+  /**
+   * Shared transport handshake tail: create the per-session MCP server,
+   * connect the streamable transport, and register the live session. Runs
+   * only after the session is authenticated and bound (launch, grant, or
+   * unassigned) — never before.
+   */
+  private async establishTransportSession(req: Request, res: Response, sessionId: string): Promise<void> {
+    const body = req.body;
     const server = this.createMcpServer(sessionId);
     let sessionEntry: McpSession | undefined;
 
@@ -1217,7 +1542,7 @@ export class AgentDeckMCPServer {
       await transport.handleRequest(req, res, body);
     } catch (error) {
       console.warn(
-        '[agent-deck] MCP initialize failed after launch-deck auth — revoking runtime session:',
+        '[agent-deck] MCP initialize failed after session auth — revoking runtime session:',
         error instanceof Error ? error.message : error,
       );
       this.sessions.delete(sessionId);
@@ -1249,6 +1574,15 @@ export class AgentDeckMCPServer {
 
   private async handleMcpSessionRequest(req: Request, res: Response): Promise<void> {
     const sessionId = this.getSessionIdHeader(req);
+    const bearerRequired = isBearerGrantRequired();
+
+    // Hosted endpoints run the Bearer [REDACTED] before session existence
+    // (same no-oracle order as POST): 401 before any 404 metadata.
+    if (bearerRequired && !this.authenticateGrant(readBearerToken(req))) {
+      this.sendGrantRequired(res);
+      return;
+    }
+
     if (!sessionId) {
       res.status(400).send('Invalid or missing session ID');
       return;
@@ -1260,8 +1594,18 @@ export class AgentDeckMCPServer {
       return;
     }
 
-    if (!(await this.requireFollowUpDeckHeader(sessionId, req, res))) {
-      return;
+    if (this.sessionBinding.isGrantSession(sessionId)) {
+      if (!(await this.requireGrantFollowUp(sessionId, req, res))) {
+        return;
+      }
+    } else {
+      if (bearerRequired) {
+        this.sendGrantRequired(res);
+        return;
+      }
+      if (!(await this.requireFollowUpDeckHeader(sessionId, req, res))) {
+        return;
+      }
     }
 
     this.touchLiveDisplay(sessionId);

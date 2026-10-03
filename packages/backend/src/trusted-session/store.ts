@@ -24,6 +24,8 @@ export type RuntimeSessionRow = {
   expires_at: string;
   admin_expires_at: string | null;
   revoked_at: string | null;
+  /** NOT-318: owning remote grant, if the session was opened by a bearer grant. */
+  grant_id: string | null;
 };
 
 export type AdminChallengeRow = {
@@ -108,7 +110,9 @@ export type DeckSwitchResolutionOutcome =
   | { outcome: 'target-missing' }
   | { outcome: 'session-invalid' }
   | { outcome: 'workspace-required' }
-  | { outcome: 'assignment-failed'; error: string };
+  | { outcome: 'assignment-failed'; error: string }
+  /** NOT-318: requested deck sits outside the session grant's allowlist. */
+  | { outcome: 'out-of-scope'; request: DeckSwitchRequest };
 
 /**
  * Sentinel that aborts the approval transaction when the requesting session
@@ -337,6 +341,21 @@ export class TrustedSessionStore {
       CREATE INDEX IF NOT EXISTS deck_switch_requests_pending_idx
         ON deck_switch_requests (runtime_session_id, requested_deck_id, status, expires_at);
     `);
+    this.ensureGrantColumn();
+  }
+
+  /**
+   * NOT-318: nullable owning-grant link on runtime sessions. Added after
+   * table creation so pre-existing databases migrate with a plain ALTER.
+   */
+  private ensureGrantColumn(): void {
+    const cols = this.db.pragma('table_info(runtime_sessions)') as Array<{
+      name: string;
+    }>;
+    if (cols.some((col) => col.name === 'grant_id')) {
+      return;
+    }
+    this.db.exec(`ALTER TABLE runtime_sessions ADD COLUMN grant_id TEXT`);
   }
 
   /**
@@ -385,6 +404,8 @@ export class TrustedSessionStore {
   createRuntimeSession(input: {
     deckId: string;
     mcpSessionId?: string;
+    /** NOT-318: owning remote grant, when opened by a bearer grant. */
+    grantId?: string;
   }): RuntimeSession {
     const id = prefixTrustedId('ses', randomUUID());
     const lastSeenAt = nowIso();
@@ -393,10 +414,10 @@ export class TrustedSessionStore {
     this.db
       .prepare(
         `INSERT INTO runtime_sessions
-         (id, mcp_session_id, deck_id, mode, last_seen_at, expires_at, admin_expires_at)
-         VALUES (?, ?, ?, 'normal', ?, ?, NULL)`,
+         (id, mcp_session_id, deck_id, mode, last_seen_at, expires_at, admin_expires_at, grant_id)
+         VALUES (?, ?, ?, 'normal', ?, ?, NULL, ?)`,
       )
-      .run(id, input.mcpSessionId ?? null, input.deckId, lastSeenAt, expiresAt);
+      .run(id, input.mcpSessionId ?? null, input.deckId, lastSeenAt, expiresAt, input.grantId ?? null);
 
     return this.toRuntimeSession(this.getRuntimeSessionRow(id)!);
   }
@@ -409,7 +430,7 @@ export class TrustedSessionStore {
     const row = this.db
       .prepare(
         `SELECT id, mcp_session_id, deck_id, mode,
-                last_seen_at, expires_at, admin_expires_at, revoked_at
+                last_seen_at, expires_at, admin_expires_at, revoked_at, grant_id
          FROM runtime_sessions
          WHERE mcp_session_id = ?
          ORDER BY last_seen_at DESC
@@ -425,7 +446,7 @@ export class TrustedSessionStore {
     const row = this.db
       .prepare(
         `SELECT id, mcp_session_id, deck_id, mode,
-                last_seen_at, expires_at, admin_expires_at, revoked_at
+                last_seen_at, expires_at, admin_expires_at, revoked_at, grant_id
          FROM runtime_sessions
          WHERE mcp_session_id = ?
            AND revoked_at IS NULL AND expires_at > ?
@@ -442,7 +463,7 @@ export class TrustedSessionStore {
     const row = this.db
       .prepare(
         `SELECT id, mcp_session_id, deck_id, mode,
-                last_seen_at, expires_at, admin_expires_at, revoked_at
+                last_seen_at, expires_at, admin_expires_at, revoked_at, grant_id
          FROM runtime_sessions
          WHERE mcp_session_id = ? AND deck_id = ?
            AND revoked_at IS NULL AND expires_at > ?`,
@@ -563,7 +584,7 @@ export class TrustedSessionStore {
       (this.db
         .prepare(
           `SELECT id, mcp_session_id, deck_id, mode,
-                  last_seen_at, expires_at, admin_expires_at, revoked_at
+                  last_seen_at, expires_at, admin_expires_at, revoked_at, grant_id
            FROM runtime_sessions WHERE id = ?`,
         )
         .get(sessionId) as RuntimeSessionRow | undefined) ?? null
@@ -666,6 +687,19 @@ export class TrustedSessionStore {
     this.db
       .prepare(`UPDATE runtime_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`)
       .run(nowIso(), sessionId);
+  }
+
+  /**
+   * NOT-318: revoke every live runtime session opened by one remote grant.
+   * Called when the grant is revoked so established sessions fail closed
+   * immediately (belt-and-braces next to the MCP per-request revalidation).
+   * Returns the number of sessions newly revoked.
+   */
+  revokeRuntimeSessionsByGrant(grantId: string): number {
+    const result = this.db
+      .prepare(`UPDATE runtime_sessions SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL`)
+      .run(nowIso(), grantId);
+    return result.changes;
   }
 
   createAdminChallenge(runtimeSessionId: string): AdminChallengeRow {
@@ -942,6 +976,12 @@ export class TrustedSessionStore {
     deps?: {
       deckExists?: (deckId: string) => boolean;
       writeWorkspaceAssignment?: (workspaceRoot: string, deckId: string, nowIso: string) => void;
+      /**
+       * NOT-318: grant-allowlist gate. When provided and it rejects the
+       * requested deck, approval resolves to `out-of-scope` with the
+       * session left on its current deck — approval never widens a grant.
+       */
+      isDeckAllowed?: (deckId: string) => boolean;
     },
   ): DeckSwitchResolutionOutcome {
     const row = this.getDeckSwitchRequestRow(requestId);
@@ -968,6 +1008,9 @@ export class TrustedSessionStore {
     }
 
     const now = nowIso();
+    if (deps?.isDeckAllowed && !deps.isDeckAllowed(row.requested_deck_id)) {
+      return { outcome: 'out-of-scope', request: this.toDeckSwitchRequest(row) };
+    }
     if (decision === 'decline') {
       this.db
         .prepare(
