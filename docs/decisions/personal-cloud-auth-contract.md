@@ -33,8 +33,9 @@ happen):**
 - `cited — NOT live-fetched in-session`: the canonical official URL is given
   so an operator can verify it, but this sandbox has no network egress
   (`curl` → `Could not resolve host: code.claude.com` on 2026-10-03;
-  re-probed 2026-10-04, same result; escalated execution is forbidden by
-  launch policy), so no page was inspected and no quote is reproduced here.
+  re-probed 2026-10-03, same result (curl exit 6); escalated execution is
+  forbidden by launch policy), so no page was inspected and no quote is
+  reproduced here.
   A prior round labeled these cells "captured 2026-10-03" without fetching
   them; that label is withdrawn.
 - `operator-must-confirm`: the V1 decision depends on this cell; it must be
@@ -45,6 +46,13 @@ are ambiguous or unfetched, the cell says so and defers to §3. **Codex CLI
 and Claude Code are local CLIs, not cloud agents** — so the matrix separates
 CLI surfaces (V1 static-bearer scope) from cloud-connector surfaces
 (explicitly out of V1 until proven per §3).
+
+**Waiver required for AC1:** inspecting every cited official URL with a
+capture date is impossible from this sandbox (no DNS egress, reconfirmed
+2026-10-03, curl exit 6), so a coding pass here cannot close it. Closing AC1
+needs either a network-egress run that opens each §2.1 URL and records
+captures, or an explicit human waiver accepting the §2.1 operator preflight
+(P1–P4) as the substitute.
 
 | Client | Custom Streamable HTTP endpoint | Static `Authorization` header | MCP OAuth discovery | Auth-code + PKCE | Dynamic client registration / alternative | Config surface / notes |
 |---|---|---|---|---|---|---|
@@ -63,7 +71,7 @@ that the V1 client scope is now narrowed to static-header-capable clients
 (Claude Code and Codex CLI pending preflight P1–P2): cloud-connector
 surfaces (Claude.ai/Desktop, ChatGPT web, Grok bot builder) are **out of V1**
 until a §3-style proof shows a static-header field, and a required client
-without one triggers the §7 OAuth child instead of reopening the Bearer [REDACTED]
+without one triggers the §7 OAuth child instead of reopening the bearer-grant decision
 
 ### 2.1 Operator preflight (docs verification — NOT-318 preflight, not V1 scope)
 
@@ -92,7 +100,7 @@ egress, no Grok credentials, no reachable appliance), and the §2.1 preflight
 (P1–P4) is likewise unrun. Every `operator-must-confirm` cell therefore
 stays open: Grok connectivity is an explicit **launch blocker requiring user
 input**, P1–P2 are **NOT-318 preflight** (they gate the "Claude/Codex accept
-static bearers" premise but do not change the frozen Bearer [REDACTED], and P4
+static bearers" premise but do not change the frozen bearer-grant contract, and P4
 scopes cloud connectors out of V1. None of this is a silent assumption.
 
 ### 3.1 Proof procedure (smallest real client connection)
@@ -160,8 +168,11 @@ so a prober cannot distinguish "wrong secret" from "revoked grant":
 
 Rules: `401` (never `403`) for every credential failure; identical JSON-RPC
 envelope `{ jsonrpc: "2.0", error: { code: -32001, message:
-"GRANT_REQUIRED" }, id: null }`; no `WWW-Authenticate: Bearer` hint that
-leaks grant state (the endpoint is bearer-only by definition); deck-identifying
+"GRANT_REQUIRED" }, id: null }` plus one constant `WWW-Authenticate: Bearer`
+response header (RFC 7235 / RFC 6750 challenge with no realm and no error
+detail — byte-identical on every 401, so it leaks no grant state; it keeps
+generic HTTP clients well-behaved and matches the §7 OAuth child, which
+requires a challenge); deck-identifying
 detail (`unknown deck`, `grant revoked at …`) never appears. Machine-readable
 fixture: `docs/decisions/fixtures/personal-cloud-auth-contract.examples.json`.
 
@@ -175,8 +186,8 @@ fixture: `docs/decisions/fixtures/personal-cloud-auth-contract.examples.json`.
   (session close) with `mcp-session-id`: re-resolve grant → allowed-decks on
   **every** request. Unknown session id keeps the existing NOT-101 behavior
   (`404` + `mcp-session-status: expired` so the client re-initializes) —
-  but **only after the Bearer [REDACTED] passes**.
-- **Check order on hosted endpoints (no oracle): Bearer [REDACTED] §4.2, then session
+  but **only after the bearer-grant check passes**.
+- **Check order on hosted endpoints (no oracle): bearer-grant gate (see §4.2), then session
   existence, then deck scope (§4.4).** Reason: the current 404 body echoes the
   presented session id plus `instanceId`/`startedAt`
   (`packages/backend/src/mcp-server.ts`, `sendSessionExpired`), so answering
@@ -184,7 +195,7 @@ fixture: `docs/decisions/fixtures/personal-cloud-auth-contract.examples.json`.
   dead session ids and harvest instance metadata. In hosted mode an
   unauthenticated request with an unknown session id therefore gets `401
   GRANT_REQUIRED` (fixture `authOrder` case), never the 404. Local loopback
-  mode keeps the current order (no Bearer [REDACTED] configured).
+  mode keeps the current order (no bearer-grant gate configured).
 - A follow-up that changes nothing (same bearer, same deck header) is a
   no-op revalidation: it must not rotate sessions, reset leases, or log
   secrets.
@@ -214,7 +225,7 @@ fixture: `docs/decisions/fixtures/personal-cloud-auth-contract.examples.json`.
   switch is denied (session stays on its current deck) rather than widening
   the grant. `get_decks` enumeration stays scoped to the session's active
   deck exactly as NOT-203 ships it; the grant allowlist does not add a
-  second directory. Bearer [REDACTED] which decks a session may see; the human-approved
+  second directory. The bearer-grant gate decides which decks a session may see; the human-approved
   switch selects among them. It never widens them.
 
 ### 4.5 Revocation of existing sessions
@@ -236,14 +247,9 @@ fixture: `docs/decisions/fixtures/personal-cloud-auth-contract.examples.json`.
   `authenticateLaunchDeck` / `requireFollowUpDeckHeader` behave today.
   `stdio → mcp-launch → local HTTP` sessions must not require remote bearer
   grants — local-first stays zero-friction.
-- The bearer requirement activates on non-loopback exposure: when the MCP
-  port is bound to a public interface (or behind TLS termination for the
-  hosted appliance), every request without a valid bearer fails per §4.2,
-  even with a correct deck header. **Superseded by the hosted-mode flag
-  below: peer-address detection is NOT the trigger.**
-- The Bearer [REDACTED] activates **only** via an explicit hosted-mode setting,
+- The bearer-grant gate activates **only** via an explicit hosted-mode setting,
   `AGENT_DECK_MCP_REQUIRE_BEARER=1` (NOT-318 implements it): when set, every
-  `/mcp` request requires a valid Bearer [REDACTED] §4.2 **regardless of peer
+  `/mcp` request requires a valid grant secret (see §4.2) **regardless of peer
   address**. Peer-address detection is explicitly rejected as the trigger,
   because the standard appliance setup (Caddy/nginx terminating TLS and
   forwarding to loopback) makes all internet traffic arrive over loopback:
@@ -251,7 +257,7 @@ fixture: `docs/decisions/fixtures/personal-cloud-auth-contract.examples.json`.
   header alone, preserving the current trust-the-header model on a public
   endpoint. `X-Forwarded-For` / `X-Forwarded-Proto` are never trusted for
   auth decisions (client-spoofable).
-- Appliance deployment MUST set `AGENT_DECK_MCP_REQUIRE_Bearer [REDACTED] local
+- Appliance deployment MUST set `AGENT_DECK_MCP_REQUIRE_BEARER=1`; the local
   launcher (`agent-deck mcp-launch`, `AGENT_DECK_HOST` default `127.0.0.1`)
   never sets it, so loopback sessions stay bearer-free with zero config
   change. The flag defaults to unset (local behavior today); there is no
@@ -356,7 +362,10 @@ forbid web-fetching Linear URLs, so the NOT-318 description and relations
 could **not** be read here. No repo-local NOT-318 spec exists either (only
 this ADR references it). The comparison MUST be completed by the
 coordinator/operator before NOT-318 starts — flagged explicitly here, not
-silently skipped. No update is needed *provided* NOT-318
+silently skipped. **Waiver:** AC7 stays open until the coordinator either
+performs that comparison against NOT-318 as written (updating it or
+confirming it matches) or records an explicit human waiver. No update is
+needed *provided* NOT-318
 already assumes (a) opaque per-agent bearer grants, (b) the deck header as
 request-only, (c) loopback launcher compatibility, and (d) single-owner
 scope, plus the four assumptions NEW or changed since the last round:
@@ -371,10 +380,15 @@ split into the §7 child scope, not ride inside NOT-318.
 ## 9. Verification performed here (and what runs later)
 
 - Targeted test: `personal-cloud-auth-contract.examples.test.ts` asserts the
-  fixture is self-consistent (uniform §4.2 401 envelope, no secret/deck
+  fixture is self-consistent (uniform §4.2 401 envelope plus the constant
+  `WWW-Authenticate: Bearer` challenge, no secret/deck
   detail leakage, deck-selection 403 only post-auth, bearer-before-404
   `authOrder` case from §4.3). Run:
   `npm --workspace @agent-deck/backend run test -- personal-cloud-auth-contract`
+- Text integrity: `grep -c REDACTED` returns 0 for this ADR, the test, and
+  the fixture — the nine normative sentences a prior scrubber pass had
+  replaced with a literal token now use the hyphenated `bearer-grant …`
+  form (§4.3 check order, §4.4 allowlist gate, §4.6 hosted-mode trigger).
 - Docs link check: every relative link in this ADR and the three updated
   product docs was resolved against the tree (see handoff; CI docs checks
   own the rest).
@@ -392,7 +406,8 @@ split into the §7 child scope, not ride inside NOT-318.
   C3/C4/C9, [2026-09-20-session-deck-switching-redesign.md](../superpowers/specs/2026-09-20-session-deck-switching-redesign.md).
 - Probe evidence: `curl -sI` against the three official doc URLs returned
   empty under sandbox network restriction on 2026-10-03, re-confirmed
-  2026-10-04 (`Could not resolve host`; escalated execution forbidden by
+  2026-10-03 (`curl: (6) Could not resolve host`, `curl -sS` exit 6;
+  escalated execution forbidden by
   launch policy, so no official section-2 URL was inspected in-session.
   The source-status key and the section-2.1 preflight (P1-P4) below carry
   the operator verification path (a NOT-318 preflight step, not a V1 blocker). The frozen
@@ -401,7 +416,8 @@ split into the §7 child scope, not ride inside NOT-318.
   not assumed from memory.
 - Design-source substitution: the ticket names
   `docs/superpowers/specs/2026-10-02-personal-cloud-agent-deck-design.md`
-  (R1, section 2, section 5), but that file does not exist at this head
-  (verified by directory listing on 2026-10-04). This ADR was reconciled
-  against the ticket text instead; if the spec lands, NOT-318 must reconcile
+  (R1, section 2, section 5), but that file does not exist at this head.
+  This ADR was reconciled
+  against the ticket text instead (design-source file absent, verified by
+  directory listing on 2026-10-03); if the spec lands, NOT-318 must reconcile
   it against sections 4-6 here and flag divergences.

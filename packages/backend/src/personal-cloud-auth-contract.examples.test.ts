@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 type Example = {
   case: string;
   request: { method: string; path: string; authorization: string | null; deckHeader: string | null };
-  response: { http: number; jsonrpc?: string; error?: { code: number; message: string }; id?: null; deck?: string };
+  response: { http: number; headers?: Record<string, string>; jsonrpc?: string; error?: { code: number; message: string }; id?: null; deck?: string };
   sessionResult?: string;
   note?: string;
 };
@@ -44,6 +44,17 @@ describe('personal-cloud V1 wire-contract fixture (NOT-56)', () => {
     }
   });
 
+  it('sends one constant challenge header on every 401 (no grant state)', () => {
+    const all = [...fixture.authFailures, ...fixture.deckSelection, ...fixture.authOrder];
+    for (const example of all) {
+      if (example.response.http !== 401) continue;
+      expect(example.response.headers).toEqual({
+        'www-authenticate': 'Bearer',
+      });
+    }
+    expect(all.some((e) => e.response.http === 401)).toBe(true);
+  });
+
   it('leaks no grant state or deck detail in any failure body', () => {
     // Responses only: requests legitimately carry example secrets.
     const serialized = JSON.stringify(fixture.authFailures.map((e) => e.response));
@@ -69,7 +80,7 @@ describe('personal-cloud V1 wire-contract fixture (NOT-56)', () => {
     expect(denied?.response.error?.message).toBe('RESOURCE_OUT_OF_SCOPE');
   });
 
-  it('checks the Bearer [REDACTED] an unknown session id never reaches the 404 oracle', () => {
+  it('checks the bearer-grant gate: an unknown session id never reaches the 404 oracle', () => {
     const order = fixture.authOrder.find((e) => e.case === 'unknown-session-without-credential');
     expect(order?.request.authorization).toBeNull();
     expect(order?.response.http).toBe(401);

@@ -115,7 +115,7 @@ Per the docs [Maintenance rule](./README.md#maintenance) ("no new top-level file
 |-----|-------|--------|
 | `DOCUMENTATION_PLAN.md` (root) | Tombstone superseded by docs/README.md | **Delete** |
 | [decisions/installation-no-bypass.md](./decisions/installation-no-bypass.md) | "Proposed", premised on removed `deck.yaml` | Annotate: superseded by session binding (MVP as-built notes) |
-| [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) / [OAUTH_REQUIREMENTS.md](./OAUTH_REQUIREMENTS.md) | Present hosting as the product path | Annotate header: local-only per D2 + Stytch ADR; hosted sections are archive |
+| [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) / [OAUTH_REQUIREMENTS.md](./OAUTH_REQUIREMENTS.md) | Presented hosting as the product path | Done (2026-10): scope headers added — personal hosted appliance is supported work per the NOT-56 ADR §6; only managed/shared multi-user SaaS sections stay archive |
 | [MCP_INTEGRATION_STRATEGY.md](./MCP_INTEGRATION_STRATEGY.md) | Stale "tokens in SQLite plaintext" line | Fix line (tokens are in Keychain) |
 | `packages/mcp-app/` | Ghost package, empty src | Delete (Cut list) |
 | agent-dealer `docs/PRD_V0.md` | US-1 auto-enqueue, Monaco, palette contradicted by as-built | Annotate stale sections; LINEAR_INTEGRATION / DATA_MODEL / cursor rules win |
