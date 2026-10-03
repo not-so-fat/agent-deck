@@ -51,14 +51,19 @@ function terminalStatusCopy(status: string): string {
 
 function successCopy(resolution: Resolution): string {
   const deck = resolution.deckName ? ` “${resolution.deckName}”` : "";
+  const hasWorkspace = Boolean(resolution.workspaceRoot?.trim());
   if (resolution.decision === "session") {
-    return `Approved for this session only. This session now uses${deck}. The workspace default was not changed.`;
+    return hasWorkspace
+      ? `Approved for this session only. This session now uses${deck}. The workspace default was not changed.`
+      : `Approved for this session only. This session now uses${deck}. The agent's configured default was not changed.`;
   }
   if (resolution.decision === "workspace-default") {
     const where = resolution.workspaceRoot ? ` in ${resolution.workspaceRoot}` : "";
     return `Approved. Future sessions${where} will use${deck} as the new default. This session was switched too.`;
   }
-  return "Declined. Nothing was changed — the session and workspace default are untouched.";
+  return hasWorkspace
+    ? "Declined. Nothing was changed — the session and workspace default are untouched."
+    : "Declined. Nothing was changed — the session and the agent's configured default are untouched.";
 }
 
 export default function DeckSwitchApprovePage() {
@@ -167,6 +172,9 @@ export default function DeckSwitchApprovePage() {
   const currentDeck = detail?.currentDeckName ?? detail?.currentDeckId;
   const requestedDeck = detail?.requestedDeckName ?? detail?.requestedDeckId;
   const sessionLabel = runtimeSessionId || detail?.runtimeSessionId;
+  // NOT-298: launch/remote sessions store no workspaceRoot — workspace-default
+  // cannot succeed, so do not offer an unusable action.
+  const canSetWorkspaceDefault = Boolean(detail?.workspaceRoot?.trim());
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-muted/30">
@@ -174,8 +182,9 @@ export default function DeckSwitchApprovePage() {
         <CardHeader>
           <CardTitle>Approve deck switch</CardTitle>
           <CardDescription>
-            Choose whether the requested deck applies to this session only or becomes the workspace
-            default. Declining leaves everything unchanged.
+            {canSetWorkspaceDefault
+              ? "Choose whether the requested deck applies to this session only or becomes the workspace default. Declining leaves everything unchanged."
+              : "Choose whether the requested deck applies to this session only, or decline. This session has no writable workspace default."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -239,14 +248,16 @@ export default function DeckSwitchApprovePage() {
               >
                 {deciding === "session" ? "Approving…" : "This session only"}
               </Button>
-              <Button
-                onClick={() => void resolve("workspace-default")}
-                disabled={busy}
-                variant="secondary"
-                className="w-full"
-              >
-                {deciding === "workspace-default" ? "Approving…" : "This workspace by default"}
-              </Button>
+              {canSetWorkspaceDefault ? (
+                <Button
+                  onClick={() => void resolve("workspace-default")}
+                  disabled={busy}
+                  variant="secondary"
+                  className="w-full"
+                >
+                  {deciding === "workspace-default" ? "Approving…" : "This workspace by default"}
+                </Button>
+              ) : null}
               <Button
                 onClick={() => void resolve("decline")}
                 disabled={busy}

@@ -4,9 +4,11 @@
  * Presentation order (deck-switching redesign spec 2.3): host-native MCP
  * form first, bootstrapped browser approval second, menubar pending-request
  * recovery third. This adapter is the first surface: after `switch_deck`
- * creates a pending request, it presents one choice — This session only,
- * This workspace by default, or Decline — through the host's structured
- * input UI when the connected client advertises form elicitation.
+ * creates a pending request, it presents This session only, Decline, and —
+ * when the request carries a workspaceRoot — This workspace by default,
+ * through the host's structured input UI when the connected client
+ * advertises form elicitation. Launch/remote sessions without a writable
+ * workspace omit the workspace-default choice (NOT-298).
  *
  * Design notes:
  * - The adapter is transport-agnostic and SDK-free: capability detection
@@ -50,6 +52,24 @@ export const DECK_SWITCH_SCOPE_LABELS: Record<DeckSwitchApprovalScope, string> =
   'workspace-default': 'This workspace by default',
   decline: 'Decline',
 };
+
+/**
+ * NOT-298: workspace-default is only offered when the pending request has a
+ * writable workspaceRoot. Launch/remote sessions without one get session +
+ * decline only — the approval API still rejects a forged workspace-default.
+ */
+export function deckSwitchHasWorkspaceRoot(creation: DeckSwitchCreationResult): boolean {
+  return typeof creation.workspaceRoot === 'string' && creation.workspaceRoot.trim().length > 0;
+}
+
+export function deckSwitchApprovalScopes(
+  creation: DeckSwitchCreationResult,
+): DeckSwitchApprovalScope[] {
+  if (deckSwitchHasWorkspaceRoot(creation)) {
+    return ['session', 'workspace-default', 'decline'];
+  }
+  return ['session', 'decline'];
+}
 
 export type ElicitationAction = 'accept' | 'decline' | 'cancel';
 
@@ -113,7 +133,7 @@ export function supportsFormElicitation(capabilities: unknown): boolean {
  * Build the `elicitation/create` form params for one pending request.
  * The message reuses the creation response's display-safe labels; the
  * schema carries only the opaque request id (as the default) and the
- * scope enum with all three human labels. No URLs, no secrets.
+ * scope enum with the applicable human labels. No URLs, no secrets.
  */
 export function buildDeckSwitchElicitationInput(creation: DeckSwitchCreationResult): {
   message: string;
@@ -124,6 +144,8 @@ export function buildDeckSwitchElicitationInput(creation: DeckSwitchCreationResu
   const requested = typeof creation.requestedDeckName === 'string' ? creation.requestedDeckName : 'requested deck';
   const body = typeof creation.presentation?.body === 'string' ? creation.presentation.body : null;
   const message = body ?? `Agent requested a deck switch from "${current}" to "${requested}". The active deck is unchanged until a human approves.`;
+  const scopes = deckSwitchApprovalScopes(creation);
+  const hasWorkspace = deckSwitchHasWorkspaceRoot(creation);
   return {
     message,
     requestedSchema: {
@@ -138,13 +160,11 @@ export function buildDeckSwitchElicitationInput(creation: DeckSwitchCreationResu
         scope: {
           type: 'string',
           title: 'Approval scope',
-          description: `Approve the switch to "${requested}" for this session only or as the workspace default, or decline it.`,
-          enum: ['session', 'workspace-default', 'decline'],
-          enumNames: [
-            DECK_SWITCH_SCOPE_LABELS.session,
-            DECK_SWITCH_SCOPE_LABELS['workspace-default'],
-            DECK_SWITCH_SCOPE_LABELS.decline,
-          ],
+          description: hasWorkspace
+            ? `Approve the switch to "${requested}" for this session only or as the workspace default, or decline it.`
+            : `Approve the switch to "${requested}" for this session only, or decline it. This session has no writable workspace default.`,
+          enum: [...scopes],
+          enumNames: scopes.map((scope) => DECK_SWITCH_SCOPE_LABELS[scope]),
         },
       },
       required: ['requestId', 'scope'],
@@ -161,6 +181,9 @@ export function buildCancelRecoveryPayload(creation: DeckSwitchCreationResult): 
   const requestId = String(creation.requestId ?? '');
   const current = typeof creation.currentDeckName === 'string' ? creation.currentDeckName : 'current deck';
   const requested = typeof creation.requestedDeckName === 'string' ? creation.requestedDeckName : 'requested deck';
+  const scopeHint = deckSwitchHasWorkspaceRoot(creation)
+    ? '"This session only" or "This workspace by default"'
+    : '"This session only"';
   return {
     requestId,
     status: 'pending',
@@ -170,9 +193,8 @@ export function buildCancelRecoveryPayload(creation: DeckSwitchCreationResult): 
     channel: 'browser',
     message:
       `Approval dismissed with no decision. Request ${requestId} is still pending and the active deck ` +
-      `("${current}") is unchanged. Approve the switch to "${requested}" ("This session only" or ` +
-      `"This workspace by default") or decline it from the browser approval page or the menubar ` +
-      `pending-requests inbox.`,
+      `("${current}") is unchanged. Approve the switch to "${requested}" (${scopeHint}) or decline it ` +
+      `from the browser approval page or the menubar pending-requests inbox.`,
   };
 }
 

@@ -65,6 +65,20 @@ describe("DeckSwitchApprovePage", () => {
     expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
   });
 
+  it("NOT-298: omits workspace-default when the request has no workspaceRoot", async () => {
+    const { workspaceRoot: _omit, ...remoteDetail } = DETAIL;
+    mockPendingDetail(remoteDetail);
+    render(<DeckSwitchApprovePage />);
+
+    expect(await screen.findByRole("button", { name: "This session only" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "This workspace by default" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/no writable workspace default/i)).toBeInTheDocument();
+    expect(screen.queryByText("/work/ws")).not.toBeInTheDocument();
+  });
+
   it("says the workspace default was not changed after session-only approval", async () => {
     mockPendingDetail();
     apiRequestMock.mockImplementation(async (method: string, url: string) => {
@@ -87,6 +101,26 @@ describe("DeckSwitchApprovePage", () => {
       "/api/trusted-session/deck-switch/req_1/resolve",
       { runtimeSessionId: "sess_1", decision: "session" },
     );
+  });
+
+  it("NOT-298: session-only success omits workspace-default wording without workspaceRoot", async () => {
+    const { workspaceRoot: _omit, ...remoteDetail } = DETAIL;
+    mockPendingDetail(remoteDetail);
+    apiRequestMock.mockImplementation(async (method: string) => {
+      if (method === "GET") {
+        return jsonResponse({ success: true, data: remoteDetail });
+      }
+      return jsonResponse({
+        success: true,
+        data: { requestId: "req_1", decision: "session", status: "consumed", deckId: "deck-b", deckName: "Beta" },
+      });
+    });
+    render(<DeckSwitchApprovePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "This session only" }));
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("agent's configured default was not changed");
+    expect(status.textContent).not.toMatch(/workspace default/i);
   });
 
   it("says future sessions use the new default after workspace-default approval", async () => {
