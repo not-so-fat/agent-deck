@@ -274,6 +274,56 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     expect(contextA.data.display_summary).not.toBe(contextB.data.display_summary);
   });
 
+  it('NOT-298: changing agent A launch header leaves live agent B default unchanged', async () => {
+    const { backendUrl, db, deckAlpha } = await buildListeningBackend();
+    const deckBeta = await db.createDeck({ name: 'beta' });
+    const deckGamma = await db.createDeck({ name: 'gamma' });
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const headersB = { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id };
+    const headersAUpdated = { [AGENT_DECK_DECK_ID_HEADER]: deckGamma.id };
+    const sessionA = await openSession(started.port, 1, headersA);
+    const sessionB = await openSession(started.port, 10, headersB);
+
+    const contextBBefore = await callToolMcpResult(
+      started.port,
+      sessionB,
+      'get_session_context',
+      {},
+      11,
+      headersB,
+    );
+    expect(contextBBefore.isError).toBe(false);
+    expect(contextBBefore.data.effective_deck_id).toBe(deckBeta.id);
+
+    // Agent A's durable default is the connector header, not a server-side store.
+    // A new session with A's updated header must not rebind B, and A's live
+    // session keeps the header it connected with.
+    const sessionAUpdated = await openSession(started.port, 20, headersAUpdated);
+    const [contextALive, contextAUpdated, contextBAfter] = await Promise.all([
+      callToolMcpResult(started.port, sessionA, 'get_session_context', {}, 2, headersA),
+      callToolMcpResult(
+        started.port,
+        sessionAUpdated,
+        'get_session_context',
+        {},
+        21,
+        headersAUpdated,
+      ),
+      callToolMcpResult(started.port, sessionB, 'get_session_context', {}, 12, headersB),
+    ]);
+
+    expect(contextALive.isError).toBe(false);
+    expect(contextALive.data.effective_deck_id).toBe(deckAlpha.id);
+    expect(contextAUpdated.isError).toBe(false);
+    expect(contextAUpdated.data.effective_deck_id).toBe(deckGamma.id);
+    expect(contextBAfter.isError).toBe(false);
+    expect(contextBAfter.data.effective_deck_id).toBe(deckBeta.id);
+    expect(contextBAfter.data.display_summary).toBe(contextBBefore.data.display_summary);
+  });
+
   it('unassigned session returns GRANT_REQUIRED with no deck metadata', async () => {
     const { backendUrl } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
