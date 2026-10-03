@@ -2,16 +2,17 @@
 
 **Read this first** if OAuth, Slack, HTTPS, or “local vs hosted” has been confusing. **Product requirements & Stytch feasibility:** [OAUTH_REQUIREMENTS.md](./OAUTH_REQUIREMENTS.md). Detailed Slack steps: [SLACK_OAUTH_APP.md](./SLACK_OAUTH_APP.md). Integration tiers: [MCP_INTEGRATION_STRATEGY.md](./MCP_INTEGRATION_STRATEGY.md).
 
-> **Product scope (2026-07):** Local-first, single-user per [DIRECTION.md](./DIRECTION.md). Hosted / managed OAuth paths below are **archive** — see [decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md).
+> **Product scope (2026-10):** Local-first, single-user per [DIRECTION.md](./DIRECTION.md). A **personal hosted appliance** (single owner, self-operated) is supported work under the frozen V1 auth contract — see [decisions/personal-cloud-auth-contract.md](./decisions/personal-cloud-auth-contract.md). **Managed multi-user SaaS** remains out of scope: no public signup, invitations, billing, or quotas; friends deploy isolated copies. Managed/shared OAuth paths below unrelated to the personal appliance remain **archive** — see [decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md).
 
 ## What Agent Deck is today
 
 | Mode | Who runs it | Dashboard | OAuth callback | Best for |
 |------|-------------|-----------|----------------|----------|
 | **Local (default)** | User’s machine (`agent-deck start` or `npm run dev:all`) | Open via `agent-deck open` (listens on `127.0.0.1:1111`) or `http://localhost:3000` (dev) | `http://localhost:8000/api/oauth/callback` unless env overrides | Linear, Notion, dev, power users |
-| **Hosted (archive — not product path)** | Agent Deck team on HTTPS | `https://your-domain` | `https://your-domain/api/oauth/callback` | Shared Slack/Google apps, non-technical users |
+| **Personal appliance (supported)** | Owner-operated host (single user, per-agent bearer grants) | Owner’s HTTPS origin | Owner’s HTTPS origin | Static-header clients (Claude Code, Codex CLI) via the V1 bearer-grant contract; Grok and cloud connectors pending proof (ADR sections 2-3) |
+| **Managed SaaS (not launched)** | — | — | — | Out of scope: shared tenancy needs a separate migration |
 
-Agent Deck is **primarily a local MCP proxy**. OAuth for easy providers (Linear, Notion) works on localhost. **Slack public distribution** requires an **HTTPS** redirect on **your** server — not tunnels as the product design; you deploy Agent Deck (or at least its backend) on HTTPS.
+Agent Deck is **primarily a local MCP proxy**. OAuth for easy providers (Linear, Notion) works on localhost. **Slack public distribution** requires an **HTTPS** redirect on **your** server — not tunnels as the product design; you deploy Agent Deck (or at least its backend) on HTTPS. A personal appliance deployment authenticates static-header remote clients (Grok and cloud-connector surfaces pending their proofs) with per-agent bearer grants per [the V1 auth contract](./decisions/personal-cloud-auth-contract.md) — that path is supported; shared-tenant hosting is not.
 
 ```mermaid
 flowchart TB

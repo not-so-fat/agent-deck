@@ -1,0 +1,64 @@
+{
+  "$comment": "Machine-readable examples for docs/decisions/personal-cloud-auth-contract.md §4.2 and §4.4. Documentation fixture only — no production behavior is implemented or changed by this file.",
+  "authFailures": [
+    {
+      "case": "missing",
+      "request": { "method": "POST", "path": "/mcp", "authorization": null, "deckHeader": "deck_owner_main" },
+      "response": { "http": 401, "headers": {"www-authenticate": "Bearer"}, "jsonrpc": "2.0", "error": { "code": -32001, "message": "GRANT_REQUIRED" }, "id": null },
+      "sessionResult": "no session created on initialize; follow-up fails, transport kept"
+    },
+    {
+      "case": "invalid",
+      "request": { "method": "POST", "path": "/mcp", "authorization": "Bearer adg_unknown_wrongsecret", "deckHeader": "deck_owner_main" },
+      "response": { "http": 401, "headers": {"www-authenticate": "Bearer"}, "jsonrpc": "2.0", "error": { "code": -32001, "message": "GRANT_REQUIRED" }, "id": null },
+      "sessionResult": "same as missing"
+    },
+    {
+      "case": "expired",
+      "request": { "method": "POST", "path": "/mcp", "authorization": "Bearer adg_agent1_expiredsecret", "deckHeader": null },
+      "response": { "http": 401, "headers": {"www-authenticate": "Bearer"}, "jsonrpc": "2.0", "error": { "code": -32001, "message": "GRANT_REQUIRED" }, "id": null },
+      "sessionResult": "same as missing"
+    },
+    {
+      "case": "revoked",
+      "request": { "method": "POST", "path": "/mcp", "authorization": "Bearer adg_agent1_revokedsecret", "deckHeader": null },
+      "response": { "http": 401, "headers": {"www-authenticate": "Bearer"}, "jsonrpc": "2.0", "error": { "code": -32001, "message": "GRANT_REQUIRED" }, "id": null },
+      "sessionResult": "same as missing; established transports fail closed on next request"
+    }
+  ],
+  "deckSelection": [
+    {
+      "case": "header-without-credential",
+      "request": { "method": "POST", "path": "/mcp", "authorization": null, "deckHeader": "deck_owner_main" },
+      "response": { "http": 401, "headers": {"www-authenticate": "Bearer"}, "jsonrpc": "2.0", "error": { "code": -32001, "message": "GRANT_REQUIRED" }, "id": null },
+      "note": "deck header never authorizes on a public endpoint"
+    },
+    {
+      "case": "credential-no-header-uses-default",
+      "request": { "method": "POST", "path": "/mcp", "authorization": "Bearer adg_agent1_validsecret", "deckHeader": null },
+      "response": { "http": 200, "deck": "deck_owner_main" },
+      "note": "grant defaultDeck applies"
+    },
+    {
+      "case": "credential-allowed-header",
+      "request": { "method": "POST", "path": "/mcp", "authorization": "Bearer adg_agent1_validsecret", "deckHeader": "deck_owner_side" },
+      "response": { "http": 200, "deck": "deck_owner_side" },
+      "note": "header selects within allowedDecks (session scope only)"
+    },
+    {
+      "case": "credential-disallowed-header",
+      "request": { "method": "POST", "path": "/mcp", "authorization": "Bearer adg_agent1_validsecret", "deckHeader": "deck_someone_else" },
+      "response": { "http": 403, "jsonrpc": "2.0", "error": { "code": -32001, "message": "RESOURCE_OUT_OF_SCOPE" }, "id": null },
+      "note": "403 only reachable after successful authentication; transport kept"
+    }
+  ],
+  "authOrder": [
+    {
+      "case": "unknown-session-without-credential",
+      "request": { "method": "POST", "path": "/mcp", "authorization": null, "deckHeader": null, "mcpSessionId": "deadbeef-unknown-session" },
+      "response": { "http": 401, "headers": {"www-authenticate": "Bearer"}, "jsonrpc": "2.0", "error": { "code": -32001, "message": "GRANT_REQUIRED" }, "id": null },
+      "sessionResult": "no 404, no session metadata: bearer check runs before session-existence check on hosted endpoints",
+      "note": "prevents unauthenticated session-existence oracle and instance-metadata harvest via the NOT-101 404 body"
+    }
+  ]
+}

@@ -4,7 +4,7 @@
 
 **As-built decision (2025):** Managed Slack OAuth (Stytch broker, hosted callback, shared app one-click) is **deferred**. See [decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md) for the full spike notes and architecture. **Ship today:** auto OAuth (Linear/Notion), BYO OAuth (Slack/Google/GitHub), honest fallbacks.
 
-> **Product scope (2026-07):** Local-first, single-user per [DIRECTION.md](./DIRECTION.md). Hosted / managed OAuth paths below are **archive** — see [decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md).
+> **Product scope (2026-10):** Local-first, single-user per [DIRECTION.md](./DIRECTION.md). A **personal hosted appliance** (single owner, per-agent bearer grants) is supported work — see [decisions/personal-cloud-auth-contract.md](./decisions/personal-cloud-auth-contract.md). **Managed multi-user SaaS** (shared Slack app one-click for other people's workspaces, marketplace listing as a growth path) remains **archive** — see [decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md).
 
 **Related:** [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) (operational setup), [SLACK_OAUTH_APP.md](./SLACK_OAUTH_APP.md) (Slack app steps), [MCP_INTEGRATION_STRATEGY.md](./MCP_INTEGRATION_STRATEGY.md) (tiers and roadmap).
 
@@ -171,9 +171,9 @@ What Agent Deck must have **as a product** to make third-party MCP usable for no
 - [x] Slack managed mode when `AGENT_DECK_SLACK_*` set  
 - [x] Slack manifest + UI copy for BYO path  
 
-### 3. Slack one-click (marketplace path) — **maintainer / hosted**
+### 3. Slack one-click (marketplace path) — **maintainer / hosted — archive, not a V1 goal**
 
-These are **in addition** to Agent Deck code; they are what unlock “Connect like Cursor” for Slack:
+These are **in addition** to Agent Deck code; they are what unlock “Connect like Cursor” for Slack. They describe **managed multi-user SaaS**, which is explicitly not being launched (see scope note at top and [the personal-cloud ADR](./decisions/personal-cloud-auth-contract.md) §6). A personal appliance owner who needs Slack still uses the BYO path; nothing here is required for the V1 bearer-grant contract:
 
 | # | Requirement | Notes |
 |---|-------------|-------|

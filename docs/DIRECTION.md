@@ -26,10 +26,10 @@ The seam between them is the **learning loop**: dealer runs consume playbooks vi
 **Why:** README markets "self-improving skills" while [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md) exists specifically to say playbooks ≠ Cursor/Claude skills. A first-time user reads both and is confused within 10 minutes. "Skill" is also a loaded, host-specific term (Claude skills, Cursor skills) we don't control.
 **Action:** README, server.json, package.json descriptions say *playbooks* ("self-improving playbooks" is fine). "Skills" appears only in PLAYBOOKS_AND_SKILLS.md as the thing we're contrasted against.
 
-### D2 — Local-first, single-user; a friend runs their own copy
+### D2 — Local-first, single-user; personal hosting allowed, shared hosting deferred
 
-**Why:** The hosted/managed-OAuth path was already killed by the accepted ADR ([decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md)), but [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) still frames hosting as the product's future. Multi-tenancy (auth, key isolation, remote MCP) is an enormous design surface with zero users demanding it. "Under my control" is the product's literal promise — local keeps it true.
-**Action:** Friend onboarding = `npm i -g` + `agent-deck setup` on their machine, their own Keychain, their own decks (export/import shares deck layouts, never secrets). Annotate OAuth docs to reflect the local-only reality; hosting becomes a possible far-future ADR, not a background assumption.
+**Why:** The hosted/managed-OAuth path was already killed by the accepted ADR ([decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md)), but [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) still frames hosting as the product's future. Multi-tenancy (auth, key isolation, remote MCP) is an enormous design surface with zero users demanding it. "Under my control" is the product's literal promise — local keeps it true. Since then, NOT-56 froze the personal-cloud V1 auth contract ([decisions/personal-cloud-auth-contract.md](./decisions/personal-cloud-auth-contract.md)): a **personal hosted appliance** (single owner, self-operated, per-agent bearer grants) is now supported work. What stays deferred is **managed multi-user SaaS** — no public signup, invitations, billing, quotas, or cross-user deck sharing.
+**Action:** Friend onboarding = their own copy: `npm i -g` + `agent-deck setup` on their machine (or their own isolated appliance deployment), their own Keychain/vault, their own decks (export/import shares deck layouts, never secrets). Future shared hosting — if ever pursued — must cross replaceable identity/grant/store/vault boundaries and still requires a separate tenancy migration; see the personal-cloud ADR §6.
 
 ### D3 — The learning loop is the integration seam, and it's next after stability
 
@@ -115,7 +115,7 @@ Per the docs [Maintenance rule](./README.md#maintenance) ("no new top-level file
 |-----|-------|--------|
 | `DOCUMENTATION_PLAN.md` (root) | Tombstone superseded by docs/README.md | **Delete** |
 | [decisions/installation-no-bypass.md](./decisions/installation-no-bypass.md) | "Proposed", premised on removed `deck.yaml` | Annotate: superseded by session binding (MVP as-built notes) |
-| [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) / [OAUTH_REQUIREMENTS.md](./OAUTH_REQUIREMENTS.md) | Present hosting as the product path | Annotate header: local-only per D2 + Stytch ADR; hosted sections are archive |
+| [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) / [OAUTH_REQUIREMENTS.md](./OAUTH_REQUIREMENTS.md) | Presented hosting as the product path | Done (2026-10): scope headers added — personal hosted appliance is supported work per the NOT-56 ADR §6; only managed/shared multi-user SaaS sections stay archive |
 | [MCP_INTEGRATION_STRATEGY.md](./MCP_INTEGRATION_STRATEGY.md) | Stale "tokens in SQLite plaintext" line | Fix line (tokens are in Keychain) |
 | `packages/mcp-app/` | Ghost package, empty src | Delete (Cut list) |
 | agent-dealer `docs/PRD_V0.md` | US-1 auto-enqueue, Monaco, palette contradicted by as-built | Annotate stale sections; LINEAR_INTEGRATION / DATA_MODEL / cursor rules win |
