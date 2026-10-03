@@ -26,7 +26,7 @@ const fixture = JSON.parse(
     resolve(here, '../../../docs/decisions/fixtures/personal-cloud-auth-contract.examples.json'),
     'utf8',
   ),
-) as { authFailures: Example[]; deckSelection: Example[] };
+) as { authFailures: Example[]; deckSelection: Example[]; authOrder: Example[] };
 
 describe('personal-cloud V1 wire-contract fixture (NOT-56)', () => {
   it('covers all four credential cases', () => {
@@ -67,5 +67,13 @@ describe('personal-cloud V1 wire-contract fixture (NOT-56)', () => {
     expect(denied?.request.authorization).toBeTruthy();
     expect(denied?.response.http).toBe(403);
     expect(denied?.response.error?.message).toBe('RESOURCE_OUT_OF_SCOPE');
+  });
+
+  it('checks the Bearer [REDACTED] an unknown session id never reaches the 404 oracle', () => {
+    const order = fixture.authOrder.find((e) => e.case === 'unknown-session-without-credential');
+    expect(order?.request.authorization).toBeNull();
+    expect(order?.response.http).toBe(401);
+    expect(order?.response.error).toEqual({ code: -32001, message: 'GRANT_REQUIRED' });
+    expect(JSON.stringify(order?.response)).not.toContain('deadbeef-unknown-session');
   });
 });

@@ -9,10 +9,10 @@
 | Mode | Who runs it | Dashboard | OAuth callback | Best for |
 |------|-------------|-----------|----------------|----------|
 | **Local (default)** | User’s machine (`agent-deck start` or `npm run dev:all`) | Open via `agent-deck open` (listens on `127.0.0.1:1111`) or `http://localhost:3000` (dev) | `http://localhost:8000/api/oauth/callback` unless env overrides | Linear, Notion, dev, power users |
-| **Personal appliance (supported)** | Owner-operated host (single user, per-agent bearer grants) | Owner’s HTTPS origin | Owner’s HTTPS origin | Remote agents (Grok, Codex, Claude) via the V1 bearer-grant contract |
+| **Personal appliance (supported)** | Owner-operated host (single user, per-agent bearer grants) | Owner’s HTTPS origin | Owner’s HTTPS origin | Static-header clients (Claude Code, Codex CLI) via the V1 bearer-grant contract; Grok and cloud connectors pending proof (ADR sections 2-3) |
 | **Managed SaaS (not launched)** | — | — | — | Out of scope: shared tenancy needs a separate migration |
 
-Agent Deck is **primarily a local MCP proxy**. OAuth for easy providers (Linear, Notion) works on localhost. **Slack public distribution** requires an **HTTPS** redirect on **your** server — not tunnels as the product design; you deploy Agent Deck (or at least its backend) on HTTPS. A personal appliance deployment authenticates remote agents with per-agent bearer grants per [the V1 auth contract](./decisions/personal-cloud-auth-contract.md) — that path is supported; shared-tenant hosting is not.
+Agent Deck is **primarily a local MCP proxy**. OAuth for easy providers (Linear, Notion) works on localhost. **Slack public distribution** requires an **HTTPS** redirect on **your** server — not tunnels as the product design; you deploy Agent Deck (or at least its backend) on HTTPS. A personal appliance deployment authenticates static-header remote clients (Grok and cloud-connector surfaces pending their proofs) with per-agent bearer grants per [the V1 auth contract](./decisions/personal-cloud-auth-contract.md) — that path is supported; shared-tenant hosting is not.
 
 ```mermaid
 flowchart TB
