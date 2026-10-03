@@ -13,7 +13,10 @@ export const DEFAULT_ALLOWED_ORIGINS = [
 function resolvePort(env: NodeJS.ProcessEnv): number {
   const raw = env.PORT?.trim();
   if (raw !== undefined && raw !== '') {
-    const parsed = Number(raw);
+    // Mirror the listener in packages/backend/src/index.ts, which parses
+    // with parseInt(process.env.PORT), so CORS derives from the same port
+    // the backend actually binds (e.g. '2111abc' listens on 2111).
+    const parsed = parseInt(raw, 10);
     if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
       return parsed;
     }
@@ -21,28 +24,34 @@ function resolvePort(env: NodeJS.ProcessEnv): number {
   return DEFAULT_CORS_PORT_FALLBACK;
 }
 
-function isAllowedExtraOrigin(entry: string): boolean {
+// Validate an AGENT_DECK_DASHBOARD_ORIGIN entry and return its normalized
+// origin, or undefined when it must be ignored. Only bare http/https
+// origins (no path, query, fragment, or wildcard) are kept.
+function normalizeExtraOrigin(entry: string): string | undefined {
   if (entry === '' || entry.includes('*')) {
-    return false;
+    return undefined;
   }
   let url: URL;
   try {
     url = new URL(entry);
   } catch {
-    return false;
+    return undefined;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return false;
+    return undefined;
   }
   // No path, query, fragment, or wildcard: entry must be a bare origin.
   const afterScheme = entry.slice(entry.indexOf('://') + 3);
   if (afterScheme === '' || /[/?#]/.test(afterScheme)) {
-    return false;
+    return undefined;
   }
   if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
-    return false;
+    return undefined;
   }
-  return true;
+  // Store the normalized origin: browsers send url.origin, so a typed entry
+  // like 'HTTP://A.example' or 'http://a.example:80' would otherwise never
+  // match the incoming Origin header.
+  return url.origin;
 }
 
 export function resolveAllowedOrigins(env: NodeJS.ProcessEnv): string[] {
@@ -65,13 +74,11 @@ export function resolveAllowedOrigins(env: NodeJS.ProcessEnv): string[] {
   const rawExtra = env.AGENT_DECK_DASHBOARD_ORIGIN;
   if (rawExtra !== undefined && rawExtra !== '') {
     for (const part of rawExtra.split(',')) {
-      const entry = part.trim();
-      if (entry === '' || seen.has(entry)) {
+      const normalized = normalizeExtraOrigin(part.trim());
+      if (normalized === undefined || seen.has(normalized)) {
         continue;
       }
-      if (isAllowedExtraOrigin(entry)) {
-        push(entry);
-      }
+      push(normalized);
     }
   }
 

@@ -75,6 +75,17 @@ describe('resolveAllowedOrigins', () => {
     },
   );
 
+  it('stores extra origins normalized the way browsers send them', () => {
+    const result = resolveAllowedOrigins({
+      PORT: '2111',
+      AGENT_DECK_DASHBOARD_ORIGIN: 'HTTP://A.example, http://b.example:80',
+    } as NodeJS.ProcessEnv);
+    expect(result).toContain('http://a.example');
+    expect(result).toContain('http://b.example');
+    expect(result).not.toContain('HTTP://A.example');
+    expect(result).not.toContain('http://b.example:80');
+  });
+
   it('never contains a wildcard', () => {
     const result = resolveAllowedOrigins({
       PORT: '2111',
