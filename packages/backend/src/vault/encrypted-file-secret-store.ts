@@ -137,9 +137,19 @@ export class EncryptedFileSecretStore implements SecretStore {
     await fs.mkdir(this.secretsDir, { recursive: true, mode: 0o700 });
   }
 
-  private encrypt(plaintext: string): EnvelopeV1 {
+  /**
+   * Authenticated data binds an envelope to its account and format version, so a
+   * file copied over another account's path fails to decrypt instead of
+   * silently yielding the wrong credential.
+   */
+  private aad(account: string): Buffer {
+    return Buffer.from(`agent-deck-vault:v${FILE_VERSION}:${account}`, 'utf8');
+  }
+
+  private encrypt(account: string, plaintext: string): EnvelopeV1 {
     const nonce = randomBytes(NONCE_BYTES);
     const cipher = createCipheriv(ALGORITHM, this.key, nonce);
+    cipher.setAAD(this.aad(account));
     const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
     return {
       v: FILE_VERSION,
@@ -150,7 +160,7 @@ export class EncryptedFileSecretStore implements SecretStore {
     };
   }
 
-  private decrypt(envelope: EnvelopeV1): string {
+  private decrypt(account: string, envelope: EnvelopeV1): string {
     if (envelope?.v !== FILE_VERSION || envelope?.alg !== ALGORITHM) {
       throw new VaultDecryptionError('Unsupported vault envelope version.');
     }
@@ -160,6 +170,7 @@ export class EncryptedFileSecretStore implements SecretStore {
         this.key,
         Buffer.from(envelope.nonce, 'base64'),
       );
+      decipher.setAAD(this.aad(account));
       decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
       return (
         decipher.update(Buffer.from(envelope.ciphertext, 'base64')).toString('utf8') +
@@ -176,8 +187,8 @@ export class EncryptedFileSecretStore implements SecretStore {
   async set(account: string, value: string): Promise<void> {
     await this.ensureDir();
     const target = this.secretPath(account);
-    const tmp = `${target}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(this.encrypt(value)), {
+    const tmp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(this.encrypt(account, value)), {
       encoding: 'utf8',
       mode: 0o600,
     });
@@ -202,7 +213,7 @@ export class EncryptedFileSecretStore implements SecretStore {
     } catch {
       throw new VaultDecryptionError('Cannot decrypt the vault entry (tampered file).');
     }
-    return this.decrypt(envelope);
+    return this.decrypt(account, envelope);
   }
 
   async delete(account: string): Promise<void> {

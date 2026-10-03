@@ -88,6 +88,31 @@ describe('EncryptedFileSecretStore', () => {
     await expect(store().get('cred-1')).rejects.toBeInstanceOf(VaultDecryptionError);
   });
 
+  it('rejects an envelope copied from another account (account is authenticated)', async () => {
+    const vault = store();
+    await vault.set('cred-a', 'secret-for-a');
+    await vault.set('cred-b', 'secret-for-b');
+    await fs.copyFile(path.join(dir, 'cred-a.enc'), path.join(dir, 'cred-b.enc'));
+    await expect(vault.get('cred-b')).rejects.toBeInstanceOf(VaultDecryptionError);
+    expect(await vault.get('cred-a')).toBe('secret-for-a');
+  });
+
+  it('writes files with mode 0600 and leaves no temp files behind', async () => {
+    await store().set('cred-1', 'v');
+    const stat = await fs.stat(path.join(dir, 'cred-1.enc'));
+    expect(stat.mode & 0o777).toBe(0o600);
+    const names = await fs.readdir(dir);
+    expect(names.filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('survives concurrent writes to the same account', async () => {
+    const vault = store();
+    await Promise.all(Array.from({ length: 20 }, (_, i) => vault.set('cred-1', `value-${i}`)));
+    expect(await vault.get('cred-1')).toMatch(/^value-\d+$/);
+    const names = await fs.readdir(dir);
+    expect(names.filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('rejects path-traversal account names', async () => {
     const vault = store();
     await expect(vault.set('../escape', 'x')).rejects.toThrow(/Invalid secret account/);
