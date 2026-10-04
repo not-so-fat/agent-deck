@@ -72,9 +72,17 @@ export async function registerAgentGrantRoutes(fastify: FastifyInstance) {
       ...(expiresAt ? { expiresAt } : {}),
     });
 
+    fastify.auditStore?.append({
+      actor: 'owner',
+      event: 'grant.created',
+      targetId: issued.grant.id,
+      outcome: 'succeeded',
+      reasonCode: null,
+    });
+
     // Log the issuance by id/label only — the bearer value is never logged.
     fastify.log.info(
-      { grantId: issued.grant.id, label: issued.grant.label },
+      { grantId: issued.grant.id },
       'agent grant issued',
     );
 
@@ -101,7 +109,17 @@ export async function registerAgentGrantRoutes(fastify: FastifyInstance) {
     // grant end now (the MCP per-request revalidation is the second layer).
     const sessionsRevoked = fastify.trustedSessionStore.revokeRuntimeSessionsByGrant(id);
 
-    fastify.log.info({ grantId: id, label: existing.label, sessionsRevoked }, 'agent grant revoked');
+    if (!existing.revokedAt) {
+      fastify.auditStore?.append({
+        actor: 'owner',
+        event: 'grant.revoked',
+        targetId: id,
+        outcome: 'succeeded',
+        reasonCode: null,
+      });
+    }
+
+    fastify.log.info({ grantId: id, sessionsRevoked }, 'agent grant revoked');
 
     return reply.send({ success: true, data: { revoked: true, sessionsRevoked } });
   });

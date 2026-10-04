@@ -11,6 +11,7 @@ import { createServer } from '../server';
 import { registeredHttpRoutes, registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { TrustedSessionStore } from '../trusted-session/store';
 import { SqliteOwnerAuthProvider } from './owner-auth';
+import { AuditStore } from '../audit/store';
 import {
   registerHostedModeGuard,
   resolveHostedModeConfig,
@@ -49,6 +50,7 @@ describe('hosted owner authentication', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
     const provider = new SqliteOwnerAuthProvider(db, BOOTSTRAP_SECRET);
+    const audit = new AuditStore(db);
     const app = logs
       ? Fastify({
           logger: {
@@ -58,6 +60,7 @@ describe('hosted owner authentication', () => {
       : Fastify();
     app.decorate('trustedSessionStore', store);
     app.decorate('ownerAuthProvider', provider);
+    app.decorate('auditStore', audit);
     registerHostedModeGuard(app, { enabled: true, publicOrigin: PUBLIC_ORIGIN, now });
     registerHttpPolicyHook(app);
     app.get('/grants', async () => ({ page: 'grants' }));
@@ -65,7 +68,7 @@ describe('hosted owner authentication', () => {
     await app.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
     await app.ready();
     servers.push(app);
-    return { app, db, store, provider };
+    return { app, db, store, provider, audit };
   }
 
   async function signIn(app: Awaited<ReturnType<typeof Fastify>>, bootstrap = false) {
@@ -113,7 +116,7 @@ describe('hosted owner authentication', () => {
   });
 
   it('uses one byte-identical response for wrong credentials and unknown owners', async () => {
-    const { app } = await buildAuthApp();
+    const { app, audit } = await buildAuthApp();
     await signIn(app, true);
 
     const wrong = await app.inject({
@@ -129,6 +132,9 @@ describe('hosted owner authentication', () => {
     expect(wrong.statusCode).toBe(401);
     expect(unknown.statusCode).toBe(401);
     expect(wrong.body).toBe(unknown.body);
+    expect(JSON.stringify(audit.list({ limit: 10 }))).not.toContain('wrong-secret');
+    expect(audit.list({ limit: 10 }).filter((row) => row.event === 'owner.sign_in_failed')).toHaveLength(2);
+    expect(audit.list({ limit: 10 }).filter((row) => row.event === 'owner.sign_in_succeeded')).toHaveLength(1);
   });
 
   it('limits sign-in failures per socket client and recovers after the window', async () => {

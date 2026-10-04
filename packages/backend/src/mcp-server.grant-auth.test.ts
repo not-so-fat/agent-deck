@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_DECK_DECK_ID_HEADER } from '@agent-deck/shared';
 
 import { ClientGrantStore, parseGrantToken } from './auth/client-grants';
+import { AuditStore } from './audit/store';
 import {
   AgentDeckMCPServer,
   MCP_INITIALIZE_RATE_LIMIT,
@@ -135,11 +136,17 @@ describe('MCP remote grant authorization (NOT-318)', () => {
     const db = new Database(':memory:');
     dbs.push(db);
     const grantStore = new ClientGrantStore(db);
+    const auditStore = new AuditStore(db);
     const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1', undefined, '127.0.0.1', {
       grantStore,
+      auditStore,
       now,
     });
-    return { server: server as unknown as McpServerInternals & { [k: string]: unknown }, grantStore };
+    return {
+      server: server as unknown as McpServerInternals & { [k: string]: unknown },
+      grantStore,
+      auditStore,
+    };
   }
 
   /** Stub the backend connect-deck + runtime-session endpoints. */
@@ -236,7 +243,7 @@ describe('MCP remote grant authorization (NOT-318)', () => {
   });
 
   it('returns byte-identical 401 bodies for every credential failure (no oracle)', async () => {
-    const { server, grantStore } = buildServer();
+    const { server, grantStore, auditStore } = buildServer();
     stubBackend();
     const issued = grantStore.issueGrant({ label: 'oracle', defaultDeck: 'deck-a' });
     const grantId = parseGrantToken(issued.token)!.grantId;
@@ -271,7 +278,7 @@ describe('MCP remote grant authorization (NOT-318)', () => {
   });
 
   it('a valid grant initializes on its default deck, then on an allowed deck', async () => {
-    const { server, grantStore } = buildServer();
+    const { server, grantStore, auditStore } = buildServer();
     stubBackend();
     const { established } = fakeTransport(server as McpServerInternals & { [k: string]: unknown });
     const issued = grantStore.issueGrant({
@@ -292,6 +299,10 @@ describe('MCP remote grant authorization (NOT-318)', () => {
     });
     expect(established).toHaveLength(2);
     expect(server.sessionBinding.getBinding(established[1]).deckId).toBe('deck-b');
+    expect(auditStore.list({ limit: 10 })).toMatchObject([
+      { actor: issued.grant.id, event: 'grant.used', targetId: 'invalid-deck-id', outcome: 'succeeded' },
+      { actor: issued.grant.id, event: 'grant.used', targetId: 'invalid-deck-id', outcome: 'succeeded' },
+    ]);
     void onDefault;
     void onAllowed;
   });
@@ -336,7 +347,7 @@ describe('MCP remote grant authorization (NOT-318)', () => {
   });
 
   it('two grants with different scopes each bind only their own decks', async () => {
-    const { server, grantStore } = buildServer();
+    const { server, grantStore, auditStore } = buildServer();
     stubBackend();
     const { established } = fakeTransport(server as McpServerInternals & { [k: string]: unknown });
     const grantA = grantStore.issueGrant({ label: 'a', defaultDeck: 'deck-a' });
@@ -353,6 +364,15 @@ describe('MCP remote grant authorization (NOT-318)', () => {
     });
     expect(denied.status).toBe(403);
     expect(denied.body).toMatchObject({ error: { message: 'RESOURCE_OUT_OF_SCOPE' } });
+    expect(auditStore.list({ limit: 10 })).toMatchObject([
+      {
+        actor: grantA.grant.id,
+        event: 'deck.selection_denied',
+        targetId: 'invalid-deck-id',
+        outcome: 'denied',
+        reasonCode: 'resource_out_of_scope',
+      },
+    ]);
 
     const allowed = await postMcp(server, initializeBody(2), {
       authorization: `Bearer ${grantB.token}`,
@@ -399,6 +419,43 @@ describe('MCP remote grant authorization (NOT-318)', () => {
     expect(server.sessionBinding.getBinding(sessionId).deckId).toBe('deck-a');
     void forged;
     void legit;
+  });
+
+  it('never copies bearer or tool-payload sentinels into audit rows', async () => {
+    const { server, grantStore, auditStore } = buildServer();
+    stubBackend();
+    const { established } = fakeTransport(server as McpServerInternals & { [k: string]: unknown });
+    const issued = grantStore.issueGrant({ label: 'redaction', defaultDeck: 'deck-a' });
+    const payloadSentinel = 'SENTINEL_TOOL_PAYLOAD_DO_NOT_STORE';
+    const headerSentinel = 'SENTINEL_HEADER_DO_NOT_STORE';
+    const auth = { authorization: `Bearer ${issued.token}` };
+    await postMcp(server, initializeBody(1), auth);
+    await postMcp(
+      server,
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'probe', arguments: { secret: payloadSentinel } },
+      },
+      { ...auth, 'mcp-session-id': established[0] },
+    );
+    await postMcp(
+      server,
+      { jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} },
+      {
+        ...auth,
+        'mcp-session-id': established[0],
+        [AGENT_DECK_DECK_ID_HEADER]: headerSentinel,
+      },
+    );
+
+    const serialized = JSON.stringify(auditStore.list({ limit: 10 }));
+    expect(serialized).not.toContain(issued.token);
+    expect(serialized).not.toContain(auth.authorization);
+    expect(serialized).not.toContain(payloadSentinel);
+    expect(serialized).not.toContain(headerSentinel);
+    expect(auditStore.list({ limit: 10 }).filter((row) => row.event === 'grant.used')).toHaveLength(1);
   });
 
   it('revocation invalidates a live session on its next request', async () => {
