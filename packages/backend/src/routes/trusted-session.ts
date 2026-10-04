@@ -734,6 +734,15 @@ export async function registerDashboardAuthRoutes(fastify: FastifyInstance) {
   const hostedCookie = (token: string, maxAgeSeconds: number) =>
     `${AGENT_DECK_DASHBOARD_COOKIE}=${encodeURIComponent(token)}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}`;
 
+  // Authenticated dashboard capability discovery. The Grants navigation and
+  // page use this rather than inferring deployment mode from the browser URL.
+  fastify.get('/context', async (_request, reply) => {
+    return reply.send({
+      success: true,
+      data: { hosted: process.env.AGENT_DECK_HOSTED_MODE === '1' },
+    });
+  });
+
   fastify.post<{
     Body: { owner?: unknown; credential?: unknown; bootstrapSecret?: unknown };
   }>('/sign-in', async (request, reply) => {

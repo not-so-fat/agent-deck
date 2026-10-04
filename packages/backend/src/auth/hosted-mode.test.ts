@@ -60,6 +60,7 @@ describe('hosted owner authentication', () => {
     app.decorate('ownerAuthProvider', provider);
     registerHostedModeGuard(app, { enabled: true, publicOrigin: PUBLIC_ORIGIN, now });
     registerHttpPolicyHook(app);
+    app.get('/grants', async () => ({ page: 'grants' }));
     app.post('/api/feedback-signals/discard', async () => ({ success: true }));
     await app.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
     await app.ready();
@@ -101,6 +102,14 @@ describe('hosted owner authentication', () => {
       },
     });
     expect(secondOwner.statusCode).toBe(401);
+  });
+
+  it('returns 401 for the Grants page without an owner session', async () => {
+    const { app } = await buildAuthApp();
+    const response = await app.inject({ method: 'GET', url: '/grants' });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ success: false, error: 'Sign-in required' });
   });
 
   it('uses one byte-identical response for wrong credentials and unknown owners', async () => {

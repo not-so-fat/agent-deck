@@ -29,6 +29,7 @@ import { ClientGrantStore } from './auth/client-grants';
 import { AgentDeckMCPServer, MCP_REQUIRE_BEARER_ENV_VAR } from './mcp-server';
 import { DatabaseManager } from './models/database';
 import { registerCredentialRoutes } from './routes/credentials';
+import { registerAgentGrantRoutes } from './routes/agent-grants';
 import { registerDeckRoutes } from './routes/decks';
 import { registerPlaybookRoutes } from './routes/playbooks';
 import { registerScopeRoutes } from './routes/scope';
@@ -37,6 +38,7 @@ import { registerTrustedSessionRoutes } from './routes/trusted-session';
 import type { ServiceManager } from './services/service-manager';
 import { TrustedSessionStore } from './trusted-session/store';
 import { registerHttpPolicyHook } from './trusted-session/policy-hook';
+import { dashboardAuthHeaders } from './test/auth-fixtures';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
 
@@ -222,6 +224,7 @@ async function buildListeningBackend(grantDb: Database.Database): Promise<Confor
   });
   await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
   await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
+  await fastify.register(registerAgentGrantRoutes, { prefix: '/api' });
   await fastify.listen({ port: 0, host: '127.0.0.1' });
 
   const address = fastify.server.address();
@@ -387,6 +390,46 @@ describe('MCP remote grant conformance over real HTTP (NOT-318)', () => {
     expect(boundB.status).toBe(200);
     expect(boundB.isError).toBe(false);
     expect(boundB.data.id).toBe(backend.deckB.id);
+  });
+
+  it('revoking through the owner API makes the next /mcp request fail with GRANT_REQUIRED', async () => {
+    const { backend, port } = await setup();
+    const issued = backend.grantStore.issueGrant({
+      label: 'revoke-over-api',
+      defaultDeck: backend.deckA.id,
+    });
+    const auth = { authorization: `Bearer ${issued.token}` };
+    const initialized = await postInitialize(port, auth, 20);
+    expect(initialized.status).toBe(200);
+    await initialized.json();
+    const sessionId = initialized.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const revoke = await fetch(
+      `${backend.backendUrl}/api/agent-grants/${issued.grant.id}/revoke`,
+      { method: 'POST', headers: dashboardAuthHeaders(backend.store) },
+    );
+    expect(revoke.status).toBe(200);
+
+    const after = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId!,
+        ...auth,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 21,
+        method: 'tools/list',
+        params: {},
+      }),
+    });
+    expect(after.status).toBe(401);
+    await expect(after.json()).resolves.toMatchObject({
+      error: { message: 'GRANT_REQUIRED' },
+    });
   });
 
   it('denies an out-of-scope deck header and a forged switch without moving the binding', async () => {

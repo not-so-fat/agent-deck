@@ -8,9 +8,11 @@ import {
 } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
+import { ClientGrantStore } from '../auth/client-grants';
 import { PatchManager } from '../playbooks/patch-manager';
 import { PlaybookManager } from '../playbooks/playbook-manager';
 import { registerDeckRoutes } from '../routes/decks';
+import { registerAgentGrantRoutes } from '../routes/agent-grants';
 import { registerPlaybookPatchRoutes } from '../routes/playbook-patches';
 import { registerPlaybookRoutes } from '../routes/playbooks';
 import { registerServiceRoutes } from '../routes/services';
@@ -55,6 +57,7 @@ describe('trusted session auth matrix (§8)', () => {
 
     const playbookManager = new PlaybookManager(db);
     const patchManager = new PatchManager(db, playbookManager);
+    const grantStore = new ClientGrantStore(db.getSqliteDatabase());
 
     const fastify = Fastify();
     fastify.decorate('db', db);
@@ -74,6 +77,7 @@ describe('trusted session auth matrix (§8)', () => {
     });
     fastify.decorate('playbookManager', playbookManager);
     fastify.decorate('patchManager', patchManager);
+    fastify.decorate('grantStore', grantStore);
 
     registerHttpPolicyHook(fastify);
     await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
@@ -82,6 +86,7 @@ describe('trusted session auth matrix (§8)', () => {
     await fastify.register(registerDeckRoutes, { prefix: '/api/decks', storeWriter: { writeDeck: async () => {} } });
     await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
     await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
+    await fastify.register(registerAgentGrantRoutes, { prefix: '/api' });
     await fastify.ready();
     servers.push(fastify);
 
@@ -114,6 +119,31 @@ describe('trusted session auth matrix (§8)', () => {
       payload: { nonce: 'dashboard-test-nonce' },
     });
     expect(replay.statusCode).toBe(410);
+  });
+
+  it('returns 401 for every Grants page API without an owner session', async () => {
+    const { fastify, boundDeck } = await buildApp();
+    const create = await fastify.inject({
+      method: 'POST',
+      url: '/api/agent-grants',
+      payload: { label: 'unauthorized', defaultDeck: boundDeck.id },
+    });
+    expect(create.statusCode).toBe(401);
+
+    const list = await fastify.inject({ method: 'GET', url: '/api/agent-grants' });
+    expect(list.statusCode).toBe(401);
+
+    const revoke = await fastify.inject({
+      method: 'POST',
+      url: '/api/agent-grants/ag_missing/revoke',
+    });
+    expect(revoke.statusCode).toBe(401);
+
+    const pageContext = await fastify.inject({
+      method: 'GET',
+      url: '/api/dashboard-auth/context',
+    });
+    expect(pageContext.statusCode).toBe(401);
   });
 
   it('forged legacy deck header does not expand agent access to dashboard-only routes', async () => {
