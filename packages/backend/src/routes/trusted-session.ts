@@ -24,9 +24,14 @@ import {
   sendTrustedAuthError,
   TrustedAuthError,
 } from '../trusted-session/auth';
-import { isDashboardAuthenticated } from '../lib/dashboard-auth';
+import { isDashboardAuthenticated, parseDashboardCookie } from '../lib/dashboard-auth';
 import type { TrustedSessionStore } from '../trusted-session/store';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
+import type { OwnerAuthProvider } from '../auth/owner-auth';
+import {
+  HOSTED_DASHBOARD_ABSOLUTE_MS,
+  HOSTED_DASHBOARD_IDLE_MS,
+} from '../auth/hosted-mode';
 
 const GRANT_REQUIRED_MESSAGE = 'No deck selected for this connection';
 
@@ -726,6 +731,62 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
 export async function registerDashboardAuthRoutes(fastify: FastifyInstance) {
   const store = fastify.trustedSessionStore;
 
+  const hostedCookie = (token: string, maxAgeSeconds: number) =>
+    `${AGENT_DECK_DASHBOARD_COOKIE}=${encodeURIComponent(token)}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}`;
+
+  fastify.post<{
+    Body: { owner?: unknown; credential?: unknown; bootstrapSecret?: unknown };
+  }>('/sign-in', async (request, reply) => {
+    if (process.env.AGENT_DECK_HOSTED_MODE !== '1') {
+      return reply.status(404).send({ success: false, error: 'Not found' });
+    }
+
+    const owner = typeof request.body?.owner === 'string' ? request.body.owner : '';
+    const credential =
+      typeof request.body?.credential === 'string' ? request.body.credential : '';
+    const bootstrapSecret =
+      typeof request.body?.bootstrapSecret === 'string' ? request.body.bootstrapSecret : '';
+    let authenticated = await fastify.ownerAuthProvider.authenticate({ owner, credential });
+    if (!authenticated && bootstrapSecret) {
+      await fastify.ownerAuthProvider.bootstrap({ owner, credential, bootstrapSecret });
+      authenticated = await fastify.ownerAuthProvider.authenticate({ owner, credential });
+    }
+    if (!authenticated) {
+      return reply.status(401).send({ success: false, error: 'Invalid owner credentials' });
+    }
+
+    const token = store.createDashboardSession({
+      idleMs: HOSTED_DASHBOARD_IDLE_MS,
+      absoluteMs: HOSTED_DASHBOARD_ABSOLUTE_MS,
+    });
+    reply.header(
+      'Set-Cookie',
+      hostedCookie(token, Math.floor(HOSTED_DASHBOARD_ABSOLUTE_MS / 1000)),
+    );
+    return reply.send({ success: true, data: { authenticated: true } });
+  });
+
+  fastify.post('/logout', async (request, reply) => {
+    if (process.env.AGENT_DECK_HOSTED_MODE !== '1') {
+      return reply.status(404).send({ success: false, error: 'Not found' });
+    }
+    const token = parseDashboardCookie(request);
+    if (token) {
+      store.revokeDashboardSession(token);
+    }
+    reply.header('Set-Cookie', hostedCookie('', 0));
+    return reply.send({ success: true, data: { authenticated: false } });
+  });
+
+  fastify.post('/revoke-all', async (_request, reply) => {
+    if (process.env.AGENT_DECK_HOSTED_MODE !== '1') {
+      return reply.status(404).send({ success: false, error: 'Not found' });
+    }
+    store.revokeAllDashboardSessions();
+    reply.header('Set-Cookie', hostedCookie('', 0));
+    return reply.send({ success: true, data: { authenticated: false } });
+  });
+
   fastify.post('/bootstrap/nonce', async (request, reply) => {
     try {
       await requireTrustedWriterBearer(request);
@@ -763,5 +824,6 @@ export async function registerDashboardAuthRoutes(fastify: FastifyInstance) {
 declare module 'fastify' {
   interface FastifyInstance {
     trustedSessionStore: TrustedSessionStore;
+    ownerAuthProvider: OwnerAuthProvider;
   }
 }

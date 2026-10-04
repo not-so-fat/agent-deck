@@ -25,6 +25,7 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/connect-deck$/, policy: 'allowPublic' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/mcp\/disconnect-deck$/, policy: 'allowPublic' },
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/bootstrap\/session$/, policy: 'allowPublic' },
+  { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/sign-in$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/api\/launch\/decks$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/api\/launch\/decks\/[^/]+\/playbooks$/, policy: 'allowPublic' },
   // NOT-257: canonical MCP client connection endpoint (no secrets — host/port only).
@@ -125,6 +126,8 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/local-mcp\/[^/]+\/status$/, policy: 'requireDashboard' },
   { methods: ['GET'], pattern: /^\/api\/local-mcp\/list$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/admin\/approve$/, policy: 'requireDashboard' },
+  { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/logout$/, policy: 'requireDashboard' },
+  { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/revoke-all$/, policy: 'requireDashboard' },
   {
     methods: ['POST'],
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+\/resolve$/,

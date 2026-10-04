@@ -41,6 +41,7 @@ export type DashboardSessionRow = {
   created_at: string;
   last_seen_at: string;
   expires_at: string;
+  absolute_expires_at: string | null;
 };
 
 /** Default validity of a deck-switch request (NOT-205). */
@@ -143,6 +144,7 @@ export type WorkspaceAssignmentWriter = (
 export type TrustedSessionStoreOptions = {
   workspaceAssignmentWriter?: WorkspaceAssignmentWriter;
   deckExists?: (deckId: string) => boolean;
+  now?: () => Date;
 };
 
 function useJsonPath(workspaceRoot: string): string {
@@ -319,7 +321,8 @@ export class TrustedSessionStore {
         token_hash TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
         last_seen_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL
+        expires_at TEXT NOT NULL,
+        absolute_expires_at TEXT
       );
 
       CREATE INDEX IF NOT EXISTS dashboard_sessions_expiry_idx
@@ -342,6 +345,14 @@ export class TrustedSessionStore {
         ON deck_switch_requests (runtime_session_id, requested_deck_id, status, expires_at);
     `);
     this.ensureGrantColumn();
+    this.ensureDashboardAbsoluteExpiryColumn();
+  }
+
+  private ensureDashboardAbsoluteExpiryColumn(): void {
+    const cols = this.db.pragma('table_info(dashboard_sessions)') as Array<{ name: string }>;
+    if (!cols.some((col) => col.name === 'absolute_expires_at')) {
+      this.db.exec(`ALTER TABLE dashboard_sessions ADD COLUMN absolute_expires_at TEXT`);
+    }
   }
 
   /**
@@ -532,29 +543,38 @@ export class TrustedSessionStore {
     return result.changes;
   }
 
-  createDashboardSession(): string {
+  createDashboardSession(options?: { idleMs?: number; absoluteMs?: number }): string {
     const token = randomBytes(32).toString('base64url');
-    const now = nowIso();
+    const now = (this.options?.now?.() ?? new Date()).toISOString();
+    const idleMs = options?.idleMs ?? DASHBOARD_SESSION_LEASE_MS;
+    const absoluteExpiresAt = options?.absoluteMs
+      ? addMs(now, options.absoluteMs)
+      : null;
     this.db
       .prepare(
-        `INSERT INTO dashboard_sessions (token_hash, created_at, last_seen_at, expires_at)
-         VALUES (?, ?, ?, ?)`,
+        `INSERT INTO dashboard_sessions
+         (token_hash, created_at, last_seen_at, expires_at, absolute_expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(hashDashboardSessionToken(token), now, now, addMs(now, DASHBOARD_SESSION_LEASE_MS));
+      .run(hashDashboardSessionToken(token), now, now, addMs(now, idleMs), absoluteExpiresAt);
     return token;
   }
 
-  validateAndTouchDashboardSession(token: string): boolean {
+  validateAndTouchDashboardSession(token: string, idleMs = DASHBOARD_SESSION_LEASE_MS): boolean {
     const tokenHash = hashDashboardSessionToken(token);
     const row = this.db
       .prepare(
-        `SELECT token_hash, created_at, last_seen_at, expires_at
+        `SELECT token_hash, created_at, last_seen_at, expires_at, absolute_expires_at
          FROM dashboard_sessions WHERE token_hash = ?`,
       )
       .get(tokenHash) as DashboardSessionRow | undefined;
 
-    const nowMs = Date.now();
-    if (!row || Date.parse(row.expires_at) <= nowMs) {
+    const nowMs = (this.options?.now?.() ?? new Date()).getTime();
+    if (
+      !row ||
+      Date.parse(row.expires_at) <= nowMs ||
+      (row.absolute_expires_at !== null && Date.parse(row.absolute_expires_at) <= nowMs)
+    ) {
       if (row) {
         this.db.prepare(`DELETE FROM dashboard_sessions WHERE token_hash = ?`).run(tokenHash);
       }
@@ -567,15 +587,36 @@ export class TrustedSessionStore {
         .prepare(
           `UPDATE dashboard_sessions SET last_seen_at = ?, expires_at = ? WHERE token_hash = ?`,
         )
-        .run(now, addMs(now, DASHBOARD_SESSION_LEASE_MS), tokenHash);
+        .run(
+          now,
+          row.absolute_expires_at
+            ? new Date(Math.min(Date.parse(row.absolute_expires_at), nowMs + idleMs)).toISOString()
+            : addMs(now, idleMs),
+          tokenHash,
+        );
     }
     return true;
   }
 
-  expireDashboardSessions(): number {
+  revokeDashboardSession(token: string): boolean {
     const result = this.db
-      .prepare(`DELETE FROM dashboard_sessions WHERE expires_at <= ?`)
-      .run(nowIso());
+      .prepare(`DELETE FROM dashboard_sessions WHERE token_hash = ?`)
+      .run(hashDashboardSessionToken(token));
+    return result.changes > 0;
+  }
+
+  revokeAllDashboardSessions(): number {
+    return this.db.prepare(`DELETE FROM dashboard_sessions`).run().changes;
+  }
+
+  expireDashboardSessions(): number {
+    const now = (this.options?.now?.() ?? new Date()).toISOString();
+    const result = this.db
+      .prepare(
+        `DELETE FROM dashboard_sessions
+         WHERE expires_at <= ? OR (absolute_expires_at IS NOT NULL AND absolute_expires_at <= ?)`,
+      )
+      .run(now, now);
     return result.changes;
   }
 

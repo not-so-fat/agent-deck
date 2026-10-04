@@ -40,6 +40,8 @@ import { ensureStoreReady } from '../store/startup';
 import { TrustedSessionStore } from '../trusted-session/store';
 import { ensureAdminSecret } from '../trusted-session/admin-secret';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
+import { SqliteOwnerAuthProvider } from '../auth/owner-auth';
+import { registerHostedModeGuard, resolveHostedModeConfig } from '../auth/hosted-mode';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -64,6 +66,10 @@ export async function createServer() {
   await ensureStoreReady(db);
   const secretStore = createSecretStore();
   const trustedSessionStore = new TrustedSessionStore(db.getSqliteDatabase());
+  const ownerAuthProvider = new SqliteOwnerAuthProvider(
+    db.getSqliteDatabase(),
+    process.env.AGENT_DECK_OWNER_BOOTSTRAP_SECRET,
+  );
   const grantStore = new ClientGrantStore(db.getSqliteDatabase());
   await ensureAdminSecret();
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
@@ -91,7 +97,9 @@ export async function createServer() {
 
   fastify.decorate('db', db);
   fastify.decorate('trustedSessionStore', trustedSessionStore);
+  fastify.decorate('ownerAuthProvider', ownerAuthProvider);
   fastify.decorate('grantStore', grantStore);
+  registerHostedModeGuard(fastify, resolveHostedModeConfig(process.env));
   registerHttpPolicyHook(fastify);
 
   const sweepStaleSessions = () => {
