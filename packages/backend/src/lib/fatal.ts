@@ -107,6 +107,10 @@ function writeStructuredLogSync(
 export function logFatal(label: FatalLabel, phase: string, error: unknown, fd = 1): void {
   writeStructuredLogSync('error', 'process_fatal', {
     service: label,
+    // Keep the established operator-facing diagnostic inside the structured
+    // record. The CLI supervisor copies this line verbatim into its own log,
+    // and older tooling searches it for the exit and cause markers.
+    message: formatFatalLines(label, phase, error).join('\n'),
     phase,
     exitCode: 1,
     pid: process.pid,

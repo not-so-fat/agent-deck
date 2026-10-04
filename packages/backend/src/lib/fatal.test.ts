@@ -64,7 +64,10 @@ describe('fatal logging', () => {
       logFatal('backend', 'startup failed before listening on 127.0.0.1:1111', new Error('database is locked'), fd);
       logExit('backend', 0, 'signal SIGTERM', fd);
       // No flush, no close: the bytes are already on disk.
-      const records = fs.readFileSync(logPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      const logText = fs.readFileSync(logPath, 'utf8').trim();
+      expect(logText).toContain('[agent-deck] backend exiting (code 1)');
+      expect(logText).toContain('[agent-deck] backend cause:');
+      const records = logText.split('\n').map((line) => JSON.parse(line));
       expect(records).toHaveLength(3);
       expect(records[0]).toMatchObject({
         level: 'info',
@@ -80,6 +83,8 @@ describe('fatal logging', () => {
         phase: 'startup failed before listening on 127.0.0.1:1111',
         exitCode: 1,
       });
+      expect(records[1].message).toContain('[agent-deck] backend exiting (code 1)');
+      expect(records[1].message).toContain('[agent-deck] backend cause:');
       expect(records[1].error).toContain('database is locked');
       expect(records[2]).toMatchObject({
         level: 'info',
