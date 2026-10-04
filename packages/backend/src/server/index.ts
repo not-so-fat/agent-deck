@@ -101,7 +101,13 @@ export async function createServer() {
     serviceHeaderVault,
   );
   void serviceManager.backfillMissingIcons();
-  void serviceManager.migrateSecretHeadersToVault();
+  if (secretStore instanceof UnavailableSecretStore) {
+    fastify.log.warn('secret-header migration deferred until the vault is available');
+  } else {
+    void serviceManager.migrateSecretHeadersToVault().catch((error) => {
+      fastify.log.warn({ err: error }, 'secret-header migration failed');
+    });
+  }
   const playbookManager = new PlaybookManager(db, storeWriter);
   const patchManager = new PatchManager(db, playbookManager);
   const collectionWarningService = new CollectionWarningService(oauthManager);

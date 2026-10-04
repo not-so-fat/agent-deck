@@ -1,5 +1,8 @@
 name: agent-deck
 
+# Single-replica only: the SQLite cache and live MCP sessions are host-local.
+# Keep exactly one backend and one MCP service; do not horizontally scale either role.
+
 services:
   backend:
     image: ${AGENT_DECK_IMAGE:-agent-deck:local}

@@ -29,25 +29,31 @@ must not be routed over the public internet.
 
 ## Docker Compose on a VPS
 
-Install Docker Engine with the Compose plugin, point DNS at the host, and create an `.env`
-next to `compose.yaml`:
+Install Docker Engine with the Compose plugin, clone this repository, and check out the release
+tag or commit you intend to deploy. Create an `.env` next to `compose.yaml`; use that same
+immutable tag or commit for both image variables:
 
 ```dotenv
-AGENT_DECK_IMAGE=ghcr.io/not-so-fat/agent-deck:<version>
-AGENT_DECK_VERSION=<version>
+AGENT_DECK_IMAGE=agent-deck:<version-or-commit>
+AGENT_DECK_VERSION=<version-or-commit>
 AGENT_DECK_PUBLIC_URL=https://deck.example.com
 AGENT_DECK_VAULT_KEY=<base64-or-hex-key>
 AGENT_DECK_OWNER_BOOTSTRAP_SECRET=<long-random-bootstrap-secret>
 ```
 
-Then start exactly one copy of each role:
+Build the one image from that checkout, then start exactly one copy of each role. The MCP
+service has no separate build: it uses the image produced by the backend build entry.
 
 ```bash
-docker compose pull
-docker compose up -d --no-scale backend=1 --no-scale mcp=1
+docker compose build --pull backend
+docker compose up -d --scale backend=1 --scale mcp=1
 docker compose ps
 curl --fail http://127.0.0.1:8000/readyz
 ```
+
+There is currently no published `ghcr.io/not-so-fat/agent-deck` image. Do not run
+`docker compose pull` unless your deployment team has separately published the exact image
+named by `AGENT_DECK_IMAGE`.
 
 The compose ports bind to loopback by default. Terminate HTTPS in the host's existing reverse
 proxy: route the public dashboard origin to `127.0.0.1:8000` and the MCP hostname/path to
@@ -74,12 +80,12 @@ application logs are newline-delimited JSON on stdout.
 
 ## Railway template (two services, same image)
 
-Create two Railway services from the same repository/image tag; do not give either service
-more than one replica:
+Create two Railway services from the same repository revision and Dockerfile; pin both builds
+to the same immutable tag or commit. Do not give either service more than one replica:
 
 | Setting | `backend` service | `mcp` service |
 | --- | --- | --- |
-| Image | same immutable `ghcr.io/...:<version>` | same immutable `ghcr.io/...:<version>` |
+| Image | Dockerfile build of the pinned revision | same Dockerfile build and revision |
 | Start command | `backend` | `mcp` |
 | Internal port | `8000` | `3001` |
 | Health path | `/readyz` | `/health` |

@@ -3,9 +3,9 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 type FixtureMessage =
-  | { type: 'ready'; port: number }
+  | { type: 'ready' }
   | { type: 'request-started' }
-  | { type: 'listen-error'; code?: string };
+  | { type: 'request-completed'; statusCode: number; body: unknown };
 
 describe('graceful SIGTERM shutdown', () => {
   let child: ChildProcess | undefined;
@@ -34,16 +34,11 @@ describe('graceful SIGTERM shutdown', () => {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
 
-    const startup = await nextMessage('ready', 'listen-error');
-    if (startup.type === 'listen-error' && startup.code === 'EPERM') {
-      // Dealer's managed builder sandbox forbids listen(). Normal CI runs the
-      // full subprocess proof below.
-      return;
-    }
+    const startup = await nextMessage('ready');
     expect(startup.type).toBe('ready');
-    const ready = startup as Extract<FixtureMessage, { type: 'ready' }>;
     const started = nextMessage('request-started');
-    const responsePromise = fetch(`http://127.0.0.1:${ready.port}/slow`);
+    const completed = nextMessage('request-completed');
+    child.send('begin-request');
     await started;
 
     const beforeSignal = Date.now();
@@ -51,9 +46,12 @@ describe('graceful SIGTERM shutdown', () => {
       child?.once('exit', (code, signal) => resolve({ code, signal }));
     });
     child.kill('SIGTERM');
-    const response = await responsePromise;
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ completed: true });
+    const response = await completed;
+    expect(response).toEqual({
+      type: 'request-completed',
+      statusCode: 200,
+      body: { completed: true },
+    });
 
     const exit = await exitPromise;
     expect(exit).toEqual({ code: 0, signal: null });
