@@ -214,6 +214,7 @@ export class AgentDeckMCPServer {
   private grantStoreOverride: ClientGrantStore | null | undefined;
   /** Lazily opened grant store for hosted mode (shared backend database file). */
   private grantStoreCache: ClientGrantStore | null = null;
+  private grantDatabaseCache: Database.Database | null = null;
   private readonly initializeLimiter: RequestLimiter;
 
   constructor(
@@ -259,7 +260,8 @@ export class AgentDeckMCPServer {
     }
     try {
       const dbPath = process.env.AGENT_DECK_DB_PATH?.trim() || resolveDatabasePath();
-      this.grantStoreCache = new ClientGrantStore(new Database(dbPath));
+      this.grantDatabaseCache = new Database(dbPath);
+      this.grantStoreCache = new ClientGrantStore(this.grantDatabaseCache);
       return this.grantStoreCache;
     } catch {
       return null;
@@ -1707,6 +1709,9 @@ export class AgentDeckMCPServer {
       // Release the port too, otherwise a restart on the same port races the old
       // listener and the "did it come back?" probe can't tell the two apart.
       await this.closeHttpServer();
+      this.grantDatabaseCache?.close();
+      this.grantDatabaseCache = null;
+      this.grantStoreCache = null;
       console.log(`🛑 MCP server stopped`);
     } catch (error) {
       console.error(`❌ Error stopping MCP server:`, error);

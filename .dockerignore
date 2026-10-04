@@ -1,0 +1,10 @@
+.git
+.github
+.agent-deck
+node_modules
+**/dist
+**/coverage
+docs
+misc
+*.log
+.env*

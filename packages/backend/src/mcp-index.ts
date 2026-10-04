@@ -1,5 +1,6 @@
 import { AgentDeckMCPServer } from './mcp-server';
-import { installFatalHandlers, logExit, logFatalAndExit, logProcessStart } from './lib/fatal';
+import { installFatalHandlers, logFatalAndExit, logProcessStart } from './lib/fatal';
+import { installGracefulShutdown } from './lib/graceful-shutdown';
 
 installFatalHandlers('mcp');
 
@@ -20,20 +21,7 @@ async function startMCPServer() {
 
     console.log('✅ Agent Deck MCP Server is ready to accept connections');
 
-    // Keep the process alive
-    const shutdown = async (signal: NodeJS.Signals) => {
-      logExit('mcp', 0, `signal ${signal}`);
-      console.log('\n🛑 Shutting down MCP server...');
-      try {
-        await mcpServer.stop();
-      } catch (error) {
-        logFatalAndExit('mcp', `shutdown after ${signal} failed`, error);
-      }
-      process.exit(0);
-    };
-
-    process.on('SIGINT', () => void shutdown('SIGINT'));
-    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    installGracefulShutdown({ label: 'mcp', close: () => mcpServer.stop() });
   } catch (error) {
     // logFatalAndExit writes the message, the cause and a hint, synchronously.
     logFatalAndExit('mcp', `startup failed before listening on ${host}:${port}`, error);

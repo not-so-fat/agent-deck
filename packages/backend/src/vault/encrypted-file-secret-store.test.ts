@@ -156,10 +156,12 @@ describe('parseVaultKey', () => {
 describe('createSecretStore vault-key selection', () => {
   const savedStore = process.env.AGENT_DECK_SECRET_STORE;
   const savedKey = process.env[VAULT_KEY_ENV_VAR];
+  const savedHostedMode = process.env.AGENT_DECK_HOSTED_MODE;
 
   beforeEach(() => {
     delete process.env.AGENT_DECK_SECRET_STORE;
     delete process.env[VAULT_KEY_ENV_VAR];
+    delete process.env.AGENT_DECK_HOSTED_MODE;
   });
 
   afterEach(() => {
@@ -172,6 +174,11 @@ describe('createSecretStore vault-key selection', () => {
       delete process.env[VAULT_KEY_ENV_VAR];
     } else {
       process.env[VAULT_KEY_ENV_VAR] = savedKey;
+    }
+    if (savedHostedMode === undefined) {
+      delete process.env.AGENT_DECK_HOSTED_MODE;
+    } else {
+      process.env.AGENT_DECK_HOSTED_MODE = savedHostedMode;
     }
   });
 
@@ -188,6 +195,11 @@ describe('createSecretStore vault-key selection', () => {
 
   it('fails fast with a key error when the selector has no usable key', () => {
     process.env.AGENT_DECK_SECRET_STORE = 'encrypted-file';
+    expect(() => createSecretStore()).toThrowError(VaultKeyError);
+  });
+
+  it('requires the portable encrypted vault in hosted mode on every OS', () => {
+    process.env.AGENT_DECK_HOSTED_MODE = '1';
     expect(() => createSecretStore()).toThrowError(VaultKeyError);
   });
 });

@@ -1,0 +1,56 @@
+name: agent-deck
+
+services:
+  backend:
+    image: ${AGENT_DECK_IMAGE:-agent-deck:local}
+    build:
+      context: .
+      args:
+        VERSION: ${AGENT_DECK_VERSION:-dev}
+    command: ["backend"]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    environment:
+      AGENT_DECK_HOSTED_MODE: "1"
+      AGENT_DECK_HOME: /data
+      AGENT_DECK_PUBLIC_URL: ${AGENT_DECK_PUBLIC_URL:?set the public HTTPS URL}
+      AGENT_DECK_DASHBOARD_URL: ${AGENT_DECK_PUBLIC_URL:?set the public HTTPS URL}
+      AGENT_DECK_VAULT_KEY: ${AGENT_DECK_VAULT_KEY:?set a 32-byte base64 or hex key}
+      AGENT_DECK_OWNER_BOOTSTRAP_SECRET: ${AGENT_DECK_OWNER_BOOTSTRAP_SECRET:?set the owner bootstrap secret}
+    ports:
+      - "${AGENT_DECK_BIND_ADDRESS:-127.0.0.1}:${AGENT_DECK_HTTP_PORT:-8000}:8000"
+    volumes:
+      - agent-deck-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+
+  mcp:
+    image: ${AGENT_DECK_IMAGE:-agent-deck:local}
+    command: ["mcp"]
+    restart: unless-stopped
+    stop_grace_period: 10s
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      AGENT_DECK_HOSTED_MODE: "1"
+      AGENT_DECK_BACKEND_URL: http://backend:8000
+      AGENT_DECK_HOME: /data
+      AGENT_DECK_MCP_REQUIRE_BEARER: "1"
+    ports:
+      - "${AGENT_DECK_BIND_ADDRESS:-127.0.0.1}:${AGENT_DECK_MCP_PUBLIC_PORT:-3001}:3001"
+    volumes:
+      - agent-deck-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  agent-deck-data:

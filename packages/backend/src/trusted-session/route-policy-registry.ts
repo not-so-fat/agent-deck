@@ -14,6 +14,8 @@ export type RoutePolicyRule = {
 export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   // Public
   { methods: ['GET'], pattern: /^\/health$/, policy: 'allowPublic' },
+  { methods: ['GET'], pattern: /^\/healthz$/, policy: 'allowPublic' },
+  { methods: ['GET'], pattern: /^\/readyz$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/api\/oauth\/callback$/, policy: 'allowPublic' },
   { methods: ['GET'], pattern: /^\/api\/oauth\/[^/]+\/callback$/, policy: 'allowPublic' },
@@ -166,7 +168,7 @@ export function shouldApplyHttpPolicy(pathname: string): boolean {
   if (pathname.startsWith('/api/ws/')) {
     return false;
   }
-  return pathname === '/health' || pathname === '/' || pathname.startsWith('/api/');
+  return pathname === '/health' || pathname === '/healthz' || pathname === '/readyz' || pathname === '/' || pathname.startsWith('/api/');
 }
 
 export function resolveRoutePolicy(method: string, pathname: string): AuthPolicy | null {

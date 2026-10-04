@@ -37,6 +37,18 @@ export class MemorySecretStore implements SecretStore {
   }
 }
 
+/** Fail closed while allowing liveness/readiness to explain bad operator config. */
+export class UnavailableSecretStore implements SecretStore {
+  private unavailable(): never {
+    throw new VaultUnsupportedError('The configured vault is unavailable. Check /readyz.');
+  }
+
+  async set(_account: string, _value: string): Promise<void> { this.unavailable(); }
+  async get(_account: string): Promise<string | null> { return this.unavailable(); }
+  async delete(_account: string): Promise<void> { this.unavailable(); }
+  async has(_account: string): Promise<boolean> { return this.unavailable(); }
+}
+
 export class DevFileSecretStore implements SecretStore {
   private readonly secretsDir: string;
 
@@ -179,6 +191,12 @@ export function createSecretStore(): SecretStore {
   }
 
   if (process.env.AGENT_DECK_SECRET_STORE === 'encrypted-file') {
+    return new EncryptedFileSecretStore();
+  }
+
+  // Hosted mode has one portable vault contract on every OS. In particular,
+  // a developer launching hosted mode on macOS must not silently use Keychain.
+  if (process.env.AGENT_DECK_HOSTED_MODE === '1') {
     return new EncryptedFileSecretStore();
   }
 

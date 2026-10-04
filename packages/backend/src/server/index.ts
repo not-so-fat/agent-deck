@@ -19,6 +19,7 @@ import { registerScopeRoutes } from '../routes/scope';
 import { registerPlaybookRoutes } from '../routes/playbooks';
 import { ServiceStatusUpdate, DeckUpdate, WebSocketMessage } from '@agent-deck/shared';
 import { createSecretStore, CredentialManager, OAuthClientSecretVault, OAuthTokenVault, ServiceHeaderVault } from '../vault';
+import { UnavailableSecretStore } from '../vault/secret-store';
 import { resolveDatabasePath } from '../lib/paths';
 import { CollectionWarningService } from '../services/collection-warning-service';
 import { registerCollectionRoutes } from '../routes/collection';
@@ -42,6 +43,8 @@ import { ensureAdminSecret } from '../trusted-session/admin-secret';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { SqliteOwnerAuthProvider } from '../auth/owner-auth';
 import { registerHostedModeGuard, resolveHostedModeConfig } from '../auth/hosted-mode';
+import { registerHealthRoutes } from './health';
+import { resolveAgentDeckHome } from '../lib/paths';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -64,7 +67,16 @@ export async function createServer() {
     console.log(`Seeded ${seededCount} default MCP service cards`);
   }
   await ensureStoreReady(db);
-  const secretStore = createSecretStore();
+  let secretStore;
+  try {
+    secretStore = createSecretStore();
+  } catch (error) {
+    if (process.env.AGENT_DECK_HOSTED_MODE !== '1') throw error;
+    // Keep the process live so /readyz can identify missing or malformed vault
+    // configuration. The placeholder never stores or returns a secret.
+    fastify.log.warn({ err: error }, 'hosted vault unavailable; serving as not ready');
+    secretStore = new UnavailableSecretStore();
+  }
   const trustedSessionStore = new TrustedSessionStore(db.getSqliteDatabase());
   const ownerAuthProvider = new SqliteOwnerAuthProvider(
     db.getSqliteDatabase(),
@@ -101,6 +113,13 @@ export async function createServer() {
   fastify.decorate('grantStore', grantStore);
   registerHostedModeGuard(fastify, resolveHostedModeConfig(process.env));
   registerHttpPolicyHook(fastify);
+
+  registerHealthRoutes(fastify, {
+    dataPath: resolveAgentDeckHome(),
+    sqliteProbe: () => {
+      db.getSqliteDatabase().prepare('SELECT 1').get();
+    },
+  });
 
   const sweepStaleSessions = () => {
     try {
@@ -183,6 +202,13 @@ export async function createServer() {
   fastify.decorate('patchManager', patchManager);
   fastify.decorate('collectionWarningService', collectionWarningService);
   fastify.decorate('liveDisplayRegistry', liveDisplayRegistry);
+
+  fastify.addHook('onClose', async () => {
+    clearInterval(staleSessionTimer);
+    liveDisplayRegistry.stopStaleSweep();
+    await mcpClient.cleanup();
+    db.close();
+  });
 
   // Add broadcast decorators for WebSocket functionality
   fastify.decorate('broadcastServiceUpdate', (update: ServiceStatusUpdate) => {

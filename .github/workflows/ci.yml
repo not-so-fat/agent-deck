@@ -34,3 +34,39 @@ jobs:
 
       - name: Session-context benchmark (NOT-189 p95 < 250 ms)
         run: npm run bench:session-context
+
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build the versioned image
+        run: docker build --build-arg VERSION="${GITHUB_SHA}" --tag agent-deck:${GITHUB_SHA} .
+
+      - name: Start backend with a temporary volume
+        run: |
+          docker volume create agent-deck-ci-data
+          docker run --detach --name agent-deck-ci \
+            --publish 127.0.0.1:18000:8000 \
+            --volume agent-deck-ci-data:/data \
+            --env AGENT_DECK_HOSTED_MODE=1 \
+            --env AGENT_DECK_PUBLIC_URL=https://deck.example.test \
+            --env AGENT_DECK_OWNER_BOOTSTRAP_SECRET=ci-owner-bootstrap \
+            --env AGENT_DECK_VAULT_KEY=0707070707070707070707070707070707070707070707070707070707070707 \
+            agent-deck:${GITHUB_SHA} backend
+
+      - name: Verify liveness and readiness
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18000/healthz; then break; fi
+            if [ "$attempt" = 30 ]; then docker logs agent-deck-ci; exit 1; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18000/readyz
+
+      - name: Clean up container smoke
+        if: always()
+        run: |
+          docker rm --force agent-deck-ci 2>/dev/null || true
+          docker volume rm agent-deck-ci-data 2>/dev/null || true
