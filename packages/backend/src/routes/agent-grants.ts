@@ -78,7 +78,7 @@ export async function registerAgentGrantRoutes(fastify: FastifyInstance) {
       'agent grant issued',
     );
 
-    return reply.status(201).send({
+    return reply.header('Cache-Control', 'no-store').status(201).send({
       success: true,
       data: {
         grant: issued.grant,

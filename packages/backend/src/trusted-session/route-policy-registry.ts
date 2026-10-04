@@ -126,6 +126,7 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/local-mcp\/[^/]+\/status$/, policy: 'requireDashboard' },
   { methods: ['GET'], pattern: /^\/api\/local-mcp\/list$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/admin\/approve$/, policy: 'requireDashboard' },
+  { methods: ['GET'], pattern: /^\/api\/dashboard-auth\/context$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/logout$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/dashboard-auth\/revoke-all$/, policy: 'requireDashboard' },
   {

@@ -53,13 +53,14 @@ describe('owner-only agent grants (NOT-318)', () => {
       payload: { label: 'field-agent', defaultDeck: deckA.id, allowedDecks: [deckA.id, deckB.id] },
     });
     expect(create.statusCode).toBe(201);
+    expect(create.headers['cache-control']).toBe('no-store');
     const body = create.json();
     expect(body.success).toBe(true);
     expect(body.data.grant).toMatchObject({
       label: 'field-agent',
       defaultDeck: deckA.id,
-      verifierVersion: 'v1',
     });
+    expect(body.data.grant).not.toHaveProperty('verifierVersion');
     expect(body.data.grant.allowedDecks).toEqual(expect.arrayContaining([deckA.id, deckB.id]));
     expect(typeof body.data.token).toBe('string');
     expect(parseGrantToken(body.data.token)).not.toBeNull();
@@ -110,6 +111,7 @@ describe('owner-only agent grants (NOT-318)', () => {
     const listBody = list.json();
     expect(listBody.data).toHaveLength(1);
     expect(listBody.data[0]).toMatchObject({ id: issued.grant.id, label: 'list-probe' });
+    expect(listBody.data[0]).not.toHaveProperty('verifierVersion');
     // Redaction: neither the full token nor the raw secret appears in list output.
     expect(list.body).not.toContain(issued.token);
     expect(list.body).not.toContain(secret);

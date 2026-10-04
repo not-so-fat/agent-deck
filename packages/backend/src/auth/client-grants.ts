@@ -56,8 +56,8 @@ export type ClientGrant = {
   lastUsedAt: string | null;
 };
 
-/** Owner-visible grant view: ids and labels only, never verifiers. */
-export type ClientGrantPublic = Omit<ClientGrant, never>;
+/** Owner-visible grant view: metadata only, never the persisted verifier. */
+export type ClientGrantPublic = Omit<ClientGrant, 'verifierVersion'>;
 
 /** Result of issuing a grant — the only moment the secret exists. */
 export type IssuedGrant = {
@@ -306,7 +306,6 @@ function toPublicGrant(row: GrantRow): ClientGrantPublic {
   return {
     id: row.id,
     label: row.label,
-    verifierVersion: row.verifier_version,
     defaultDeck: row.default_deck,
     allowedDecks: parseAllowedDecks(row.allowed_decks),
     installationId: row.installation_id,
