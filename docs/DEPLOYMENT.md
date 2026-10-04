@@ -60,7 +60,8 @@ proxy: route the public dashboard origin to `127.0.0.1:8000` and the MCP hostnam
 `127.0.0.1:3001`. TLS/ingress hardening is handled in WS6; do not expose either plain-HTTP
 port directly. After TLS is configured, open `AGENT_DECK_PUBLIC_URL`, verify the owner sign-in
 page loads, and verify `https://deck.example.com/readyz` returns 200. Record that dated VPS
-check in the pull request; it is an operator gate, not a CI claim.
+check in the pull request; it is an operator gate, not a CI claim. Use the
+`docs/VPS-DEPLOY-LOG.md` template for the dated log until the operator completes it.
 
 ## Health semantics
 

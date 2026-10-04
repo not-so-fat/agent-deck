@@ -3,9 +3,10 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 type FixtureMessage =
-  | { type: 'ready' }
+  | { type: 'ready'; port: number }
   | { type: 'request-started' }
-  | { type: 'request-completed'; statusCode: number; body: unknown };
+  | { type: 'request-completed'; statusCode: number; body: unknown }
+  | { type: 'request-failed'; error: string };
 
 describe('graceful SIGTERM shutdown', () => {
   let child: ChildProcess | undefined;
@@ -34,10 +35,10 @@ describe('graceful SIGTERM shutdown', () => {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
 
-    const startup = await nextMessage('ready');
+    const startup = await nextMessage('ready', 'request-failed');
     expect(startup.type).toBe('ready');
     const started = nextMessage('request-started');
-    const completed = nextMessage('request-completed');
+    const completed = nextMessage('request-completed', 'request-failed');
     child.send('begin-request');
     await started;
 
