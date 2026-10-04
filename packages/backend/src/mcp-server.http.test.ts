@@ -3,6 +3,8 @@ import {
   AgentDeckMCPServer,
   DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
   LIVE_TOUCH_KEEPALIVE_ENV_VAR,
+  MCP_INITIALIZE_RATE_LIMIT,
+  MCP_INITIALIZE_RATE_WINDOW_MS,
   resolveLiveTouchKeepAliveMs,
 } from './mcp-server';
 import { installStrictConsoleCapture } from './mcp-tools/test-harness';
@@ -131,6 +133,55 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
     expect(stream.status).toBe(200);
     expect(stream.headers.get('content-type')).toContain('text/event-stream');
     await stream.body?.cancel();
+  });
+
+  it('limits hosted initialize floods, recovers, and never cuts an existing stream', async () => {
+    const previousHostedMode = process.env.AGENT_DECK_HOSTED_MODE;
+    process.env.AGENT_DECK_HOSTED_MODE = '1';
+    let now = 25_000;
+    const server = new AgentDeckMCPServer(
+      0,
+      'http://127.0.0.1:1',
+      undefined,
+      '127.0.0.1',
+      { now: () => now },
+    );
+    const capture = installStrictConsoleCapture({
+      allowPrefixes: ['Failed to call backend API'],
+    });
+    await server.start();
+    try {
+      const limitedPort = server.getPort();
+      const initialized: Response[] = [];
+      for (let attempt = 0; attempt < MCP_INITIALIZE_RATE_LIMIT; attempt += 1) {
+        initialized.push(await postInitialize(limitedPort, 1_000 + attempt));
+      }
+      expect(initialized.every((response) => response.status === 200)).toBe(true);
+
+      const limited = await postInitialize(limitedPort, 2_000);
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('retry-after')).toBe('60');
+
+      const sessionId = initialized[0].headers.get('mcp-session-id')!;
+      const stream = await fetch(`http://127.0.0.1:${limitedPort}/mcp`, {
+        method: 'GET',
+        headers: { 'mcp-session-id': sessionId, Accept: 'text/event-stream' },
+      });
+      expect(stream.status).toBe(200);
+
+      now += MCP_INITIALIZE_RATE_WINDOW_MS;
+      const recovered = await postInitialize(limitedPort, 2_001);
+      expect(recovered.status).toBe(200);
+      await expect(listTools(limitedPort, sessionId, 2_002)).resolves.toEqual(expect.any(Array));
+      expect(stream.body).not.toBeNull();
+      await stream.body?.cancel();
+    } finally {
+      await server.stop();
+      capture.restore();
+      capture.assertClean();
+      if (previousHostedMode === undefined) delete process.env.AGENT_DECK_HOSTED_MODE;
+      else process.env.AGENT_DECK_HOSTED_MODE = previousHostedMode;
+    }
   });
 
   it('rejects GET /mcp without a session id', async () => {

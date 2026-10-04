@@ -23,7 +23,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_DECK_DECK_ID_HEADER } from '@agent-deck/shared';
 
 import { ClientGrantStore, parseGrantToken } from './auth/client-grants';
-import { AgentDeckMCPServer, MCP_REQUIRE_BEARER_ENV_VAR } from './mcp-server';
+import {
+  AgentDeckMCPServer,
+  MCP_INITIALIZE_RATE_LIMIT,
+  MCP_INITIALIZE_RATE_WINDOW_MS,
+  MCP_REQUIRE_BEARER_ENV_VAR,
+} from './mcp-server';
 
 const SKIP_HEADER_ENV_VAR = 'AGENT_DECK_MCP_SKIP_DECK_HEADER';
 
@@ -69,7 +74,7 @@ function mockRes() {
 }
 
 function mockReq(body: unknown, headers: Record<string, string> = {}) {
-  return { body, headers } as never;
+  return { body, headers, socket: { remoteAddress: '127.0.0.1' } } as never;
 }
 
 type McpServerInternals = {
@@ -86,12 +91,14 @@ describe('MCP remote grant authorization (NOT-318)', () => {
   const dbs: Database.Database[] = [];
   let savedBearerFlag: string | undefined;
   let savedSkipFlag: string | undefined;
+  let savedHostedFlag: string | undefined;
   let fetchStub: ReturnType<typeof vi.fn> | null = null;
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     savedBearerFlag = process.env[MCP_REQUIRE_BEARER_ENV_VAR];
     savedSkipFlag = process.env[SKIP_HEADER_ENV_VAR];
+    savedHostedFlag = process.env.AGENT_DECK_HOSTED_MODE;
     process.env[MCP_REQUIRE_BEARER_ENV_VAR] = '1';
     delete process.env[SKIP_HEADER_ENV_VAR];
   });
@@ -107,6 +114,11 @@ describe('MCP remote grant authorization (NOT-318)', () => {
     } else {
       process.env[SKIP_HEADER_ENV_VAR] = savedSkipFlag;
     }
+    if (savedHostedFlag === undefined) {
+      delete process.env.AGENT_DECK_HOSTED_MODE;
+    } else {
+      process.env.AGENT_DECK_HOSTED_MODE = savedHostedFlag;
+    }
     if (fetchStub) {
       fetchStub.mockRestore();
       fetchStub = null;
@@ -119,12 +131,13 @@ describe('MCP remote grant authorization (NOT-318)', () => {
     vi.restoreAllMocks();
   });
 
-  function buildServer() {
+  function buildServer(now?: () => number) {
     const db = new Database(':memory:');
     dbs.push(db);
     const grantStore = new ClientGrantStore(db);
     const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1', undefined, '127.0.0.1', {
       grantStore,
+      now,
     });
     return { server: server as unknown as McpServerInternals & { [k: string]: unknown }, grantStore };
   }
@@ -281,6 +294,45 @@ describe('MCP remote grant authorization (NOT-318)', () => {
     expect(server.sessionBinding.getBinding(established[1]).deckId).toBe('deck-b');
     void onDefault;
     void onAllowed;
+  });
+
+  it('limits initialize per authenticated grant, recovers, and leaves live traffic alone', async () => {
+    process.env.AGENT_DECK_HOSTED_MODE = '1';
+    let now = 50_000;
+    const { server, grantStore } = buildServer(() => now);
+    stubBackend();
+    const { established, delivered } = fakeTransport(
+      server as McpServerInternals & { [k: string]: unknown },
+    );
+    const issued = grantStore.issueGrant({ label: 'rate-limited', defaultDeck: 'deck-a' });
+    const otherGrant = grantStore.issueGrant({ label: 'independent', defaultDeck: 'deck-b' });
+    const auth = { authorization: `Bearer ${issued.token}` };
+
+    for (let attempt = 0; attempt < MCP_INITIALIZE_RATE_LIMIT; attempt += 1) {
+      await postMcp(server, initializeBody(attempt + 1), auth);
+    }
+    expect(established).toHaveLength(MCP_INITIALIZE_RATE_LIMIT);
+
+    const limited = await postMcp(server, initializeBody(100), auth);
+    expect(limited.status).toBe(429);
+    expect(limited.headers['Retry-After']).toBe('60');
+
+    await postMcp(server, initializeBody(101), {
+      authorization: `Bearer ${otherGrant.token}`,
+    });
+    expect(established).toHaveLength(MCP_INITIALIZE_RATE_LIMIT + 1);
+
+    const existingSession = established[0];
+    await postMcp(
+      server,
+      { jsonrpc: '2.0', id: 102, method: 'tools/list', params: {} },
+      { ...auth, 'mcp-session-id': existingSession },
+    );
+    expect(delivered).toHaveLength(1);
+
+    now += MCP_INITIALIZE_RATE_WINDOW_MS;
+    await postMcp(server, initializeBody(103), auth);
+    expect(established).toHaveLength(MCP_INITIALIZE_RATE_LIMIT + 2);
   });
 
   it('two grants with different scopes each bind only their own decks', async () => {

@@ -45,7 +45,7 @@ describe('hosted owner authentication', () => {
     }
   });
 
-  async function buildAuthApp(logs?: string[]) {
+  async function buildAuthApp(logs?: string[], now?: () => number) {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
     const provider = new SqliteOwnerAuthProvider(db, BOOTSTRAP_SECRET);
@@ -58,8 +58,9 @@ describe('hosted owner authentication', () => {
       : Fastify();
     app.decorate('trustedSessionStore', store);
     app.decorate('ownerAuthProvider', provider);
-    registerHostedModeGuard(app, { enabled: true, publicOrigin: PUBLIC_ORIGIN });
+    registerHostedModeGuard(app, { enabled: true, publicOrigin: PUBLIC_ORIGIN, now });
     registerHttpPolicyHook(app);
+    app.post('/api/feedback-signals/discard', async () => ({ success: true }));
     await app.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
     await app.ready();
     servers.push(app);
@@ -119,6 +120,75 @@ describe('hosted owner authentication', () => {
     expect(wrong.statusCode).toBe(401);
     expect(unknown.statusCode).toBe(401);
     expect(wrong.body).toBe(unknown.body);
+  });
+
+  it('limits sign-in failures per socket client and recovers after the window', async () => {
+    let now = 10_000;
+    const { app } = await buildAuthApp(undefined, () => now);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await signIn(app);
+      expect(response.statusCode).toBe(401);
+    }
+    const limited = await signIn(app, true);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers['retry-after']).toBe('60');
+
+    now += 60_000;
+    const recovered = await signIn(app, true);
+    expect(recovered.statusCode).toBe(200);
+  });
+
+  it('rejects an oversized public mutation body with 413', async () => {
+    const { app } = await buildAuthApp();
+    const signedIn = await signIn(app, true);
+    const cookie = String(signedIn.headers['set-cookie']).split(';')[0];
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/feedback-signals/discard',
+      headers: { cookie, origin: PUBLIC_ORIGIN },
+      payload: { value: 'x'.repeat(1024 * 1024) },
+    });
+    expect(response.statusCode).toBe(413);
+  });
+
+  it('limits public mutations per socket IP, ignores forwarded IPs, and recovers', async () => {
+    let now = 20_000;
+    const { app } = await buildAuthApp(undefined, () => now);
+    const signedIn = await signIn(app, true);
+    const cookie = String(signedIn.headers['set-cookie']).split(';')[0];
+
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/feedback-signals/discard',
+        headers: {
+          cookie,
+          origin: PUBLIC_ORIGIN,
+          'x-forwarded-for': `198.51.100.${attempt + 1}`,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+    const limited = await app.inject({
+      method: 'POST',
+      url: '/api/feedback-signals/discard',
+      headers: {
+        cookie,
+        origin: PUBLIC_ORIGIN,
+        'x-forwarded-for': '203.0.113.200',
+      },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers['retry-after']).toBe('60');
+
+    now += 60_000;
+    const recovered = await app.inject({
+      method: 'POST',
+      url: '/api/feedback-signals/discard',
+      headers: { cookie, origin: PUBLIC_ORIGIN },
+    });
+    expect(recovered.statusCode).toBe(200);
   });
 
   it('rejects a cross-site mutation with a valid session before state changes', async () => {

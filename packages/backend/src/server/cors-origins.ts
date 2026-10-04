@@ -55,6 +55,24 @@ function normalizeExtraOrigin(entry: string): string | undefined {
 }
 
 export function resolveAllowedOrigins(env: NodeJS.ProcessEnv): string[] {
+  if (env.AGENT_DECK_HOSTED_MODE === '1') {
+    const hostedOrigins = new Set<string>();
+    for (const raw of [env.AGENT_DECK_PUBLIC_URL, env.AGENT_DECK_DASHBOARD_URL]) {
+      const value = raw?.trim();
+      if (!value) continue;
+      try {
+        const url = new URL(value);
+        if (url.protocol === 'http:' || url.protocol === 'https:') {
+          hostedOrigins.add(url.origin);
+        }
+      } catch {
+        // Hosted-mode configuration validation reports invalid public URLs.
+        // CORS still fails closed if called independently.
+      }
+    }
+    return [...hostedOrigins];
+  }
+
   const port = resolvePort(env);
   const seen = new Set<string>();
   const result: string[] = [];
