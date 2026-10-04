@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getAgentDeckHome } from '../vault/yaml-sync';
+import { guardedFetch } from '../lib/destination-guard';
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_ICON_BYTES = 512 * 1024;
@@ -91,7 +92,7 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    return await fetch(url, {
+    return await guardedFetch(url, {
       ...init,
       signal: controller.signal,
       redirect: 'follow',

@@ -40,6 +40,11 @@ import { storeServiceFromDb } from '../store/service-codec';
 import { FileStoreWriter } from '../store/writer';
 import { ServiceHeaderVault } from '../vault/service-header-vault';
 import { splitSecretHeaders } from '../export-import/sanitize-for-export';
+import {
+  destinationGuard,
+  DestinationGuardError,
+  guardedFetch,
+} from '../lib/destination-guard';
 
 interface A2AManifest {
   endpoints?: Record<string, A2AEndpoint>;
@@ -135,6 +140,9 @@ export class ServiceManager {
   async createService(input: CreateServiceInput): Promise<Service> {
     // Validate input
     const validatedInput = CreateServiceSchema.parse(input);
+    if (validatedInput.type !== 'local-mcp') {
+      await destinationGuard.assertUrlAllowed(validatedInput.url);
+    }
     
     // Check for name conflicts
     const existingServices = await this.db.getAllServices();
@@ -362,6 +370,12 @@ export class ServiceManager {
   async updateService(id: string, input: UpdateServiceInput): Promise<Service | null> {
     // Validate input
     const validatedInput = UpdateServiceSchema.parse(input);
+    if (validatedInput.url) {
+      const existing = await this.db.getService(id);
+      if ((validatedInput.type ?? existing?.type) !== 'local-mcp') {
+        await destinationGuard.assertUrlAllowed(validatedInput.url);
+      }
+    }
 
     const headersUpdated = validatedInput.headers !== undefined;
     // Route secret headers to the vault; only non-secret headers reach the row.
@@ -598,6 +612,8 @@ export class ServiceManager {
       await this.db.updateServiceStatus(validatedInput.serviceId, false, 'unhealthy');
 
       const cause = resolveMcpErrorMessage(error);
+      const blockedCategory =
+        error instanceof DestinationGuardError ? error.category : undefined;
       return {
         success: false,
         error: 'Failed to call tool',
@@ -605,7 +621,7 @@ export class ServiceManager {
         details: {
           service_id: service.id,
           service_name: service.name,
-          remote_url: service.url,
+          remote_url: blockedCategory ? `blocked:${blockedCategory}` : service.url,
           tool_name: validatedInput.toolName,
           cause,
           phase: 'callTool',
@@ -640,7 +656,7 @@ export class ServiceManager {
 
   private async discoverA2ATools(service: Service): Promise<ServiceTool[]> {
     try {
-      const response = await fetch(`${service.url}/manifest`);
+      const response = await guardedFetch(`${service.url}/manifest`);
       if (!response.ok) {
         throw new Error(`Failed to fetch A2A manifest: ${response.statusText}`);
       }
@@ -667,7 +683,7 @@ export class ServiceManager {
 
   private async callA2ATool(service: Service, toolName: string, arguments_: Record<string, any>): Promise<any> {
     try {
-      const response = await fetch(`${service.url}/${toolName}`, {
+      const response = await guardedFetch(`${service.url}/${toolName}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -4,6 +4,7 @@ import { ServiceManager } from '../services/service-manager';
 import { MCPDiscoveryService } from '../services/mcp-discovery-service';
 import { ApiResponse, Service, ServiceTool } from '@agent-deck/shared';
 import { resolveMcpEndpoint } from '../mcp-endpoint';
+import { guardedFetch } from '../lib/destination-guard';
 
 // OAuth discovery functions
 async function extractUrlsFromWWWAuthenticate(headerValue: string): Promise<string[]> {
@@ -25,7 +26,7 @@ async function probeWWWAuthenticate(url: string): Promise<{ wwwAuth: string | nu
   
   try {
     // Try GET first
-    const getResp = await fetch(url, { 
+    const getResp = await guardedFetch(url, {
       method: 'GET',
       headers: { 'Accept': headersCommon.Accept }
     });
@@ -40,7 +41,7 @@ async function probeWWWAuthenticate(url: string): Promise<{ wwwAuth: string | nu
   try {
     // Try POST minimal JSON-RPC envelope
     const payload = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} };
-    const postResp = await fetch(url, {
+    const postResp = await guardedFetch(url, {
       method: 'POST',
       headers: headersCommon,
       body: JSON.stringify(payload)
@@ -58,7 +59,7 @@ async function probeWWWAuthenticate(url: string): Promise<{ wwwAuth: string | nu
 async function fetchProtectedResourceMetadata(baseOrigin: string): Promise<any> {
   const prUrl = `${baseOrigin}/.well-known/oauth-protected-resource`;
   try {
-    const response = await fetch(prUrl);
+    const response = await guardedFetch(prUrl);
     if (response.ok) {
       const data = await response.json();
       console.log(`✅ Fetched OAuth metadata from ${prUrl}:`, data);
@@ -80,7 +81,7 @@ async function fetchAuthorizationServerMetadata(issuerOrAsUrl: string): Promise<
   }
   
   try {
-    const response = await fetch(asUrl);
+    const response = await guardedFetch(asUrl);
     if (response.ok) {
       const data = await response.json() as any;
       return {

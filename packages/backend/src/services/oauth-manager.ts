@@ -17,6 +17,7 @@ import {
   oauthTokenRequestHeaders,
   parseOAuthTokenResponse,
 } from '../lib/oauth-token-response';
+import { DestinationGuardError, guardedFetch } from '../lib/destination-guard';
 
 
 
@@ -53,7 +54,7 @@ export class OAuthManager {
   async discoverOAuth(serviceUrl: string): Promise<OAuthDiscoveryResult> {
     try {
       // Try to get OAuth metadata from the service
-      const response = await fetch(`${serviceUrl}/.well-known/oauth-authorization-server`, {
+      const response = await guardedFetch(`${serviceUrl}/.well-known/oauth-authorization-server`, {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
@@ -79,7 +80,7 @@ export class OAuthManager {
       }
 
       // Try alternative discovery methods
-      const alternativeResponse = await fetch(`${serviceUrl}/oauth/metadata`, {
+      const alternativeResponse = await guardedFetch(`${serviceUrl}/oauth/metadata`, {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
@@ -190,7 +191,7 @@ export class OAuthManager {
       tokenBody.set('client_secret', clientSecret);
     }
 
-    const tokenResponse = await fetch(service.oauthTokenUrl, {
+    const tokenResponse = await guardedFetch(service.oauthTokenUrl, {
       method: 'POST',
       headers: oauthTokenRequestHeaders(),
       body: tokenBody,
@@ -262,7 +263,7 @@ export class OAuthManager {
       refreshBody.set('client_secret', clientSecret);
     }
 
-    const tokenResponse = await fetch(service.oauthTokenUrl, {
+    const tokenResponse = await guardedFetch(service.oauthTokenUrl, {
       method: 'POST',
       headers: oauthTokenRequestHeaders(),
       body: refreshBody,
@@ -389,7 +390,7 @@ export class OAuthManager {
         const oauthMetadataUrl = `${baseUrl.origin}/.well-known/oauth-authorization-server`;
         console.log('Trying OAuth metadata at:', oauthMetadataUrl);
         
-        const metadataResponse = await fetch(oauthMetadataUrl);
+        const metadataResponse = await guardedFetch(oauthMetadataUrl);
         if (metadataResponse.ok) {
           const metadata = await metadataResponse.json() as any;
           console.log('OAuth metadata found:', metadata);
@@ -418,7 +419,7 @@ export class OAuthManager {
             ];
 
             for (const payload of registrationPayloads) {
-              const registrationResponse = await fetch(metadata.registration_endpoint, {
+              const registrationResponse = await guardedFetch(metadata.registration_endpoint, {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -459,6 +460,7 @@ export class OAuthManager {
           console.log('MCP service OAuth metadata not found at:', oauthMetadataUrl);
         }
       } catch (error) {
+        if (error instanceof DestinationGuardError) throw error;
         console.log('Failed to get OAuth metadata from MCP service:', error);
       }
 
@@ -476,7 +478,7 @@ export class OAuthManager {
         try {
           console.log('Trying MCP OAuth endpoint:', endpoint);
           
-          const response = await fetch(endpoint, {
+          const response = await guardedFetch(endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -506,6 +508,7 @@ export class OAuthManager {
             console.log('MCP OAuth endpoint failed:', endpoint, await response.text());
           }
         } catch (error) {
+          if (error instanceof DestinationGuardError) throw error;
           console.log('MCP OAuth endpoint error:', endpoint, error);
         }
       }

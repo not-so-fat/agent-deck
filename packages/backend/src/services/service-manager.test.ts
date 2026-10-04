@@ -5,6 +5,7 @@ import { MCPClientManager } from './mcp-client-manager';
 import { OAuthManager } from './oauth-manager';
 import { CreateServiceInput, ServiceCallInput } from '@agent-deck/shared';
 import { FileStoreWriter } from '../store/writer';
+import { DestinationGuardError } from '../lib/destination-guard';
 
 // Mock the managers
 vi.mock('../models/database');
@@ -72,6 +73,10 @@ describe('ServiceManager', () => {
     );
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe('Service CRUD Operations', () => {
     it('should create a service', async () => {
       const serviceInput: CreateServiceInput = {
@@ -98,6 +103,21 @@ describe('ServiceManager', () => {
 
       expect(mockDbManager.createService).toHaveBeenCalledWith(serviceInput);
       expect(result).toEqual(expectedService);
+    });
+
+    it('rejects a blocked destination before registering the service in hosted mode', async () => {
+      vi.stubEnv('AGENT_DECK_HOSTED_MODE', '1');
+      vi.stubEnv('AGENT_DECK_ALLOW_PRIVATE_DESTINATIONS', '');
+
+      await expect(
+        serviceManager.createService({
+          name: 'Metadata',
+          type: 'mcp',
+          url: 'http://169.254.169.254/mcp',
+          cardColor: '#ff0000',
+        }),
+      ).rejects.toMatchObject({ category: 'metadata' });
+      expect(mockDbManager.createService).not.toHaveBeenCalled();
     });
 
     it('should get a service by ID', async () => {
@@ -525,6 +545,29 @@ describe('ServiceManager', () => {
         serviceName: 'Docmost',
         toolName: 'get_page',
       });
+    });
+
+    it('returns only the block category when a proxy destination is denied', async () => {
+      const serviceId = '123e4567-e89b-12d3-a456-426614174000';
+      mockDbManager.getService.mockResolvedValue({
+        id: serviceId,
+        name: 'Legacy internal service',
+        type: 'mcp',
+        url: 'http://169.254.169.254/mcp',
+      });
+      mockMCPClientManager.callTool.mockRejectedValue(new DestinationGuardError('metadata'));
+
+      const result = await serviceManager.callServiceTool({
+        serviceId,
+        toolName: 'read_metadata',
+        arguments: {},
+      });
+
+      expect(result.details).toMatchObject({
+        remote_url: 'blocked:metadata',
+        cause: 'Blocked metadata destination in hosted mode',
+      });
+      expect(JSON.stringify(result)).not.toContain('169.254.169.254');
     });
   });
 
