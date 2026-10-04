@@ -9,6 +9,41 @@ import {
 } from './store';
 
 describe('TrustedSessionStore', () => {
+  it('enforces hosted dashboard idle and absolute expiry with a fake clock', () => {
+    const db = new Database(':memory:');
+    let nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+    const store = new TrustedSessionStore(db, { now: () => new Date(nowMs) });
+    const idleMs = 12 * 60 * 60 * 1000;
+    const absoluteMs = 7 * 24 * 60 * 60 * 1000;
+
+    const idleToken = store.createDashboardSession({ idleMs, absoluteMs });
+    nowMs += idleMs + 1;
+    expect(store.validateAndTouchDashboardSession(idleToken, idleMs)).toBe(false);
+
+    nowMs = Date.parse('2026-01-01T00:00:00.000Z');
+    const absoluteToken = store.createDashboardSession({ idleMs, absoluteMs });
+    for (let touch = 1; touch <= 27; touch += 1) {
+      nowMs += 6 * 60 * 60 * 1000;
+      expect(store.validateAndTouchDashboardSession(absoluteToken, idleMs)).toBe(true);
+    }
+    nowMs = Date.parse('2026-01-08T00:00:00.001Z');
+    expect(store.validateAndTouchDashboardSession(absoluteToken, idleMs)).toBe(false);
+  });
+
+  it('revokes one or all dashboard sessions immediately', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const first = store.createDashboardSession();
+    const second = store.createDashboardSession();
+
+    expect(store.revokeDashboardSession(first)).toBe(true);
+    expect(store.validateAndTouchDashboardSession(first)).toBe(false);
+    expect(store.validateAndTouchDashboardSession(second)).toBe(true);
+
+    expect(store.revokeAllDashboardSessions()).toBe(1);
+    expect(store.validateAndTouchDashboardSession(second)).toBe(false);
+  });
+
   it('persists hashed dashboard sessions across store instances', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
