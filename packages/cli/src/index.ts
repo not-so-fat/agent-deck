@@ -146,7 +146,15 @@ export function suggestTopLevelCommand(command: string): string | null {
       nearestDistance = distance;
     }
   }
-  return nearestDistance <= 2 ? nearest : null;
+  const threshold = Math.max(1, Math.floor(command.length / 3));
+  return nearestDistance <= threshold ? nearest : null;
+}
+
+function quoteShellArg(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function printUnknownCommand(command: string, rest: string[]): void {
@@ -154,7 +162,7 @@ function printUnknownCommand(command: string, rest: string[]): void {
   console.error(`${terminalStyle.error('Unknown command:', color)} ${command}`);
   const suggestion = suggestTopLevelCommand(command);
   if (suggestion) {
-    const corrected = ['agent-deck', suggestion, ...rest].join(' ');
+    const corrected = ['agent-deck', suggestion, ...rest].map(quoteShellArg).join(' ');
     console.error(`Did you mean: ${terminalStyle.command(corrected, color)}`);
   }
   console.error(terminalStyle.dim('Run agent-deck --help to see all commands.', color));
@@ -352,7 +360,7 @@ export async function runCli(argv: string[]): Promise<number> {
     console.log(getAgentDeckVersion());
     return 0;
   }
-  if (command === '--help' || command === '-h') {
+  if (command === '--help' || command === '-h' || command === 'help') {
     printUsage();
     return 0;
   }

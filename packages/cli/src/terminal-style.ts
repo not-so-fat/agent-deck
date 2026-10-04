@@ -7,7 +7,7 @@ const ANSI = {
 } as const;
 
 export function terminalColorsEnabled(stream: NodeJS.WriteStream = process.stdout): boolean {
-  if ('NO_COLOR' in process.env || process.env.FORCE_COLOR === '0') {
+  if (Boolean(process.env.NO_COLOR) || process.env.FORCE_COLOR === '0') {
     return false;
   }
   if (process.env.FORCE_COLOR && process.env.FORCE_COLOR !== '0') {
