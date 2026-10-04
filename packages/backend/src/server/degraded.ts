@@ -22,6 +22,14 @@ export function isStorageStartupError(error: unknown): boolean {
   return /sqlite|database (?:is|could not be) (?:opened|open)|readonly database/i.test(message);
 }
 
+/** Hosted deployments stay live for probes; local CLI launches must fail fast. */
+export function shouldServeStorageFailure(
+  error: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.AGENT_DECK_HOSTED_MODE === '1' && isStorageStartupError(error);
+}
+
 /**
  * If persistent state cannot initialize, retain only the two probe endpoints.
  * This keeps liveness truthful while readiness reports the operator-fixable

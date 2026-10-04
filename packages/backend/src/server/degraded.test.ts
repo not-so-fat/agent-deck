@@ -3,7 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { createStorageFailureServer, isStorageStartupError } from './degraded';
+import {
+  createStorageFailureServer,
+  isStorageStartupError,
+  shouldServeStorageFailure,
+} from './degraded';
 
 const TEST_KEY = Buffer.alloc(32, 9).toString('base64');
 
@@ -18,6 +22,13 @@ describe('storage-degraded backend', () => {
 
   it('does not hide unrelated configuration failures', () => {
     expect(isStorageStartupError(new Error('AGENT_DECK_PUBLIC_URL is required'))).toBe(false);
+  });
+
+  it('serves storage failure probes only in hosted mode', () => {
+    const error = Object.assign(new Error('unable to open database'), { code: 'SQLITE_CANTOPEN' });
+    expect(shouldServeStorageFailure(error, {})).toBe(false);
+    expect(shouldServeStorageFailure(error, { AGENT_DECK_HOSTED_MODE: '0' })).toBe(false);
+    expect(shouldServeStorageFailure(error, { AGENT_DECK_HOSTED_MODE: '1' })).toBe(true);
   });
 
   it('stays live but not ready when SQLite cannot open', async () => {

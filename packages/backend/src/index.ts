@@ -1,7 +1,7 @@
 import { createServer } from './server';
 import { installFatalHandlers, logFatalAndExit, logProcessStart } from './lib/fatal';
 import { installGracefulShutdown } from './lib/graceful-shutdown';
-import { createStorageFailureServer, isStorageStartupError } from './server/degraded';
+import { createStorageFailureServer, shouldServeStorageFailure } from './server/degraded';
 
 // The supervisor only sees this process's exit code, so every way out of here
 // has to name itself in the log first.
@@ -18,7 +18,7 @@ async function start() {
     try {
       server = await createServer();
     } catch (error) {
-      if (!isStorageStartupError(error)) throw error;
+      if (!shouldServeStorageFailure(error)) throw error;
       server = createStorageFailureServer(error);
     }
 
