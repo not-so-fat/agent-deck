@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   appendDaemonLogLine,
   formatChildLogTail,
@@ -18,10 +18,15 @@ describe('daemon-logs', () => {
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-daemon-'));
     process.env.AGENT_DECK_HOME = tempHome;
+    process.env.AGENT_DECK_LOG_MAX_BYTES = '100';
+    process.env.AGENT_DECK_LOG_RETAIN = '3';
   });
 
   afterEach(() => {
     delete process.env.AGENT_DECK_HOME;
+    delete process.env.AGENT_DECK_LOG_MAX_BYTES;
+    delete process.env.AGENT_DECK_LOG_RETAIN;
+    vi.restoreAllMocks();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
 
@@ -40,6 +45,103 @@ describe('daemon-logs', () => {
   it('appends lines to log file', () => {
     appendDaemonLogLine('mcp', '[test] hello');
     expect(fs.readFileSync(resolveDaemonLogPath('mcp'), 'utf8')).toContain('[test] hello');
+  });
+
+  describe('rotation', () => {
+    it('retains three generations in newest-to-oldest order', () => {
+      const logPath = resolveDaemonLogPath('backend');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+
+      for (let generation = 1; generation <= 4; generation += 1) {
+        fs.writeFileSync(logPath, `generation ${generation}`.padEnd(100, '.'));
+        appendDaemonLogLine('backend', `new write ${generation}`);
+      }
+
+      expect(fs.readFileSync(logPath, 'utf8')).toBe('new write 4\n');
+      expect(fs.readFileSync(`${logPath}.1`, 'utf8')).toContain('generation 4');
+      expect(fs.readFileSync(`${logPath}.2`, 'utf8')).toContain('generation 3');
+      expect(fs.readFileSync(`${logPath}.3`, 'utf8')).toContain('generation 2');
+      expect(fs.existsSync(`${logPath}.4`)).toBe(false);
+      expect(readDaemonLogTail('backend', 20)).toEqual(['new write 4']);
+    });
+
+    it('honors a configured retention count', () => {
+      process.env.AGENT_DECK_LOG_RETAIN = '2';
+      const logPath = resolveDaemonLogPath('backend');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.writeFileSync(logPath, 'newest'.padEnd(100, '.'));
+      fs.writeFileSync(`${logPath}.1`, 'older');
+      fs.writeFileSync(`${logPath}.2`, 'oldest');
+
+      appendDaemonLogLine('backend', 'new active');
+
+      expect(fs.readFileSync(`${logPath}.1`, 'utf8')).toContain('newest');
+      expect(fs.readFileSync(`${logPath}.2`, 'utf8')).toBe('older');
+      expect(fs.existsSync(`${logPath}.3`)).toBe(false);
+    });
+
+    it.each(['backend', 'mcp', 'supervisor'] as const)(
+      'rotates the %s log before opening it',
+      (name) => {
+        const logPath = resolveDaemonLogPath(name);
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
+        fs.writeFileSync(logPath, `${name} old`.padEnd(100, '.'));
+
+        const fd = openDaemonLogFd(name);
+        fs.closeSync(fd);
+
+        expect(fs.readFileSync(`${logPath}.1`, 'utf8')).toContain(`${name} old`);
+        expect(fs.readFileSync(logPath, 'utf8')).toMatch(new RegExp(`^\\n--- ${name} `));
+      },
+    );
+
+    it.each(['0', '-1', 'not-a-number'])(
+      'uses default limits when overrides are invalid (%s)',
+      (invalidValue) => {
+        process.env.AGENT_DECK_LOG_MAX_BYTES = invalidValue;
+        process.env.AGENT_DECK_LOG_RETAIN = invalidValue;
+        const logPath = resolveDaemonLogPath('backend');
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
+        fs.writeFileSync(logPath, 'old active');
+        fs.truncateSync(logPath, 25 * 1024 * 1024);
+        fs.writeFileSync(`${logPath}.1`, 'previous one');
+        fs.writeFileSync(`${logPath}.2`, 'previous two');
+        fs.writeFileSync(`${logPath}.3`, 'previous three');
+
+        appendDaemonLogLine('backend', 'new active');
+
+        expect(fs.readFileSync(logPath, 'utf8')).toBe('new active\n');
+        expect(fs.statSync(`${logPath}.1`).size).toBe(25 * 1024 * 1024);
+        expect(fs.readFileSync(`${logPath}.2`, 'utf8')).toBe('previous one');
+        expect(fs.readFileSync(`${logPath}.3`, 'utf8')).toBe('previous two');
+        expect(fs.existsSync(`${logPath}.4`)).toBe(false);
+      },
+    );
+
+    it.each([
+      ['appendDaemonLogLine', (name: 'mcp') => appendDaemonLogLine(name, 'write survived')],
+      [
+        'openDaemonLogFd',
+        (name: 'mcp') => {
+          const fd = openDaemonLogFd(name);
+          fs.closeSync(fd);
+        },
+      ],
+    ] as const)('warns once and continues writing when rename fails in %s', (_label, write) => {
+      const logPath = resolveDaemonLogPath('mcp');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.writeFileSync(logPath, 'existing'.padEnd(100, '.'));
+      vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+        throw new Error('forced rename failure');
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      expect(() => write('mcp')).not.toThrow();
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('mcp.log'));
+      expect(fs.readFileSync(logPath, 'utf8').length).toBeGreaterThan(100);
+    });
   });
 
   describe('log tail', () => {
@@ -92,6 +194,9 @@ describe('daemon-logs', () => {
      * inherited fd, and the supervisor can read it back after the exit.
      */
     it('captures a child that exits non-zero through the redirected fd', () => {
+      const logPath = resolveDaemonLogPath('backend');
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.writeFileSync(logPath, 'previous run'.padEnd(100, '.'));
       const fd = openDaemonLogFd('backend');
       const script =
         "process.stderr.write('❌ Failed to start server: ERR_DLOPEN_FAILED NODE_MODULE_VERSION 147\\n'); process.exit(1);";
@@ -99,6 +204,7 @@ describe('daemon-logs', () => {
       fs.closeSync(fd);
 
       expect(result.status).toBe(1);
+      expect(fs.readFileSync(`${logPath}.1`, 'utf8')).toContain('previous run');
       expect(readDaemonLogTail('backend', 5).join('\n')).toContain('NODE_MODULE_VERSION 147');
     });
   });
