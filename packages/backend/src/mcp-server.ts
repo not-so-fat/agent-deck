@@ -48,6 +48,7 @@ import {
   type StubBindSyncResult,
   type PlaybookStubInput,
 } from './playbooks/stub-sync';
+import { RequestLimiter } from './auth/request-limiter';
 
 function readWorkspaceRootHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_WORKSPACE_HEADER];
@@ -88,6 +89,8 @@ type McpSession = {
  * bearer-free with zero config change.
  */
 export const MCP_REQUIRE_BEARER_ENV_VAR = 'AGENT_DECK_MCP_REQUIRE_BEARER';
+export const MCP_INITIALIZE_RATE_LIMIT = 30;
+export const MCP_INITIALIZE_RATE_WINDOW_MS = 60_000;
 
 export function isBearerGrantRequired(raw: string | undefined = process.env[MCP_REQUIRE_BEARER_ENV_VAR]): boolean {
   return raw === '1' || raw?.trim().toLowerCase() === 'true';
@@ -211,22 +214,28 @@ export class AgentDeckMCPServer {
   private grantStoreOverride: ClientGrantStore | null | undefined;
   /** Lazily opened grant store for hosted mode (shared backend database file). */
   private grantStoreCache: ClientGrantStore | null = null;
+  private readonly initializeLimiter: RequestLimiter;
 
   constructor(
     port: number = 3001,
     backendUrl: string = 'http://localhost:8000',
     toolProfile?: McpToolProfile,
     host: string = '127.0.0.1',
-    options?: { grantStore?: ClientGrantStore | null },
+    options?: { grantStore?: ClientGrantStore | null; now?: () => number },
   ) {
     this.port = port;
     this.backendUrl = backendUrl;
     this.toolProfile = toolProfile ?? resolveMcpToolProfile();
     this.host = host;
     this.grantStoreOverride = options?.grantStore;
+    this.initializeLimiter = new RequestLimiter(MCP_INITIALIZE_RATE_WINDOW_MS, options?.now);
 
     this.app = express();
-    this.app.use(express.json());
+    this.app.use(
+      process.env.AGENT_DECK_HOSTED_MODE === '1'
+        ? express.json({ limit: 1024 * 1024 })
+        : express.json(),
+    );
     this.setupRoutes();
 
     this.sessionBinding = new McpSessionBindingStore({
@@ -1432,6 +1441,23 @@ export class AgentDeckMCPServer {
       typeof body === 'object' &&
       (isInitializeRequest(body) ||
         (Array.isArray(body) && body.some((message) => isInitializeRequest(message))));
+
+    if (isInit && process.env.AGENT_DECK_HOSTED_MODE === '1') {
+      const principal = this.authenticateGrant(readBearerToken(req));
+      const clientKey = principal
+        ? `grant:${principal.grantId}`
+        : `ip:${req.socket.remoteAddress ?? 'unknown'}`;
+      const rate = this.initializeLimiter.consume(clientKey, MCP_INITIALIZE_RATE_LIMIT);
+      if (!rate.allowed) {
+        res.set('Retry-After', String(rate.retryAfterSeconds));
+        res.status(429).json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Too many initialize requests' },
+          id: null,
+        });
+        return;
+      }
+    }
 
     if (!isInit) {
       // Hosted endpoints run the bearer-grant gate before session

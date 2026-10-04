@@ -2,6 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { resolveAllowedOrigins } from './cors-origins';
 
 describe('resolveAllowedOrigins', () => {
+  it('uses only configured public origins in hosted mode', () => {
+    expect(resolveAllowedOrigins({
+      AGENT_DECK_HOSTED_MODE: '1',
+      AGENT_DECK_PUBLIC_URL: 'https://deck.example.test/app',
+      AGENT_DECK_DASHBOARD_URL: 'https://dashboard.example.test/path',
+      AGENT_DECK_DASHBOARD_ORIGIN: 'https://legacy.example.test',
+      PORT: '2111',
+    } as NodeJS.ProcessEnv)).toEqual([
+      'https://deck.example.test',
+      'https://dashboard.example.test',
+    ]);
+  });
+
+  it('dedupes hosted URLs that resolve to the same origin', () => {
+    expect(resolveAllowedOrigins({
+      AGENT_DECK_HOSTED_MODE: '1',
+      AGENT_DECK_PUBLIC_URL: 'https://deck.example.test',
+      AGENT_DECK_DASHBOARD_URL: 'https://deck.example.test/dashboard',
+    } as NodeJS.ProcessEnv)).toEqual(['https://deck.example.test']);
+  });
+
   it('derives loopback origins from PORT plus the existing defaults', () => {
     const result = resolveAllowedOrigins({ PORT: '2111' } as NodeJS.ProcessEnv);
     expect([...result].sort()).toEqual(

@@ -19,6 +19,16 @@ describe('registerCors', () => {
     return app!;
   }
 
+  async function buildHosted() {
+    app = Fastify();
+    await registerCors(app!, {
+      AGENT_DECK_HOSTED_MODE: '1',
+      AGENT_DECK_PUBLIC_URL: 'https://deck.example.test/app',
+    } as NodeJS.ProcessEnv);
+    app!.get('/ping', async () => ({ ok: true }));
+    return app!;
+  }
+
   it('allows the configured loopback origin with credentials', async () => {
     const server = await build();
     const res = await server.inject({
@@ -55,5 +65,25 @@ describe('registerCors', () => {
     });
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it.each([
+    ['configured public origin', 'https://deck.example.test', 200, 'https://deck.example.test'],
+    ['local default', 'http://127.0.0.1:1111', 500, undefined],
+    ['unlisted origin', 'http://evil.example', 500, undefined],
+  ])('hosted mode handles %s without reflecting rejected origins', async (
+    _label,
+    origin,
+    expectedStatus,
+    expectedAllowOrigin,
+  ) => {
+    const server = await buildHosted();
+    const res = await server.inject({
+      method: 'GET',
+      url: '/ping',
+      headers: { origin, host: 'evil.example' },
+    });
+    expect(res.statusCode).toBe(expectedStatus);
+    expect(res.headers['access-control-allow-origin']).toBe(expectedAllowOrigin);
   });
 });
