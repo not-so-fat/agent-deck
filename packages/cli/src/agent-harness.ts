@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { McpClient, SetupScope } from './mcp-config';
+import { terminalColorsEnabled, terminalStyle } from './terminal-style';
 
 export type HarnessClient = McpClient | 'codex';
 
@@ -297,24 +298,44 @@ export function diagnoseAllHarnesses(scope: SetupScope = 'global'): HarnessDiagn
   return clients.map((client) => diagnoseHarness(client, scope));
 }
 
-/** Human-readable lines naming the affected client/file and the exact repair command. */
-export function formatHarnessDiagnosis(diagnoses: HarnessDiagnosis[]): string[] {
-  const lines = ['Agent harness:'];
-  let problems = 0;
-  for (const diagnosis of diagnoses) {
-    if (diagnosis.status === 'current') {
-      lines.push(`  OK: ${diagnosis.client} → ${diagnosis.path}`);
-      continue;
-    }
-    problems += 1;
+export interface HarnessFormatOptions {
+  color?: boolean;
+  homeDir?: string;
+}
+
+function compactHomePath(filePath: string, homeDir: string): string {
+  if (filePath === homeDir) {
+    return '~';
+  }
+  const homePrefix = `${homeDir}${path.sep}`;
+  return filePath.startsWith(homePrefix) ? `~${path.sep}${filePath.slice(homePrefix.length)}` : filePath;
+}
+
+/** Compact, human-readable recovery summary with visually distinct commands. */
+export function formatHarnessDiagnosis(
+  diagnoses: HarnessDiagnosis[],
+  options: HarnessFormatOptions = {},
+): string[] {
+  const color = options.color ?? terminalColorsEnabled();
+  const homeDir = options.homeDir ?? os.homedir();
+  const problems = diagnoses.filter((diagnosis) => diagnosis.status !== 'current');
+
+  if (problems.length === 0) {
+    return [`${terminalStyle.bold('Agent harness:', color)} all current`];
+  }
+
+  const noun = problems.length === 1 ? 'repair' : 'repairs';
+  const lines = [
+    `${terminalStyle.bold('Agent harness:', color)} ${terminalStyle.warning(`${problems.length} ${noun} needed`, color)}`,
+  ];
+  for (const diagnosis of problems) {
     const label = diagnosis.status === 'missing' ? 'MISSING' : 'STALE';
-    lines.push(`  ${label}: ${diagnosis.client} → ${diagnosis.path || '(no path)'}`);
-    lines.push(`    repair: ${diagnosis.repairCommand}`);
+    const target = compactHomePath(diagnosis.path, homeDir) || '(no path)';
+    lines.push(
+      `  ${terminalStyle.warning(label, color)} ${diagnosis.client}  ${terminalStyle.dim(target, color)}`,
+    );
+    lines.push(`    Run: ${terminalStyle.command(diagnosis.repairCommand, color)}`);
   }
-  if (problems === 0) {
-    lines.push('  All harnesses current — first turns show one verbatim display_summary receipt.');
-  } else {
-    lines.push('  First-turn receipt requires the harness above; re-run the repair command, then restart the host.');
-  }
+  lines.push(terminalStyle.dim('  Restart each repaired host to load the updated harness.', color));
   return lines;
 }

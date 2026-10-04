@@ -13,6 +13,8 @@ import PlaybookPatchesPage from "@/pages/playbook-patches";
 import FeedbackSignalsPage from "@/pages/feedback-signals";
 import AdminApprovePage from "@/pages/admin-approve";
 import DeckSwitchApprovePage from "@/pages/deck-switch-approve";
+import GrantsPage from "@/pages/grants";
+import AuditPage from "@/pages/audit";
 
 function Router() {
   return (
@@ -21,6 +23,8 @@ function Router() {
       <Route path="/oauth/callback" component={OAuthCallback} />
       <Route path="/playbook-patches" component={PlaybookPatchesPage} />
       <Route path="/feedback-signals" component={FeedbackSignalsPage} />
+      <Route path="/grants" component={GrantsPage} />
+      <Route path="/audit" component={AuditPage} />
       <Route path="/admin/approve" component={AdminApprovePage} />
       <Route path="/deck-switch/approve" component={DeckSwitchApprovePage} />
       <Route path="/mcp-test" component={McpTestPage} />

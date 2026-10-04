@@ -28,6 +28,7 @@ import { isDashboardAuthenticated, parseDashboardCookie } from '../lib/dashboard
 import type { TrustedSessionStore } from '../trusted-session/store';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
 import type { OwnerAuthProvider } from '../auth/owner-auth';
+import { auditDeckTarget, type AuditActor } from '../audit/store';
 import {
   HOSTED_DASHBOARD_ABSOLUTE_MS,
   HOSTED_DASHBOARD_IDLE_MS,
@@ -100,6 +101,13 @@ function requireGrantDeckScope(
     throw new TrustedAuthError('GRANT_REQUIRED', 'Grant expired or revoked');
   }
   if (!grant.allowedDecks.includes(deckId)) {
+    fastify.auditStore?.append({
+      actor: grantId as AuditActor,
+      event: 'deck.selection_denied',
+      targetId: auditDeckTarget(deckId),
+      outcome: 'denied',
+      reasonCode: 'resource_out_of_scope',
+    });
     throw new TrustedAuthError(
       'RESOURCE_OUT_OF_SCOPE',
       "Deck is outside this grant's allowed decks",
@@ -166,12 +174,28 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         // Launch session: deck fixed at connect unless elevated assignment update.
         if (deckId !== session.deckId) {
           if (updateAssignment !== true) {
+            const row = store.getRuntimeSessionRow(session.sessionId);
+            fastify.auditStore?.append({
+              actor: (row?.grant_id ?? 'local-launch') as AuditActor,
+              event: 'deck.selection_denied',
+              targetId: auditDeckTarget(deckId),
+              outcome: 'denied',
+              reasonCode: 'deck_fixed',
+            });
             throw new TrustedAuthError(
               'DECK_FIXED',
               "This connection's deck was set when it was launched and cannot be changed by the agent",
             );
           }
           if (session.mode !== 'agent-admin') {
+            const row = store.getRuntimeSessionRow(session.sessionId);
+            fastify.auditStore?.append({
+              actor: (row?.grant_id ?? 'local-launch') as AuditActor,
+              event: 'deck.selection_denied',
+              targetId: auditDeckTarget(deckId),
+              outcome: 'denied',
+              reasonCode: 'admin_required',
+            });
             throw new TrustedAuthError('ADMIN_REQUIRED', 'Deck-admin elevation is required');
           }
           // NOT-318: even an elevated grant session cannot leave its allowlist.
@@ -279,6 +303,13 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         }
 
         const challenge = store.createAdminChallenge(runtimeSessionId);
+        fastify.auditStore?.append({
+          actor: (row.grant_id ?? 'local-launch') as AuditActor,
+          event: 'elevation.requested',
+          targetId: runtimeSessionId,
+          outcome: 'succeeded',
+          reasonCode: null,
+        });
         const approvalUrl = `/admin/approve?challenge=${encodeURIComponent(challenge.id)}&session=${encodeURIComponent(runtimeSessionId)}`;
 
         return reply.send({
@@ -322,7 +353,50 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           throw new TrustedAuthError('SESSION_INVALID', 'Runtime session absent or expired');
         }
 
+        fastify.auditStore?.append({
+          actor: 'owner',
+          event: 'elevation.approved',
+          targetId: runtimeSessionId,
+          outcome: 'succeeded',
+          reasonCode: null,
+        });
+
         return reply.send({ success: true, data: { session: elevated } });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.post<{ Body: { challengeId: string; runtimeSessionId: string } }>(
+    '/admin/deny',
+    async (request, reply) => {
+      try {
+        const { challengeId, runtimeSessionId } = request.body ?? {};
+        if (!challengeId?.trim() || !runtimeSessionId?.trim()) {
+          return reply.status(400).send({
+            success: false,
+            error: 'challengeId and runtimeSessionId required',
+          });
+        }
+        const consumed = store.consumeAdminChallenge(challengeId, runtimeSessionId);
+        if (!consumed) {
+          throw new TrustedAuthError(
+            'ADMIN_CHALLENGE_EXPIRED',
+            'Approval challenge expired or was already consumed',
+          );
+        }
+        fastify.auditStore?.append({
+          actor: 'owner',
+          event: 'elevation.denied',
+          targetId: runtimeSessionId,
+          outcome: 'denied',
+          reasonCode: 'owner_denied',
+        });
+        return reply.send({ success: true, data: { denied: true } });
       } catch (error) {
         if (error instanceof TrustedAuthError) {
           return sendTrustedAuthError(reply, error);
@@ -734,6 +808,15 @@ export async function registerDashboardAuthRoutes(fastify: FastifyInstance) {
   const hostedCookie = (token: string, maxAgeSeconds: number) =>
     `${AGENT_DECK_DASHBOARD_COOKIE}=${encodeURIComponent(token)}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}`;
 
+  // Authenticated dashboard capability discovery. The Grants navigation and
+  // page use this rather than inferring deployment mode from the browser URL.
+  fastify.get('/context', async (_request, reply) => {
+    return reply.send({
+      success: true,
+      data: { hosted: process.env.AGENT_DECK_HOSTED_MODE === '1' },
+    });
+  });
+
   fastify.post<{
     Body: { owner?: unknown; credential?: unknown; bootstrapSecret?: unknown };
   }>('/sign-in', async (request, reply) => {
@@ -752,6 +835,13 @@ export async function registerDashboardAuthRoutes(fastify: FastifyInstance) {
       authenticated = await fastify.ownerAuthProvider.authenticate({ owner, credential });
     }
     if (!authenticated) {
+      fastify.auditStore?.append({
+        actor: 'owner',
+        event: 'owner.sign_in_failed',
+        targetId: 'owner',
+        outcome: 'denied',
+        reasonCode: 'invalid_credentials',
+      });
       return reply.status(401).send({ success: false, error: 'Invalid owner credentials' });
     }
 
@@ -763,6 +853,13 @@ export async function registerDashboardAuthRoutes(fastify: FastifyInstance) {
       'Set-Cookie',
       hostedCookie(token, Math.floor(HOSTED_DASHBOARD_ABSOLUTE_MS / 1000)),
     );
+    fastify.auditStore?.append({
+      actor: 'owner',
+      event: 'owner.sign_in_succeeded',
+      targetId: 'owner',
+      outcome: 'succeeded',
+      reasonCode: null,
+    });
     return reply.send({ success: true, data: { authenticated: true } });
   });
 

@@ -49,6 +49,7 @@ import {
   type PlaybookStubInput,
 } from './playbooks/stub-sync';
 import { RequestLimiter } from './auth/request-limiter';
+import { AuditStore, auditDeckTarget, type AuditActor } from './audit/store';
 
 function readWorkspaceRootHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_WORKSPACE_HEADER];
@@ -214,7 +215,9 @@ export class AgentDeckMCPServer {
   private grantStoreOverride: ClientGrantStore | null | undefined;
   /** Lazily opened grant store for hosted mode (shared backend database file). */
   private grantStoreCache: ClientGrantStore | null = null;
-  private grantDatabaseCache: Database.Database | null = null;
+  private auditStoreOverride: AuditStore | null | undefined;
+  private auditStoreCache: AuditStore | null = null;
+  private sharedSecurityDb: Database.Database | null = null;
   private readonly initializeLimiter: RequestLimiter;
 
   constructor(
@@ -222,13 +225,18 @@ export class AgentDeckMCPServer {
     backendUrl: string = 'http://localhost:8000',
     toolProfile?: McpToolProfile,
     host: string = '127.0.0.1',
-    options?: { grantStore?: ClientGrantStore | null; now?: () => number },
+    options?: {
+      grantStore?: ClientGrantStore | null;
+      auditStore?: AuditStore | null;
+      now?: () => number;
+    },
   ) {
     this.port = port;
     this.backendUrl = backendUrl;
     this.toolProfile = toolProfile ?? resolveMcpToolProfile();
     this.host = host;
     this.grantStoreOverride = options?.grantStore;
+    this.auditStoreOverride = options?.auditStore;
     this.initializeLimiter = new RequestLimiter(MCP_INITIALIZE_RATE_WINDOW_MS, options?.now);
 
     this.app = express();
@@ -260,9 +268,22 @@ export class AgentDeckMCPServer {
     }
     try {
       const dbPath = process.env.AGENT_DECK_DB_PATH?.trim() || resolveDatabasePath();
-      this.grantDatabaseCache = new Database(dbPath);
-      this.grantStoreCache = new ClientGrantStore(this.grantDatabaseCache);
+      this.sharedSecurityDb ??= new Database(dbPath);
+      this.grantStoreCache = new ClientGrantStore(this.sharedSecurityDb);
       return this.grantStoreCache;
+    } catch {
+      return null;
+    }
+  }
+
+  private getAuditStore(): AuditStore | null {
+    if (this.auditStoreOverride !== undefined) return this.auditStoreOverride;
+    if (this.auditStoreCache) return this.auditStoreCache;
+    try {
+      const dbPath = process.env.AGENT_DECK_DB_PATH?.trim() || resolveDatabasePath();
+      this.sharedSecurityDb ??= new Database(dbPath);
+      this.auditStoreCache = new AuditStore(this.sharedSecurityDb);
+      return this.auditStoreCache;
     } catch {
       return null;
     }
@@ -1207,6 +1228,13 @@ export class AgentDeckMCPServer {
     const header = readLaunchDeckHeader(req);
     const boundDeck = this.sessionBinding.getBinding(sessionId).deckId;
     if (header && header !== boundDeck && !principalAllowsDeck(principal, header)) {
+      this.getAuditStore()?.append({
+        actor: principal.grantId as AuditActor,
+        event: 'deck.selection_denied',
+        targetId: auditDeckTarget(header),
+        outcome: 'denied',
+        reasonCode: 'resource_out_of_scope',
+      });
       console.warn(
         '[agent-deck] Grant follow-up deck denied (transport kept):',
         `grantId=${principal.grantId}`,
@@ -1385,6 +1413,13 @@ export class AgentDeckMCPServer {
     }
     const deckId = resolveGrantDeck(principal, readLaunchDeckHeader(req));
     if (!deckId) {
+      this.getAuditStore()?.append({
+        actor: principal.grantId as AuditActor,
+        event: 'deck.selection_denied',
+        targetId: auditDeckTarget(readLaunchDeckHeader(req)!),
+        outcome: 'denied',
+        reasonCode: 'resource_out_of_scope',
+      });
       console.warn(
         '[agent-deck] Grant initialize deck denied (no session created):',
         `grantId=${principal.grantId}`,
@@ -1405,6 +1440,13 @@ export class AgentDeckMCPServer {
       this.sendGrantRequired(res);
       return;
     }
+    this.getAuditStore()?.append({
+      actor: principal.grantId as AuditActor,
+      event: 'grant.used',
+      targetId: auditDeckTarget(deckId),
+      outcome: 'succeeded',
+      reasonCode: null,
+    });
     await this.establishTransportSession(req, res, sessionId);
   }
 
@@ -1507,6 +1549,13 @@ export class AgentDeckMCPServer {
       try {
         await this.authenticateLaunchDeck(sessionId, req);
       } catch (error) {
+        this.getAuditStore()?.append({
+          actor: 'local-launch',
+          event: 'deck.selection_denied',
+          targetId: auditDeckTarget(launchDeck),
+          outcome: 'denied',
+          reasonCode: 'resource_out_of_scope',
+        });
         console.warn(
           '[agent-deck] Launch-deck auth failed before MCP init:',
           error instanceof Error ? error.message : error,
@@ -1709,9 +1758,10 @@ export class AgentDeckMCPServer {
       // Release the port too, otherwise a restart on the same port races the old
       // listener and the "did it come back?" probe can't tell the two apart.
       await this.closeHttpServer();
-      this.grantDatabaseCache?.close();
-      this.grantDatabaseCache = null;
+      this.sharedSecurityDb?.close();
+      this.sharedSecurityDb = null;
       this.grantStoreCache = null;
+      this.auditStoreCache = null;
       console.log(`🛑 MCP server stopped`);
     } catch (error) {
       console.error(`❌ Error stopping MCP server:`, error);

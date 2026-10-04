@@ -38,7 +38,7 @@ import { downloadBundleJson, exportBundle } from "@/lib/export-import";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Layers, Bolt, Server, KeyRound, BookOpen, Plus, Filter, ArrowUpDown, AlertTriangle, LayoutGrid, Download, Upload, GitPullRequest } from "lucide-react";
+import { Search, Layers, Bolt, Server, KeyRound, BookOpen, Plus, Filter, ArrowUpDown, AlertTriangle, LayoutGrid, Download, Upload, GitPullRequest, ShieldCheck, ScrollText } from "lucide-react";
 import { Link } from "wouter";
 import { listPlaybookPatches } from "@/lib/playbook-patches";
 import { getFeedbackSignalCount } from "@/lib/feedback-signals";
@@ -92,6 +92,10 @@ export default function Home() {
   const { data: openSignalCount = 0 } = useQuery({
     queryKey: ["/api/feedback-signals/count", "available"],
     queryFn: () => getFeedbackSignalCount(),
+  });
+
+  const { data: dashboardContext } = useQuery<{ success: boolean; data: { hosted: boolean } }>({
+    queryKey: ["/api/dashboard-auth/context"],
   });
 
   const handleExportAll = async () => {
@@ -380,6 +384,23 @@ export default function Home() {
               
               {/* Live MCP sessions (replaces editing-deck name/cards chip) */}
               <LiveSessionBadges highlightDeckId={editingDeckId ?? undefined} />
+
+              {dashboardContext?.data.hosted && (
+                <>
+                  <Link href="/grants">
+                    <Button variant="outline" size="sm" className="shrink-0 border-white/20 bg-white/5 text-[#E8F6F4]">
+                      <ShieldCheck className="mr-2 h-4 w-4" />
+                      <span className="font-ui-display">Grants</span>
+                    </Button>
+                  </Link>
+                  <Link href="/audit">
+                    <Button variant="outline" size="sm" className="shrink-0 border-white/20 bg-white/5 text-[#E8F6F4]">
+                      <ScrollText className="mr-2 h-4 w-4" />
+                      <span className="font-ui-display">Audit</span>
+                    </Button>
+                  </Link>
+                </>
+              )}
 
               <Link href="/feedback-signals">
                 <Button variant="outline" size="sm" className="relative shrink-0 border-white/20 bg-white/5 text-[#E8F6F4]">

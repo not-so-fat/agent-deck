@@ -28,6 +28,7 @@ import { runInstall } from './install';
 import { runUseCommand } from './use';
 import { runMcpLaunch } from './mcp-launcher';
 import { getAgentDeckVersion } from './version';
+import { terminalColorsEnabled, terminalStyle } from './terminal-style';
 
 type VaultManager = {
   create: (input: unknown) => Promise<unknown>;
@@ -73,6 +74,98 @@ function printUsage() {
   agent-deck bootstrap [--host claude|cursor|all] [--workspace <path>] [--since <date>] [--limit <n>] [--out <dir>]
     Mine local Claude Code session history into playbook-proposal digests (offline).
   agent-deck exec [--deck DECK_ID] [--connections cred_a,cred_b] [--dry-run] -- <command...>`);
+}
+
+const TOP_LEVEL_COMMANDS = [
+  'start',
+  'stop',
+  'status',
+  'open',
+  'statusline',
+  'menubar',
+  'setup',
+  'use',
+  'install',
+  'upgrade',
+  'doctor',
+  'debug-mcp',
+  'credential',
+  'service',
+  'playbook',
+  'deck',
+  'export',
+  'import',
+  'reindex',
+  'store',
+  'import-feedback-signals',
+  'bootstrap',
+  'exec',
+] as const;
+
+function editDistance(left: string, right: string): number {
+  const rows = Array.from({ length: left.length + 1 }, () =>
+    Array.from({ length: right.length + 1 }, () => 0),
+  );
+  for (let leftIndex = 0; leftIndex <= left.length; leftIndex += 1) {
+    rows[leftIndex][0] = leftIndex;
+  }
+  for (let rightIndex = 0; rightIndex <= right.length; rightIndex += 1) {
+    rows[0][rightIndex] = rightIndex;
+  }
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      rows[leftIndex][rightIndex] = Math.min(
+        rows[leftIndex][rightIndex - 1] + 1,
+        rows[leftIndex - 1][rightIndex] + 1,
+        rows[leftIndex - 1][rightIndex - 1] + substitutionCost,
+      );
+      if (
+        leftIndex > 1 &&
+        rightIndex > 1 &&
+        left[leftIndex - 1] === right[rightIndex - 2] &&
+        left[leftIndex - 2] === right[rightIndex - 1]
+      ) {
+        rows[leftIndex][rightIndex] = Math.min(
+          rows[leftIndex][rightIndex],
+          rows[leftIndex - 2][rightIndex - 2] + 1,
+        );
+      }
+    }
+  }
+  return rows[left.length][right.length];
+}
+
+export function suggestTopLevelCommand(command: string): string | null {
+  let nearest: string | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of TOP_LEVEL_COMMANDS) {
+    const distance = editDistance(command, candidate);
+    if (distance < nearestDistance) {
+      nearest = candidate;
+      nearestDistance = distance;
+    }
+  }
+  const threshold = Math.max(1, Math.floor(command.length / 3));
+  return nearestDistance <= threshold ? nearest : null;
+}
+
+function quoteShellArg(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function printUnknownCommand(command: string, rest: string[]): void {
+  const color = terminalColorsEnabled(process.stderr);
+  console.error(`${terminalStyle.error('Unknown command:', color)} ${command}`);
+  const suggestion = suggestTopLevelCommand(command);
+  if (suggestion) {
+    const corrected = ['agent-deck', suggestion, ...rest].map(quoteShellArg).join(' ');
+    console.error(`Did you mean: ${terminalStyle.command(corrected, color)}`);
+  }
+  console.error(terminalStyle.dim('Run agent-deck --help to see all commands.', color));
 }
 
 export async function runCredentialAdd(args: string[]): Promise<number> {
@@ -267,6 +360,10 @@ export async function runCli(argv: string[]): Promise<number> {
     console.log(getAgentDeckVersion());
     return 0;
   }
+  if (command === '--help' || command === '-h' || command === 'help') {
+    printUsage();
+    return 0;
+  }
 
   switch (command) {
     case 'start': {
@@ -360,7 +457,11 @@ export async function runCli(argv: string[]): Promise<number> {
     case 'exec':
       return runExec(rest);
     default:
+      if (command) {
+        printUnknownCommand(command, rest);
+        return 1;
+      }
       printUsage();
-      return command ? 1 : 0;
+      return 0;
   }
 }

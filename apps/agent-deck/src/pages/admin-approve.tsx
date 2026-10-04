@@ -4,7 +4,7 @@ import { adminApproveFailure } from "@/lib/admin-approve-error";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-type ApproveState = "idle" | "loading" | "success" | "error";
+type ApproveState = "idle" | "approving" | "denying" | "success" | "error";
 
 export default function AdminApprovePage() {
   const params = new URLSearchParams(window.location.search);
@@ -27,7 +27,7 @@ export default function AdminApprovePage() {
     if (!challengeId || !runtimeSessionId) {
       return;
     }
-    setState("loading");
+    setState("approving");
     try {
       await apiRequest("POST", "/api/trusted-session/admin/approve", {
         challengeId,
@@ -35,6 +35,24 @@ export default function AdminApprovePage() {
       });
       setState("success");
       setMessage("Admin elevation approved for this MCP session. Return to the agent.");
+    } catch (error) {
+      const failure = adminApproveFailure(error);
+      setState("error");
+      setRetryable(failure.retryable);
+      setMessage(failure.message);
+    }
+  }
+
+  async function deny() {
+    if (!challengeId || !runtimeSessionId) return;
+    setState("denying");
+    try {
+      await apiRequest("POST", "/api/trusted-session/admin/deny", {
+        challengeId,
+        runtimeSessionId,
+      });
+      setState("success");
+      setMessage("Admin elevation denied. The MCP session remains in normal mode.");
     } catch (error) {
       const failure = adminApproveFailure(error);
       setState("error");
@@ -78,9 +96,23 @@ export default function AdminApprovePage() {
           ) : null}
 
           {state !== "success" && challengeId && runtimeSessionId && (state !== "error" || retryable) ? (
-            <Button onClick={() => void approve()} disabled={state === "loading"} className="w-full">
-              {state === "loading" ? "Approving…" : "Approve elevation"}
-            </Button>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button
+                variant="outline"
+                onClick={() => void deny()}
+                disabled={state === "approving" || state === "denying"}
+                className="w-full"
+              >
+                {state === "denying" ? "Denying…" : "Deny"}
+              </Button>
+              <Button
+                onClick={() => void approve()}
+                disabled={state === "approving" || state === "denying"}
+                className="w-full"
+              >
+                {state === "approving" ? "Approving…" : "Approve elevation"}
+              </Button>
+            </div>
           ) : null}
         </CardContent>
       </Card>
