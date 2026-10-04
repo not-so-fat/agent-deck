@@ -9,6 +9,7 @@ import {
 
 import { DatabaseManager } from '../models/database';
 import { ClientGrantStore } from '../auth/client-grants';
+import { AuditStore } from '../audit/store';
 import { PatchManager } from '../playbooks/patch-manager';
 import { PlaybookManager } from '../playbooks/playbook-manager';
 import { registerDeckRoutes } from '../routes/decks';
@@ -58,6 +59,7 @@ describe('trusted session auth matrix (§8)', () => {
     const playbookManager = new PlaybookManager(db);
     const patchManager = new PatchManager(db, playbookManager);
     const grantStore = new ClientGrantStore(db.getSqliteDatabase());
+    const audit = new AuditStore(db.getSqliteDatabase());
 
     const fastify = Fastify();
     fastify.decorate('db', db);
@@ -78,6 +80,7 @@ describe('trusted session auth matrix (§8)', () => {
     fastify.decorate('playbookManager', playbookManager);
     fastify.decorate('patchManager', patchManager);
     fastify.decorate('grantStore', grantStore);
+    fastify.decorate('auditStore', audit);
 
     registerHttpPolicyHook(fastify);
     await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
@@ -90,7 +93,7 @@ describe('trusted session auth matrix (§8)', () => {
     await fastify.ready();
     servers.push(fastify);
 
-    return { fastify, db, session, boundDeck, otherDeck, store, serviceOnBound, playbook };
+    return { fastify, db, session, boundDeck, otherDeck, store, audit, serviceOnBound, playbook };
   }
 
   it('exchanges a one-shot nonce for a persistent dashboard cookie', async () => {
@@ -217,7 +220,7 @@ describe('trusted session auth matrix (§8)', () => {
   });
 
   it('elevation request → dashboard approve → deck creation succeeds', async () => {
-    const { fastify, session, store } = await buildApp();
+    const { fastify, session, store, audit } = await buildApp();
 
     const requestElevation = await fastify.inject({
       method: 'POST',
@@ -246,6 +249,54 @@ describe('trusted session auth matrix (§8)', () => {
       payload: { name: 'admin-created' },
     });
     expect(createDeck.statusCode).toBe(201);
+    expect(audit.list({ limit: 10 }).filter((row) => row.event.startsWith('elevation.'))).toMatchObject([
+      { actor: 'owner', event: 'elevation.approved', targetId: session.sessionId, outcome: 'succeeded' },
+      { actor: 'local-launch', event: 'elevation.requested', targetId: session.sessionId, outcome: 'succeeded' },
+    ]);
+  });
+
+  it('owner can deny elevation exactly once and the session stays normal', async () => {
+    const { fastify, session, store, audit } = await buildApp();
+    const requested = await fastify.inject({
+      method: 'POST',
+      url: '/api/trusted-session/admin/request-elevation',
+      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+      payload: { runtimeSessionId: session.sessionId },
+    });
+    const { challengeId } = requested.json().data as { challengeId: string };
+    const payload = { challengeId, runtimeSessionId: session.sessionId };
+    const denied = await fastify.inject({
+      method: 'POST', url: '/api/trusted-session/admin/deny', headers: dashboardAuthHeaders(store), payload,
+    });
+    const replay = await fastify.inject({
+      method: 'POST', url: '/api/trusted-session/admin/deny', headers: dashboardAuthHeaders(store), payload,
+    });
+    expect(denied.statusCode).toBe(200);
+    expect(replay.statusCode).toBe(410);
+    expect(store.getRuntimeSessionRow(session.sessionId)?.mode).toBe('normal');
+    expect(audit.list({ limit: 10 }).filter((row) => row.event === 'elevation.denied')).toMatchObject([
+      { actor: 'owner', targetId: session.sessionId, outcome: 'denied', reasonCode: 'owner_denied' },
+    ]);
+  });
+
+  it('records a denied local deck selection without adding a prompt', async () => {
+    const { fastify, session, otherDeck, audit } = await buildApp();
+    const denied = await fastify.inject({
+      method: 'POST',
+      url: '/api/trusted-session/bind-workspace',
+      headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+      payload: { workspaceRoot: '/workspace', deckId: otherDeck.id },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(audit.list({ limit: 10 })).toMatchObject([
+      {
+        actor: 'local-launch',
+        event: 'deck.selection_denied',
+        targetId: otherDeck.id,
+        outcome: 'denied',
+        reasonCode: 'deck_fixed',
+      },
+    ]);
   });
 
   it('lists pending admin challenges for menubar', async () => {

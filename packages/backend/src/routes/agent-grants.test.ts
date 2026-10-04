@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AGENT_DECK_SESSION_HEADER } from '@agent-deck/shared';
 
 import { ClientGrantStore, parseGrantToken } from '../auth/client-grants';
+import { AuditStore } from '../audit/store';
 import { DatabaseManager } from '../models/database';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
@@ -31,21 +32,23 @@ describe('owner-only agent grants (NOT-318)', () => {
     const deckB = await db.createDeck({ name: 'grant-deck-b' });
     const store = new TrustedSessionStore(db.getSqliteDatabase());
     const grants = new ClientGrantStore(db.getSqliteDatabase());
+    const audit = new AuditStore(db.getSqliteDatabase());
 
     const fastify = Fastify();
     fastify.decorate('db', db);
     fastify.decorate('trustedSessionStore', store);
     fastify.decorate('grantStore', grants);
+    fastify.decorate('auditStore', audit);
     registerHttpPolicyHook(fastify);
     await fastify.register(registerAgentGrantRoutes, { prefix: '/api' });
     await fastify.ready();
     servers.push(fastify);
 
-    return { fastify, db, store, grants, deckA, deckB };
+    return { fastify, db, store, grants, audit, deckA, deckB };
   }
 
   it('owner creates a grant and sees the secret exactly once', async () => {
-    const { fastify, store, deckA, deckB } = await buildApp();
+    const { fastify, store, audit, deckA, deckB } = await buildApp();
     const create = await fastify.inject({
       method: 'POST',
       url: '/api/agent-grants',
@@ -67,6 +70,15 @@ describe('owner-only agent grants (NOT-318)', () => {
 
     // The grant object itself carries no secret material.
     expect(JSON.stringify(body.data.grant)).not.toContain(body.data.token);
+    expect(audit.list({ limit: 10 })).toMatchObject([
+      {
+        actor: 'owner',
+        event: 'grant.created',
+        targetId: body.data.grant.id,
+        outcome: 'succeeded',
+        reasonCode: null,
+      },
+    ]);
   });
 
   it('denies create/list/revoke without dashboard auth, including to Bearer [REDACTED]', async () => {
@@ -101,7 +113,7 @@ describe('owner-only agent grants (NOT-318)', () => {
   });
 
   it('lists grants without secrets and revokes with immediate session kill', async () => {
-    const { fastify, store, grants, deckA } = await buildApp();
+    const { fastify, store, grants, audit, deckA } = await buildApp();
     const auth = dashboardAuthHeaders(store);
     const issued = grants.issueGrant({ label: 'list-probe', defaultDeck: deckA.id });
     const secret = parseGrantToken(issued.token)!.secret;
@@ -130,6 +142,15 @@ describe('owner-only agent grants (NOT-318)', () => {
     // Redaction on the revoke response as well.
     expect(revoke.body).not.toContain(issued.token);
     expect(revoke.body).not.toContain(secret);
+    const repeated = await fastify.inject({
+      method: 'POST',
+      url: `/api/agent-grants/${issued.grant.id}/revoke`,
+      headers: auth,
+    });
+    expect(repeated.statusCode).toBe(200);
+    expect(audit.list({ limit: 10 }).filter((row) => row.event === 'grant.revoked')).toMatchObject([
+      { actor: 'owner', targetId: issued.grant.id, outcome: 'succeeded' },
+    ]);
   });
 
   it('revoking an unknown grant is a 404', async () => {

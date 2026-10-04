@@ -42,6 +42,8 @@ import { ensureAdminSecret } from '../trusted-session/admin-secret';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { SqliteOwnerAuthProvider } from '../auth/owner-auth';
 import { registerHostedModeGuard, resolveHostedModeConfig } from '../auth/hosted-mode';
+import { AuditStore } from '../audit/store';
+import { registerAuditRoutes } from '../routes/audit';
 
 export async function createServer() {
   const fastify = Fastify({
@@ -71,6 +73,7 @@ export async function createServer() {
     process.env.AGENT_DECK_OWNER_BOOTSTRAP_SECRET,
   );
   const grantStore = new ClientGrantStore(db.getSqliteDatabase());
+  const auditStore = new AuditStore(db.getSqliteDatabase());
   await ensureAdminSecret();
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
   const oauthTokenVault = new OAuthTokenVault(secretStore, db);
@@ -99,6 +102,7 @@ export async function createServer() {
   fastify.decorate('trustedSessionStore', trustedSessionStore);
   fastify.decorate('ownerAuthProvider', ownerAuthProvider);
   fastify.decorate('grantStore', grantStore);
+  fastify.decorate('auditStore', auditStore);
   registerHostedModeGuard(fastify, resolveHostedModeConfig(process.env));
   registerHttpPolicyHook(fastify);
 
@@ -138,6 +142,7 @@ export async function createServer() {
   await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
   await fastify.register(registerLaunchRoutes, { prefix: '/api/launch' });
   await fastify.register(registerUsageRoutes, { prefix: '/api/usage' });
+  await fastify.register(registerAuditRoutes, { prefix: '/api' });
 
   // Health check endpoint
   fastify.get('/health', async (request, reply) => {
@@ -219,6 +224,7 @@ declare module 'fastify' {
     patchManager: PatchManager;
     collectionWarningService: CollectionWarningService;
     liveDisplayRegistry: LiveDisplayRegistry;
+    auditStore: AuditStore;
     broadcastServiceUpdate: (update: ServiceStatusUpdate) => void;
     broadcastDeckUpdate: (update: DeckUpdate) => void;
     broadcastToAll: (message: WebSocketMessage) => void;
