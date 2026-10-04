@@ -632,9 +632,9 @@ describe('NOT-295 harness freshness diagnostic', () => {
     expect(diagnosis.repairCommand).toBe(`agent-deck setup --client ${client}`);
     // Read-only: the diagnostic must not create the file.
     expect(fs.existsSync(diagnosis.path)).toBe(false);
-    const joined = formatHarnessDiagnosis([diagnosis]).join('\n');
-    expect(joined).toContain(`MISSING: ${client} → ${diagnosis.path}`);
-    expect(joined).toContain(`repair: agent-deck setup --client ${client}`);
+    const joined = formatHarnessDiagnosis([diagnosis], { color: false, homeDir: '/not-home' }).join('\n');
+    expect(joined).toContain(`MISSING ${client}  ${diagnosis.path}`);
+    expect(joined).toContain(`Run: agent-deck setup --client ${client}`);
   });
 
   it.each(clients)('stale %s harness names the client/file and the exact repair command', (client) => {
@@ -654,9 +654,9 @@ describe('NOT-295 harness freshness diagnostic', () => {
     expect(diagnosis.status).toBe('stale');
     expect(diagnosis.path).toBe(target);
     expect(diagnosis.repairCommand).toBe(`agent-deck setup --client ${client}`);
-    const joined = formatHarnessDiagnosis([diagnosis]).join('\n');
-    expect(joined).toContain(`STALE: ${client} → ${target}`);
-    expect(joined).toContain(`repair: agent-deck setup --client ${client}`);
+    const joined = formatHarnessDiagnosis([diagnosis], { color: false, homeDir: '/not-home' }).join('\n');
+    expect(joined).toContain(`STALE ${client}  ${target}`);
+    expect(joined).toContain(`Run: agent-deck setup --client ${client}`);
   });
 
   it.each(clients)('current %s harness after install, ignoring user notes outside the markers', (client) => {
@@ -683,8 +683,9 @@ describe('NOT-295 harness freshness diagnostic', () => {
       'agent-deck setup --client claude',
       'agent-deck setup --client codex',
     ]);
-    const joined = formatHarnessDiagnosis(all).join('\n');
-    expect(joined).toContain('First-turn receipt requires the harness above');
+    const joined = formatHarnessDiagnosis(all, { color: false }).join('\n');
+    expect(joined).toContain('3 repairs needed');
+    expect(joined).toContain('Restart each repaired host');
   });
 
   it('release path: install each harness into a temporary home, then diagnose current', () => {
@@ -699,7 +700,22 @@ describe('NOT-295 harness freshness diagnostic', () => {
         'exactly one transcript line',
       );
     }
-    const joined = formatHarnessDiagnosis(diagnoseAllHarnesses('global')).join('\n');
-    expect(joined).toContain('All harnesses current');
+    const joined = formatHarnessDiagnosis(diagnoseAllHarnesses('global'), { color: false }).join('\n');
+    expect(joined).toBe('Agent harness: all current');
+  });
+
+  it('shortens home paths and highlights the repair command when color is enabled', () => {
+    const lines = formatHarnessDiagnosis(
+      [{
+        client: 'cursor',
+        path: '/Users/test/.cursor/rules/agent-deck.mdc',
+        status: 'stale',
+        repairCommand: 'agent-deck setup --client cursor',
+      }],
+      { color: true, homeDir: '/Users/test' },
+    );
+    const joined = lines.join('\n');
+    expect(joined).toContain('~/.cursor/rules/agent-deck.mdc');
+    expect(joined).toContain('\u001b[1;36magent-deck setup --client cursor\u001b[0m');
   });
 });
