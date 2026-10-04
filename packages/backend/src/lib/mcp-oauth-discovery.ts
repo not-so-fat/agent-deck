@@ -3,6 +3,7 @@ import {
   resolveOAuthSetupMode,
   type OAuthSetupMode,
 } from '../data/oauth-provider-guides';
+import { DestinationGuardError, guardedFetch } from './destination-guard';
 
 interface ProtectedResourceMetadata {
   resource?: string;
@@ -67,14 +68,15 @@ function protectedResourceCandidates(serviceUrl: string): string[] {
 
 async function fetchJson(url: string): Promise<unknown | null> {
   try {
-    const response = await fetch(url, {
+    const response = await guardedFetch(url, {
       headers: { Accept: 'application/json' },
     });
     if (!response.ok) {
       return null;
     }
     return response.json();
-  } catch {
+  } catch (error) {
+    if (error instanceof DestinationGuardError) throw error;
     return null;
   }
 }
@@ -163,12 +165,13 @@ async function probeWwwAuthenticate(serviceUrl: string): Promise<string | null> 
               headers,
               body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
             };
-      const response = await fetch(serviceUrl, init);
+      const response = await guardedFetch(serviceUrl, init);
       const wwwAuth = response.headers.get('www-authenticate');
       if (wwwAuth) {
         return wwwAuth;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof DestinationGuardError) throw error;
       // try next method
     }
   }

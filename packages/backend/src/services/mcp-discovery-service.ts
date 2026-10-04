@@ -1,4 +1,5 @@
 import { discoverMcpOAuthRequirements } from '../lib/mcp-oauth-discovery';
+import { guardedFetch } from '../lib/destination-guard';
 
 interface MCPDiscoveryResult {
   success: boolean;
@@ -86,7 +87,7 @@ export class MCPDiscoveryService {
 
     try {
       // Try a simple HTTP request to check if the service is reachable
-      const response = await fetch(url, {
+      const response = await guardedFetch(url, {
         method: 'GET',
         headers: {
           'Accept': 'application/json, text/event-stream',

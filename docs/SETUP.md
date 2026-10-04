@@ -206,6 +206,18 @@ agent-deck start --daemon --force  # restart
 | `AGENT_DECK_PUBLIC_URL` | HTTPS origin → `{url}/api/oauth/callback` |
 | `AGENT_DECK_DASHBOARD_URL` | Where to send browser after OAuth |
 
+### Hosted-mode destination security
+
+When `AGENT_DECK_HOSTED_MODE=1`, remote service registration, discovery, OAuth,
+and proxied calls reject loopback, private, link-local, CGNAT, cloud-metadata,
+`localhost`, and `*.internal` destinations. Local mode is unchanged.
+
+`AGENT_DECK_ALLOW_PRIVATE_DESTINATIONS=1` disables this protection for the
+whole deployment. This is dangerous: it lets registered services make the
+hosted instance send requests into its private network. Set it only when the
+deployment owner intentionally accepts that SSRF exposure and has equivalent
+network-level controls.
+
 ### Shared provider apps (maintainers)
 
 | Variable | Purpose |

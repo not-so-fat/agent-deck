@@ -8,6 +8,7 @@ import {
   extractMcpErrorMessage,
   shouldAttemptLegacySseFallback,
 } from '../lib/mcp-connection-error';
+import { guardedFetch } from '../lib/destination-guard';
 
 interface MCPTool {
   name: string;
@@ -108,6 +109,7 @@ export class MCPClientManager {
       console.log(`🔗 Attempting StreamableHTTP transport for ${serviceUrl}`);
       const streamableTransport = new StreamableHTTPClientTransport(baseUrl, {
         requestInit: { headers },
+        fetch: guardedFetch,
       });
       await streamableClient.connect(streamableTransport);
       console.log(`✅ Connected to MCP service ${serviceUrl} using StreamableHTTP transport`);
@@ -137,6 +139,7 @@ export class MCPClientManager {
       try {
         const sseTransport = new SSEClientTransport(baseUrl, {
           requestInit: { headers },
+          fetch: guardedFetch,
         });
         await sseClient.connect(sseTransport);
         console.log(`✅ Connected to MCP service ${serviceUrl} using SSE transport`);

@@ -9,6 +9,7 @@ import {
 import type { DatabaseManager } from '../models/database';
 import { migrateSqliteToStore } from '../store/migrate';
 import { serviceNeedsOauthReconnect } from './sanitize-for-export';
+import { destinationGuard } from '../lib/destination-guard';
 
 export class ImportBundleError extends Error {
   constructor(message: string) {
@@ -62,6 +63,9 @@ async function resolveService(
   servicesNeedingOauth: string[],
 ): Promise<ResolveResult> {
   try {
+    if (service.type !== 'local-mcp') {
+      await destinationGuard.assertUrlAllowed(service.url);
+    }
     const created = await db.createService({
       name: service.name,
       type: service.type,
