@@ -1,25 +1,21 @@
 import Fastify from 'fastify';
 
-import { installGracefulShutdown, trackInFlightRequests } from '../lib/graceful-shutdown';
+import { createTrackedClose, installGracefulShutdown } from '../lib/graceful-shutdown';
 
 async function run(): Promise<void> {
   // Bare Fastify instance on purpose: the full createServer() boots the
   // entire backend (SQLite, seeding, icon backfill with outbound fetches,
   // every route plugin and hook), which made this timing-sensitive test
   // flaky in CI. The mechanism under test is installGracefulShutdown plus
-  // the production close call — server.close() with the shared
-  // trackInFlightRequests drain, identical to src/index.ts — draining a
-  // real in-flight HTTP connection. This fixture keeps all of that and
-  // drops only the unrelated app stack.
+  // the production close call — createTrackedClose, the same function
+  // src/index.ts passes — draining a real in-flight HTTP connection. This
+  // fixture keeps all of that and drops only the unrelated app stack.
   const server = Fastify({ logger: false });
 
-  // Tracked in-flight drain shared with production src/index.ts: CI lost
-  // the in-flight /slow request with ECONNRESET on the client (and logged
-  // shutdown_complete ~1ms after shutdown_started in an earlier revision),
-  // so the shutdown close must not rely on server.close() alone to observe
-  // the live handler. The outer shutdown deadline in
-  // installGracefulShutdown still bounds this wait.
-  const waitForDrain = trackInFlightRequests(server);
+  // No local drain counter here: the close below is the production
+  // createTrackedClose from src/index.ts, so the SIGTERM test proves what
+  // production does. The outer shutdown deadline in
+  // installGracefulShutdown still bounds the wait.
 
   server.get('/slow', async () => {
     process.send?.({ type: 'request-started' });
@@ -41,18 +37,8 @@ async function run(): Promise<void> {
   const port = typeof bound === 'object' && bound ? bound.port : 0;
   if (!port) throw new Error('shutdown fixture listener did not report a port');
 
-  // Production close, identical to src/index.ts: server.close() stops
-  // accepting and releases the listener, and the shared tracked in-flight
-  // drain is additionally awaited so process exit cannot precede the
-  // response even if server.close() resolves early.
-  installGracefulShutdown({
-    label: 'backend',
-    close: async () => {
-      const closing = server.close();
-      await waitForDrain();
-      await closing;
-    },
-  });
+  // Production close, the same createTrackedClose src/index.ts uses.
+  installGracefulShutdown({ label: 'backend', close: createTrackedClose(server) });
   process.send?.({ type: 'ready', port });
 }
 

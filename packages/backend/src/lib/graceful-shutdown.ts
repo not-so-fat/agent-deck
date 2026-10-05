@@ -20,13 +20,25 @@ function writeJsonLog(
 }
 
 /**
- * Count live HTTP requests so the shutdown close can wait for the tracked
- * in-flight request to respond before the process exits. server.close()
- * alone stops accepting and releases the listener but CI showed it can
- * resolve while a live handler is still running (client ECONNRESET,
- * shutdown_complete ~1ms after shutdown_started), so production and the
- * shutdown test share this instead of each open-coding its own counter.
+ * The production backend shutdown close, shared with the shutdown test
+ * fixture: server.close() stops accepting and releases the listener, and
+ * the tracked in-flight request is additionally awaited so process exit
+ * cannot precede the response even if server.close() resolves early
+ * (CI showed server.close() alone resolving while a live handler still
+ * ran: client ECONNRESET, shutdown_complete ~1ms after shutdown_started).
+ * Both src/index.ts and the fixture call this, so the SIGTERM test proves
+ * what production does instead of its own drain.
  */
+export function createTrackedClose(server: FastifyInstance): () => Promise<void> {
+  const waitForDrain = trackInFlightRequests(server);
+  return async () => {
+    const closing = server.close();
+    await waitForDrain();
+    await closing;
+  };
+}
+
+/** Count live HTTP requests; resolves when none remain in flight. */
 export function trackInFlightRequests(server: FastifyInstance): () => Promise<void> {
   let inFlight = 0;
   let notifyDrained: (() => void) | null = null;
