@@ -82,6 +82,12 @@ describe('graceful SIGTERM shutdown', () => {
     child.stderr?.on('data', appendOutput);
 
     const startup = await nextMessage('ready', 'startup-failed');
+    // Report the fixture's own startup error (for example a listener bind
+    // EPERM under a sandboxed runner) instead of a bare type mismatch.
+    if (startup.type !== 'ready')
+      throw new Error(
+        `fixture failed to start: ${startup.error}\n--- fixture output tail ---\n${fixtureOutput.slice(-2000)}`,
+      );
     expect(startup.type).toBe('ready');
     if (startup.type !== 'ready') throw new Error(`fixture failed to start: ${startup.error}`);
     const started = nextMessage('request-started');
