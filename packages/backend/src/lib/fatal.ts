@@ -3,8 +3,8 @@ import fs from 'node:fs';
 /**
  * A child that dies during startup must say why *before* it exits: the
  * supervisor only ever sees an exit code, so an unexplained `process.exit(1)`
- * leaves no diagnostic anywhere. Writes go straight to fd 2 (synchronously) so
- * they survive the immediate exit.
+ * leaves no diagnostic anywhere. Writes go straight to stdout synchronously so
+ * they survive the immediate exit and keep the container log stream as NDJSON.
  */
 export type FatalLabel = 'backend' | 'mcp';
 
@@ -71,10 +71,10 @@ export function formatFatalLines(label: FatalLabel, phase: string, error: unknow
 }
 
 /**
- * Synchronous write to fd 2 — process.exit() must not be able to drop it.
- * `fd` is a seam for tests; production always writes to stderr.
+ * Synchronous write — process.exit() must not be able to drop it.
+ * `fd` is a seam for tests; production writes to stdout.
  */
-export function writeLogSync(text: string, fd = 2, maxRetries = 1000): void {
+export function writeLogSync(text: string, fd = 1, maxRetries = 1000): void {
   const buffer = Buffer.from(text.endsWith('\n') ? text : `${text}\n`, 'utf8');
   let offset = 0;
   let retries = 0;
@@ -82,7 +82,7 @@ export function writeLogSync(text: string, fd = 2, maxRetries = 1000): void {
     try {
       offset += fs.writeSync(fd, buffer, offset, buffer.length - offset);
     } catch (error) {
-      // A non-blocking stderr (a TTY, or a pipe whose reader stalled) answers
+      // A non-blocking output stream (a TTY, or a pipe whose reader stalled) answers
       // EAGAIN. Retry, but bounded: spinning forever would hang the exit path
       // this diagnostic exists to keep alive.
       if ((error as NodeJS.ErrnoException).code === 'EAGAIN' && retries < maxRetries) {
@@ -95,14 +95,30 @@ export function writeLogSync(text: string, fd = 2, maxRetries = 1000): void {
   }
 }
 
-export function logFatal(label: FatalLabel, phase: string, error: unknown, fd = 2): void {
-  const timestamp = new Date().toISOString();
-  writeLogSync(
-    formatFatalLines(label, phase, error)
-      .map((line) => `${timestamp} ${line}`)
-      .join('\n'),
-    fd,
-  );
+function writeStructuredLogSync(
+  level: 'info' | 'error',
+  event: string,
+  fields: Record<string, unknown>,
+  fd: number,
+): void {
+  writeLogSync(JSON.stringify({ level, time: new Date().toISOString(), event, ...fields }), fd);
+}
+
+export function logFatal(label: FatalLabel, phase: string, error: unknown, fd = 1): void {
+  writeStructuredLogSync('error', 'process_fatal', {
+    service: label,
+    // Keep the established operator-facing diagnostic inside the structured
+    // record. The CLI supervisor copies this line verbatim into its own log,
+    // and older tooling searches it for the exit and cause markers.
+    message: formatFatalLines(label, phase, error).join('\n'),
+    phase,
+    exitCode: 1,
+    pid: process.pid,
+    nodeVersion: process.version,
+    nodeModuleVersion: process.versions.modules,
+    error: describeFatalError(error),
+    hint: fatalHint(error),
+  }, fd);
 }
 
 export function logFatalAndExit(label: FatalLabel, phase: string, error: unknown): never {
@@ -114,22 +130,23 @@ export function logFatalAndExit(label: FatalLabel, phase: string, error: unknown
 export function logProcessStart(
   label: FatalLabel,
   fields: Record<string, string | number>,
-  fd = 2,
+  fd = 1,
 ): void {
-  const detail = Object.entries(fields)
-    .map(([key, value]) => `${key}=${value}`)
-    .join(' ');
-  writeLogSync(
-    `${new Date().toISOString()} [agent-deck] ${label} starting pid=${process.pid} node=${process.version} modules=${process.versions.modules} ${detail}`,
-    fd,
-  );
+  writeStructuredLogSync('info', 'process_start', {
+    service: label,
+    pid: process.pid,
+    nodeVersion: process.version,
+    nodeModuleVersion: process.versions.modules,
+    ...fields,
+  }, fd);
 }
 
-export function logExit(label: FatalLabel, exitCode: number, reason: string, fd = 2): void {
-  writeLogSync(
-    `${new Date().toISOString()} [agent-deck] ${label} exiting (code ${exitCode}): ${reason}`,
-    fd,
-  );
+export function logExit(label: FatalLabel, exitCode: number, reason: string, fd = 1): void {
+  writeStructuredLogSync(exitCode === 0 ? 'info' : 'error', 'process_exit', {
+    service: label,
+    exitCode,
+    reason,
+  }, fd);
 }
 
 /**

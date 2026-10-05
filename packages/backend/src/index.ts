@@ -1,5 +1,7 @@
 import { createServer } from './server';
-import { installFatalHandlers, logExit, logFatalAndExit, logProcessStart } from './lib/fatal';
+import { installFatalHandlers, logFatalAndExit, logProcessStart } from './lib/fatal';
+import { createTrackedClose, installGracefulShutdown } from './lib/graceful-shutdown';
+import { createStorageFailureServer, shouldServeStorageFailure } from './server/degraded';
 
 // The supervisor only sees this process's exit code, so every way out of here
 // has to name itself in the log first.
@@ -12,27 +14,27 @@ async function start() {
   logProcessStart('backend', { host, port });
 
   try {
-    const server = await createServer();
+    let server;
+    try {
+      server = await createServer();
+    } catch (error) {
+      if (!shouldServeStorageFailure(error)) throw error;
+      server = createStorageFailureServer(error);
+    }
+
+    // Fastify refuses addHook once listening, so the in-flight tracking hooks
+    // must be registered before listen().
+    const close = createTrackedClose(server);
 
     await server.listen({ port, host });
 
     console.log(`🚀 Agent Deck Backend server running on http://${host}:${port}`);
     console.log(`📊 Health check: http://${host}:${port}/health`);
 
-    // Graceful shutdown
-    const shutdown = async (signal: NodeJS.Signals) => {
-      logExit('backend', 0, `signal ${signal}`);
-      console.log('\n🛑 Shutting down server...');
-      try {
-        await server.close();
-      } catch (error) {
-        logFatalAndExit('backend', `shutdown after ${signal} failed`, error);
-      }
-      process.exit(0);
-    };
-
-    process.on('SIGINT', () => void shutdown('SIGINT'));
-    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    // Production close shared with the shutdown test fixture
+    // (createTrackedClose): stop accepting, drain the tracked in-flight
+    // request, then release the listener.
+    installGracefulShutdown({ label: 'backend', close });
   } catch (error) {
     // logFatalAndExit writes the message, the cause and a hint, synchronously.
     logFatalAndExit('backend', `startup failed before listening on ${host}:${port}`, error);

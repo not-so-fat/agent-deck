@@ -43,6 +43,10 @@ export function resolveHostedModeConfig(
 const HOSTED_PUBLIC_ROUTES = new Set([
   'GET /health',
   'HEAD /health',
+  'GET /healthz',
+  'HEAD /healthz',
+  'GET /readyz',
+  'HEAD /readyz',
   'POST /api/dashboard-auth/sign-in',
 ]);
 

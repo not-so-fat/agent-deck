@@ -1758,6 +1758,10 @@ export class AgentDeckMCPServer {
       // Release the port too, otherwise a restart on the same port races the old
       // listener and the "did it come back?" probe can't tell the two apart.
       await this.closeHttpServer();
+      this.sharedSecurityDb?.close();
+      this.sharedSecurityDb = null;
+      this.grantStoreCache = null;
+      this.auditStoreCache = null;
       console.log(`🛑 MCP server stopped`);
     } catch (error) {
       console.error(`❌ Error stopping MCP server:`, error);

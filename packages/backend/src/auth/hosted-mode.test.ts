@@ -275,7 +275,7 @@ describe('hosted owner authentication', () => {
     );
   });
 
-  it('returns 401 from every registered route except health and sign-in', async () => {
+  it('returns 401 from every registered route except probes and sign-in', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-hosted-matrix-'));
     process.env.AGENT_DECK_HOME = home;
     registeredHttpRoutes.length = 0;
@@ -291,6 +291,10 @@ describe('hosted owner authentication', () => {
         tested.has(key) ||
         key === 'GET /health' ||
         key === 'HEAD /health' ||
+        key === 'GET /healthz' ||
+        key === 'HEAD /healthz' ||
+        key === 'GET /readyz' ||
+        key === 'HEAD /readyz' ||
         key === 'POST /api/dashboard-auth/sign-in'
       ) {
         continue;
