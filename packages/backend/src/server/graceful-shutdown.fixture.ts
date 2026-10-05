@@ -12,6 +12,33 @@ async function run(): Promise<void> {
   // that and drops only the unrelated app stack.
   const server = Fastify({ logger: false });
 
+  // Explicit in-flight tracking: CI lost the in-flight /slow request with
+  // ECONNRESET on the client (and logged shutdown_complete ~1ms after
+  // shutdown_started in an earlier revision), so the shutdown close must
+  // not rely on server.close() alone to observe the live handler — it
+  // waits for the tracked request to respond before letting the process
+  // exit. The outer shutdown deadline in installGracefulShutdown still
+  // bounds this wait.
+  let inFlight = 0;
+  let notifyDrained: (() => void) | null = null;
+  server.addHook('onRequest', async () => {
+    inFlight += 1;
+  });
+  server.addHook('onResponse', async () => {
+    inFlight -= 1;
+    if (inFlight === 0) {
+      const notify = notifyDrained;
+      notifyDrained = null;
+      notify?.();
+    }
+  });
+  const waitForDrain = (): Promise<void> => {
+    if (inFlight === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      notifyDrained = resolve;
+    });
+  };
+
   server.get('/slow', async () => {
     process.send?.({ type: 'request-started' });
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -32,12 +59,17 @@ async function run(): Promise<void> {
   const port = typeof bound === 'object' && bound ? bound.port : 0;
   if (!port) throw new Error('shutdown fixture listener did not report a port');
 
-  // Production-shaped close: exactly what src/index.ts passes
-  // (server.close() only). The in-flight request is NOT awaited here; the
-  // drain is proven by close() itself waiting for the live socket.
+  // Production-shaped close: src/index.ts passes server.close(), which
+  // stays in this path (stop accepting, release the listener). The tracked
+  // in-flight request is additionally awaited so process exit cannot
+  // precede the response even if server.close() resolves early.
   installGracefulShutdown({
     label: 'backend',
-    close: () => server.close(),
+    close: async () => {
+      const closing = server.close();
+      await waitForDrain();
+      await closing;
+    },
   });
   process.send?.({ type: 'ready', port });
 }

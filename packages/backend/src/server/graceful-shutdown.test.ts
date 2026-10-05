@@ -84,17 +84,30 @@ describe('graceful SIGTERM shutdown', () => {
     const responsePromise = getSlow(startup.port);
     await started;
 
+    // Fixture log tail, attached to failures below: a lost in-flight
+    // request otherwise reports a bare "socket hang up" with the
+    // shutdown_started/shutdown_complete timestamps discarded.
+    const fixtureTail = (): string => {
+      const tail = fixtureOutput.slice(-2000);
+      return tail ? `\n--- fixture output tail ---\n${tail}` : '';
+    };
+
     const beforeSignal = Date.now();
     const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
       child?.once('exit', (code, signal) => resolve({ code, signal }));
     });
     child.kill('SIGTERM');
-    const response = await responsePromise;
+    let response: { statusCode: number; body: unknown };
+    try {
+      response = await responsePromise;
+    } catch (error) {
+      throw new Error(`in-flight request failed during SIGTERM shutdown: ${String(error)}${fixtureTail()}`);
+    }
     expect(response.statusCode).toBe(200);
     expect(response.body).toEqual({ completed: true });
 
     const exit = await exitPromise;
-    expect(exit).toEqual({ code: 0, signal: null });
+    expect(exit, `fixture exit mismatch${fixtureTail()}`).toEqual({ code: 0, signal: null });
     expect(Date.now() - beforeSignal).toBeLessThan(10_000);
   }, 12_000);
 });
