@@ -1,12 +1,12 @@
 import { fork, type ChildProcess } from 'node:child_process';
+import http from 'node:http';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 type FixtureMessage =
   | { type: 'ready'; port: number }
   | { type: 'request-started' }
-  | { type: 'request-completed'; statusCode: number; body: unknown }
-  | { type: 'request-failed'; error: string };
+  | { type: 'startup-failed'; error: string };
 
 describe('graceful SIGTERM shutdown', () => {
   let child: ChildProcess | undefined;
@@ -40,6 +40,31 @@ describe('graceful SIGTERM shutdown', () => {
     });
   }
 
+  // The HTTP client runs here in the parent, not in the fixture: the
+  // fixture's process.exit(0) after server.close() must not be able to
+  // kill the client observing the drain. No keep-alive agent, so the
+  // socket closes after the response and server.close() drains on request
+  // completion instead of hanging on an idle keep-alive connection.
+  function getSlow(port: number): Promise<{ statusCode: number; body: unknown }> {
+    return new Promise((resolve, reject) => {
+      const request = http.get({ host: '127.0.0.1', port, path: '/slow', agent: false }, (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          let body: unknown = Buffer.concat(chunks).toString('utf8');
+          try {
+            body = JSON.parse(body as string);
+          } catch {
+            // Keep the raw text so the assertion reports it.
+          }
+          resolve({ statusCode: response.statusCode ?? 0, body });
+        });
+        response.on('error', reject);
+      });
+      request.on('error', reject);
+    });
+  }
+
   it('finishes an in-flight request and exits zero within ten seconds', async () => {
     child = fork(path.join(__dirname, 'graceful-shutdown.fixture.ts'), [], {
       execArgv: ['--import', 'tsx'],
@@ -52,11 +77,11 @@ describe('graceful SIGTERM shutdown', () => {
     child.stdout?.on('data', appendOutput);
     child.stderr?.on('data', appendOutput);
 
-    const startup = await nextMessage('ready', 'request-failed');
+    const startup = await nextMessage('ready', 'startup-failed');
     expect(startup.type).toBe('ready');
+    if (startup.type !== 'ready') throw new Error(`fixture failed to start: ${startup.error}`);
     const started = nextMessage('request-started');
-    const completed = nextMessage('request-completed', 'request-failed');
-    child.send('begin-request');
+    const responsePromise = getSlow(startup.port);
     await started;
 
     const beforeSignal = Date.now();
@@ -64,12 +89,9 @@ describe('graceful SIGTERM shutdown', () => {
       child?.once('exit', (code, signal) => resolve({ code, signal }));
     });
     child.kill('SIGTERM');
-    const response = await completed;
-    expect(response).toEqual({
-      type: 'request-completed',
-      statusCode: 200,
-      body: { completed: true },
-    });
+    const response = await responsePromise;
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({ completed: true });
 
     const exit = await exitPromise;
     expect(exit).toEqual({ code: 0, signal: null });
