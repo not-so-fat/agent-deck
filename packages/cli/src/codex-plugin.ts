@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export type CodexClassification =
@@ -244,6 +245,19 @@ export interface CodexPluginState {
   classification?: CodexClassification;
   installedVersion?: string;
   selector?: string;
+  /**
+   * Installed plugin root as reported by `codex plugin list` (the Codex
+   * versioned cache path, e.g. `~/.codex/plugins/cache/agent-deck/agent-deck/<version>/`,
+   * when Codex materializes one). This is the version source of truth — not
+   * the marketplace workspace path.
+   */
+  installedRoot?: string;
+  /** Marketplace source root from `codex plugin marketplace list`. */
+  marketplaceRoot?: string;
+  /**
+   * Back-compat alias: the installed root when known, else the marketplace
+   * root. Prefer {@link installedRoot} / {@link marketplaceRoot}.
+   */
   root?: string;
   marketplaceName?: string;
   sourceKind?: 'local' | 'git' | 'unknown';
@@ -370,6 +384,7 @@ export async function inspectCodexPlugin(
       classification: 'disabled',
       installedVersion: first.version,
       selector: first.selector,
+      installedRoot: first.root,
       root: first.root,
       transport: readTransport(first.root),
     };
@@ -393,6 +408,7 @@ export async function inspectCodexPlugin(
   const distinctRoots = [...new Set(installed.map((p) => p.root).filter(Boolean))] as string[];
   const ambiguous = selectors.length > 1 || supplying.length > 1 || distinctRoots.length > 1;
   if (ambiguous) {
+    const ambiguousRoot = distinctRoots.length === 1 ? distinctRoots[0] : first.root;
     return {
       ...base,
       installed,
@@ -400,16 +416,24 @@ export async function inspectCodexPlugin(
       classification: 'ambiguous-source',
       installedVersion: first.version,
       selector,
-      root: distinctRoots.length === 1 ? distinctRoots[0] : first.root,
-      transport: readTransport(distinctRoots.length === 1 ? distinctRoots[0] : first.root),
+      installedRoot: ambiguousRoot,
+      root: ambiguousRoot,
+      transport: readTransport(ambiguousRoot),
     };
   }
 
   const resolvedMarketplace = supplying.length === 1 ? (supplying[0] as CodexMarketplace) : undefined;
-  const root = first.root ?? resolvedMarketplace?.root;
+  // The installed root (Codex versioned cache path when present) is the
+  // version source of truth; the marketplace root is only where Codex
+  // re-reads from on `plugin add`. A sticky cache keeps serving the old
+  // installed root after the marketplace workspace already has the new
+  // `plugin.json`, so the two must stay distinguishable downstream.
+  const installedRoot = observedVersionedCacheRoot(first.version) ?? first.root;
+  const marketplaceRoot = resolvedMarketplace?.root;
+  const root = installedRoot ?? marketplaceRoot;
   const marketplaceName = part ?? resolvedMarketplace?.name ?? first.marketplace;
   const sourceKind = resolvedMarketplace?.source ?? 'unknown';
-  const transport = readTransport(root);
+  const transport = readTransport(installedRoot ?? marketplaceRoot);
 
   if (transport === 'direct-http') {
     return {
@@ -419,6 +443,8 @@ export async function inspectCodexPlugin(
       classification: 'legacy-http',
       installedVersion: first.version,
       selector,
+      installedRoot,
+      marketplaceRoot,
       root,
       marketplaceName,
       sourceKind,
@@ -434,6 +460,8 @@ export async function inspectCodexPlugin(
       classification: 'version-mismatch',
       installedVersion: first.version,
       selector,
+      installedRoot,
+      marketplaceRoot,
       root,
       marketplaceName,
       sourceKind,
@@ -451,6 +479,8 @@ export async function inspectCodexPlugin(
       classification: 'unknown-transport',
       installedVersion: first.version,
       selector,
+      installedRoot,
+      marketplaceRoot,
       root,
       marketplaceName,
       sourceKind,
@@ -465,6 +495,8 @@ export async function inspectCodexPlugin(
     classification: 'compatible',
     installedVersion: first.version,
     selector,
+    installedRoot,
+    marketplaceRoot,
     root,
     marketplaceName,
     sourceKind,
@@ -478,6 +510,83 @@ export function manualCodexCommands(selector: string): string[] {
 
 export function remediationLine(selector: string): string {
   return `codex plugin remove ${selector} && codex plugin add ${selector}`;
+}
+
+/**
+ * True when `root` is a Codex versioned plugin cache path, e.g.
+ * `~/.codex/plugins/cache/agent-deck/agent-deck/1.11.7/`. Only such paths
+ * are ever suggested for manual `rm -rf`: Agent Deck never removes cache
+ * paths itself and never suggests removing a marketplace workspace path.
+ */
+export function isVersionedCodexCachePath(root: string | undefined): boolean {
+  if (!root) {
+    return false;
+  }
+  return /plugins[/\\]cache[/\\]agent-deck[/\\]agent-deck[/\\][^/\\]+/.test(root.replace(/\\/g, '/'));
+}
+
+/**
+ * Manual cache-clear commands for a sticky installed root. Returns [] unless
+ * the root is recognisably a versioned `plugins/cache/agent-deck` path, so
+ * callers never print `rm -rf` against a marketplace workspace checkout.
+ * Agent Deck never runs these itself — they are printed for the operator.
+ */
+export function stickyCacheClearCommands(installedRoot: string | undefined): string[] {
+  if (!isVersionedCodexCachePath(installedRoot)) {
+    return [];
+  }
+  return [`rm -rf "${installedRoot}"`];
+}
+
+function codexHomeDir(): string {
+  const fromEnv = process.env.CODEX_HOME?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  return path.join(os.homedir(), '.codex');
+}
+
+/**
+ * Versioned Codex plugin cache dir for an installed version, e.g.
+ * `<CODEX_HOME>/plugins/cache/agent-deck/agent-deck/1.11.7/`, when it
+ * exists on disk. Live Codex may list the marketplace workspace as the
+ * plugin source path while actually serving a stale copy from this cache,
+ * so an on-disk match takes precedence as the installed root. Returns
+ * undefined when absent — inspection never implies a cache that is not there.
+ */
+function observedVersionedCacheRoot(installedVersion: string | undefined): string | undefined {
+  if (!installedVersion || /[/\\]/.test(installedVersion) || installedVersion.includes('..')) {
+    return undefined;
+  }
+  const candidate = path.join(
+    codexHomeDir(),
+    'plugins',
+    'cache',
+    'agent-deck',
+    'agent-deck',
+    installedVersion,
+  );
+  try {
+    if (fs.statSync(candidate).isDirectory()) {
+      return candidate;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function printStickyCacheBlock(installedRoot: string | undefined, selector: string): void {
+  const commands = stickyCacheClearCommands(installedRoot);
+  if (commands.length === 0) {
+    return;
+  }
+  console.log('If remove/add keeps reporting the old version, Codex kept a sticky versioned cache.');
+  console.log('Clear the Agent Deck cache path manually (never removed by Agent Deck itself), then re-add:');
+  for (const command of commands) {
+    console.log(`  ${command}`);
+  }
+  console.log(`  codex plugin add ${selector}`);
 }
 
 function printManualSyncBlock(selector: string, marketplaceName?: string): void {
@@ -615,7 +724,12 @@ export async function reconcileCodexPluginAfterUpgrade(
   console.log(
     `${prefix}; Codex plugin still ${reread.classification ?? 'unreadable'} (installed ${reread.installedVersion ?? '(unknown)'}, expected ${expectedVersion}).`,
   );
+  const rereadInstalledRoot = reread.installedRoot ?? reread.root;
+  if (rereadInstalledRoot) {
+    console.log(`Installed root: ${rereadInstalledRoot}`);
+  }
   printManualSyncBlock(targetSelector, marketplaceName);
+  printStickyCacheBlock(rereadInstalledRoot, targetSelector);
   return 1;
 }
 
@@ -659,15 +773,30 @@ export async function runCodexPluginDoctor(
     case 'unknown-transport':
     case 'ambiguous-source': {
       const selector = state.selector ?? DEFAULT_PLUGIN_SELECTOR;
-      const root = state.root ?? '(unknown)';
+      // The installed root is the version source of truth; the marketplace
+      // root only shows where `plugin add` re-reads from. When a sticky
+      // versioned cache survives, the two differ and only the installed
+      // root explains the reported version.
+      const installedRoot = state.installedRoot ?? state.root;
+      const marketplaceRoot = state.marketplaceRoot ?? state.root ?? '(unknown)';
       const source = state.sourceKind ?? 'unknown';
       console.log(
         `Codex plugin: ${state.classification} (installed ${state.installedVersion ?? '(unknown)'}, expected ${cliVersion})`,
       );
       console.log(`Selector: ${selector}`);
-      console.log(`Marketplace root: ${root} (${source})`);
+      console.log(`Marketplace root: ${marketplaceRoot} (${source})`);
+      if (installedRoot && installedRoot !== marketplaceRoot) {
+        console.log(`Installed root: ${installedRoot}`);
+      }
       console.log(`Transport: ${state.transport}`);
       console.log(`Remediation: ${remediationLine(selector)}`);
+      if (
+        state.classification === 'version-mismatch' ||
+        state.classification === 'legacy-http' ||
+        state.classification === 'unknown-transport'
+      ) {
+        printStickyCacheBlock(installedRoot, selector);
+      }
       console.error(
         `FAIL: Codex plugin ${state.classification} (installed ${state.installedVersion ?? '(unknown)'}, expected ${cliVersion})`,
       );

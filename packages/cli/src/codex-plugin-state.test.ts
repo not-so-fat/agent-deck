@@ -345,6 +345,141 @@ describe('current Codex plugin-list contract (NOT-301)', () => {
   });
 });
 
+describe('sticky versioned cache (NOT-360)', () => {
+  const STALE_VERSION = '1.11.7';
+
+  /**
+   * Live failure shape: the local marketplace workspace already carries the
+   * new `plugin.json`, Codex lists the workspace as the source path, but the
+   * served version is stale because a versioned copy survives under
+   * `<CODEX_HOME>/plugins/cache/agent-deck/agent-deck/<old>/`. Fixture home
+   * is isolated temp; never the developer's real CODEX_HOME.
+   */
+  function seedStickyCacheHome(sourcePath: 'marketplace' | 'cache'): {
+    marketplaceRoot: string;
+    installedCacheRoot: string;
+  } {
+    codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-sticky-'));
+    const marketplaceRoot = path.join(codexHome, 'marketplace', 'agent-deck');
+    fs.mkdirSync(path.join(marketplaceRoot, '.codex-plugin'), { recursive: true });
+    fs.writeFileSync(
+      path.join(marketplaceRoot, '.codex-plugin', 'plugin.json'),
+      `${JSON.stringify({ name: 'agent-deck', version: CLI_VERSION }, null, 2)}\n`,
+    );
+    fs.writeFileSync(
+      path.join(marketplaceRoot, '.mcp.json'),
+      `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`,
+    );
+    const installedCacheRoot = path.join(
+      codexHome,
+      'plugins',
+      'cache',
+      'agent-deck',
+      'agent-deck',
+      STALE_VERSION,
+    );
+    fs.mkdirSync(installedCacheRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(installedCacheRoot, '.mcp.json'),
+      `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`,
+    );
+    pluginRoot = marketplaceRoot;
+    const listedPath = sourcePath === 'cache' ? installedCacheRoot : marketplaceRoot;
+    fs.writeFileSync(
+      path.join(codexHome, 'plugin-list.json'),
+      `${JSON.stringify(
+        {
+          installed: [
+            {
+              pluginId: SELECTOR,
+              name: 'agent-deck',
+              marketplaceName: 'agent-deck',
+              version: STALE_VERSION,
+              installed: true,
+              enabled: true,
+              source: { source: 'local', path: listedPath },
+              marketplaceSource: { sourceType: 'local', source: marketplaceRoot },
+            },
+          ],
+          available: [],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    fs.writeFileSync(
+      path.join(codexHome, 'marketplace-list.json'),
+      `${JSON.stringify(
+        { marketplaces: [{ name: 'agent-deck', root: marketplaceRoot, source: 'local' }] },
+        null,
+        2,
+      )}\n`,
+    );
+    const stub = path.join(codexHome, 'codex');
+    fs.writeFileSync(stub, LIST_STUB.replaceAll('$CODEX_HOME', codexHome));
+    fs.chmodSync(stub, 0o755);
+    process.env.CODEX_HOME = codexHome;
+    process.env.CODEX_BIN = stub;
+    return { marketplaceRoot, installedCacheRoot };
+  }
+
+  it('classifies version-mismatch with the installed cache root, not the marketplace path', async () => {
+    const { marketplaceRoot, installedCacheRoot } = seedStickyCacheHome('marketplace');
+    expect(process.env.CODEX_HOME).toBe(codexHome);
+    expect(path.dirname(codexHome)).toBe(path.resolve(os.tmpdir()));
+
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.classification).toBe('version-mismatch');
+    expect(state.installedVersion).toBe(STALE_VERSION);
+    expect(state.marketplaceRoot).toBe(marketplaceRoot);
+    expect(state.installedRoot).toBe(installedCacheRoot);
+
+    output.length = 0;
+    expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(1);
+    const text = output.join('\n');
+    expect(text).toContain(`Marketplace root: ${marketplaceRoot} (local)`);
+    expect(text).toContain(`Installed root: ${installedCacheRoot}`);
+    expect(text).toContain(`rm -rf "${installedCacheRoot}"`);
+    expect(text).toContain(`codex plugin add ${SELECTOR}`);
+    // The marketplace workspace checkout itself is never an rm target.
+    expect(text).not.toContain(`rm -rf "${marketplaceRoot}"`);
+
+    const calls = fs.readFileSync(path.join(codexHome, 'calls.log'), 'utf8');
+    expect(calls).not.toContain('plugin remove');
+    expect(calls).not.toContain('plugin add');
+  });
+
+  it('reports the cache root when plugin list already points at it', async () => {
+    const { installedCacheRoot } = seedStickyCacheHome('cache');
+
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.classification).toBe('version-mismatch');
+    expect(state.installedRoot).toBe(installedCacheRoot);
+
+    output.length = 0;
+    expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(1);
+    expect(output.join('\n')).toContain(`rm -rf "${installedCacheRoot}"`);
+  });
+
+  it('never suggests rm -rf for a non-cache installed root', async () => {
+    const { marketplaceRoot } = seedStickyCacheHome('marketplace');
+    // Remove the versioned cache: the installed root falls back to the
+    // listed workspace path, which must never be an rm target.
+    fs.rmSync(
+      path.join(codexHome, 'plugins', 'cache', 'agent-deck', 'agent-deck', STALE_VERSION),
+      { recursive: true, force: true },
+    );
+
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.classification).toBe('version-mismatch');
+    expect(state.installedRoot).toBe(marketplaceRoot);
+
+    output.length = 0;
+    expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(1);
+    expect(output.join('\n')).not.toContain('rm -rf');
+  });
+});
+
 describe('pre-publish release sync (NOT-188)', () => {
   const script = path.join(__dirname, '..', '..', '..', 'scripts', 'pre-publish-check.mjs');
 
