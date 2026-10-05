@@ -139,9 +139,15 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
     const previousHostedMode = process.env.AGENT_DECK_HOSTED_MODE;
     process.env.AGENT_DECK_HOSTED_MODE = '1';
     let now = 25_000;
+    // Reachable stub backend (same shape as the badge-flow stub below): the
+    // rate limit under test never touches the backend, but every initialize
+    // fire-and-forgets registerLiveDisplay and stop() drains unregister —
+    // against an unreachable URL those are dozens of failing fetches whose
+    // console noise and timing variance made this test fragile in CI.
+    const stub = await startStubBackend();
     const server = new AgentDeckMCPServer(
       0,
-      'http://127.0.0.1:1',
+      `http://127.0.0.1:${stub.port}`,
       undefined,
       '127.0.0.1',
       { now: () => now },
@@ -157,10 +163,12 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
         initialized.push(await postInitialize(limitedPort, 1_000 + attempt));
       }
       expect(initialized.every((response) => response.status === 200)).toBe(true);
+      await Promise.all(initialized.map((response) => response.arrayBuffer()));
 
       const limited = await postInitialize(limitedPort, 2_000);
       expect(limited.status).toBe(429);
       expect(limited.headers.get('retry-after')).toBe('60');
+      await limited.arrayBuffer();
 
       const sessionId = initialized[0].headers.get('mcp-session-id')!;
       const stream = await fetch(`http://127.0.0.1:${limitedPort}/mcp`, {
@@ -172,11 +180,14 @@ describe('AgentDeckMCPServer streamable HTTP', () => {
       now += MCP_INITIALIZE_RATE_WINDOW_MS;
       const recovered = await postInitialize(limitedPort, 2_001);
       expect(recovered.status).toBe(200);
+      await recovered.arrayBuffer();
       await expect(listTools(limitedPort, sessionId, 2_002)).resolves.toEqual(expect.any(Array));
       expect(stream.body).not.toBeNull();
       await stream.body?.cancel();
+      expect(stub.unhandled).toEqual([]);
     } finally {
       await server.stop();
+      await stub.close();
       capture.restore();
       capture.assertClean();
       if (previousHostedMode === undefined) delete process.env.AGENT_DECK_HOSTED_MODE;
