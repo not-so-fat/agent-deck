@@ -22,6 +22,10 @@ async function start() {
       server = createStorageFailureServer(error);
     }
 
+    // Fastify refuses addHook once listening, so the in-flight tracking hooks
+    // must be registered before listen().
+    const close = createTrackedClose(server);
+
     await server.listen({ port, host });
 
     console.log(`🚀 Agent Deck Backend server running on http://${host}:${port}`);
@@ -30,7 +34,7 @@ async function start() {
     // Production close shared with the shutdown test fixture
     // (createTrackedClose): stop accepting, drain the tracked in-flight
     // request, then release the listener.
-    installGracefulShutdown({ label: 'backend', close: createTrackedClose(server) });
+    installGracefulShutdown({ label: 'backend', close });
   } catch (error) {
     // logFatalAndExit writes the message, the cause and a hint, synchronously.
     logFatalAndExit('backend', `startup failed before listening on ${host}:${port}`, error);

@@ -10,7 +10,7 @@ async function run(): Promise<void> {
   // the production close call — createTrackedClose, the same function
   // src/index.ts passes — draining a real in-flight HTTP connection. This
   // fixture keeps all of that and drops only the unrelated app stack.
-  const server = Fastify({ logger: false });
+  const server = Fastify({ logger: false, forceCloseConnections: false });
 
   // No local drain counter here: the close below is the production
   // createTrackedClose from src/index.ts, so the SIGTERM test proves what
@@ -32,13 +32,15 @@ async function run(): Promise<void> {
   // could kill the same-process client before it reported completion —
   // a race CI lost. An out-of-process client is also the production
   // shape: external clients are unaffected by our exit.
+  // Hooks must be registered before listen(); Fastify rejects addHook after.
+  const close = createTrackedClose(server);
   await server.listen({ port: 0, host: '127.0.0.1' });
   const bound = server.server.address();
   const port = typeof bound === 'object' && bound ? bound.port : 0;
   if (!port) throw new Error('shutdown fixture listener did not report a port');
 
   // Production close, the same createTrackedClose src/index.ts uses.
-  installGracefulShutdown({ label: 'backend', close: createTrackedClose(server) });
+  installGracefulShutdown({ label: 'backend', close });
   process.send?.({ type: 'ready', port });
 }
 

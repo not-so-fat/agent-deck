@@ -39,7 +39,13 @@ export function createStorageFailureServer(
   startupError: unknown,
   options: { env?: NodeJS.ProcessEnv; dataPath?: string } = {},
 ) {
-  const fastify = Fastify({ logger: { level: 'info' } });
+  const fastify = Fastify({
+    logger: { level: 'info' },
+    // Fastify's default ('idle') also drops a connection whose handler has not
+    // written a byte yet; graceful shutdown must let that request finish.
+    // Node's server.close() already closes truly idle keep-alive sockets.
+    forceCloseConnections: false,
+  });
   fastify.log.error({ err: startupError }, 'persistent state unavailable; serving probes only');
   registerHealthRoutes(fastify, {
     env: options.env,
