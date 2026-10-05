@@ -1,43 +1,25 @@
 import Fastify from 'fastify';
 
-import { installGracefulShutdown } from '../lib/graceful-shutdown';
+import { installGracefulShutdown, trackInFlightRequests } from '../lib/graceful-shutdown';
 
 async function run(): Promise<void> {
   // Bare Fastify instance on purpose: the full createServer() boots the
   // entire backend (SQLite, seeding, icon backfill with outbound fetches,
   // every route plugin and hook), which made this timing-sensitive test
   // flaky in CI. The mechanism under test is installGracefulShutdown plus
-  // the production close call — server.close(), identical to src/index.ts —
-  // draining a real in-flight HTTP connection. This fixture keeps all of
-  // that and drops only the unrelated app stack.
+  // the production close call — server.close() with the shared
+  // trackInFlightRequests drain, identical to src/index.ts — draining a
+  // real in-flight HTTP connection. This fixture keeps all of that and
+  // drops only the unrelated app stack.
   const server = Fastify({ logger: false });
 
-  // Explicit in-flight tracking: CI lost the in-flight /slow request with
-  // ECONNRESET on the client (and logged shutdown_complete ~1ms after
-  // shutdown_started in an earlier revision), so the shutdown close must
-  // not rely on server.close() alone to observe the live handler — it
-  // waits for the tracked request to respond before letting the process
-  // exit. The outer shutdown deadline in installGracefulShutdown still
-  // bounds this wait.
-  let inFlight = 0;
-  let notifyDrained: (() => void) | null = null;
-  server.addHook('onRequest', async () => {
-    inFlight += 1;
-  });
-  server.addHook('onResponse', async () => {
-    inFlight -= 1;
-    if (inFlight === 0) {
-      const notify = notifyDrained;
-      notifyDrained = null;
-      notify?.();
-    }
-  });
-  const waitForDrain = (): Promise<void> => {
-    if (inFlight === 0) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      notifyDrained = resolve;
-    });
-  };
+  // Tracked in-flight drain shared with production src/index.ts: CI lost
+  // the in-flight /slow request with ECONNRESET on the client (and logged
+  // shutdown_complete ~1ms after shutdown_started in an earlier revision),
+  // so the shutdown close must not rely on server.close() alone to observe
+  // the live handler. The outer shutdown deadline in
+  // installGracefulShutdown still bounds this wait.
+  const waitForDrain = trackInFlightRequests(server);
 
   server.get('/slow', async () => {
     process.send?.({ type: 'request-started' });
@@ -59,10 +41,10 @@ async function run(): Promise<void> {
   const port = typeof bound === 'object' && bound ? bound.port : 0;
   if (!port) throw new Error('shutdown fixture listener did not report a port');
 
-  // Production-shaped close: src/index.ts passes server.close(), which
-  // stays in this path (stop accepting, release the listener). The tracked
-  // in-flight request is additionally awaited so process exit cannot
-  // precede the response even if server.close() resolves early.
+  // Production close, identical to src/index.ts: server.close() stops
+  // accepting and releases the listener, and the shared tracked in-flight
+  // drain is additionally awaited so process exit cannot precede the
+  // response even if server.close() resolves early.
   installGracefulShutdown({
     label: 'backend',
     close: async () => {

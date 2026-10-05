@@ -1,6 +1,6 @@
 import { createServer } from './server';
 import { installFatalHandlers, logFatalAndExit, logProcessStart } from './lib/fatal';
-import { installGracefulShutdown } from './lib/graceful-shutdown';
+import { installGracefulShutdown, trackInFlightRequests } from './lib/graceful-shutdown';
 import { createStorageFailureServer, shouldServeStorageFailure } from './server/degraded';
 
 // The supervisor only sees this process's exit code, so every way out of here
@@ -27,7 +27,19 @@ async function start() {
     console.log(`🚀 Agent Deck Backend server running on http://${host}:${port}`);
     console.log(`📊 Health check: http://${host}:${port}/health`);
 
-    installGracefulShutdown({ label: 'backend', close: () => server.close() });
+    // Tracked drain shared with the shutdown test fixture: server.close()
+    // stops accepting and releases the listener, and the tracked in-flight
+    // request is additionally awaited so process exit cannot precede the
+    // response even if server.close() resolves early.
+    const waitForDrain = trackInFlightRequests(server);
+    installGracefulShutdown({
+      label: 'backend',
+      close: async () => {
+        const closing = server.close();
+        await waitForDrain();
+        await closing;
+      },
+    });
   } catch (error) {
     // logFatalAndExit writes the message, the cause and a hint, synchronously.
     logFatalAndExit('backend', `startup failed before listening on ${host}:${port}`, error);
