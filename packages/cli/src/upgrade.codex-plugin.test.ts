@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { reconcileCodexPluginAfterUpgrade, runCodexPluginDoctor } from './codex-plugin';
 import { runUpgrade } from './upgrade';
 import { getAgentDeckVersion } from './version';
 
@@ -539,6 +540,163 @@ describe('current-contract reconciliation (NOT-301)', { timeout: 30_000 }, () =>
     expect(text).toContain('CLI upgrade complete; Codex plugin unchanged');
     expect(text).toContain('plugin not installed');
     expect(hashLiveFixtures()).toBe(before);
+  });
+});
+
+describe('sticky versioned cache reconciliation (NOT-360)', { timeout: 30_000 }, () => {
+  const STALE_VERSION = '1.11.7';
+
+  /**
+   * Stub Codex with a sticky versioned cache: `plugin remove` + `plugin add`
+   * succeed but leave the installed version at 1.11.7 until the versioned
+   * cache path itself is cleared. The marketplace workspace already carries
+   * the new `plugin.json`; live Codex lists the workspace as the source
+   * path. Fixture home is isolated temp; never the real CODEX_HOME.
+   */
+  function seedStickyCacheUpgradeHome(): { marketplaceRoot: string; installedCacheRoot: string } {
+    codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-sticky-up-'));
+    const marketplaceRoot = path.join(codexHome, 'marketplace', 'agent-deck');
+    fs.mkdirSync(path.join(marketplaceRoot, '.codex-plugin'), { recursive: true });
+    fs.writeFileSync(
+      path.join(marketplaceRoot, '.codex-plugin', 'plugin.json'),
+      `${JSON.stringify({ name: 'agent-deck', version: CLI_VERSION }, null, 2)}\n`,
+    );
+    fs.writeFileSync(
+      path.join(marketplaceRoot, '.mcp.json'),
+      `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`,
+    );
+    pluginRoot = marketplaceRoot;
+    const installedCacheRoot = path.join(
+      codexHome,
+      'plugins',
+      'cache',
+      'agent-deck',
+      'agent-deck',
+      STALE_VERSION,
+    );
+    fs.mkdirSync(installedCacheRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(installedCacheRoot, '.mcp.json'),
+      `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`,
+    );
+    fs.writeFileSync(
+      path.join(codexHome, 'plugin-list.json'),
+      `${JSON.stringify(
+        {
+          installed: [
+            {
+              pluginId: SELECTOR,
+              name: 'agent-deck',
+              marketplaceName: 'agent-deck',
+              version: STALE_VERSION,
+              installed: true,
+              enabled: true,
+              source: { source: 'local', path: marketplaceRoot },
+              marketplaceSource: { sourceType: 'local', source: marketplaceRoot },
+            },
+          ],
+          available: [],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    writeMarketplaces([{ name: 'agent-deck', root: marketplaceRoot, source: 'local' }]);
+    // remove/add report success but never refresh the installed version:
+    // the stale cache survives until the operator clears it manually.
+    const stub = path.join(codexHome, 'codex');
+    fs.writeFileSync(
+      stub,
+      `#!/bin/bash
+echo "codex $*" >> "${codexHome}/calls.log"
+if [ "$1" = "plugin" ] && [ "$2" = "list" ]; then
+  cat "${codexHome}/plugin-list.json"
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "list" ]; then
+  cat "${codexHome}/marketplace-list.json"
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "remove" ]; then
+  exit 0
+fi
+if [ "$1" = "plugin" ] && [ "$2" = "add" ]; then
+  exit 0
+fi
+echo "stub codex: unexpected invocation: $*" >&2
+exit 1
+`,
+    );
+    fs.chmodSync(stub, 0o755);
+    process.env.CODEX_HOME = codexHome;
+    process.env.CODEX_BIN = stub;
+    return { marketplaceRoot, installedCacheRoot };
+  }
+
+  function promoteToCurrent(): void {
+    fs.writeFileSync(
+      path.join(codexHome, 'plugin-list.json'),
+      `${JSON.stringify(
+        {
+          installed: [
+            {
+              pluginId: SELECTOR,
+              name: 'agent-deck',
+              marketplaceName: 'agent-deck',
+              version: CLI_VERSION,
+              installed: true,
+              enabled: true,
+              source: { source: 'local', path: pluginRoot },
+              marketplaceSource: { sourceType: 'local', source: pluginRoot },
+            },
+          ],
+          available: [],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  }
+
+  it('exits 1 with cache-clear remediation when remove/add leave the old version', async () => {
+    const { installedCacheRoot } = seedStickyCacheUpgradeHome();
+    expect(process.env.CODEX_HOME).toBe(codexHome);
+
+    const code = await reconcileCodexPluginAfterUpgrade(CLI_VERSION);
+    const text = output.join('\n');
+    const calls = readCalls();
+
+    expect(code).toBe(1);
+    // Reconciliation still goes through the supported commands ...
+    expect(calls).toContain(`codex plugin remove ${SELECTOR}`);
+    expect(calls).toContain(`codex plugin add ${SELECTOR}`);
+    // ... but the re-read still sees the stale version, so remediation must
+    // name the observed installed (cache) root and how to clear it — not
+    // only remove/add against the marketplace selector.
+    expect(text).toContain(`still version-mismatch`);
+    expect(text).toContain(`installed ${STALE_VERSION}`);
+    expect(text).toContain(`Installed root: ${installedCacheRoot}`);
+    expect(text).toContain(`rm -rf "${installedCacheRoot}"`);
+    expect(text).toContain(`codex plugin add ${SELECTOR}`);
+    // Safety: Agent Deck never clears the cache itself and never edits
+    // Codex state files directly — the stale copy is still on disk.
+    expect(fs.existsSync(installedCacheRoot)).toBe(true);
+    expect(calls.some((line) => line.includes('rm '))).toBe(false);
+  });
+
+  it('reaches OK once the operator clears the cache and re-adds', async () => {
+    const { installedCacheRoot } = seedStickyCacheUpgradeHome();
+
+    expect(await reconcileCodexPluginAfterUpgrade(CLI_VERSION)).toBe(1);
+
+    // Operator follows the printed remediation: clear the sticky cache,
+    // re-add (which serves the marketplace workspace at CLI_VERSION).
+    fs.rmSync(installedCacheRoot, { recursive: true, force: true });
+    promoteToCurrent();
+
+    output.length = 0;
+    expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(0);
+    expect(output.join('\n')).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
   });
 });
 
