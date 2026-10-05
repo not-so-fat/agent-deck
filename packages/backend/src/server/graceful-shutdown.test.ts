@@ -22,6 +22,10 @@ describe('graceful SIGTERM shutdown', () => {
 
   function nextMessage(...types: FixtureMessage['type'][]): Promise<FixtureMessage> {
     return new Promise((resolve, reject) => {
+      // Generous on purpose: under a loaded CI runner the forked fixture's
+      // tsx boot plus Fastify import can take seconds. The 10 s AC bound
+      // below is measured only from SIGTERM to exit, so slow boot here
+      // cannot mask a slow shutdown.
       const timeout = setTimeout(() => {
         const tail = fixtureOutput.slice(-2000);
         reject(
@@ -29,7 +33,7 @@ describe('graceful SIGTERM shutdown', () => {
             `fixture did not send ${types.join(' or ')}${tail ? `\n--- fixture output tail ---\n${tail}` : ''}`,
           ),
         );
-      }, 5_000);
+      }, 10_000);
       const listener = (message: FixtureMessage) => {
         if (!types.includes(message.type)) return;
         clearTimeout(timeout);
@@ -109,5 +113,5 @@ describe('graceful SIGTERM shutdown', () => {
     const exit = await exitPromise;
     expect(exit, `fixture exit mismatch${fixtureTail()}`).toEqual({ code: 0, signal: null });
     expect(Date.now() - beforeSignal).toBeLessThan(10_000);
-  }, 12_000);
+  }, 20_000);
 });
