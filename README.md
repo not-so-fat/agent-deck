@@ -3,11 +3,11 @@
 [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A governed way of working that travels with every new agent worker — playbooks, tools, and credentials in a deck; queue the issues and only show up for real decisions.
+Keep the way you work consistent across coding agents and workspaces. Agent Deck gives every agent the right playbooks, tools, and credentials from one governed source of truth.
 
-[![Agent Deck + Agent Dealer](https://img.youtube.com/vi/DVC70PgMY80/maxresdefault.jpg)](https://www.youtube.com/watch?v=DVC70PgMY80)
+[![One playbook across coding agents — Agent Deck](https://img.youtube.com/vi/DVC70PgMY80/maxresdefault.jpg)](https://www.youtube.com/watch?v=DVC70PgMY80)
 
-[Watch the 2-min overview](https://www.youtube.com/watch?v=DVC70PgMY80) — portable decks, then a governed issue queue.
+[Watch the 100-second overview](https://www.youtube.com/watch?v=DVC70PgMY80) — one playbook across agents and workspaces.
 
 [Why](#why) · [Quick Start](#quick-start) · [Reference](#reference) · [Docs](#documentation)
 
@@ -15,15 +15,15 @@ A governed way of working that travels with every new agent worker — playbooks
 
 ## Why
 
-You lean on one agent for everything — client code, triage, releases, research. Each kind of work needs its own MCP servers, API keys, and procedures. Wire them all into the agent at once and the tool list balloons: the agent slows down, picks the wrong integration, or leaks one client's context into another's. And the procedures you carefully explained live in old chat threads — you re-explain the same release checklist every session.
+You teach one coding agent how you work: how to open a PR, write a ticket, check a release, or use your knowledge base. Then you switch to another agent and teach it all again. Move to a different workspace and the same procedures are copied, drift, or disappear into old chat threads.
 
-**Monday, 9am — client bug.** You say *"use the acme deck."* The agent binds that client's Linear and repo MCP servers, their keys from your Keychain, and the `code-review` playbook that encodes how they like PRs. Only that deck's tools are in play.
+**Consistency across agents.** The same playbook can guide Claude Code, Codex, Cursor, or another MCP client. You maintain one procedure instead of separate copies for every agent.
 
-**Same afternoon — your own release.** *"Switch to the dev deck."* Different tools, different keys, and the `ship-to-npm` playbook with the checklist you refined last month. Nothing from acme leaks in.
+**Consistency across workspaces.** Reusable PR rules, ticketing procedures, UI principles, and knowledge-base workflows live in one collection. Attach them to the decks that need them instead of duplicating them across repositories.
 
-**You correct the agent once** — "changelog entries go newest-first." Instead of dying with the thread, the correction becomes a playbook **patch proposal**; you accept it in the dashboard, and every future session — Cursor or Claude Code — starts from what you taught it, not from scratch.
+**One governed source of truth.** A deck bundles the MCP services, credentials, and playbooks for one context. The agent sees only that deck. When you correct a playbook-driven result, Agent Deck turns the lesson into a reviewable patch proposal so future sessions start from what you taught it.
 
-One MCP endpoint, registered once. Decks scope it per job; playbooks make it compound.
+One MCP endpoint, registered once. Switch decks instead of rewiring agents; improve a playbook once and reuse the lesson everywhere.
 
 <img src="./misc/Idea.png" alt="Single MCP for Context" width="70%" />
 

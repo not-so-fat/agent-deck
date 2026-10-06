@@ -1,6 +1,6 @@
 # Product Direction — agent_deck + agent-dealer
 
-**Date:** 2026-07-05 · **Status:** Accepted · **Scope:** cross-product (this repo + [agent-dealer](https://github.com/not-so-fat/agent-dealer))
+**Date:** 2026-07-05 · **Updated:** 2026-10-06 · **Status:** Accepted · **Scope:** cross-product (this repo + [agent-dealer](https://github.com/not-so-fat/agent-dealer))
 
 This doc is the single owner of *direction*: what the two products are, which decisions are locked, and what order to build in. Repo-level docs ([MVP.md](./MVP.md), agent-dealer's `docs/`) own behavior details; when they conflict with older PRDs, as-built docs win. Supersedes the direction fragments scattered across PRDs, OAuth docs, and ADRs (see appendix).
 
@@ -8,23 +8,25 @@ This doc is the single owner of *direction*: what the two products are, which de
 
 ## 1. Thesis
 
-One user, working with agents on everything, where every run makes the next run better.
+One user, moving across coding agents and workspaces without re-teaching the same working method. Corrections should compound instead of staying in one chat, agent, or repository.
 
-- **agent_deck** owns **what the agent knows**: decks of MCP servers, Keychain-backed keys, and playbooks — context and capability scoped per job, under the user's control. It is the knowledge layer; it never executes.
-- **agent-dealer** owns **what runs**: the queue of small/mid daily tasks, human plan approval, agent execution (Claude/Cursor CLI), review, and the audit record. It is the execution layer; it never stores knowledge or secrets — it passes `deckId`/`playbookId` through.
+- **agent_deck** owns **consistent context**: one governed source of truth for playbooks, MCP services, and credentials, grouped into decks and available across agent runtimes and workspaces. It is the knowledge and capability layer; it never executes work.
+- **agent-dealer** owns **governed execution**: the queue of small/mid daily tasks, human plan approval, agent execution, review, and the audit record. It never stores knowledge or secrets — it passes `deckId`/`playbookId` through.
 
-The seam between them is the **learning loop**: dealer runs consume playbooks via deck MCP, and feed lessons back via `update_playbook`. That loop — not the queue, not the proxy — is the reason these are two halves of one product.
+The seam between them is the **learning loop**: Dealer runs consume Deck playbooks and feed lessons back as reviewable patch proposals. Deck makes the working method consistent; Dealer increases the volume of governed runs that can improve it.
 
-**One tagline** (replaces the three in circulation — README "self-improving skills", server.json "MCP proxy", package.json "browser for agents"):
+**Canonical positioning:**
 
-> *Agent Deck: switch what your agent knows — decks of tools, keys, and self-improving playbooks. Agent Dealer: run your day through it.*
+> *Agent Deck keeps the way you work consistent across coding agents and workspaces — playbooks, tools, and credentials from one governed source of truth.*
+>
+> *Agent Dealer runs queued work against that context and only asks for real decisions.*
 
 ## 2. Decisions (locked)
 
-### D1 — The word is "playbooks", everywhere
+### D1 — Consistency is the story; "playbook" is the product term
 
-**Why:** README markets "self-improving skills" while [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md) exists specifically to say playbooks ≠ Cursor/Claude skills. A first-time user reads both and is confused within 10 minutes. "Skill" is also a loaded, host-specific term (Claude skills, Cursor skills) we don't control.
-**Action:** README, server.json, package.json descriptions say *playbooks* ("self-improving playbooks" is fine). "Skills" appears only in PLAYBOOKS_AND_SKILLS.md as the thing we're contrasted against.
+**Why:** The lived problem is inconsistency: users teach the same procedure again when they switch coding agents or workspaces, and each copy can drift. That is clearer than leading with the implementation primitives. "Skill" works as colloquial presentation language, but it is also a loaded, host-specific term (Claude skills, Cursor skills) that Agent Deck does not replace.
+**Action:** README and public demos lead with consistency across agents and workspaces, then explain decks and playbooks as the mechanism. Product copy says *playbooks*; [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md) owns the precise distinction from host-native skills. Agent Dealer keeps an execution-specific opening rather than inheriting Agent Deck's hero copy.
 
 ### D2 — Local-first, single-user; personal hosting allowed, shared hosting deferred
 
