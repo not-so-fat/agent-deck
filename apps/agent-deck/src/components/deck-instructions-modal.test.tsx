@@ -76,14 +76,27 @@ function mockDeckEndpoints(server: ServerState, seen: SeenRequests) {
       if (server.failPutWith) {
         return jsonResponse({ success: false, error: server.failPutWith }, 500);
       }
+      // Mirror the real server: the 16,000-character bound applies to the
+      // normalized form, so 16,000 chars without a newline are rejected.
+      const normalized = normalizeLikeServer(
+        String(body.operatingInstructions ?? ""),
+      );
+      if (normalized.length > OPERATING_INSTRUCTIONS_MAX_LENGTH) {
+        return jsonResponse(
+          {
+            success: false,
+            error:
+              "Deck operating instructions must be at most 16,000 characters",
+          },
+          400,
+        );
+      }
       const id = url.split("/")[3];
       const target = server.decks.find((deck) => deck.id === id);
       if (!target) {
         return jsonResponse({ success: false, error: "Deck not found" }, 404);
       }
-      target.operatingInstructions = normalizeLikeServer(
-        String(body.operatingInstructions ?? ""),
-      );
+      target.operatingInstructions = normalized;
       target.updatedAt = new Date().toISOString();
       return jsonResponse({ success: true, data: target });
     }
@@ -296,7 +309,7 @@ describe("Deck instructions modal (NOT-376)", () => {
     ).toHaveValue("Ship it\n");
   });
 
-  it("blocks over-limit input but allows exactly the 16,000-character bound", async () => {
+  it("enforces the normalized bound: 15,999 allowed, 16,000 without a newline blocked", async () => {
     expect(OPERATING_INSTRUCTIONS_MAX_LENGTH).toBe(16_000);
     const server = twoDeckServer();
     const seen: SeenRequests = { puts: [], deckGets: 0 };
@@ -307,8 +320,23 @@ describe("Deck instructions modal (NOT-376)", () => {
     const textarea = within(modal).getByTestId("input-deck-instructions");
     const save = within(modal).getByTestId("button-save-deck-instructions");
 
+    // 16,001 raw chars normalize to 16,002: blocked.
     fireEvent.change(textarea, {
       target: { value: "x".repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH + 1) },
+    });
+    expect(within(modal).getByTestId("deck-instructions-count")).toHaveTextContent(
+      "16,002 / 16,000",
+    );
+    expect(
+      within(modal).getByTestId("deck-instructions-over-limit"),
+    ).toBeInTheDocument();
+    expect(save).toBeDisabled();
+    expect(seen.puts).toHaveLength(0);
+
+    // 16,000 raw chars without a trailing newline normalize to 16,001, which
+    // the server rejects: blocked client-side so it cannot be submitted.
+    fireEvent.change(textarea, {
+      target: { value: "x".repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH) },
     });
     expect(within(modal).getByTestId("deck-instructions-count")).toHaveTextContent(
       "16,001 / 16,000",
@@ -319,9 +347,27 @@ describe("Deck instructions modal (NOT-376)", () => {
     expect(save).toBeDisabled();
     expect(seen.puts).toHaveLength(0);
 
+    // 15,999 chars normalize to exactly 16,000: allowed.
     fireEvent.change(textarea, {
-      target: { value: "x".repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH) },
+      target: { value: "x".repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH - 1) },
     });
+    expect(within(modal).getByTestId("deck-instructions-count")).toHaveTextContent(
+      "16,000 / 16,000",
+    );
+    expect(
+      within(modal).queryByTestId("deck-instructions-over-limit"),
+    ).not.toBeInTheDocument();
+    expect(save).toBeEnabled();
+
+    // 15,999 chars plus the trailing newline itself (16,000 stored): allowed.
+    fireEvent.change(textarea, {
+      target: {
+        value: `${"x".repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH - 1)}\n`,
+      },
+    });
+    expect(within(modal).getByTestId("deck-instructions-count")).toHaveTextContent(
+      "16,000 / 16,000",
+    );
     expect(
       within(modal).queryByTestId("deck-instructions-over-limit"),
     ).not.toBeInTheDocument();

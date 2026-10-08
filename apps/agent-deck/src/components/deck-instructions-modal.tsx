@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Deck, OPERATING_INSTRUCTIONS_MAX_LENGTH } from "@agent-deck/shared";
+import {
+  Deck,
+  OPERATING_INSTRUCTIONS_MAX_LENGTH,
+  normalizeOperatingInstructions,
+} from "@agent-deck/shared";
 import {
   Dialog,
   DialogContent,
@@ -53,10 +57,19 @@ export default function DeckInstructionsModal({
   }, [open, deck.id]);
 
   const dirty = open && draft !== saved;
-  const overLimit = draft.length > OPERATING_INSTRUCTIONS_MAX_LENGTH;
+  // The server validates the normalized form (non-empty drafts gain a
+  // trailing newline), so the counter and the limit check must use the
+  // normalized length: 16,000 chars without a newline is already over.
+  const normalizedLength = normalizeOperatingInstructions(draft).length;
+  const overLimit = normalizedLength > OPERATING_INSTRUCTIONS_MAX_LENGTH;
 
   useEffect(() => {
     onDirtyChange?.(dirty);
+    // Clear the parent's guard if this modal unmounts with a draft unsaved
+    // (e.g. the deck is deleted), so later deck switches never prompt needlessly.
+    return () => {
+      onDirtyChange?.(false);
+    };
   }, [dirty, onDirtyChange]);
 
   const saveMutation = useMutation({
@@ -70,14 +83,25 @@ export default function DeckInstructionsModal({
         error?: string;
       }>;
     },
-    onSuccess: (body, value) => {
+    onSuccess: async (body, value) => {
       if (!body.success) {
-        throw new Error(body.error || "Save failed");
+        // A 200 with success:false never reaches onError, so report it here
+        // and keep the draft for retry, same as a rejected save.
+        toast({
+          title: "Could not save deck instructions",
+          description: body.error || "Save failed",
+          variant: "destructive",
+        });
+        return;
       }
       // The server normalizes the stored form (trailing newline), so track
       // the returned value until the invalidated query refetches.
       setDraft(body.data?.operatingInstructions ?? value);
-      queryClient.invalidateQueries({ queryKey: ["/api/decks"] });
+      // Await the refetch before closing so an immediate reopen prefills the
+      // saved value instead of the stale one the query still holds.
+      await queryClient
+        .invalidateQueries({ queryKey: ["/api/decks"] })
+        .catch(() => {});
       toast({
         title: "Deck instructions saved",
         description: `New sessions using ${deck.name} will receive the updated instructions.`,
@@ -133,7 +157,7 @@ export default function DeckInstructionsModal({
               className={`shrink-0 text-xs tabular-nums ${overLimit ? "font-semibold text-red-400" : "text-gray-400"}`}
               data-testid="deck-instructions-count"
             >
-              {draft.length.toLocaleString("en-US")} / {limitLabel}
+              {normalizedLength.toLocaleString("en-US")} / {limitLabel}
             </span>
           </div>
           <Textarea
@@ -149,7 +173,8 @@ export default function DeckInstructionsModal({
           {overLimit && (
             <p className="text-sm text-red-400" data-testid="deck-instructions-over-limit">
               Instructions exceed the {limitLabel}-character limit and cannot be
-              saved.
+              saved. Non-empty instructions are stored with a trailing newline,
+              which counts toward the limit.
             </p>
           )}
           <p className="text-xs text-gray-400">
