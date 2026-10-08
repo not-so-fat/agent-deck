@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import type { BundleV1, ExportRequest, ImportReport } from '@agent-deck/shared';
+import type { BundleV2, ExportRequest, ImportReport } from '@agent-deck/shared';
 import { DatabaseManager, STORE_LAST_REINDEX } from './models/database';
 import { resolveDatabasePath } from './lib/paths';
 import { createSecretStore, CredentialManager } from './vault';
@@ -148,7 +148,7 @@ export function createCliExportImport() {
     async exportToFile(
       outputPath: string,
       request: ExportRequest,
-    ): Promise<{ ok: true; bundle: BundleV1 } | { ok: false; error: string }> {
+    ): Promise<{ ok: true; bundle: BundleV2 } | { ok: false; error: string }> {
       try {
         const bundle = await buildExportBundle(db, request);
         const resolved = path.resolve(outputPath);

@@ -141,6 +141,108 @@ describe('import unique-name skip', () => {
     expect(decks[0].services.map((row) => row.id)).toEqual([service.id]);
   });
 
+  it('keeps existing deck instructions on reuse and warns when incoming differ', async () => {
+    const existingDeck = await db.createDeck({
+      name: 'dev',
+      isActive: false,
+      operatingInstructions: 'Existing runbook\n',
+      credentials: [],
+      playbooks: [],
+    });
+
+    const report = await importBundle(db, {
+      format: 'agent-deck-bundle',
+      version: 2,
+      exportedAt: '2026-07-03T00:00:00.000Z',
+      exportedFrom: { agentDeckVersion: 'test' },
+      scope: 'deck',
+      services: [],
+      playbooks: [],
+      decks: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          name: 'dev',
+          operatingInstructions: 'Incoming runbook\n',
+          serviceIds: [],
+          playbookIds: [],
+        },
+      ],
+    });
+
+    expect(report.counts.decks).toEqual({ created: 0, reused: 1 });
+    expect(report.idMap['22222222-2222-4222-8222-222222222222']).toBe(
+      existingDeck.id,
+    );
+    expect(report.warnings.some((row) => row.includes('Skipped deck'))).toBe(
+      true,
+    );
+    const instructionWarning = report.warnings.find((row) =>
+      row.includes('operating instructions'),
+    );
+    expect(instructionWarning).toBeDefined();
+    expect(instructionWarning).toContain('"dev"');
+
+    const decks = await db.getAllDecks();
+    expect(decks).toHaveLength(1);
+    expect(decks[0].operatingInstructions).toBe('Existing runbook\n');
+  });
+
+  it('stays silent on reuse when incoming instructions match or are empty', async () => {
+    await db.createDeck({
+      name: 'same',
+      isActive: false,
+      operatingInstructions: 'Shared runbook\n',
+      credentials: [],
+      playbooks: [],
+    });
+    await db.createDeck({
+      name: 'empty-incoming',
+      isActive: false,
+      operatingInstructions: 'Keep me\n',
+      credentials: [],
+      playbooks: [],
+    });
+
+    const report = await importBundle(db, {
+      format: 'agent-deck-bundle',
+      version: 2,
+      exportedAt: '2026-07-03T00:00:00.000Z',
+      exportedFrom: { agentDeckVersion: 'test' },
+      scope: 'collection',
+      services: [],
+      playbooks: [],
+      decks: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          name: 'same',
+          operatingInstructions: 'Shared runbook\n',
+          serviceIds: [],
+          playbookIds: [],
+        },
+        {
+          id: '33333333-3333-4333-8333-333333333333',
+          name: 'empty-incoming',
+          operatingInstructions: '',
+          serviceIds: [],
+          playbookIds: [],
+        },
+      ],
+    });
+
+    expect(report.counts.decks).toEqual({ created: 0, reused: 2 });
+    expect(
+      report.warnings.some((row) => row.includes('operating instructions')),
+    ).toBe(false);
+
+    const decks = await db.getAllDecks();
+    expect(
+      decks.find((row) => row.name === 'same')?.operatingInstructions,
+    ).toBe('Shared runbook\n');
+    expect(
+      decks.find((row) => row.name === 'empty-incoming')?.operatingInstructions,
+    ).toBe('Keep me\n');
+  });
+
   it('skips duplicate service ids in one bundle', async () => {
     const report = await importBundle(db, {
       format: 'agent-deck-bundle',

@@ -62,8 +62,10 @@ describe('deck-scoped export', () => {
     );
 
     expect(bundle.scope).toBe('deck');
+    expect(bundle.version).toBe(2);
     expect(bundle.decks).toHaveLength(1);
     expect(bundle.decks[0].name).toBe('focus');
+    expect(bundle.decks[0].operatingInstructions).toBe('');
     expect(bundle.services.map((row) => row.name)).toEqual(['Linked']);
     expect(bundle.playbooks.map((row) => row.id)).toEqual(['pb_linked']);
     // Membership-only closure: drop service deps not in the exported set.

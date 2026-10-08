@@ -58,6 +58,7 @@ describe('export/import round-trip', () => {
 
     const deck = await source.createDeck({
       name: 'dev',
+      operatingInstructions: '# Dev runbook\nPrefer small PRs.\n',
     });
     await source.addServiceToDeck({ deckId: deck.id, serviceId: serviceA.id, position: 0 });
     await source.addServiceToDeck({ deckId: deck.id, serviceId: serviceB.id, position: 1 });
@@ -87,9 +88,13 @@ describe('export/import round-trip', () => {
       agentDeckVersion: 'test',
     });
 
+    expect(bundle.version).toBe(2);
     expect(bundle.services).toHaveLength(2);
     expect(bundle.playbooks).toHaveLength(1);
     expect(bundle.decks).toHaveLength(1);
+    expect(bundle.decks[0].operatingInstructions).toBe(
+      '# Dev runbook\nPrefer small PRs.\n',
+    );
     expect(JSON.stringify(bundle)).not.toContain('cred_');
     expect(JSON.stringify(bundle)).not.toContain('SECRET');
     expect(JSON.stringify(bundle)).not.toContain('nope');
@@ -111,6 +116,9 @@ describe('export/import round-trip', () => {
     const targetDecks = await target.getAllDecks();
     expect(targetDecks).toHaveLength(1);
     expect(targetDecks[0].name).toBe('dev');
+    expect(targetDecks[0].operatingInstructions).toBe(
+      '# Dev runbook\nPrefer small PRs.\n',
+    );
     expect(targetDecks[0].services.map((row) => row.name)).toEqual([
       'Linear',
       'Local Tool',
@@ -130,5 +138,54 @@ describe('export/import round-trip', () => {
 
     const targetCredentials = await target.getAllCredentials();
     expect(targetCredentials).toHaveLength(0);
+  });
+
+  it('accepts a v1 bundle through the public import path with empty instructions', async () => {
+    const report = await importBundle(target, {
+      format: 'agent-deck-bundle',
+      version: 1,
+      exportedAt: '2026-07-03T00:00:00.000Z',
+      exportedFrom: { agentDeckVersion: 'test' },
+      scope: 'collection',
+      services: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          name: 'Linear',
+          type: 'mcp',
+          url: 'https://mcp.linear.app/mcp',
+        },
+      ],
+      playbooks: [
+        {
+          id: 'pb_triage',
+          title: 'Triage',
+          body: 'Use Linear',
+          triggers: ['triage'],
+          dependsOnServiceIds: ['11111111-1111-4111-8111-111111111111'],
+        },
+      ],
+      decks: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          name: 'dev',
+          serviceIds: ['11111111-1111-4111-8111-111111111111'],
+          playbookIds: ['pb_triage'],
+        },
+      ],
+    });
+
+    expect(report.status).toBe('completed');
+    expect(report.counts).toEqual({
+      services: { created: 1, reused: 0 },
+      playbooks: { created: 1, reused: 0 },
+      decks: { created: 1, reused: 0 },
+    });
+
+    const targetDecks = await target.getAllDecks();
+    expect(targetDecks).toHaveLength(1);
+    expect(targetDecks[0].name).toBe('dev');
+    expect(targetDecks[0].operatingInstructions).toBe('');
+    expect(targetDecks[0].services.map((row) => row.name)).toEqual(['Linear']);
+    expect(targetDecks[0].playbooks.map((row) => row.title)).toEqual(['Triage']);
   });
 });

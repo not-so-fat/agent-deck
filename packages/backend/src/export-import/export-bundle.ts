@@ -1,6 +1,6 @@
 import {
-  BundleV1,
-  BundleV1Schema,
+  BundleV2,
+  BundleV2Schema,
   ExportRequest,
   ExportRequestSchema,
   type BundlePlaybook,
@@ -46,13 +46,13 @@ export async function buildExportBundle(
   db: DatabaseManager,
   request: ExportRequest,
   options?: { agentDeckVersion?: string },
-): Promise<BundleV1> {
+): Promise<BundleV2> {
   const input = ExportRequestSchema.parse(request);
   const agentDeckVersion = options?.agentDeckVersion ?? getAgentDeckVersion();
 
   let services: BundleService[] = [];
   let playbooks: BundlePlaybook[] = [];
-  let decks: BundleV1['decks'] = [];
+  let decks: BundleV2['decks'] = [];
 
   if (input.scope === 'collection') {
     const allServices = await db.getAllServices();
@@ -68,6 +68,7 @@ export async function buildExportBundle(
     decks = allDecks.map((deck) => ({
       id: deck.id,
       name: deck.name,
+      operatingInstructions: deck.operatingInstructions ?? '',
       serviceIds: (deck.services ?? []).map((service) => service.id),
       playbookIds: (deck.playbooks ?? []).map((playbook) => playbook.id),
     }));
@@ -90,15 +91,16 @@ export async function buildExportBundle(
       {
         id: deck.id,
         name: deck.name,
+        operatingInstructions: deck.operatingInstructions ?? '',
         serviceIds: deckServices.map((service) => service.id),
         playbookIds: deckPlaybooks.map((playbook) => playbook.id),
       },
     ];
   }
 
-  return BundleV1Schema.parse({
+  return BundleV2Schema.parse({
     format: 'agent-deck-bundle',
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     exportedFrom: { agentDeckVersion },
     scope: input.scope,

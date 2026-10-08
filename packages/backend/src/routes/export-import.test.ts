@@ -7,6 +7,7 @@ import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
   AGENT_DECK_DASHBOARD_CLIENT,
+  OPERATING_INSTRUCTIONS_MAX_LENGTH,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
 import { registerExportImportRoutes } from './export-import';
@@ -55,10 +56,15 @@ describe('export-import routes', () => {
       name: 'Linear',
       type: 'mcp',
       url: 'https://mcp.linear.app/mcp',
+      headers: { Authorization: 'Bearer sekrit', 'X-Custom': 'ok' },
+      oauthClientSecret: 'sekrit-client',
+      oauthAccessToken: 'sekrit-access',
+      localEnv: { API_KEY: 'sekrit-env' },
     });
     const deck = await db.createDeck({
       name: 'dev',
       isActive: false,
+      operatingInstructions: '# Dev runbook\nPrefer small PRs.\n',
       credentials: [],
       playbooks: [],
     });
@@ -72,8 +78,18 @@ describe('export-import routes', () => {
     });
     expect(exported.statusCode).toBe(200);
     const bundle = exported.json().data;
+    expect(bundle.version).toBe(2);
     expect(bundle.services).toHaveLength(1);
     expect(bundle.decks).toHaveLength(1);
+    expect(bundle.decks[0].operatingInstructions).toBe(
+      '# Dev runbook\nPrefer small PRs.\n',
+    );
+    expect(bundle.services[0]).not.toHaveProperty('oauthClientSecret');
+    expect(bundle.services[0]).not.toHaveProperty('oauthAccessToken');
+    expect(bundle.services[0]).not.toHaveProperty('localEnv');
+    expect(bundle.services[0]).not.toHaveProperty('credentialId');
+    expect(bundle.services[0].headers ?? {}).not.toHaveProperty('Authorization');
+    expect(JSON.stringify(bundle)).not.toContain('sekrit');
 
     const imported = await app.inject({
       method: 'POST',
@@ -101,6 +117,7 @@ describe('export-import routes', () => {
     const deck = await db.createDeck({
       name: 'focus',
       isActive: false,
+      operatingInstructions: 'Focus runbook\n',
       credentials: [],
       playbooks: [],
     });
@@ -115,9 +132,11 @@ describe('export-import routes', () => {
     expect(response.statusCode).toBe(200);
     const bundle = response.json().data;
     expect(bundle.scope).toBe('deck');
+    expect(bundle.version).toBe(2);
     expect(bundle.services.map((row: { name: string }) => row.name)).toEqual([
       'Linked',
     ]);
+    expect(bundle.decks[0].operatingInstructions).toBe('Focus runbook\n');
   });
 
   it('returns 404 for missing deck', async () => {
@@ -131,5 +150,67 @@ describe('export-import routes', () => {
       },
     });
     expect(response.statusCode).toBe(404);
+  });
+
+  it('rejects over-limit v2 instructions before any import mutation', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/import',
+      headers: dashboardHeaders,
+      payload: {
+        format: 'agent-deck-bundle',
+        version: 2,
+        exportedAt: '2026-07-03T00:00:00.000Z',
+        exportedFrom: { agentDeckVersion: 'test' },
+        scope: 'collection',
+        services: [
+          {
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'Linear',
+            type: 'mcp',
+            url: 'https://mcp.linear.app/mcp',
+          },
+        ],
+        playbooks: [],
+        decks: [
+          {
+            id: '22222222-2222-4222-8222-222222222222',
+            name: 'dev',
+            operatingInstructions: 'x'.repeat(
+              OPERATING_INSTRUCTIONS_MAX_LENGTH + 1,
+            ),
+            serviceIds: ['11111111-1111-4111-8111-111111111111'],
+            playbookIds: [],
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toContain('operatingInstructions');
+    expect(await db.getAllServices()).toHaveLength(0);
+    expect(await db.getAllDecks()).toHaveLength(0);
+  });
+
+  it('rejects malformed v2 deck records before any import mutation', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/import',
+      headers: dashboardHeaders,
+      payload: {
+        format: 'agent-deck-bundle',
+        version: 2,
+        exportedAt: '2026-07-03T00:00:00.000Z',
+        exportedFrom: { agentDeckVersion: 'test' },
+        scope: 'collection',
+        services: [],
+        playbooks: [],
+        decks: [{ id: '22222222-2222-4222-8222-222222222222' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(await db.getAllServices()).toHaveLength(0);
+    expect(await db.getAllDecks()).toHaveLength(0);
   });
 });
