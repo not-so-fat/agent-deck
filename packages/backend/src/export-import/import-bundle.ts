@@ -1,6 +1,6 @@
 import {
-  BundleV1,
-  BundleV1Schema,
+  BundleAny,
+  BundleAnySchema,
   ImportReport,
   ImportReportSchema,
   type BundlePlaybook,
@@ -157,14 +157,14 @@ async function resolvePlaybook(
 async function resolveDeck(
   db: DatabaseManager,
   name: string,
+  operatingInstructions: string,
   warnings: string[],
 ): Promise<ResolveResult> {
   try {
     const created = await db.createDeck({
       name,
       isActive: false,
-      // Bundles do not carry instructions (NOT-374 non-goal); imports start empty.
-      operatingInstructions: '',
+      operatingInstructions,
       credentials: [],
       playbooks: [],
     });
@@ -178,6 +178,15 @@ async function resolveDeck(
       throw error;
     }
     warnings.push(`Skipped deck "${name}" (already exists)`);
+    // Reused decks keep their instructions; never overwrite silently.
+    if (
+      operatingInstructions !== '' &&
+      operatingInstructions !== (existing.operatingInstructions ?? '')
+    ) {
+      warnings.push(
+        `Deck "${name}": kept existing operating instructions (imported instructions differ)`,
+      );
+    }
     return { targetId: existing.id, created: false };
   }
 }
@@ -227,7 +236,7 @@ export async function importBundle(
   raw: unknown,
   options: ImportBundleOptions = {},
 ): Promise<ImportReport> {
-  const parsed = BundleV1Schema.safeParse(raw);
+  const parsed = BundleAnySchema.safeParse(raw);
   if (!parsed.success) {
     const message = parsed.error.issues
       .map((issue) => `${issue.path.join('.') || 'bundle'}: ${issue.message}`)
@@ -235,7 +244,7 @@ export async function importBundle(
     throw new ImportBundleError(`Invalid bundle: ${message}`);
   }
 
-  const bundle: BundleV1 = parsed.data;
+  const bundle: BundleAny = parsed.data;
   const warnings: string[] = [];
   const servicesNeedingOauth: string[] = [];
   const idMap: Record<string, string> = {};
@@ -287,7 +296,15 @@ export async function importBundle(
     }
 
     for (const deck of bundle.decks) {
-      const resolved = await resolveDeck(db, deck.name, warnings);
+      // V1 bundles predate deck instructions; those decks start empty.
+      const operatingInstructions =
+        'operatingInstructions' in deck ? deck.operatingInstructions : '';
+      const resolved = await resolveDeck(
+        db,
+        deck.name,
+        operatingInstructions,
+        warnings,
+      );
       idMap[deck.id] = resolved.targetId;
       if (resolved.created) {
         counts.decks.created += 1;

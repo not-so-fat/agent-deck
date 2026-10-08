@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import { OperatingInstructionsSchema } from './deck';
 import { PlaybookIdSchema } from './playbook';
 
 export const BundleFormatSchema = z.literal('agent-deck-bundle');
 export const BundleVersionSchema = z.literal(1);
+export const BundleV2VersionSchema = z.literal(2);
 export const BundleScopeSchema = z.enum(['collection', 'deck']);
 
 export const BundleServiceSchema = z
@@ -64,6 +66,41 @@ export const BundleV1Schema = z
   })
   .strict();
 
+export const BundleDeckV2Schema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    operatingInstructions: OperatingInstructionsSchema.default(''),
+    serviceIds: z.array(z.string()).default([]),
+    playbookIds: z.array(z.string()).default([]),
+  })
+  // Ignore legacy `description` on older bundles.
+  .strip();
+
+export const BundleV2Schema = z
+  .object({
+    format: BundleFormatSchema,
+    version: BundleV2VersionSchema,
+    exportedAt: z.string().datetime(),
+    exportedFrom: z.object({
+      agentDeckVersion: z.string().min(1),
+    }),
+    scope: BundleScopeSchema,
+    services: z.array(BundleServiceSchema).default([]),
+    playbooks: z.array(BundlePlaybookSchema).default([]),
+    decks: z.array(BundleDeckV2Schema).default([]),
+  })
+  .strict();
+
+/**
+ * Import-side parser: exports always emit v2, but v1 bundles stay readable.
+ * Imported v1 decks receive empty instructions (see import-bundle.ts).
+ */
+export const BundleAnySchema = z.discriminatedUnion('version', [
+  BundleV1Schema,
+  BundleV2Schema,
+]);
+
 export const ImportEntityCountsSchema = z.object({
   created: z.number().int().min(0),
   reused: z.number().int().min(0),
@@ -102,6 +139,9 @@ export type BundleService = z.infer<typeof BundleServiceSchema>;
 export type BundlePlaybook = z.infer<typeof BundlePlaybookSchema>;
 export type BundleDeck = z.infer<typeof BundleDeckSchema>;
 export type BundleV1 = z.infer<typeof BundleV1Schema>;
+export type BundleDeckV2 = z.infer<typeof BundleDeckV2Schema>;
+export type BundleV2 = z.infer<typeof BundleV2Schema>;
+export type BundleAny = z.infer<typeof BundleAnySchema>;
 export type BundleScope = z.infer<typeof BundleScopeSchema>;
 export type ImportReport = z.infer<typeof ImportReportSchema>;
 export type ExportRequest = z.infer<typeof ExportRequestSchema>;

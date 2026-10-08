@@ -3,7 +3,7 @@ import {
   ApiResponse,
   ExportRequestSchema,
   ImportReport,
-  type BundleV1,
+  type BundleV2,
 } from '@agent-deck/shared';
 import {
   DashboardOnlyError,
@@ -40,7 +40,7 @@ export async function registerExportImportRoutes(fastify: FastifyInstance) {
       requireDashboardClient(request);
       const input = ExportRequestSchema.parse(request.body ?? {});
       const bundle = await buildExportBundle(fastify.db, input);
-      return reply.send({ success: true, data: bundle } satisfies ApiResponse<BundleV1>);
+      return reply.send({ success: true, data: bundle } satisfies ApiResponse<BundleV2>);
     } catch (error) {
       const { status, body } = clientErrorResponse(error);
       return reply.status(status).send(body);
