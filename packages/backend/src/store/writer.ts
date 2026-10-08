@@ -22,7 +22,7 @@ import { serializeService } from './service-codec';
 
 const DEFAULT_MANIFEST: StoreManifest = {
   format: 'agent-deck-store',
-  version: 1,
+  version: 2,
 };
 
 async function unlinkIfExists(filePath: string): Promise<void> {
@@ -106,13 +106,17 @@ export class FileStoreWriter {
   async writeDeck(deck: StoreDeck): Promise<void> {
     const { decksDir } = storePaths(this.home);
     await writeFileAtomic(
-      path.join(decksDir, `${deck.id}.json`),
+      path.join(decksDir, `${deck.id}.md`),
       serializeDeck(deck),
     );
   }
 
   async deleteDeck(id: string): Promise<void> {
-    await unlinkIfExists(path.join(storePaths(this.home).decksDir, `${id}.json`));
+    // The legacy `.json` twin is removed too: a deck deleted mid-migration
+    // must not leave a v1 file behind for the next reindex to trip over.
+    const { decksDir } = storePaths(this.home);
+    await unlinkIfExists(path.join(decksDir, `${id}.md`));
+    await unlinkIfExists(path.join(decksDir, `${id}.json`));
   }
 
   async writeCredential(credential: StoreCredentialMeta): Promise<void> {

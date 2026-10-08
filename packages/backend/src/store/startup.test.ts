@@ -47,6 +47,52 @@ describe('ensureStoreReady', () => {
     );
   });
 
+  it('migrates a v1 store to v2 and reindexes it on startup', async () => {
+    const { home, database } = await createFixture();
+    const paths = storePaths(home);
+    await fs.mkdir(paths.decksDir, { recursive: true });
+    await fs.writeFile(
+      paths.manifest,
+      `${JSON.stringify({ format: 'agent-deck-store', version: 1 }, null, 2)}\n`,
+      'utf8',
+    );
+    const deckId = '44444444-4444-4334-8234-444444444444';
+    await fs.writeFile(
+      path.join(paths.decksDir, `${deckId}.json`),
+      `${JSON.stringify(
+        {
+          id: deckId,
+          name: 'Legacy',
+          serviceIds: [],
+          credentialIds: [],
+          playbookIds: [],
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-02T00:00:00.000Z',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    await expect(ensureStoreReady(database, { home })).resolves.toEqual({
+      migrated: false,
+      reindexed: true,
+    });
+    expect(JSON.parse(await fs.readFile(paths.manifest, 'utf8')).version).toBe(
+      2,
+    );
+    await expect(
+      fs.access(path.join(paths.decksDir, `${deckId}.md`)),
+    ).resolves.toBeUndefined();
+    const [deck] = await database.getAllDecks();
+    expect(deck).toMatchObject({
+      id: deckId,
+      name: 'Legacy',
+      operatingInstructions: '',
+    });
+  });
+
   it('keeps the previous database when changed store files fail validation', async () => {
     const { home, database } = await createFixture();
     const service = await database.createService({

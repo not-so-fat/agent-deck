@@ -3,8 +3,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { OPERATING_INSTRUCTIONS_MAX_LENGTH } from '@agent-deck/shared';
 import { DatabaseManager, STORE_CONTENT_HASH } from '../models/database';
 import { hashStoreTree } from './content-hash';
+import { parseDeckMarkdown, serializeDeck } from './deck-codec';
+import { storeDeckFromDb } from './deck-file';
 import { migrateSqliteToStore } from './migrate';
 import { storePaths } from './paths';
 import { readLastReindex, reindexStoreToSqlite } from './reindex';
@@ -263,6 +266,7 @@ describe('reindexStoreToSqlite', () => {
       serviceIds: [fixture.service.id],
       credentialIds: [fixture.credential.id],
       playbookIds: [fixture.playbook.id],
+      operatingInstructions: '',
       createdAt: fixture.deck.createdAt,
       updatedAt: fixture.deck.updatedAt,
     });
@@ -280,10 +284,10 @@ describe('reindexStoreToSqlite', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain(fixture.deck.name);
     expect(warnings[0]).toContain(
-      path.join(storePaths(fixture.home).decksDir, `${fixture.deck.id}.json`),
+      path.join(storePaths(fixture.home).decksDir, `${fixture.deck.id}.md`),
     );
     expect(warnings[0]).toContain(
-      path.join(storePaths(fixture.home).decksDir, `${twinId}.json`),
+      path.join(storePaths(fixture.home).decksDir, `${twinId}.md`),
     );
 
     const decks = await fixture.database.getAllDecks();
@@ -352,7 +356,7 @@ describe('reindexStoreToSqlite', () => {
 
     await fs.writeFile(
       storePaths(fixture.home).manifest,
-      '{"format":"agent-deck-store","version":2}\n',
+      '{"format":"agent-deck-store","version":3}\n',
     );
     const failure = await reindexStoreToSqlite(fixture.database, {
       home: fixture.home,
@@ -406,13 +410,11 @@ describe('reindexStoreToSqlite', () => {
     };
     const deckPath = path.join(
       storePaths(fixture.home).decksDir,
-      `${fixture.deck.id}.json`,
+      `${fixture.deck.id}.md`,
     );
-    const deck = JSON.parse(await fs.readFile(deckPath, 'utf8')) as {
-      playbookIds: string[];
-    };
+    const deck = parseDeckMarkdown(await fs.readFile(deckPath, 'utf8'));
     deck.playbookIds = ['pb_missing'];
-    await fs.writeFile(deckPath, `${JSON.stringify(deck, null, 2)}\n`);
+    await fs.writeFile(deckPath, serializeDeck(deck));
 
     const result = await reindexStoreToSqlite(fixture.database, {
       home: fixture.home,
@@ -422,6 +424,10 @@ describe('reindexStoreToSqlite', () => {
     expect(result).toMatchObject({
       ok: false,
       error: expect.stringContaining('pb_missing'),
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(deckPath),
     });
     expect(await fixture.database.getAllServices()).toEqual(before.services);
     expect(await fixture.database.getAllCredentials()).toEqual(before.credentials);
@@ -435,7 +441,7 @@ describe('reindexStoreToSqlite', () => {
     const before = await fixture.database.getAllDecks();
     await fs.writeFile(
       storePaths(fixture.home).manifest,
-      '{"format":"agent-deck-store","version":2}\n',
+      '{"format":"agent-deck-store","version":3}\n',
     );
 
     const result = await reindexStoreToSqlite(fixture.database, {
@@ -448,5 +454,228 @@ describe('reindexStoreToSqlite', () => {
       error: expect.stringContaining('manifest'),
     });
     expect(await fixture.database.getAllDecks()).toEqual(before);
+  });
+
+  it('restores deck operating instructions into a fresh database', async () => {
+    const fixture = await createFixture();
+    await fixture.database.updateDeck(fixture.deck.id, {
+      operatingInstructions: '# Runbook\n\nStep one.\n',
+    });
+    const updated = await fixture.database.getDeck(fixture.deck.id);
+    if (!updated) {
+      throw new Error('Deck missing after update');
+    }
+    await new FileStoreWriter(fixture.home).writeDeck(storeDeckFromDb(updated));
+    closeDatabase(fixture.database);
+    await fs.unlink(fixture.dbPath);
+
+    const restored = new DatabaseManager(fixture.dbPath);
+    databases.add(restored);
+    const result = await reindexStoreToSqlite(restored, { home: fixture.home });
+
+    expect(result.ok).toBe(true);
+    const [deck] = await restored.getAllDecks();
+    expect(deck.operatingInstructions).toBe('# Runbook\n\nStep one.\n');
+    expect(deck.services.map(({ id }) => id)).toEqual([fixture.service.id]);
+    expect(deck.credentials.map(({ id }) => id)).toEqual([fixture.credential.id]);
+    expect(deck.playbooks.map(({ id }) => id)).toEqual([fixture.playbook.id]);
+  });
+
+  it('reindex returns the same normalized instructions the API stored', async () => {
+    const fixture = await createFixture();
+    // API input without a trailing newline is stored canonicalized.
+    await fixture.database.updateDeck(fixture.deck.id, {
+      operatingInstructions: 'Prefer small PRs.',
+    });
+    expect(
+      (await fixture.database.getDeck(fixture.deck.id))?.operatingInstructions,
+    ).toBe('Prefer small PRs.\n');
+    const updated = await fixture.database.getDeck(fixture.deck.id);
+    if (!updated) {
+      throw new Error('Deck missing after update');
+    }
+    await new FileStoreWriter(fixture.home).writeDeck(storeDeckFromDb(updated));
+    closeDatabase(fixture.database);
+    await fs.unlink(fixture.dbPath);
+
+    const restored = new DatabaseManager(fixture.dbPath);
+    databases.add(restored);
+    const result = await reindexStoreToSqlite(restored, { home: fixture.home });
+
+    expect(result.ok).toBe(true);
+    const [deck] = await restored.getAllDecks();
+    expect(deck.operatingInstructions).toBe('Prefer small PRs.\n');
+  });
+
+  it('applies a body-only git pull: hash changes, cache follows, others untouched', async () => {
+    const fixture = await createFixture();
+    const other = await fixture.database.createDeck({
+      name: 'Other',
+      operatingInstructions: 'Other runbook\n',
+    });
+    await fixture.database.addServiceToDeck({
+      deckId: other.id,
+      serviceId: fixture.service.id,
+      position: 0,
+    });
+    const otherFull = await fixture.database.getDeck(other.id);
+    if (!otherFull) {
+      throw new Error('Second deck missing after create');
+    }
+    const writer = new FileStoreWriter(fixture.home);
+    await writer.writeDeck(storeDeckFromDb(otherFull));
+    const hashBefore = await hashStoreTree(fixture.home);
+
+    // A git pull that touches only the deck Markdown body.
+    const deckPath = path.join(
+      storePaths(fixture.home).decksDir,
+      `${fixture.deck.id}.md`,
+    );
+    const parsed = parseDeckMarkdown(await fs.readFile(deckPath, 'utf8'));
+    parsed.operatingInstructions = '# Pulled runbook\n';
+    await fs.writeFile(deckPath, serializeDeck(parsed));
+
+    expect(await hashStoreTree(fixture.home)).not.toBe(hashBefore);
+
+    const result = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+
+    const deck = await fixture.database.getDeck(fixture.deck.id);
+    expect(deck?.operatingInstructions).toBe('# Pulled runbook\n');
+    expect(deck?.services.map(({ id }) => id)).toEqual([fixture.service.id]);
+    expect(deck?.credentials.map(({ id }) => id)).toEqual([fixture.credential.id]);
+    expect(deck?.playbooks.map(({ id }) => id)).toEqual([fixture.playbook.id]);
+
+    const untouched = await fixture.database.getDeck(other.id);
+    expect(untouched?.operatingInstructions).toBe('Other runbook\n');
+    expect(untouched?.services.map(({ id }) => id)).toEqual([fixture.service.id]);
+    expect((await fixture.database.getAllServices()).map(({ id }) => id)).toEqual([
+      fixture.service.id,
+    ]);
+    expect((await fixture.database.getAllPlaybooks()).map(({ id }) => id)).toEqual([
+      fixture.playbook.id,
+    ]);
+  });
+
+  it('fails closed on malformed deck Markdown without changing SQLite', async () => {
+    const fixture = await createFixture();
+    const before = await fixture.database.getAllDecks();
+    const broken = path.join(storePaths(fixture.home).decksDir, 'zz-broken.md');
+    await fs.writeFile(broken, '---\n: nope: [\n---\nbody\n', 'utf8');
+
+    const result = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(broken),
+    });
+    expect(await fixture.database.getAllDecks()).toEqual(before);
+  });
+
+  it('fails closed on duplicate deck ids across Markdown files', async () => {
+    const fixture = await createFixture();
+    const decksDir = storePaths(fixture.home).decksDir;
+    const original = path.join(decksDir, `${fixture.deck.id}.md`);
+    const copy = path.join(decksDir, 'zz-copy.md');
+    await fs.copyFile(original, copy);
+
+    const result = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('Duplicate ids'),
+      conflicts: [
+        {
+          kind: 'deck',
+          value: fixture.deck.id,
+          paths: expect.arrayContaining([original, copy]),
+        },
+      ],
+    });
+  });
+
+  it('fails closed on an over-limit deck body without changing SQLite', async () => {
+    const fixture = await createFixture();
+    const before = await fixture.database.getDeck(fixture.deck.id);
+    const deckPath = path.join(
+      storePaths(fixture.home).decksDir,
+      `${fixture.deck.id}.md`,
+    );
+    const raw = await fs.readFile(deckPath, 'utf8');
+    await fs.writeFile(
+      deckPath,
+      `${raw}${'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH + 1)}`,
+      'utf8',
+    );
+
+    const result = await reindexStoreToSqlite(fixture.database, {
+      home: fixture.home,
+      force: true,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(deckPath),
+    });
+    expect(await fixture.database.getDeck(fixture.deck.id)).toEqual(before);
+  });
+
+  it('migrates a v1 store automatically before reindexing', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-reindex-v1-'));
+    homes.push(home);
+    const paths = storePaths(home);
+    await fs.mkdir(paths.decksDir, { recursive: true });
+    await fs.writeFile(
+      paths.manifest,
+      `${JSON.stringify({ format: 'agent-deck-store', version: 1 }, null, 2)}\n`,
+      'utf8',
+    );
+    const deckId = '33333333-3333-4333-8333-333333333333';
+    await fs.writeFile(
+      path.join(paths.decksDir, `${deckId}.json`),
+      `${JSON.stringify(
+        {
+          id: deckId,
+          name: 'Legacy',
+          serviceIds: [],
+          credentialIds: [],
+          playbookIds: [],
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-02T00:00:00.000Z',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+    const dbPath = path.join(home, 'agent_deck.db');
+    const database = new DatabaseManager(dbPath);
+    databases.add(database);
+
+    const result = await reindexStoreToSqlite(database, { home });
+
+    expect(result).toMatchObject({
+      ok: true,
+      counts: { playbooks: 0, services: 0, credentials: 0, decks: 1 },
+    });
+    expect(JSON.parse(await fs.readFile(paths.manifest, 'utf8')).version).toBe(2);
+    await expect(
+      fs.access(path.join(paths.decksDir, `${deckId}.json`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    const [deck] = await database.getAllDecks();
+    expect(deck).toMatchObject({
+      id: deckId,
+      name: 'Legacy',
+      operatingInstructions: '',
+    });
   });
 });

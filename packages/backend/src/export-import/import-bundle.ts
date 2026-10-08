@@ -163,6 +163,8 @@ async function resolveDeck(
     const created = await db.createDeck({
       name,
       isActive: false,
+      // Bundles do not carry instructions (NOT-374 non-goal); imports start empty.
+      operatingInstructions: '',
       credentials: [],
       playbooks: [],
     });

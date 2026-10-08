@@ -10,14 +10,14 @@ import { PlaybookManager } from '../playbooks/playbook-manager';
 import { ServiceManager } from '../services/service-manager';
 import { CredentialManager } from '../vault/credential-manager';
 import { MemorySecretStore } from '../vault/secret-store';
-import { parseDeckJson } from './deck-codec';
+import { parseDeckMarkdown } from './deck-codec';
 import { flushDeckFile } from './deck-file';
 import { storePaths } from './paths';
 import { reindexStoreToSqlite } from './reindex';
 import { FileStoreWriter } from './writer';
 
 /**
- * Deck membership must reach `decks/<id>.json`, not just SQLite: reindex wipes the
+ * Deck membership must reach `decks/<id>.md`, not just SQLite: reindex wipes the
  * DB tables and rebuilds them from the files, so a link that never lands in the
  * file is gone on the next reindex (and on the other laptop). Every non-route
  * caller gets a case here.
@@ -85,10 +85,10 @@ describe('deck membership dual-write', () => {
 
   async function deckFileMembership(id = deckId) {
     const raw = await fs.readFile(
-      path.join(storePaths(home).decksDir, `${id}.json`),
+      path.join(storePaths(home).decksDir, `${id}.md`),
       'utf8',
     );
-    const deck = parseDeckJson(raw);
+    const deck = parseDeckMarkdown(raw);
     return {
       serviceIds: deck.serviceIds,
       credentialIds: deck.credentialIds,

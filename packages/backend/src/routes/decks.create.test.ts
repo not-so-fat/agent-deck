@@ -7,7 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { OPERATING_INSTRUCTIONS_MAX_LENGTH } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
+import { parseDeckMarkdown } from '../store/deck-codec';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { TrustedSessionStore } from '../trusted-session/store';
@@ -105,9 +107,166 @@ describe('POST /api/decks (NOT-153 dashboard create)', () => {
 
     expect(response.statusCode).toBe(201);
     const deckId = response.json().data.id as string;
-    const deckFile = path.join(storeHome!, 'decks', `${deckId}.json`);
+    const deckFile = path.join(storeHome!, 'decks', `${deckId}.md`);
     const raw = await fs.readFile(deckFile, 'utf8');
-    expect(JSON.parse(raw)).toMatchObject({ id: deckId, name: 'File-backed' });
+    expect(parseDeckMarkdown(raw)).toMatchObject({
+      id: deckId,
+      name: 'File-backed',
+      operatingInstructions: '',
+    });
+  });
+
+  it('dashboard create persists operatingInstructions to the deck file body', async () => {
+    const { fastify, store, storeHome, db } = await buildApp({
+      withRealStore: true,
+    });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: dashboardAuthHeaders(store),
+      payload: { name: 'With runbook', operatingInstructions: '# Runbook\n' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const deckId = response.json().data.id as string;
+    expect(response.json().data).toMatchObject({
+      operatingInstructions: '# Runbook\n',
+    });
+    const deckFile = path.join(storeHome!, 'decks', `${deckId}.md`);
+    expect(parseDeckMarkdown(await fs.readFile(deckFile, 'utf8'))).toMatchObject(
+      {
+        id: deckId,
+        operatingInstructions: '# Runbook\n',
+      },
+    );
+    expect((await db.getDeck(deckId))?.operatingInstructions).toBe('# Runbook\n');
+  });
+
+  it('dashboard update rewrites the deck file body', async () => {
+    const { fastify, store, storeHome, db } = await buildApp({
+      withRealStore: true,
+    });
+    const created = await fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: dashboardAuthHeaders(store),
+      payload: { name: 'Editable' },
+    });
+    const deckId = created.json().data.id as string;
+
+    const response = await fastify.inject({
+      method: 'PUT',
+      url: `/api/decks/${deckId}`,
+      headers: dashboardAuthHeaders(store),
+      payload: { operatingInstructions: '# Edited runbook\n' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toMatchObject({
+      operatingInstructions: '# Edited runbook\n',
+    });
+    const deckFile = path.join(storeHome!, 'decks', `${deckId}.md`);
+    expect(parseDeckMarkdown(await fs.readFile(deckFile, 'utf8'))).toMatchObject(
+      {
+        id: deckId,
+        name: 'Editable',
+        operatingInstructions: '# Edited runbook\n',
+      },
+    );
+    expect((await db.getDeck(deckId))?.operatingInstructions).toBe(
+      '# Edited runbook\n',
+    );
+  });
+
+  it('dashboard update rejects over-limit operatingInstructions', async () => {
+    const { fastify, store, db } = await buildApp({
+      storeWriter: { writeDeck: async () => {} },
+    });
+    const deck = await db.createDeck({ name: 'Editable' });
+
+    const response = await fastify.inject({
+      method: 'PUT',
+      url: `/api/decks/${deck.id}`,
+      headers: dashboardAuthHeaders(store),
+      payload: {
+        operatingInstructions: 'x'.repeat(
+          OPERATING_INSTRUCTIONS_MAX_LENGTH + 1,
+        ),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(String(response.json().error)).toMatch(/operatingInstructions/);
+    expect((await db.getDeck(deck.id))?.operatingInstructions).toBe('');
+  });
+
+  it('dashboard create rejects over-limit operatingInstructions', async () => {
+    const { fastify, store } = await buildApp({
+      storeWriter: { writeDeck: async () => {} },
+    });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: dashboardAuthHeaders(store),
+      payload: {
+        name: 'Too long',
+        operatingInstructions: 'x'.repeat(
+          OPERATING_INSTRUCTIONS_MAX_LENGTH + 1,
+        ),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(String(response.json().error)).toMatch(/operatingInstructions/);
+  });
+
+  it('dashboard create normalizes a body without a trailing newline', async () => {
+    const { fastify, store, storeHome, db } = await buildApp({
+      withRealStore: true,
+    });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: dashboardAuthHeaders(store),
+      payload: { name: 'No newline', operatingInstructions: 'Prefer small PRs.' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const deckId = response.json().data.id as string;
+    expect(response.json().data).toMatchObject({
+      operatingInstructions: 'Prefer small PRs.\n',
+    });
+    expect((await db.getDeck(deckId))?.operatingInstructions).toBe(
+      'Prefer small PRs.\n',
+    );
+    const deckFile = path.join(storeHome!, 'decks', `${deckId}.md`);
+    expect(parseDeckMarkdown(await fs.readFile(deckFile, 'utf8'))).toMatchObject({
+      operatingInstructions: 'Prefer small PRs.\n',
+    });
+  });
+
+  it('dashboard create rejects a 16,000-char body without a trailing newline', async () => {
+    const { fastify, store } = await buildApp({
+      storeWriter: { writeDeck: async () => {} },
+    });
+
+    // Normalizes to 16,001 chars, so it must fail here rather than produce an
+    // unreindexable file.
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: dashboardAuthHeaders(store),
+      payload: {
+        name: 'Exact limit unnormalized',
+        operatingInstructions: 'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(String(response.json().error)).toMatch(/operatingInstructions/);
   });
 
   it('duplicate name returns 400 with an already-exists message', async () => {
