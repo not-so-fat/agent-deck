@@ -6,7 +6,7 @@ import { StoreManifestSchema } from '@agent-deck/shared';
 import { DatabaseManager, STORE_CONTENT_HASH } from '../models/database';
 import { hashStoreTree } from './content-hash';
 import { parseCredentialYaml } from './credential-codec';
-import { parseDeckJson } from './deck-codec';
+import { parseDeckMarkdown } from './deck-codec';
 import { migrateSqliteToStore } from './migrate';
 import { storePaths } from './paths';
 import { parsePlaybookMarkdown } from './playbook-codec';
@@ -152,6 +152,9 @@ describe('migrateSqliteToStore', () => {
   it('writes every SQLite entity with preserved ids, ordering, and safe data', async () => {
     const { home, database } = await createDatabase();
     const seeded = await seedDatabase(database);
+    await database.updateDeck(seeded.deck.id, {
+      operatingInstructions: '# Demo runbook\n',
+    });
     const paths = storePaths(home);
 
     const result = await migrateSqliteToStore(database, { home });
@@ -164,7 +167,7 @@ describe('migrateSqliteToStore', () => {
         path.join(paths.playbooksDir, 'pb_a.md'),
         path.join(paths.servicesDir, `${seeded.remote.id}.json`),
         path.join(paths.credentialsDir, 'cred_a.yaml'),
-        path.join(paths.decksDir, `${seeded.deck.id}.json`),
+        path.join(paths.decksDir, `${seeded.deck.id}.md`),
       ]),
     });
     expect(result.paths).toHaveLength(8);
@@ -175,7 +178,7 @@ describe('migrateSqliteToStore', () => {
       ),
     ).toEqual({
       format: 'agent-deck-store',
-      version: 1,
+      version: 2,
       migratedFrom: 'sqlite',
     });
     expect(
@@ -198,10 +201,11 @@ describe('migrateSqliteToStore', () => {
       envName: seeded.credentialA.envName,
       tags: seeded.credentialA.tags,
     });
+    const migratedDeck = await database.getDeck(seeded.deck.id);
     expect(
-      parseDeckJson(
+      parseDeckMarkdown(
         await fs.readFile(
-          path.join(paths.decksDir, `${seeded.deck.id}.json`),
+          path.join(paths.decksDir, `${seeded.deck.id}.md`),
           'utf8',
         ),
       ),
@@ -211,8 +215,9 @@ describe('migrateSqliteToStore', () => {
       serviceIds: [seeded.local.id, seeded.remote.id],
       credentialIds: [seeded.credentialB.id, seeded.credentialA.id],
       playbookIds: [seeded.playbookB.id, seeded.playbookA.id],
+      operatingInstructions: '# Demo runbook\n',
       createdAt: seeded.deck.createdAt,
-      updatedAt: seeded.deck.updatedAt,
+      updatedAt: migratedDeck?.updatedAt,
     });
 
     const remoteRaw = await fs.readFile(

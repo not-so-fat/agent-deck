@@ -37,7 +37,7 @@ async function createStoreHome(manifestVersion: number): Promise<string> {
 
 /** A store whose manifest the backend refuses — the cheapest way to fail a reindex for real. */
 async function createFailedReindex(): Promise<{ error: string }> {
-  await createStoreHome(2);
+  await createStoreHome(3);
   const result = await createStore().reindex();
   if (result.ok) {
     throw new Error('Expected the reindex to fail');
@@ -48,16 +48,20 @@ async function createFailedReindex(): Promise<{ error: string }> {
 async function writeDeck(home: string, id: string, name: string): Promise<void> {
   await fs.mkdir(path.join(home, 'decks'), { recursive: true });
   await fs.writeFile(
-    path.join(home, 'decks', `${id}.json`),
-    JSON.stringify({
-      id,
-      name,
-      serviceIds: [],
-      credentialIds: [],
-      playbookIds: [],
-      createdAt: '2026-09-15T10:00:00.000Z',
-      updatedAt: '2026-09-15T10:00:00.000Z',
-    }),
+    path.join(home, 'decks', `${id}.md`),
+    [
+      '---',
+      `id: ${id}`,
+      `name: ${name}`,
+      'serviceIds: []',
+      'credentialIds: []',
+      'playbookIds: []',
+      'createdAt: "2026-09-15T10:00:00.000Z"',
+      'updatedAt: "2026-09-15T10:00:00.000Z"',
+      '---',
+      '',
+      '',
+    ].join('\n'),
   );
 }
 
@@ -143,7 +147,7 @@ describe('status and doctor after a failed reindex', () => {
   });
 
   it('names the duplicated deck and both files in status after a warned reindex', async () => {
-    const home = await createStoreHome(1);
+    const home = await createStoreHome(2);
     await writeDeck(home, 'aaaaaaaa-1111-4111-8111-111111111111', 'Twin');
     await writeDeck(home, 'bbbbbbbb-2222-4222-8222-222222222222', 'Twin');
 
@@ -161,8 +165,8 @@ describe('status and doctor after a failed reindex', () => {
     expect(output).toContain('Last reindex OK');
     expect(output).toContain('1 warning');
     expect(output).toContain('Duplicate deck name "Twin"');
-    expect(output).toContain('aaaaaaaa-1111-4111-8111-111111111111.json');
-    expect(output).toContain('bbbbbbbb-2222-4222-8222-222222222222.json');
+    expect(output).toContain('aaaaaaaa-1111-4111-8111-111111111111.md');
+    expect(output).toContain('bbbbbbbb-2222-4222-8222-222222222222.md');
   });
 
   it('reads the record without creating or migrating a database', async () => {

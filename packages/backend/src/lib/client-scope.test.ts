@@ -6,6 +6,7 @@ const baseDeck = (overrides: Partial<Deck>): Deck => ({
   id: 'deck-1',
   name: 'Test',
   isActive: false,
+  operatingInstructions: '',
   services: [],
   credentials: [{ id: 'cred_a' } as Deck['credentials'][number]],
   createdAt: new Date().toISOString(),

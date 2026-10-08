@@ -4,7 +4,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DatabaseManager } from '../models/database';
 import { PlaybookManager } from '../playbooks/playbook-manager';
-import { parseDeckJson } from './deck-codec';
+import { parseDeckMarkdown } from './deck-codec';
+import { storeDeckFromDb } from './deck-file';
 import { storePaths } from './paths';
 import { FileStoreWriter } from './writer';
 
@@ -17,15 +18,7 @@ async function flushDeckToFile(
   if (!deck) {
     throw new Error(`Deck not found: ${deckId}`);
   }
-  await writer.writeDeck({
-    id: deck.id,
-    name: deck.name,
-    serviceIds: deck.services.map(({ id }) => id),
-    credentialIds: deck.credentials.map(({ id }) => id),
-    playbookIds: deck.playbooks.map(({ id }) => id),
-    createdAt: deck.createdAt,
-    updatedAt: deck.updatedAt,
-  });
+  await writer.writeDeck(storeDeckFromDb(deck));
   await writer.touchHash(db);
 }
 
@@ -65,19 +58,46 @@ describe('mutation dual-write', () => {
     await expect(fs.access(playbookPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('updateDeck name refreshes deck JSON on flush', async () => {
+  it('updateDeck name refreshes deck Markdown on flush', async () => {
     const writer = new FileStoreWriter(home);
     await writer.ensureLayout();
 
     const deck = await db.createDeck({ name: 'Original name' });
     await flushDeckToFile(db, deck.id, writer);
 
-    const deckPath = path.join(storePaths(home).decksDir, `${deck.id}.json`);
-    expect(parseDeckJson(await fs.readFile(deckPath, 'utf8')).name).toBe('Original name');
+    const deckPath = path.join(storePaths(home).decksDir, `${deck.id}.md`);
+    expect(parseDeckMarkdown(await fs.readFile(deckPath, 'utf8')).name).toBe('Original name');
 
     await db.updateDeck(deck.id, { name: 'Renamed deck' });
     await flushDeckToFile(db, deck.id, writer);
 
-    expect(parseDeckJson(await fs.readFile(deckPath, 'utf8')).name).toBe('Renamed deck');
+    expect(parseDeckMarkdown(await fs.readFile(deckPath, 'utf8')).name).toBe('Renamed deck');
+  });
+
+  it('persists operatingInstructions to the deck Markdown body', async () => {
+    const writer = new FileStoreWriter(home);
+    await writer.ensureLayout();
+
+    const deck = await db.createDeck({
+      name: 'Runbook deck',
+      operatingInstructions: '# Initial runbook\n',
+    });
+    await flushDeckToFile(db, deck.id, writer);
+
+    const deckPath = path.join(storePaths(home).decksDir, `${deck.id}.md`);
+    expect(parseDeckMarkdown(await fs.readFile(deckPath, 'utf8'))).toMatchObject({
+      id: deck.id,
+      name: 'Runbook deck',
+      operatingInstructions: '# Initial runbook\n',
+    });
+
+    await db.updateDeck(deck.id, {
+      operatingInstructions: '# Revised runbook\n\nStep two.\n',
+    });
+    await flushDeckToFile(db, deck.id, writer);
+
+    expect(parseDeckMarkdown(await fs.readFile(deckPath, 'utf8'))).toMatchObject({
+      operatingInstructions: '# Revised runbook\n\nStep two.\n',
+    });
   });
 });

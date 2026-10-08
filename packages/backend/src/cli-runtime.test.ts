@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createCliCollectionAdmin } from './cli-runtime';
 import { DatabaseManager } from './models/database';
-import { parseDeckJson } from './store/deck-codec';
+import { parseDeckMarkdown } from './store/deck-codec';
 import { storePaths } from './store/paths';
 import { FileStoreWriter } from './store/writer';
 
@@ -101,6 +101,7 @@ describe('createCliCollectionAdmin', () => {
       serviceIds: [service.id],
       credentialIds: [],
       playbookIds: [],
+      operatingInstructions: '',
       createdAt: deck.createdAt,
       updatedAt: deck.updatedAt,
     });
@@ -108,8 +109,8 @@ describe('createCliCollectionAdmin', () => {
 
     expect(await createCliCollectionAdmin().deleteService(service.id)).toEqual({ ok: true });
 
-    const deckFile = parseDeckJson(
-      fs.readFileSync(path.join(storePaths(home).decksDir, `${deck.id}.json`), 'utf8'),
+    const deckFile = parseDeckMarkdown(
+      fs.readFileSync(path.join(storePaths(home).decksDir, `${deck.id}.md`), 'utf8'),
     );
     expect(deckFile.serviceIds).toEqual([]);
   });

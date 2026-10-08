@@ -6,7 +6,7 @@ import { StoreManifestSchema } from '@agent-deck/shared';
 import { DatabaseManager, STORE_CONTENT_HASH } from '../models/database';
 import { hashStoreTree } from './content-hash';
 import { parseCredentialYaml } from './credential-codec';
-import { parseDeckJson } from './deck-codec';
+import { parseDeckMarkdown } from './deck-codec';
 import { parsePlaybookMarkdown } from './playbook-codec';
 import { parseServiceJson } from './service-codec';
 import { storePaths } from './paths';
@@ -69,6 +69,7 @@ describe('FileStoreWriter', () => {
     serviceIds: [service.id],
     credentialIds: ['cred_demo'],
     playbookIds: [playbook.id],
+    operatingInstructions: 'Follow the runbook.\n',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-02T00:00:00.000Z',
   };
@@ -95,7 +96,7 @@ describe('FileStoreWriter', () => {
     const manifest = StoreManifestSchema.parse(
       JSON.parse(await fs.readFile(paths.manifest, 'utf8')),
     );
-    expect(manifest).toEqual({ format: 'agent-deck-store', version: 1 });
+    expect(manifest).toEqual({ format: 'agent-deck-store', version: 2 });
     expect(
       parsePlaybookMarkdown(
         await fs.readFile(path.join(paths.playbooksDir, 'pb_demo.md'), 'utf8'),
@@ -107,8 +108,8 @@ describe('FileStoreWriter', () => {
       ),
     ).toEqual(service);
     expect(
-      parseDeckJson(
-        await fs.readFile(path.join(paths.decksDir, `${deck.id}.json`), 'utf8'),
+      parseDeckMarkdown(
+        await fs.readFile(path.join(paths.decksDir, `${deck.id}.md`), 'utf8'),
       ),
     ).toEqual(deck);
     expect(
@@ -126,6 +127,12 @@ describe('FileStoreWriter', () => {
     await writer.writeService(service);
     await writer.writeDeck(deck);
     await writer.writeCredential(credential);
+    // A deck deleted mid-migration must not strand its legacy v1 twin.
+    await fs.writeFile(
+      path.join(paths.decksDir, `${deck.id}.json`),
+      '{}\n',
+      'utf8',
+    );
 
     await writer.deletePlaybook(playbook.id);
     await writer.deleteService(service.id);
@@ -134,6 +141,7 @@ describe('FileStoreWriter', () => {
 
     await expect(fs.access(path.join(paths.playbooksDir, 'pb_demo.md'))).rejects.toThrow();
     await expect(fs.access(path.join(paths.servicesDir, 'svc_demo.json'))).rejects.toThrow();
+    await expect(fs.access(path.join(paths.decksDir, `${deck.id}.md`))).rejects.toThrow();
     await expect(fs.access(path.join(paths.decksDir, `${deck.id}.json`))).rejects.toThrow();
     await expect(fs.access(path.join(paths.credentialsDir, 'cred_demo.yaml'))).rejects.toThrow();
     await expect(writer.deletePlaybook(playbook.id)).resolves.toBeUndefined();
