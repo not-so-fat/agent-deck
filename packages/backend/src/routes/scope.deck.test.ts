@@ -85,7 +85,10 @@ describe('agent scope and deck list routes', () => {
     const deck = response.json().data as {
       services: Array<Record<string, unknown>>;
       playbooks: Array<Record<string, unknown>>;
+      operatingInstructions?: unknown;
     };
+    // NOT-375: empty instructions read as '' on the agent scope path too.
+    expect(deck.operatingInstructions).toBe('');
 
     const slack = deck.services[0];
     expect(slack.oauthClientSecret).toBeUndefined();
@@ -98,6 +101,22 @@ describe('agent scope and deck list routes', () => {
       triggers: ['summarize PR'],
     });
     expect(deck.playbooks[0]).not.toHaveProperty('body');
+  });
+
+  it('NOT-375: GET /api/scope/deck returns the deck exact operatingInstructions', async () => {
+    await db.updateDeck(deckId, { operatingInstructions: 'SCOPE-MARKER\n' });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/scope/deck',
+      headers: {
+        ...agentHeaders,
+        ...agentSessionHeaders(db, deckId),
+        [AGENT_DECK_WORKSPACE_HEADER]: '/repo',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.operatingInstructions).toBe('SCOPE-MARKER\n');
   });
 
   it('GET /api/decks returns metadata-only list for agent clients', async () => {

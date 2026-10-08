@@ -71,8 +71,9 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
 
   async function buildListeningBackend() {
     const db = new DatabaseManager(':memory:');
-    const deckA = await db.createDeck({ name: 'alpha' });
-    const deckB = await db.createDeck({ name: 'beta' });
+    // NOT-375: distinguishable instructions per deck for the post-approval refresh assertions.
+    const deckA = await db.createDeck({ name: 'alpha', operatingInstructions: 'SWITCH-MARKER-ALPHA\n' });
+    const deckB = await db.createDeck({ name: 'beta', operatingInstructions: 'SWITCH-MARKER-BETA\n' });
 
     const serviceOnA = await db.createService({
       name: 'svc-a',
@@ -388,6 +389,7 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
     expect(before.isError).toBe(false);
     expect(before.data.effective_deck_id).toBe(deckA.id);
     expect(before.data.display_summary).toContain('alpha');
+    expect(before.data.operatingInstructions).toBe('SWITCH-MARKER-ALPHA\n');
 
     const requested = await callToolMcpResult(
       started.port,
@@ -431,6 +433,20 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
     expect(after.isError).toBe(false);
     expect(after.data.effective_deck_id).toBe(deckB.id);
     expect(after.data.display_summary).toContain('beta');
+    // NOT-375: the one live refresh returns only the new deck's instructions.
+    expect(after.data.operatingInstructions).toBe('SWITCH-MARKER-BETA\n');
+    expect(JSON.stringify(after.data)).not.toContain('SWITCH-MARKER-ALPHA');
+
+    const boundAfter = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_bound_deck',
+      {},
+      7,
+      headersA,
+    );
+    expect(boundAfter.isError).toBe(false);
+    expect(boundAfter.data.operatingInstructions).toBe('SWITCH-MARKER-BETA\n');
 
     const offDeck = await callToolMcpResult(
       started.port,

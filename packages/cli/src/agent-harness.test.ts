@@ -719,3 +719,59 @@ describe('NOT-295 harness freshness diagnostic', () => {
     expect(joined).toContain('\u001b[1;36magent-deck setup --client cursor\u001b[0m');
   });
 });
+describe('NOT-375 deck operating instructions contract', () => {
+  const texts = (): Array<[string, string]> => [
+    ['cursor/global', buildCursorHarnessFile('global')],
+    ['cursor/project', buildCursorHarnessFile('project')],
+    ['claude/global', buildClaudeHarnessBlock('global')],
+    ['claude/project', buildClaudeHarnessBlock('project')],
+    ['codex/global', buildCodexHarnessBlock('global')],
+    ['codex/project', buildCodexHarnessBlock('project')],
+  ];
+
+  it('first turn reads and follows the non-empty deck instructions', () => {
+    for (const [label, text] of texts()) {
+      expect(text, label).toContain('Deck operating instructions');
+      expect(text, label).toContain('`operatingInstructions`');
+      expect(text, label).toContain('read and follow the non-empty instructions');
+      expect(text, label).toContain("for this session's deck only");
+    }
+  });
+
+  it('hot switch reloads the new deck context before more task work, old instructions stop at once', () => {
+    for (const [label, text] of texts()) {
+      expect(text, label).toContain('After a confirmed deck change');
+      expect(text, label).toContain('call `get_session_context` once before more task work');
+      expect(text, label).toContain('follow only the new deck');
+      expect(text, label).toContain('stop applying immediately');
+      expect(text, label).toContain('No reconnect is needed');
+    }
+  });
+
+  it('states the precedence rule: deck prose never wins and never enables tools', () => {
+    for (const [label, text] of texts()) {
+      expect(text, label).toContain('never override platform safety');
+      expect(text, label).toContain('developer/user instructions');
+      expect(text, label).toContain('authorization boundaries');
+      expect(text, label).toContain('never enable extra tools');
+      expect(text, label).toContain('higher-priority instruction wins');
+    }
+  });
+
+  it('names get_session_context the authoritative live value over the initialize hint', () => {
+    for (const [label, text] of texts()) {
+      expect(text, label).toContain('bootstrap hint only');
+      expect(text, label).toContain('never update after a hot switch');
+      expect(text, label).toContain('authoritative live value');
+    }
+  });
+
+  it('embeds no deck-specific instruction body', () => {
+    for (const [label, text] of texts()) {
+      // The representative Planner policy from the ticket must stay in the
+      // deck body — the generic guidance references the field, never a body.
+      expect(text, label).not.toContain('create execution tickets');
+      expect(text, label).not.toContain('SMOKE-');
+    }
+  });
+});

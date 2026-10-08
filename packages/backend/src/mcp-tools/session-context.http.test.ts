@@ -23,6 +23,7 @@ import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { TrustedSessionStore } from '../trusted-session/store';
+import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import type { ServiceManager } from '../services/service-manager';
 import {
   callToolMcpResult,
@@ -43,6 +44,7 @@ const REQUIRED_CONTEXT_FIELDS = [
   'services',
   'credentials',
   'playbooks',
+  'operatingInstructions',
 ] as const;
 
 describe('MCP session context bootstrap (NOT-189)', () => {
@@ -171,7 +173,7 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     };
   }
 
-  it('one call returns all nine fields with values equal to the two-call results', async () => {
+  it('one call returns all ten fields with values equal to the two-call results', async () => {
     const { backendUrl, deckAlpha } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
@@ -241,6 +243,111 @@ describe('MCP session context bootstrap (NOT-189)', () => {
       expect(Object.keys(playbook).sort()).toEqual(['id', 'title', 'triggers']);
     }
     expect(JSON.stringify(context.data)).not.toContain('Keep it short');
+
+    // NOT-375: empty instructions read as '' on both tools — never null, never omitted.
+    expect(context.data.operatingInstructions).toBe('');
+    expect(deck.data.operatingInstructions).toBe('');
+  });
+
+  it('NOT-375: both tools return the bound deck exact operatingInstructions without leaking another deck', async () => {
+    const { backendUrl, db, deckAlpha } = await buildListeningBackend();
+    await db.updateDeck(deckAlpha.id, { operatingInstructions: 'ALPHA-OPERATING-INSTRUCTIONS\n' });
+    await db.createDeck({ name: 'beta', operatingInstructions: 'BETA-OPERATING-INSTRUCTIONS\n' });
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const sessionA = await openSession(started.port, 1, headersA);
+    const context = await callToolMcpResult(
+      started.port,
+      sessionA,
+      'get_session_context',
+      {},
+      2,
+      headersA,
+    );
+    const bound = await callToolMcpResult(
+      started.port,
+      sessionA,
+      'get_bound_deck',
+      {},
+      3,
+      headersA,
+    );
+
+    expect(context.isError).toBe(false);
+    expect(bound.isError).toBe(false);
+    expect(context.data.operatingInstructions).toBe('ALPHA-OPERATING-INSTRUCTIONS\n');
+    expect(bound.data.operatingInstructions).toBe('ALPHA-OPERATING-INSTRUCTIONS\n');
+    // No other deck's value leaks into this session.
+    expect(JSON.stringify(context.data)).not.toContain('BETA-OPERATING-INSTRUCTIONS');
+    expect(JSON.stringify(bound.data)).not.toContain('BETA-OPERATING-INSTRUCTIONS');
+  });
+
+  it('NOT-375: concurrent sessions keep isolated operatingInstructions before and after one session switches', async () => {
+    const { backendUrl, db, deckAlpha, store } = await buildListeningBackend();
+    await db.updateDeck(deckAlpha.id, { operatingInstructions: 'ALPHA-OPERATING-INSTRUCTIONS\n' });
+    const deckBeta = await db.createDeck({ name: 'beta', operatingInstructions: 'BETA-OPERATING-INSTRUCTIONS\n' });
+    const deckGamma = await db.createDeck({ name: 'gamma', operatingInstructions: 'GAMMA-OPERATING-INSTRUCTIONS\n' });
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckAlpha.id };
+    const headersG = { [AGENT_DECK_DECK_ID_HEADER]: deckGamma.id };
+    const sessionA = await openSession(started.port, 1, headersA);
+    const sessionG = await openSession(started.port, 10, headersG);
+
+    const [contextA, contextG] = await Promise.all([
+      callToolMcpResult(started.port, sessionA, 'get_session_context', {}, 2, headersA),
+      callToolMcpResult(started.port, sessionG, 'get_session_context', {}, 12, headersG),
+    ]);
+    expect(contextA.isError).toBe(false);
+    expect(contextG.isError).toBe(false);
+    expect(contextA.data.operatingInstructions).toBe('ALPHA-OPERATING-INSTRUCTIONS\n');
+    expect(contextG.data.operatingInstructions).toBe('GAMMA-OPERATING-INSTRUCTIONS\n');
+
+    // Session A requests a session-only switch to beta; the dashboard commits it.
+    const requested = await callToolMcpResult(
+      started.port,
+      sessionA,
+      'switch_deck',
+      { target: 'beta' },
+      3,
+      headersA,
+    );
+    expect(requested.isError).toBe(false);
+    expect(requested.data.status).toBe('pending');
+
+    const runtimeSessionId = store.findActiveRuntimeSessionByMcpSessionId(sessionA)?.sessionId;
+    expect(runtimeSessionId).toBeTruthy();
+    const resolve = await fetch(
+      `${backendUrl}/api/trusted-session/deck-switch/${requested.data.requestId}/resolve`,
+      {
+        method: 'POST',
+        headers: {
+          ...dashboardAuthHeaders(store),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ runtimeSessionId, decision: 'session' }),
+      },
+    );
+    expect(resolve.status).toBe(200);
+
+    // Same transports — no reconnect — one live refresh each.
+    const [afterA, afterG] = await Promise.all([
+      callToolMcpResult(started.port, sessionA, 'get_session_context', {}, 4, headersA),
+      callToolMcpResult(started.port, sessionG, 'get_session_context', {}, 13, headersG),
+    ]);
+    expect(afterA.isError).toBe(false);
+    expect(afterA.data.effective_deck_id).toBe(deckBeta.id);
+    expect(afterA.data.operatingInstructions).toBe('BETA-OPERATING-INSTRUCTIONS\n');
+    expect(JSON.stringify(afterA.data)).not.toContain('ALPHA-OPERATING-INSTRUCTIONS');
+    // The concurrent session is untouched by the switch.
+    expect(afterG.isError).toBe(false);
+    expect(afterG.data.effective_deck_id).toBe(deckGamma.id);
+    expect(afterG.data.operatingInstructions).toBe('GAMMA-OPERATING-INSTRUCTIONS\n');
+    expect(JSON.stringify(afterG.data)).not.toContain('BETA-OPERATING-INSTRUCTIONS');
+    expect(JSON.stringify(afterG.data)).not.toContain('ALPHA-OPERATING-INSTRUCTIONS');
   });
 
   it('NOT-298: two concurrent launch sessions keep independent get_session_context defaults', async () => {
@@ -349,7 +456,7 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     expect(context.data.error_code).toBe('GRANT_REQUIRED');
     expect(String(context.data.message ?? '')).toContain(UNASSIGNED_DECK_MESSAGE.slice(0, 20));
     // No deck metadata leaks through the bootstrap read.
-    for (const field of ['effective_deck_id', 'effective_deck_name', 'services', 'credentials', 'playbooks'] as const) {
+    for (const field of ['effective_deck_id', 'effective_deck_name', 'services', 'credentials', 'playbooks', 'operatingInstructions'] as const) {
       expect(context.data, `leaked field ${field}`).not.toHaveProperty(field);
     }
   });
@@ -411,7 +518,7 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     expect(context.data).toEqual(binding.data);
     expect(context.data).toEqual(deck.data);
     // The error serializes before any deck data: no deck fields, no deck text.
-    for (const field of ['effective_deck_id', 'effective_deck_name', 'services', 'credentials', 'playbooks'] as const) {
+    for (const field of ['effective_deck_id', 'effective_deck_name', 'services', 'credentials', 'playbooks', 'operatingInstructions'] as const) {
       expect(context.data, `leaked field ${field}`).not.toHaveProperty(field);
     }
     expect(JSON.stringify(context.data)).not.toContain(deckAlpha.id);
