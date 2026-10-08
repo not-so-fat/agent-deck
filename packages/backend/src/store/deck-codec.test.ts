@@ -38,6 +38,32 @@ describe('deck-codec', () => {
     expect(frontmatter).not.toMatch(/operatingInstructions:/);
   });
 
+  it('normalizes a body without a trailing newline so cache and file agree', () => {
+    const raw = serializeDeck({ ...DECK, operatingInstructions: 'Prefer small PRs.' });
+    const parsed = parseDeckMarkdown(raw);
+    expect(parsed.operatingInstructions).toBe('Prefer small PRs.\n');
+    // Serializing the parsed form is stable — no second newline appears.
+    expect(parseDeckMarkdown(serializeDeck(parsed))).toEqual(parsed);
+  });
+
+  it('preserves a leading blank line instead of dropping it', () => {
+    const input = { ...DECK, operatingInstructions: '\nBody after blank.\n' };
+    expect(parseDeckMarkdown(serializeDeck(input))).toEqual(input);
+  });
+
+  it('round-trips an exact-limit body without producing an unreindexable file', () => {
+    const atLimit = `${'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH - 1)}\n`;
+    const raw = serializeDeck({ ...DECK, operatingInstructions: atLimit });
+    expect(parseDeckMarkdown(raw).operatingInstructions).toBe(atLimit);
+    // Same length without the trailing newline normalizes over the bound.
+    expect(() =>
+      serializeDeck({
+        ...DECK,
+        operatingInstructions: 'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH),
+      }),
+    ).toThrow(/operatingInstructions/);
+  });
+
   it('rejects bodies over the shared bound on serialize and parse', () => {
     const over = 'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH + 1);
     expect(() =>
@@ -45,7 +71,7 @@ describe('deck-codec', () => {
     ).toThrow(/operatingInstructions/);
     const raw = serializeDeck({
       ...DECK,
-      operatingInstructions: 'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH),
+      operatingInstructions: `${'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH - 1)}\n`,
     });
     expect(() => parseDeckMarkdown(`${raw}y`)).toThrow(/operatingInstructions/);
   });

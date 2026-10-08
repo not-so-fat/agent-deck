@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CreateDeckSchema,
   DeckSchema,
+  normalizeOperatingInstructions,
   OPERATING_INSTRUCTIONS_MAX_LENGTH,
+  OperatingInstructionsSchema,
   UpdateDeckSchema,
 } from './deck';
 
@@ -47,11 +49,50 @@ describe('deck operating instructions contract', () => {
         expect(parsed.error.issues[0].path).toEqual(['operatingInstructions']);
       }
     }
+    // Exactly at the bound, already in canonical form (trailing newline).
     expect(
       CreateDeckSchema.parse({
         name: 'dev',
-        operatingInstructions: 'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH),
+        operatingInstructions: `${'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH - 1)}\n`,
       }).operatingInstructions,
+    ).toHaveLength(OPERATING_INSTRUCTIONS_MAX_LENGTH);
+  });
+
+  it('normalizes to a canonical trailing newline for non-empty bodies', () => {
+    expect(normalizeOperatingInstructions('')).toBe('');
+    expect(normalizeOperatingInstructions('\n')).toBe('');
+    expect(normalizeOperatingInstructions('Prefer small PRs.')).toBe(
+      'Prefer small PRs.\n',
+    );
+    expect(normalizeOperatingInstructions('Prefer small PRs.\n')).toBe(
+      'Prefer small PRs.\n',
+    );
+    // Leading blank lines are preserved; normalization is idempotent.
+    expect(normalizeOperatingInstructions('\nBody\n')).toBe('\nBody\n');
+    expect(
+      normalizeOperatingInstructions(
+        normalizeOperatingInstructions('Body without newline'),
+      ),
+    ).toBe('Body without newline\n');
+  });
+
+  it('applies the bound to the normalized form', () => {
+    // 16,000 chars without a trailing newline normalizes to 16,001 and fails.
+    expect(
+      OperatingInstructionsSchema.safeParse(
+        'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH),
+      ).success,
+    ).toBe(false);
+    // 15,999 chars without a newline normalizes to exactly 16,000 and passes.
+    expect(
+      OperatingInstructionsSchema.parse(
+        'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH - 1),
+      ),
+    ).toHaveLength(OPERATING_INSTRUCTIONS_MAX_LENGTH);
+    expect(
+      OperatingInstructionsSchema.parse(
+        `${'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH - 1)}\n`,
+      ),
     ).toHaveLength(OPERATING_INSTRUCTIONS_MAX_LENGTH);
   });
 });

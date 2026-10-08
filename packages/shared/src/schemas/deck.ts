@@ -11,11 +11,35 @@ import { PlaybookSchema } from './playbook';
  */
 export const OPERATING_INSTRUCTIONS_MAX_LENGTH = 16_000;
 
+/**
+ * Canonical form for deck operating instructions.
+ *
+ * gray-matter appends a trailing newline on serialize, so a body without one
+ * would round-trip back longer than the API input (`'a'` -> `'a\n'`), and a
+ * 16,000-char body without a trailing newline would produce an unreindexable
+ * 16,001-char file. Normalizing once — empty stays empty, every other body
+ * ends with exactly the newline(s) it had plus one when missing — keeps
+ * SQLite and `decks/<id>.md` byte-identical. A lone `'\n'` collapses to `''`
+ * because both serialize to the same file and would otherwise be ambiguous.
+ * Idempotent: `normalize(normalize(x)) === normalize(x)`.
+ */
+export function normalizeOperatingInstructions(value: string): string {
+  if (value === '' || value === '\n') {
+    return '';
+  }
+  return value.endsWith('\n') ? value : `${value}\n`;
+}
+
 export const OperatingInstructionsSchema = z
   .string()
-  .max(
-    OPERATING_INSTRUCTIONS_MAX_LENGTH,
-    `Deck operating instructions must be at most ${OPERATING_INSTRUCTIONS_MAX_LENGTH.toLocaleString('en-US')} characters`,
+  .transform((value) => normalizeOperatingInstructions(value))
+  .pipe(
+    z
+      .string()
+      .max(
+        OPERATING_INSTRUCTIONS_MAX_LENGTH,
+        `Deck operating instructions must be at most ${OPERATING_INSTRUCTIONS_MAX_LENGTH.toLocaleString('en-US')} characters`,
+      ),
   );
 
 export const DeckSchema = z.object({

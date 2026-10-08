@@ -1,5 +1,9 @@
 import matter from 'gray-matter';
-import { StoreDeckSchema, type StoreDeck } from '@agent-deck/shared';
+import {
+  StoreDeckSchema,
+  normalizeOperatingInstructions,
+  type StoreDeck,
+} from '@agent-deck/shared';
 
 function frontmatterFromDeck(deck: StoreDeck): Record<string, unknown> {
   return {
@@ -14,12 +18,18 @@ function frontmatterFromDeck(deck: StoreDeck): Record<string, unknown> {
 }
 
 /**
- * gray-matter emits the body right after the closing fence, so a body that
- * starts with a blank line round-trips with one leading newline intact.
- * Same normalization as the playbook codec: strip exactly one.
+ * Canonicalize a parsed Markdown body to the shared instructions form.
+ *
+ * gray-matter preserves the body verbatim (it only appends a trailing newline
+ * on serialize when one is missing), so unlike the first draft of this codec
+ * there is no leading newline to strip — stripping one corrupts bodies that
+ * legitimately start with a blank line. The shared normalizer maps the
+ * empty-file content (`'\n'`, and a hand-edited fence with no body `''`) to
+ * `''` and appends the missing trailing newline otherwise, so
+ * `parse(serialize(x))` is byte-identical to what SQLite stores.
  */
 function normalizeDeckBody(content: string): string {
-  return content.startsWith('\n') ? content.slice(1) : content;
+  return normalizeOperatingInstructions(content);
 }
 
 function frontmatterValue(value: unknown): string | undefined {

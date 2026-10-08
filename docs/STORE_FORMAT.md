@@ -83,7 +83,7 @@ YAML metadata validated by `StoreCredentialMetaSchema` (camelCase in Zod; on-dis
 
 ## Deck file (`decks/<id>.md`)
 
-A v2 deck file is YAML frontmatter plus a Markdown body. The frontmatter carries the deck metadata validated by `StoreDeckSchema` (`id`, `name`, ordered `serviceIds` / `credentialIds` / `playbookIds`, `createdAt`, `updatedAt`); the body contains **only** the deck operating instructions (`operatingInstructions`, at most 16,000 characters — see `OPERATING_INSTRUCTIONS_MAX_LENGTH` in `packages/shared/src/schemas/deck.ts`). An empty body is valid and is what every migrated v1 deck starts with.
+A v2 deck file is YAML frontmatter plus a Markdown body. The frontmatter carries the deck metadata validated by `StoreDeckSchema` (`id`, `name`, ordered `serviceIds` / `credentialIds` / `playbookIds`, `createdAt`, `updatedAt`); the body contains **only** the deck operating instructions (`operatingInstructions`, at most 16,000 characters — see `OPERATING_INSTRUCTIONS_MAX_LENGTH` in `packages/shared/src/schemas/deck.ts`). An empty body is valid and is what every migrated v1 deck starts with. Non-empty bodies are stored in canonical form — empty stays empty, every other body ends with a trailing newline (`normalizeOperatingInstructions` in `packages/shared/src/schemas/deck.ts`) — and the 16,000-character bound applies to that normalized form, so a 16,000-character body without a trailing newline is rejected rather than written as an unreindexable 16,001-character file.
 
 Decks reference card ids only; they do not embed full card payloads. Operating instructions are **not** secrets — review the Markdown before committing the store.
 

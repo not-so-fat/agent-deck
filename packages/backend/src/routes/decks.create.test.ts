@@ -222,6 +222,53 @@ describe('POST /api/decks (NOT-153 dashboard create)', () => {
     expect(String(response.json().error)).toMatch(/operatingInstructions/);
   });
 
+  it('dashboard create normalizes a body without a trailing newline', async () => {
+    const { fastify, store, storeHome, db } = await buildApp({
+      withRealStore: true,
+    });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: dashboardAuthHeaders(store),
+      payload: { name: 'No newline', operatingInstructions: 'Prefer small PRs.' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const deckId = response.json().data.id as string;
+    expect(response.json().data).toMatchObject({
+      operatingInstructions: 'Prefer small PRs.\n',
+    });
+    expect((await db.getDeck(deckId))?.operatingInstructions).toBe(
+      'Prefer small PRs.\n',
+    );
+    const deckFile = path.join(storeHome!, 'decks', `${deckId}.md`);
+    expect(parseDeckMarkdown(await fs.readFile(deckFile, 'utf8'))).toMatchObject({
+      operatingInstructions: 'Prefer small PRs.\n',
+    });
+  });
+
+  it('dashboard create rejects a 16,000-char body without a trailing newline', async () => {
+    const { fastify, store } = await buildApp({
+      storeWriter: { writeDeck: async () => {} },
+    });
+
+    // Normalizes to 16,001 chars, so it must fail here rather than produce an
+    // unreindexable file.
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/api/decks',
+      headers: dashboardAuthHeaders(store),
+      payload: {
+        name: 'Exact limit unnormalized',
+        operatingInstructions: 'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(String(response.json().error)).toMatch(/operatingInstructions/);
+  });
+
   it('duplicate name returns 400 with an already-exists message', async () => {
     const { fastify, store } = await buildApp({
       storeWriter: { writeDeck: async () => {} },

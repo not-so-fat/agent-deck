@@ -34,6 +34,7 @@ import {
   StoreDeck,
   StorePlaybookFile,
   StoreService,
+  normalizeOperatingInstructions,
 } from '@agent-deck/shared';
 import { 
   serializeForDatabase, 
@@ -1017,7 +1018,9 @@ export class DatabaseManager {
       id: generateId(),
       name: input.name,
       isActive: input.isActive || false,
-      operatingInstructions: input.operatingInstructions ?? '',
+      operatingInstructions: normalizeOperatingInstructions(
+        input.operatingInstructions ?? '',
+      ),
       services: [],
       credentials: [],
       playbooks: [],
@@ -1183,7 +1186,9 @@ export class DatabaseManager {
       ...existing,
       ...input,
       operatingInstructions:
-        input.operatingInstructions ?? existing.operatingInstructions,
+        input.operatingInstructions !== undefined
+          ? normalizeOperatingInstructions(input.operatingInstructions)
+          : existing.operatingInstructions,
       updatedAt: new Date().toISOString(),
     };
 

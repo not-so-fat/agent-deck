@@ -100,4 +100,35 @@ describe('mutation dual-write', () => {
       operatingInstructions: '# Revised runbook\n\nStep two.\n',
     });
   });
+
+  it('stores the normalized body in SQLite and the deck file alike', async () => {
+    const writer = new FileStoreWriter(home);
+    await writer.ensureLayout();
+
+    // No trailing newline on the way in — the cache must hold the same
+    // canonical form the codec writes, or delete-cache+reindex diverges.
+    const deck = await db.createDeck({
+      name: 'Unnormalized runbook',
+      operatingInstructions: 'Prefer small PRs.',
+    });
+    expect(deck.operatingInstructions).toBe('Prefer small PRs.\n');
+    expect((await db.getDeck(deck.id))?.operatingInstructions).toBe(
+      'Prefer small PRs.\n',
+    );
+    await flushDeckToFile(db, deck.id, writer);
+
+    const deckPath = path.join(storePaths(home).decksDir, `${deck.id}.md`);
+    expect(parseDeckMarkdown(await fs.readFile(deckPath, 'utf8')).operatingInstructions).toBe(
+      'Prefer small PRs.\n',
+    );
+
+    await db.updateDeck(deck.id, { operatingInstructions: 'Revised without newline' });
+    expect((await db.getDeck(deck.id))?.operatingInstructions).toBe(
+      'Revised without newline\n',
+    );
+    await flushDeckToFile(db, deck.id, writer);
+    expect(parseDeckMarkdown(await fs.readFile(deckPath, 'utf8')).operatingInstructions).toBe(
+      'Revised without newline\n',
+    );
+  });
 });

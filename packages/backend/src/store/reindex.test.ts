@@ -481,6 +481,32 @@ describe('reindexStoreToSqlite', () => {
     expect(deck.playbooks.map(({ id }) => id)).toEqual([fixture.playbook.id]);
   });
 
+  it('reindex returns the same normalized instructions the API stored', async () => {
+    const fixture = await createFixture();
+    // API input without a trailing newline is stored canonicalized.
+    await fixture.database.updateDeck(fixture.deck.id, {
+      operatingInstructions: 'Prefer small PRs.',
+    });
+    expect(
+      (await fixture.database.getDeck(fixture.deck.id))?.operatingInstructions,
+    ).toBe('Prefer small PRs.\n');
+    const updated = await fixture.database.getDeck(fixture.deck.id);
+    if (!updated) {
+      throw new Error('Deck missing after update');
+    }
+    await new FileStoreWriter(fixture.home).writeDeck(storeDeckFromDb(updated));
+    closeDatabase(fixture.database);
+    await fs.unlink(fixture.dbPath);
+
+    const restored = new DatabaseManager(fixture.dbPath);
+    databases.add(restored);
+    const result = await reindexStoreToSqlite(restored, { home: fixture.home });
+
+    expect(result.ok).toBe(true);
+    const [deck] = await restored.getAllDecks();
+    expect(deck.operatingInstructions).toBe('Prefer small PRs.\n');
+  });
+
   it('applies a body-only git pull: hash changes, cache follows, others untouched', async () => {
     const fixture = await createFixture();
     const other = await fixture.database.createDeck({

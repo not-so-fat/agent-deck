@@ -10,7 +10,7 @@ import {
   DeckListEntry,
   PlaybookSummary,
   countDeckCards,
-  OPERATING_INSTRUCTIONS_MAX_LENGTH,
+  OperatingInstructionsSchema,
   trustedSessionError,
 } from '@agent-deck/shared';
 import {
@@ -76,21 +76,18 @@ async function enrichDeckServicesWithSecretHeaders(
 }
 
 /**
- * Deck routes validate by hand rather than via the Zod schemas; the shared
- * bound still applies so an over-limit body fails here instead of wedging
- * the file store (the codec would reject the dual-write after the row lands).
+ * Deck routes validate against the shared instructions schema so an over-limit
+ * body fails here — on the normalized form — instead of wedging the file store
+ * (the codec would reject the dual-write after the row lands).
  */
 function invalidOperatingInstructions(value: unknown): string | null {
-  if (value === undefined) {
+  const parsed = OperatingInstructionsSchema.optional().safeParse(value);
+  if (parsed.success) {
     return null;
   }
-  if (typeof value !== 'string') {
-    return 'operatingInstructions must be a string';
-  }
-  if (value.length > OPERATING_INSTRUCTIONS_MAX_LENGTH) {
-    return `operatingInstructions must be at most ${OPERATING_INSTRUCTIONS_MAX_LENGTH.toLocaleString('en-US')} characters`;
-  }
-  return null;
+  const detail =
+    parsed.error.issues[0]?.message ?? parsed.error.message;
+  return `operatingInstructions: ${detail}`;
 }
 
 interface CreateDeckRequest {

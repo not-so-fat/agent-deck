@@ -105,9 +105,17 @@ describe('store schemas', () => {
     expect(
       StoreDeckSchema.parse({
         ...base,
-        operatingInstructions: 'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH),
+        operatingInstructions: `${'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH - 1)}\n`,
       }).operatingInstructions,
     ).toHaveLength(OPERATING_INSTRUCTIONS_MAX_LENGTH);
+
+    // 16,000 chars without a trailing newline normalizes to 16,001 and fails.
+    expect(
+      StoreDeckSchema.safeParse({
+        ...base,
+        operatingInstructions: 'x'.repeat(OPERATING_INSTRUCTIONS_MAX_LENGTH),
+      }).success,
+    ).toBe(false);
 
     const over = StoreDeckSchema.safeParse({
       ...base,
