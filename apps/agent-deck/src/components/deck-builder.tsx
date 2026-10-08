@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Deck, Service, Credential, Playbook } from "@agent-deck/shared";
 import { getServiceCardColor, API_KEY_CARD_COLOR, PLAYBOOK_CARD_COLOR } from "@/lib/card-colors";
-import { BookOpen, Plus } from "lucide-react";
+import { BookOpen, FileText, Plus } from "lucide-react";
 import ServiceCardIcon from "@/components/service-card-icon";
 import CardWarningBadge from "@/components/card-warning-badge";
 import CredentialCardIcon from "@/components/credential-card-icon";
 import DeckFan, { CARD_HEIGHT, CARD_WIDTH, FAN_SLOT_MIN_HEIGHT } from "@/components/deck-fan";
 import type { CollectionWarningsView } from "@/lib/collection-warnings";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import DeckInstructionsModal from "@/components/deck-instructions-modal";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -27,6 +29,7 @@ interface DeckBuilderProps {
   onCardClick?: (service: Service) => void;
   onPlaybookClick?: (playbook: Playbook) => void;
   onCredentialClick?: (credential: Credential) => void;
+  onInstructionsDirtyChange?: (dirty: boolean) => void;
 }
 
 export default function DeckBuilder({
@@ -43,9 +46,11 @@ export default function DeckBuilder({
   onCardClick,
   onPlaybookClick,
   onCredentialClick,
+  onInstructionsDirtyChange,
 }: DeckBuilderProps) {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(deck.name);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -146,6 +151,18 @@ export default function DeckBuilder({
         <span className="ml-2 shrink-0 text-sm font-normal text-gray-400">
           ({deckCards} cards)
         </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => setInstructionsOpen(true)}
+          data-testid="button-deck-instructions"
+          title="Edit deck instructions"
+          className="ml-2 h-7 shrink-0 px-2 text-xs font-normal text-gray-400 hover:text-white"
+        >
+          <FileText />
+          Instructions
+        </Button>
       </h3>
 
       <div
@@ -315,6 +332,13 @@ export default function DeckBuilder({
           )}
         </div>
       </div>
+
+      <DeckInstructionsModal
+        deck={deck}
+        open={instructionsOpen}
+        onOpenChange={setInstructionsOpen}
+        onDirtyChange={onInstructionsDirtyChange}
+      />
     </div>
   );
 }
