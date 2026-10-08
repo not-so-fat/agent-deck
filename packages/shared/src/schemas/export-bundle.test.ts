@@ -131,6 +131,57 @@ describe('BundleV2Schema', () => {
     }
   });
 
+  it('accepts the documented PRD §7.1 v2 example', () => {
+    const result = BundleV2Schema.safeParse({
+      format: 'agent-deck-bundle',
+      version: 2,
+      exportedAt: '2026-07-03T00:00:00.000Z',
+      exportedFrom: { agentDeckVersion: '1.3.0' },
+      scope: 'collection',
+      services: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          name: 'Linear',
+          type: 'mcp',
+          url: 'https://mcp.linear.app/mcp',
+          description: 'optional',
+          cardColor: '#92E4DD',
+          disabledToolNames: [],
+          oauthClientId: 'optional-public',
+          oauthAuthorizationUrl: 'https://example.com/oauth/authorize',
+          oauthTokenUrl: 'https://example.com/oauth/token',
+          oauthRedirectUri: 'https://example.com/callback',
+          oauthScope: 'read',
+          localCommand: 'optional',
+          localArgs: [],
+          localWorkingDir: 'optional',
+          headers: { 'X-Custom': 'ok' },
+        },
+      ],
+      playbooks: [
+        {
+          id: 'pb_example',
+          title: 'Example',
+          body: '…',
+          triggers: ['example'],
+          dependsOnServiceIds: ['11111111-1111-4111-8111-111111111111'],
+          exec: 'optional',
+          skill: 'optional',
+        },
+      ],
+      decks: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          name: 'dev',
+          operatingInstructions: '# Dev runbook\nPrefer small PRs.\n',
+          serviceIds: ['11111111-1111-4111-8111-111111111111'],
+          playbookIds: ['pb_example'],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('defaults missing v2 deck instructions to empty', () => {
     const result = BundleDeckV2Schema.safeParse({
       id: '22222222-2222-4222-8222-222222222222',

@@ -6,7 +6,7 @@ playbooks: pb_ai_codegen_prd, pb_product_principle
 
 **One-liner:** Export a portable JSON snapshot of MCP + playbook cards and deck layouts (`export all` or one deck); import creates when names are new and skips unique display-name conflicts; users re-enter API keys and reconnect OAuth.
 
-**Status:** Implemented (CLI + REST + dashboard) · **Codegen load path:** `docs/PRD_EXPORT_IMPORT.md` · **Contracts:** `packages/shared/src/schemas/export-bundle.ts`
+**Status:** Implemented (CLI + REST + dashboard) · bundle v2 carries deck operating instructions · **Codegen load path:** `docs/PRD_EXPORT_IMPORT.md` · **Contracts:** `packages/shared/src/schemas/export-bundle.ts`
 
 ---
 
@@ -23,6 +23,7 @@ This PRD specifies a **local-only** single-file `.agent-deck.json` bundle, CLI +
 | # | Criterion | Target |
 |---|-----------|--------|
 | SC-1 | Round-trip restores equivalent layout (deck names, service/playbook membership order); IDs may differ | v1 ship |
+| SC-5 | Round-trip preserves each deck's exact `operatingInstructions` body | v2 ship |
 | SC-4 | Import report lists MCP cards that need OAuth reconnect (and rename / dep warnings) | v1 ship |
 
 **Dropped from earlier draft:** encrypted secrets (SC-2), credential migration (US-2), preserved IDs for repo manifests (US-3 / SC-3). Bind is session-only (`bind_workspace`); leftover `.agent-deck/deck.yaml` does not bind.
@@ -52,6 +53,7 @@ This PRD specifies a **local-only** single-file `.agent-deck.json` bundle, CLI +
 
 - [x] `agent-deck export all -o backup.agent-deck.json` produces a JSON file the CLI accepts on another host
 - [x] After `agent-deck import backup.agent-deck.json`, dashboard shows the same deck names and service/playbook membership order
+- [x] Exported decks keep their exact `operatingInstructions`; a v1 bundle still imports with empty instructions
 - [x] Create when names are new; skip unique display-name conflicts (`idMap` always present)
 - [x] Bundle contains zero credentials and zero secret bytes
 - [x] Import report lists each MCP card needing OAuth reconnect
@@ -79,7 +81,8 @@ This PRD specifies a **local-only** single-file `.agent-deck.json` bundle, CLI +
 
 | Req ID | Requirement | Acceptance |
 |--------|-------------|------------|
-| F1.1 | Bundle is a single JSON file | Validator rejects missing `format: agent-deck-bundle` or unknown `version` |
+| F1.1 | Bundle is a single JSON file | Exports emit `version: 2`; validator accepts `1`–`2` and rejects missing `format: agent-deck-bundle` or unknown `version` |
+| F1.6 | v2 deck records carry `operatingInstructions` | Same empty default and 16,000-char bound as the Deck model; v1 decks import with `''` |
 | F1.2 | Support scopes `collection` and `deck` | `deck` includes only the named deck + linked services/playbooks |
 | F1.3 | Bundle ids are within-file refs only; decks always new; services/playbooks link-or-create | Report `idMap` + `created`/`reused` counts |
 | F1.4 | Exclude credentials, `exec_runs`, session binding, harness files, icon cache | Not present in bundle |
@@ -91,7 +94,7 @@ This PRD specifies a **local-only** single-file `.agent-deck.json` bundle, CLI +
 |--------|-------------|------------|
 | F2.1 | Display names UNIQUE (deck `name`, service `name`, playbook `title`, credential `label`) | SQLite enforces; create APIs return clear errors |
 | F2.2 | Import: try create; on UNIQUE reject, skip and map to existing row | Report `created` / `reused` (skipped); no rename suffixes |
-| F2.3 | Skipped playbooks/services/decks are not overwritten | Existing body/deps unchanged |
+| F2.3 | Skipped playbooks/services/decks are not overwritten | Existing body/deps unchanged; reused decks keep their instructions and warn when incoming differ |
 | F2.4 | **New** playbooks only: remap `dependsOnServiceIds` via `idMap` | Skipped playbooks untouched |
 | F2.5 | Post-import report matches `ImportReport` (§7.2) | CLI stdout + dashboard modal; warnings list skips |
 
@@ -127,12 +130,12 @@ This PRD specifies a **local-only** single-file `.agent-deck.json` bundle, CLI +
 
 Implementation: Zod in `packages/shared/src/schemas/export-bundle.ts`.
 
-### 7.1 Bundle (`BundleV1`)
+### 7.1 Bundle (`BundleV2`; v1 still imports)
 
 ```json
 {
   "format": "agent-deck-bundle",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-07-03T00:00:00.000Z",
   "exportedFrom": { "agentDeckVersion": "1.3.0" },
   "scope": "collection",
@@ -171,6 +174,7 @@ Implementation: Zod in `packages/shared/src/schemas/export-bundle.ts`.
     {
       "id": "22222222-2222-4222-8222-222222222222",
       "name": "dev",
+      "operatingInstructions": "# Dev runbook\nPrefer small PRs.\n",
       "serviceIds": ["11111111-1111-4111-8111-111111111111"],
       "playbookIds": ["pb_example"]
     }
@@ -180,7 +184,11 @@ Implementation: Zod in `packages/shared/src/schemas/export-bundle.ts`.
 
 Bundle ids are **opaque within-file refs only** (membership + playbook deps). Import tries create; UNIQUE display-name conflicts **skip** and map to the existing row. `idMap` always maps bundle id → target id.
 
-**Never present:** `credentials`, `credentialId`, `dependsOnCredentialIds` (export forces `[]`), OAuth tokens/state, `oauthClientSecret`, `localEnv`, `Authorization` headers, runtime fields (`health`, `isConnected`, `lastPing`, `isActive`).
+**Versions:** exports always emit `version: 2`. The importer accepts `1` and `2`; v1 deck records carry no `operatingInstructions`, so v1 decks are created with `''`. Unknown versions fail validation before any import mutation.
+
+**Deck instructions (v2):** each deck record carries its exact `operatingInstructions` body — same empty default and 16,000-character bound as the Deck model, validated before any partial import mutation. A newly created deck stores the imported body. A reused same-name deck keeps its existing instructions; when the incoming non-empty body differs, the import report carries a warning naming the deck (e.g. `Deck "dev": kept existing operating instructions (imported instructions differ)`).
+
+**Never present:** `credentials`, `credentialId`, `dependsOnCredentialIds` (export forces `[]`), OAuth tokens/state, `oauthClientSecret`, `localEnv`, `Authorization` headers, runtime fields (`health`, `isConnected`, `lastPing`, `isActive`). Unchanged in v2: the bundle stays portable without the source machine's SQLite cache or Keychain.
 
 ### 7.2 Import report (`ImportReport`)
 
@@ -193,7 +201,7 @@ Bundle ids are **opaque within-file refs only** (membership + playbook deps). Im
     "decks": { "created": 0, "reused": 1 }
   },
   "servicesNeedingOauth": ["Linear"],
-  "warnings": ["Skipped service \"Linear\" (already exists)", "Skipped deck \"dev\" (already exists)"],
+  "warnings": ["Skipped service \"Linear\" (already exists)", "Skipped deck \"dev\" (already exists)", "Deck \"dev\": kept existing operating instructions (imported instructions differ)"],
   "idMap": {
     "11111111-1111-4111-8111-111111111111": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     "pb_example": "pb_example_imported",
@@ -245,7 +253,7 @@ After import, bind with the **new** deck id from `idMap` or `agent-deck deck lis
 | NFR-2 Import latency (same bundle) | p95 < 10 s | Same |
 | NFR-3 Bundle size (50 cards) | < 5 MB | File size |
 | NFR-4 Secret safety | 0 secret material in bundle | Unit tests on sanitize + zip/json scan |
-| NFR-5 Forward compatibility | Reject unknown `version` with actionable error | Integration test |
+| NFR-5 Forward compatibility | Accept `version` 1–2; reject unknown `version` with actionable error | Integration test |
 
 ---
 
@@ -256,7 +264,7 @@ After import, bind with the **new** deck id from `idMap` or `agent-deck deck lis
 | Credentials (metadata or secrets) | Explicit product cut; keys stay on each machine |
 | Encrypted / plaintext secrets in bundle | Same |
 | Preserve / upsert by source UUID | Natural-key reuse instead |
-| Overwrite existing card body on reuse | v1 warns only |
+| Overwrite existing card body or deck instructions on reuse | Warns only; existing values kept |
 | Cloud sync / multi-user replication | [MVP.md](./MVP.md) non-goals |
 | MCP `export_bundle` / `import_bundle` | MVP: import/export is CLI/dashboard only |
 | `exec_runs`, session binding, harness files | Not layout data |
@@ -270,6 +278,7 @@ After import, bind with the **new** deck id from `idMap` or `agent-deck deck lis
 | Phase | Exit criteria |
 |-------|---------------|
 | **v1** | Zod schemas; link-or-create import; CLI units; REST; dashboard; shared-card + multi-deck-import tests; SC-1, SC-4 |
+| **v2** | `operatingInstructions` on deck records; v1-compatible import; reuse keeps existing instructions + warns; SC-5 |
 
 ---
 
@@ -277,7 +286,7 @@ After import, bind with the **new** deck id from `idMap` or `agent-deck deck lis
 
 | Question | Default if undecided | Owner |
 |----------|----------------------|-------|
-| OD-1 Import bundle from older Agent Deck on newer host? | Reader accepts `version: 1` only; ship migration adapter when v2 needed | Eng |
+| OD-1 Import bundle from older Agent Deck on newer host? | Decided: exports emit v2, reader accepts v1–v2; v1 decks import with empty instructions | Eng |
 | OD-2 Overwrite card config on reuse? | Defer; warn only in v1 | Eng |
 
 ---
