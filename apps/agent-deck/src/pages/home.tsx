@@ -20,6 +20,7 @@ import CardComponent from "@/components/card-component";
 import CredentialCardComponent from "@/components/credential-card-component";
 import PlaybookCardComponent from "@/components/playbook-card-component";
 import DeckBuilder from "@/components/deck-builder";
+import { DECK_INSTRUCTIONS_DISCARD_MESSAGE } from "@/components/deck-instructions-modal";
 import LiveSessionBadges from "@/components/live-session-badges";
 import ServiceRegistrationModal from "@/components/service-registration-modal";
 import DeckManagementPanel from "@/components/deck-management-panel";
@@ -125,6 +126,18 @@ export default function Home() {
 
   const decksArray = decksResponse?.data || [];
   const { editingDeck, editingDeckId, setEditingDeckId } = useEditingDeck(decksArray);
+  const [instructionsDirty, setInstructionsDirty] = useState(false);
+
+  // The Instructions modal lives on the selected deck; switching decks with
+  // an unsaved draft requires confirmation so the draft cannot be lost.
+  const handleSelectDeck = (deckId: string) => {
+    if (deckId !== editingDeckId && instructionsDirty) {
+      if (!window.confirm(DECK_INSTRUCTIONS_DISCARD_MESSAGE)) {
+        return;
+      }
+    }
+    setEditingDeckId(deckId);
+  };
 
   const {
     handleDragStart,
@@ -461,7 +474,7 @@ export default function Home() {
               <DeckManagementPanel
                 decks={decksArray}
                 editingDeckId={editingDeckId}
-                onSelectDeck={setEditingDeckId}
+                onSelectDeck={handleSelectDeck}
                 isLoading={decksLoading}
               />
             </div>
@@ -531,6 +544,7 @@ export default function Home() {
                     onCardClick={handleCardClick}
                     onPlaybookClick={handlePlaybookClick}
                     onCredentialClick={handleCredentialClick}
+                    onInstructionsDirtyChange={setInstructionsDirty}
                   />
                 </div>
               ) : (
