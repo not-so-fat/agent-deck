@@ -119,6 +119,8 @@ For each `decks/<id>.json` (in sorted filename order): parse the v1 record, writ
 
 Anything ambiguous aborts before the manifest is touched: an unparseable `.json`, two files claiming one deck id, or a Markdown twin with different metadata. The error names the concrete paths.
 
+The migration writes through symlinks safely: when `manifest.json` or a store directory is a link into a separate checkout (see "Symlinked-store layout" below), the linked target files are updated and the links themselves are preserved.
+
 ---
 
 ## Git sync (user-owned)
@@ -142,6 +144,32 @@ Anything ambiguous aborts before the manifest is touched: an unparseable `.json`
    - Re-enter Keychain secrets and reconnect OAuth on the new machine as needed.
 
 After a git pull, the merged file tree wins. Resolve merge conflicts in `.md` / `.json` / `.yaml` in git, then reindex.
+
+### Symlinked-store layout (supported)
+
+A supported local-first pattern keeps runtime-only data under the data home while the Git-backed store surfaces live in a separate checkout, linked in:
+
+```sh
+# ~/yusuke-decks is an ordinary git checkout holding the store files.
+ln -s ~/yusuke-decks/manifest.json   ~/.agent-deck/manifest.json
+ln -s ~/yusuke-decks/decks           ~/.agent-deck/decks
+ln -s ~/yusuke-decks/playbooks       ~/.agent-deck/playbooks
+ln -s ~/yusuke-decks/services        ~/.agent-deck/services
+ln -s ~/yusuke-decks/credentials     ~/.agent-deck/credentials
+```
+
+Result:
+
+```text
+~/.agent-deck/manifest.json -> ~/yusuke-decks/manifest.json
+~/.agent-deck/{decks,playbooks,services,credentials}/ -> ~/yusuke-decks/...
+~/yusuke-decks/                  <- git repository, source of truth
+~/.agent-deck/agent_deck.db      <- machine-local SQLite cache (never linked in)
+```
+
+All store writes — including the automatic v1→v2 migration — go through the shared atomic-write path, which resolves an existing final-component file symlink and replaces the **target** file in place, leaving the link itself intact. Directory symlinks are followed the same way, so deck conversion inside a linked `decks/` directory modifies the checkout. A dangling, cyclic, or otherwise unresolvable final symlink fails closed with a path-specific error instead of being replaced by a regular file.
+
+Machine-local data stays in the runtime home and out of the repository: the SQLite cache (`agent_deck.db*`), logs, managed CLI versions, Keychain secrets, and OAuth tokens are never written under the linked store paths. Commit from inside the checkout (`~/yusuke-decks`); run `agent-deck reindex` (or restart the backend) after pulling.
 
 ### Merging deck Markdown conflicts
 
