@@ -2,10 +2,27 @@ import { z } from 'zod';
 import { CredentialSchema } from './credential';
 import { PlaybookSchema } from './playbook';
 
+/**
+ * Single shared bound for deck operating instructions (NOT-374).
+ *
+ * Instructions live as the Markdown body of `decks/<id>.md` in the Git-synced
+ * file store, with SQLite holding a rebuildable copy. Every entry point — the
+ * deck API, the store codec, and reindex — enforces this same limit.
+ */
+export const OPERATING_INSTRUCTIONS_MAX_LENGTH = 16_000;
+
+export const OperatingInstructionsSchema = z
+  .string()
+  .max(
+    OPERATING_INSTRUCTIONS_MAX_LENGTH,
+    `Deck operating instructions must be at most ${OPERATING_INSTRUCTIONS_MAX_LENGTH.toLocaleString('en-US')} characters`,
+  );
+
 export const DeckSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1, 'Deck name is required'),
   isActive: z.boolean().default(false),
+  operatingInstructions: OperatingInstructionsSchema.default(''),
   services: z.array(z.any()).default([]), // Will be populated with Service objects
   credentials: z.array(CredentialSchema).default([]),
   playbooks: z.array(PlaybookSchema).default([]),

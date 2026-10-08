@@ -1,12 +1,19 @@
 import { z } from 'zod';
 import { PlaybookIdSchema } from './playbook';
 import { BundleServiceSchema } from './export-bundle';
+import { OperatingInstructionsSchema } from './deck';
 import { normalizeTriggers } from '../utils/trigger-hygiene';
 
+/**
+ * Current store generation is 2 (`decks/<id>.md` with operating instructions
+ * in the Markdown body). Version 1 is still accepted so startup and reindex
+ * can detect a legacy tree and run the automatic v1→v2 migration; anything
+ * else fails closed.
+ */
 export const StoreManifestSchema = z
   .object({
     format: z.literal('agent-deck-store'),
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     migratedFrom: z.literal('sqlite').optional(),
   })
   .strict();
@@ -57,6 +64,9 @@ export const StoreDeckSchema = z
     serviceIds: z.array(z.string()).default([]),
     credentialIds: z.array(z.string()).default([]),
     playbookIds: z.array(z.string()).default([]),
+    // Serialized as the Markdown body of `decks/<id>.md`, not frontmatter.
+    // Defaulted so legacy v1 JSON (which has no instructions) still parses.
+    operatingInstructions: OperatingInstructionsSchema.default(''),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
