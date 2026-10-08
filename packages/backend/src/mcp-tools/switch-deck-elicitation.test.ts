@@ -418,6 +418,7 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
     elicitation?: ElicitationResult | Error | null;
     supported?: boolean;
     creation?: Record<string, unknown>;
+    resolveResult?: Record<string, unknown>;
   }): {
     host: McpToolHost;
     tools: Map<string, CapturedTool>;
@@ -442,7 +443,15 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
           return creation;
         }
         if (endpoint.includes('/resolve')) {
-          return { requestId: 'req_1', decision: 'session', status: 'consumed', deckId: 'deck_b', deckName: 'beta' };
+          return (
+            overrides?.resolveResult ?? {
+              requestId: 'req_1',
+              decision: 'session',
+              status: 'consumed',
+              deckId: 'deck_b',
+              deckName: 'beta',
+            }
+          );
         }
         throw new Error(`unexpected endpoint ${endpoint}`);
       }),
@@ -502,6 +511,9 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
 
     expect(payload).toMatchObject({ requestId: 'req_1', status: 'consumed' });
     expect(result.isError).toBeUndefined();
+    // NOT-375: the consumed result names the one refresh path — no reconnect.
+    expect(payload).toMatchObject({ refresh: { tool: 'get_session_context' } });
+    expect(String(payload.refresh.when)).toContain('No MCP reconnect is needed');
     const resolved = resolveCalls(calls);
     expect(resolved).toHaveLength(1);
     expect(resolved[0].endpoint).toBe('/api/trusted-session/deck-switch/req_1/resolve');
@@ -510,6 +522,20 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
       decision: 'workspace-default',
     });
     expect((resolved[0].init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${SECRET}`);
+  });
+
+  it('NOT-375: declined resolution carries no refresh hint', async () => {
+    const { host, tools } = buildStubHost({
+      elicitation: { action: 'decline' },
+      resolveResult: { requestId: 'req_1', decision: 'decline', status: 'declined' },
+    });
+    registerMcpTools(host);
+
+    const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
+    const payload = JSON.parse(result.content[0].text);
+
+    expect(payload).toMatchObject({ requestId: 'req_1', status: 'declined' });
+    expect(payload).not.toHaveProperty('refresh');
   });
 
   it('keeps the request pending with reopen help on cancel', async () => {

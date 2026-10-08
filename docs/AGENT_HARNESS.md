@@ -108,6 +108,40 @@ Templates: [cursor-agent-deck.mdc](./examples/agent-harness/cursor-agent-deck.md
 
 ---
 
+## Deck operating instructions (precedence + hot-switch contract)
+
+`get_session_context` and `get_bound_deck` return the bound deck's exact `operatingInstructions` value. Empty instructions are always the empty string `''` — never null and never omitted. The value is deck-scoped: concurrent sessions bound to different decks each see only their own deck's instructions, and a hot switch never leaks the previous deck's value into the new context.
+
+**First turn:** the bootstrap reads `operatingInstructions` and follows the non-empty instructions for this session's deck only.
+
+**Hot switch:** after a confirmed session-only or workspace-default switch, the agent calls `get_session_context` once before more task work — no MCP reconnect is needed — and follows only the new deck's instructions. The previous deck's instructions stop applying immediately. The consumed `switch_deck` elicitation result carries the same refresh hint (`refresh.tool: get_session_context`).
+
+**Precedence (highest first):** platform safety rules, then developer/user instructions, then authorization boundaries, then deck operating instructions. Deck prose can neither widen access nor enable extra tools; on any conflict the higher-priority instruction wins and the agent reports the conflict instead of complying.
+
+**Two delivery paths:** the MCP initialize response carries the initially assigned deck's non-empty instructions in the server `instructions` field where the SDK/host surfaces it (an unassigned session still receives the existing recovery message; empty instructions omit the field). That value is frozen at connect time and never updates after a hot switch, so `get_session_context` is the authoritative live value on every host. MCP server instructions do not carry system-message priority in every host — the harness treats them as a bootstrap hint only.
+
+### Host smoke checklist (initialize `instructions` vs `get_session_context`)
+
+For each host: bind a deck whose instructions contain a distinctive marker (e.g. `SMOKE-deck-a`), connect, then approve a hot switch to a second deck with a different marker.
+
+1. Connect the host to Agent Deck MCP on deck A. Record whether the host surfaces the server `instructions` value from the initialize response (verbatim marker visible to the agent without any tool call).
+2. Call `get_session_context` and confirm `operatingInstructions` contains only the deck-A marker.
+3. Request `switch_deck` to deck B and approve it (session-only is enough). Confirm no reconnect was needed.
+4. Call `get_session_context` once and confirm `operatingInstructions` contains only the deck-B marker.
+5. Confirm a concurrent deck-A session still returns only the deck-A marker.
+
+Status vocabulary: **Verified** (observed on the named host build), **Unsupported** (the host ignores the field), **Unknown** (not run). The `get_session_context` path is host-independent — it is one MCP tool call — and is covered by backend protocol tests on every host.
+
+| Host | Initialize `instructions` surfaced | `get_session_context` authoritative path |
+|------|------------------------------------|------------------------------------------|
+| Codex | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
+| Claude Code | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
+| Cursor | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
+
+No claim is made here about host initialize-instruction behavior until a workstation run records it above.
+
+---
+
 ## Manual edit / audit
 
 - **Cursor:** edit `agent-deck.mdc`; `description` in frontmatter is what the rule picker shows (like a skill one-liner).  
