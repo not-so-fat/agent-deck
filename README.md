@@ -134,6 +134,22 @@ Drag cards onto your deck in the dashboard, or ask the agent when building the d
 
 Terminal agents show the active deck in the footer (`◆ dev · 2 MCP · …`). If it stays unbound, check `agent-deck start` and that the deck exists in **My Decks**.
 
+### Same decks across machines
+
+None of these paths is mandatory. Pick by how you want persistence to work:
+
+| Path | Purpose |
+|------|---------|
+| **Git-backed file-store sync (recommended)** | Local-first: same decks across machines **without** hosting Agent Deck in the cloud |
+| **Personal cloud hosting (optional)** | Always-on authenticated MCP endpoint when you want Agent Deck reachable remotely |
+| **Export / import (one-shot)** | Move or share a layout once — not ongoing sync ([Data & portability](#data--portability)) |
+
+**Recommended non-cloud workflow:** put the Agent Deck store (`~/.agent-deck/` in production) in a **private Git repository you own**. Commit and push on one machine after edits; pull on another; then run `agent-deck reindex` or restart the backend. **Agent Deck never runs Git** and does not resolve merge conflicts — fix conflicts in Git, then reindex.
+
+**Safe to commit:** `manifest.json` plus the documented card/deck directories (`playbooks/`, `services/`, `credentials/`, `decks/`). Credential files are metadata only. **Keep machine-local / uncommitted:** SQLite and cache files (`*.db`, `*.db-*`), Keychain secrets, and OAuth tokens (re-enter or reconnect on each new machine).
+
+Layout, `.gitignore`, conflicts, and reindex details: [Store format](docs/STORE_FORMAT.md).
+
 ---
 
 ## Reference
@@ -148,7 +164,7 @@ For contributors, dev ports (`:3000` / `:8000` / `:3001`) and env vars → [Setu
 
 ### Data & portability
 
-Your collection and decks live as files under `~/.agent-deck/` (playbooks as `.md`, services/decks as JSON, credential metadata as YAML). You can put that tree in **your own git repo** for ongoing sync across laptops — **Agent Deck never runs git**; you commit, push, and pull, then `agent-deck reindex`. Secrets stay in Keychain per machine. For one-shot moves or sharing a deck template without git, use `.agent-deck.json` export/import ([format](docs/STORE_FORMAT.md) · [export PRD](docs/PRD_EXPORT_IMPORT.md)).
+Collection and decks live as files under `~/.agent-deck/` (playbooks as `.md`, services/decks as JSON, credential metadata as YAML). For ongoing multi-machine sync without cloud hosting, use **[Git-backed file-store sync](#same-decks-across-machines)** (recommended). For a one-shot move or sharing a deck template without Git, use `.agent-deck.json` export/import ([format](docs/STORE_FORMAT.md) · [export PRD](docs/PRD_EXPORT_IMPORT.md)).
 
 ## Install & run
 
@@ -178,6 +194,7 @@ Port conflicts: `agent-deck status` · `agent-deck start --force`
 | [Agent harness](docs/AGENT_HARNESS.md) | What `setup` installs |
 | [Playbooks vs Cursor skills](docs/PLAYBOOKS_AND_SKILLS.md) | Deck playbooks vs Cursor skills |
 | [Export / import](docs/PRD_EXPORT_IMPORT.md) | Portable layout bundles |
+| [Store format](docs/STORE_FORMAT.md) | File-backed store layout, Git sync, reindex |
 | [Deck display](docs/PRD_DECK_DISPLAY.md) | Terminal status line |
 | [Codex / Claude plugin](docs/CODEX_PLUGIN.md) | Marketplace packaging (HOL / Codex / Claude Code) |
 | [Architecture](docs/ARCHITECTURE.md) | SQLite, Keychain, components |

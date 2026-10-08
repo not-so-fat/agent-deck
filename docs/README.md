@@ -26,6 +26,7 @@
 | [MVP.md](./MVP.md) | Shipped product — bound deck, vault, playbooks, MCP tools |
 | [SETUP.md](./SETUP.md) | Install, ports, data dirs, **dashboard** tour |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Components, SQLite, secret storage |
+| [STORE_FORMAT.md](./STORE_FORMAT.md) | File-backed store layout, Git sync, reindex |
 | [DEVELOPMENT.md](./DEVELOPMENT.md) | Clone, test, contribute |
 | [TESTING.md](./TESTING.md) | FE / BE / MCP / CLI test map + integration scenarios |
 | [LEARNING_LOOP_TEST_SCENARIOS.md](./LEARNING_LOOP_TEST_SCENARIOS.md) | Manual QA — proposal queue, stubs, self-improvement |
