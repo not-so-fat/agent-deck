@@ -199,12 +199,7 @@ export default function DeckInstructionsModal({
             onClick={() => saveMutation.mutate(draft)}
             disabled={draft === saved || overLimit || saveMutation.isPending}
             data-testid="button-save-deck-instructions"
-            className="rounded-full border px-6 text-sm font-semibold hover:opacity-90 disabled:opacity-50"
-            style={{
-              background: "#C4B643",
-              borderColor: "#C4B643",
-              color: "black",
-            }}
+            className="rounded-full border border-[#C4B643] bg-[#C4B643] px-6 text-sm font-semibold text-black hover:opacity-90 disabled:border-white/15 disabled:bg-white/10 disabled:text-white/40 disabled:opacity-100"
           >
             {saveMutation.isPending ? "Saving…" : "Save instructions"}
           </Button>
