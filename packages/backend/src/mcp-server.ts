@@ -317,14 +317,20 @@ export class AgentDeckMCPServer {
    * One McpServer per transport session. Tools/resources close over `sessionId`
    * so concurrent requests cannot steal another session's backend authority.
    */
-  private createMcpServer(sessionId: string): McpServer {
+  private async createMcpServer(sessionId: string): Promise<McpServer> {
     const unassigned = this.sessionBinding.isUnassigned(sessionId);
+    let instructions: string | undefined;
+    if (unassigned) {
+      instructions = UNASSIGNED_DECK_MESSAGE;
+    } else {
+      instructions = await this.resolveInitializeInstructions(sessionId);
+    }
     this.mcpServerForRegistration = new McpServer(
       {
         name: "agent-deck-server",
         version: getAgentDeckVersion(),
       },
-      unassigned ? { instructions: UNASSIGNED_DECK_MESSAGE } : undefined,
+      instructions ? { instructions } : undefined,
     );
     this.setupTools(sessionId);
     if (!unassigned) {
@@ -333,6 +339,30 @@ export class AgentDeckMCPServer {
     const server = this.mcpServerForRegistration;
     this.mcpServerForRegistration = undefined;
     return server;
+  }
+
+  /**
+   * NOT-375: initialize-time server instructions for an assigned deck.
+   * The bound deck's non-empty operating instructions ride the initialize
+   * response as a bootstrap hint where the SDK/host surfaces them; empty
+   * instructions omit the field. This value is frozen at connect time and
+   * never updates after a hot deck switch — `get_session_context` is the
+   * authoritative live read. Any failure here falls back to no instructions
+   * rather than failing the handshake; the bootstrap tool call surfaces the
+   * underlying deck error instead.
+   */
+  private async resolveInitializeInstructions(sessionId: string): Promise<string | undefined> {
+    const binding = this.sessionBinding.getBinding(sessionId);
+    if (!binding.deckId && !binding.runtimeSessionId) {
+      return undefined;
+    }
+    try {
+      const deck = await this.callBackendAPI('/api/scope/deck', {}, sessionId);
+      const value = deck?.operatingInstructions;
+      return typeof value === 'string' && value.length > 0 ? value : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async fetchDeck(
@@ -1585,7 +1615,7 @@ export class AgentDeckMCPServer {
    */
   private async establishTransportSession(req: Request, res: Response, sessionId: string): Promise<void> {
     const body = req.body;
-    const server = this.createMcpServer(sessionId);
+    const server = await this.createMcpServer(sessionId);
     let sessionEntry: McpSession | undefined;
 
     const transport = new StreamableHTTPServerTransport({
