@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {
-  CreateDeckInput, 
+  CreateDeckInput,
   UpdateDeckInput,
   AddServiceToDeckInput,
   RemoveServiceFromDeckInput,
@@ -10,6 +10,7 @@ import {
   DeckListEntry,
   PlaybookSummary,
   countDeckCards,
+  OPERATING_INSTRUCTIONS_MAX_LENGTH,
   trustedSessionError,
 } from '@agent-deck/shared';
 import {
@@ -74,6 +75,24 @@ async function enrichDeckServicesWithSecretHeaders(
   );
 }
 
+/**
+ * Deck routes validate by hand rather than via the Zod schemas; the shared
+ * bound still applies so an over-limit body fails here instead of wedging
+ * the file store (the codec would reject the dual-write after the row lands).
+ */
+function invalidOperatingInstructions(value: unknown): string | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    return 'operatingInstructions must be a string';
+  }
+  if (value.length > OPERATING_INSTRUCTIONS_MAX_LENGTH) {
+    return `operatingInstructions must be at most ${OPERATING_INSTRUCTIONS_MAX_LENGTH.toLocaleString('en-US')} characters`;
+  }
+  return null;
+}
+
 interface CreateDeckRequest {
   Body: CreateDeckInput;
 }
@@ -123,6 +142,15 @@ export async function registerDeckRoutes(
         return reply.status(400).send({
           success: false,
           error: 'Deck name is required',
+        } satisfies ApiResponse);
+      }
+      const instructionsError = invalidOperatingInstructions(
+        request.body?.operatingInstructions,
+      );
+      if (instructionsError) {
+        return reply.status(400).send({
+          success: false,
+          error: instructionsError,
         } satisfies ApiResponse);
       }
 
@@ -325,6 +353,15 @@ export async function registerDeckRoutes(
   // Update deck
   fastify.put<UpdateDeckRequest>('/:id', async (request, reply) => {
     try {
+      const instructionsError = invalidOperatingInstructions(
+        request.body?.operatingInstructions,
+      );
+      if (instructionsError) {
+        return reply.status(400).send({
+          success: false,
+          error: instructionsError,
+        } satisfies ApiResponse);
+      }
       const deck = await fastify.db.updateDeck(request.params.id, request.body);
       
       if (!deck) {

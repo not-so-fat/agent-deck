@@ -439,7 +439,7 @@ export class ServiceManager {
   }
 
   // Deck membership — these own the deck file flush so every caller (routes,
-  // agents, imports) leaves `decks/<id>.json` matching the DB.
+  // agents, imports) leaves `decks/<id>.md` matching the DB.
   async addToDeck(input: AddServiceToDeckInput): Promise<void> {
     await this.db.addServiceToDeck(input);
     await flushDeckFile(this.db, input.deckId, this.storeWriter);

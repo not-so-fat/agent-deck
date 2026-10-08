@@ -34,7 +34,7 @@ type PendingWrite =
 
 const MIGRATED_MANIFEST: StoreManifest = {
   format: 'agent-deck-store',
-  version: 1,
+  version: 2,
   migratedFrom: 'sqlite',
 };
 
@@ -124,7 +124,7 @@ export async function migrateSqliteToStore(
     ...decks.map(
       (deck): PendingWrite => ({
         kind: 'decks',
-        path: path.join(paths.decksDir, `${deck.id}.json`),
+        path: path.join(paths.decksDir, `${deck.id}.md`),
         value: storeDeckFromDb(deck),
       }),
     ),

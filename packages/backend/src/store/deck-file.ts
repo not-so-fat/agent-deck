@@ -2,7 +2,7 @@ import type { Deck, StoreDeck } from '@agent-deck/shared';
 import type { DatabaseManager } from '../models/database';
 import type { FileStoreWriter } from './writer';
 
-/** Deck file shape: name plus the ordered card ids, straight from the DB join. */
+/** Deck file shape: name, ordered card ids, and instructions, straight from the DB join. */
 export function storeDeckFromDb(deck: Deck): StoreDeck {
   return {
     id: deck.id,
@@ -10,6 +10,7 @@ export function storeDeckFromDb(deck: Deck): StoreDeck {
     serviceIds: deck.services.map(({ id }) => id),
     credentialIds: deck.credentials.map(({ id }) => id),
     playbookIds: deck.playbooks.map(({ id }) => id),
+    operatingInstructions: deck.operatingInstructions ?? '',
     createdAt: deck.createdAt,
     updatedAt: deck.updatedAt,
   };
@@ -46,7 +47,7 @@ function listDeckIdsForCard(
 }
 
 /**
- * Rewrite `decks/<id>.json` from the DB after a membership change.
+ * Rewrite `decks/<id>.md` from the DB after a membership change.
  *
  * Files are the source of truth: `reindex` wipes the DB tables and rebuilds them
  * from the store tree, so a membership row that never reaches the deck file is
@@ -174,7 +175,7 @@ async function restoreDeckFiles(
   }
 }
 
-/** Remove `decks/<id>.json` after the deck row is gone. */
+/** Remove `decks/<id>.md` after the deck row is gone. */
 export async function deleteDeckFile(
   deckId: string,
   writer?: FileStoreWriter,

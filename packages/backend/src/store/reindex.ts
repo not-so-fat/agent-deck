@@ -9,7 +9,8 @@ import {
 } from '../models/database';
 import { hashStoreTree } from './content-hash';
 import { parseCredentialYaml } from './credential-codec';
-import { parseDeckJson } from './deck-codec';
+import { parseDeckMarkdown } from './deck-codec';
+import { migrateStoreV1ToV2 } from './migrate-v1-to-v2';
 import { storePaths } from './paths';
 import { parsePlaybookMarkdown } from './playbook-codec';
 import { parseServiceJson } from './service-codec';
@@ -167,7 +168,10 @@ function dedupeDisplayNames<T>(
   return { values, warnings };
 }
 
-function missingDeckReferences(snapshot: StoreSnapshot): string[] {
+function missingDeckReferences(
+  snapshot: StoreSnapshot,
+  deckPaths: Map<string, string>,
+): string[] {
   const serviceIds = new Set(snapshot.services.map(({ id }) => id));
   const credentialIds = new Set(snapshot.credentials.map(({ id }) => id));
   const playbookIds = new Set(snapshot.playbooks.map(({ id }) => id));
@@ -182,22 +186,25 @@ function missingDeckReferences(snapshot: StoreSnapshot): string[] {
   }
 
   for (const deck of snapshot.decks) {
+    const where = deckPaths.get(deck.id) ?? deck.id;
     for (const serviceId of deck.serviceIds) {
       if (!serviceIds.has(serviceId)) {
-        errors.push(`Deck "${deck.name}" references missing service "${serviceId}"`);
+        errors.push(
+          `Deck "${deck.name}" at ${where} references missing service "${serviceId}"`,
+        );
       }
     }
     for (const credentialId of deck.credentialIds) {
       if (!credentialIds.has(credentialId)) {
         errors.push(
-          `Deck "${deck.name}" references missing credential "${credentialId}"`,
+          `Deck "${deck.name}" at ${where} references missing credential "${credentialId}"`,
         );
       }
     }
     for (const playbookId of deck.playbookIds) {
       if (!playbookIds.has(playbookId)) {
         errors.push(
-          `Deck "${deck.name}" references missing playbook "${playbookId}"`,
+          `Deck "${deck.name}" at ${where} references missing playbook "${playbookId}"`,
         );
       }
     }
@@ -211,6 +218,12 @@ async function runReindex(
   opts: { home?: string; force?: boolean },
 ): Promise<StoreReindexResult> {
   const paths = storePaths(opts.home);
+  try {
+    await migrateStoreV1ToV2(opts.home);
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: detail };
+  }
   let manifestRaw: string;
   try {
     manifestRaw = await fs.readFile(paths.manifest, 'utf8');
@@ -240,7 +253,7 @@ async function runReindex(
       readStoreFiles(paths.servicesDir, parseServiceJson),
       readStoreFiles(paths.credentialsDir, parseCredentialYaml),
       readStoreFiles(paths.playbooksDir, parsePlaybookMarkdown),
-      readStoreFiles(paths.decksDir, parseDeckJson),
+      readStoreFiles(paths.decksDir, parseDeckMarkdown),
     ]);
   } catch (error: unknown) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -313,7 +326,10 @@ async function runReindex(
     playbooks: namedPlaybooks.values,
     decks: namedDecks.values,
   };
-  const referenceErrors = missingDeckReferences(snapshot);
+  const deckPaths = new Map(
+    decks.entries.map((entry) => [entry.value.id, entry.path] as const),
+  );
+  const referenceErrors = missingDeckReferences(snapshot, deckPaths);
   if (referenceErrors.length > 0) {
     return {
       ok: false,

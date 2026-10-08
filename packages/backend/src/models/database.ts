@@ -197,6 +197,13 @@ export class DatabaseManager {
     // Deck description was never shown in UI — drop from existing DBs.
     this.dropColumnIfExists('decks', 'description');
 
+    // NOT-374: cache of the `decks/<id>.md` instructions body; files stay authoritative.
+    this.addColumnIfMissing(
+      'decks',
+      'operating_instructions',
+      "TEXT NOT NULL DEFAULT ''",
+    );
+
     this.addColumnIfMissing('playbook_patches', 'conflicts_json', 'TEXT');
     this.addColumnIfMissing('playbook_patches', 'superseded_by', 'TEXT');
 
@@ -268,6 +275,7 @@ export class DatabaseManager {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         is_active BOOLEAN NOT NULL DEFAULT 0,
+        operating_instructions TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -531,8 +539,8 @@ export class DatabaseManager {
       )
     `);
     const insertDeck = this.db.prepare(`
-      INSERT INTO decks (id, name, is_active, created_at, updated_at)
-      VALUES (@id, @name, @is_active, @created_at, @updated_at)
+      INSERT INTO decks (id, name, is_active, operating_instructions, created_at, updated_at)
+      VALUES (@id, @name, @is_active, @operating_instructions, @created_at, @updated_at)
     `);
     const insertDeckService = this.db.prepare(`
       INSERT INTO deck_services (deck_id, service_id, position)
@@ -627,6 +635,7 @@ export class DatabaseManager {
           id: deck.id,
           name: deck.name,
           is_active: existingDecks.get(deck.id)?.is_active ?? 0,
+          operating_instructions: deck.operatingInstructions ?? '',
           created_at: deck.createdAt,
           updated_at: deck.updatedAt,
         });
@@ -1008,6 +1017,7 @@ export class DatabaseManager {
       id: generateId(),
       name: input.name,
       isActive: input.isActive || false,
+      operatingInstructions: input.operatingInstructions ?? '',
       services: [],
       credentials: [],
       playbooks: [],
@@ -1016,8 +1026,8 @@ export class DatabaseManager {
     };
 
     const stmt = this.db.prepare(`
-      INSERT INTO decks (id, name, is_active, created_at, updated_at)
-      VALUES (@id, @name, @is_active, @created_at, @updated_at)
+      INSERT INTO decks (id, name, is_active, operating_instructions, created_at, updated_at)
+      VALUES (@id, @name, @is_active, @operating_instructions, @created_at, @updated_at)
     `);
 
     try {
@@ -1025,6 +1035,7 @@ export class DatabaseManager {
         id: deck.id,
         name: deck.name,
         is_active: deck.isActive ? 1 : 0,
+        operating_instructions: deck.operatingInstructions,
         created_at: deck.createdAt,
         updated_at: deck.updatedAt,
       });
@@ -1049,6 +1060,7 @@ export class DatabaseManager {
       id: row.id,
       name: row.name,
       isActive: Boolean(row.is_active),
+      operatingInstructions: row.operating_instructions ?? '',
       services: servicesByDeck.get(row.id) ?? [],
       credentials: credentialsByDeck.get(row.id) ?? [],
       playbooks: playbooksByDeck.get(row.id) ?? [],
@@ -1170,12 +1182,16 @@ export class DatabaseManager {
     const updated: Deck = {
       ...existing,
       ...input,
+      operatingInstructions:
+        input.operatingInstructions ?? existing.operatingInstructions,
       updatedAt: new Date().toISOString(),
     };
 
     const stmt = this.db.prepare(`
       UPDATE decks SET
-        name = @name, is_active = @is_active, updated_at = @updated_at
+        name = @name, is_active = @is_active,
+        operating_instructions = @operating_instructions,
+        updated_at = @updated_at
       WHERE id = @id
     `);
 
@@ -1184,6 +1200,7 @@ export class DatabaseManager {
         id: updated.id,
         name: updated.name,
         is_active: updated.isActive ? 1 : 0,
+        operating_instructions: updated.operatingInstructions,
         updated_at: updated.updatedAt,
       });
     } catch (error) {
