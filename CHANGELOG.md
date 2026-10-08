@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 2.0.0 — 2026-10-08
+
+### Feature: deck operating instructions (NOT-374, NOT-375, NOT-376, NOT-377, NOT-379)
+
+- **Git-backed store v2.** Each deck now carries `operatingInstructions` (Markdown, normalized, up to 16,000 characters). Existing v1 stores migrate to v2 automatically; final-component symlinks (for example a symlinked store root shared between machines) are preserved across atomic writes and migration.
+- **Delivered to agents.** `get_session_context` and `get_bound_deck` return the bound deck's exact instructions (`''` when unset), and the MCP `initialize` response carries them for the initially assigned deck. After a confirmed `switch_deck`, one `get_session_context` call refreshes them — no reconnect; the previous deck's instructions stop applying immediately. Deck instructions never override platform safety, user instructions or authorization boundaries, and never enable extra tools.
+- **Editor in My Decks.** The selected-deck header has an Instructions action with a Markdown editor, character counter, unsaved-change guard and save errors that keep your draft.
+- **Export/import bundles v2.** Bundles carry each deck's instructions. Import still accepts v1 bundles and never silently overwrites a reused deck's instructions (it warns when they differ). The secret boundary is unchanged.
+- Generated Codex, Claude and Cursor guidance plus the bundled session skill explain the first-turn and hot-switch behaviour.
+
+### Feature: self-hosting
+
+- Single-replica OCI image, compose/PaaS templates and liveness/readiness checks (NOT-337).
+- README Quick Start now recommends Git-backed file-store sync for multi-machine use (NOT-373); positioning docs aligned around cross-agent consistency.
+
+### Feature / Fix: agents and tooling
+
+- Grok agents: per-agent default deck and smooth mid-session switch (NOT-298).
+- `doctor` / `reconcile` surface the sticky Codex versioned cache root (NOT-360); CLI repair guidance is easier to scan (NOT-357).
+
+### After upgrade
+
+- Run `agent-deck setup` for each client to refresh the generated guidance (it now describes deck operating instructions).
+- The first start on a v1 store migrates it to v2 in place. Older Agent Deck versions cannot read a v2 store, so upgrade every machine sharing a Git-synced store together.
+
 ## 1.11.9 — 2026-10-03
 
 ### Fix: status line counts dead sessions (NOT-309)
