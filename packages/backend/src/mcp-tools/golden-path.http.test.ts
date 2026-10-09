@@ -138,6 +138,28 @@ function startRichStubBackend(): Promise<StubBackend> {
         respond({ success: true, data: { ok: true } });
         return;
       }
+      // NOT-191: launch-deck trust handshake. The unified session cleanup
+      // disconnects the trusted runtime session, so a strict stub must
+      // accept the same vocabulary as the other MCP stubs.
+      if (method === 'POST' && url === '/api/trusted-session/mcp/connect-deck') {
+        respond({
+          success: true,
+          data: {
+            sessionId: `runtime-${String(body.mcpSessionId ?? 'x')}`,
+            deckId: String(body.deckId ?? DECK_ID),
+            mode: 'normal',
+          },
+        });
+        return;
+      }
+      if (method === 'POST' && url === '/api/trusted-session/mcp/disconnect-deck') {
+        respond({ success: true, data: { revoked: true } });
+        return;
+      }
+      if (method === 'GET' && url === '/api/trusted-session/runtime-session') {
+        respond({ success: true, data: { mode: 'normal', deckId: DECK_ID } });
+        return;
+      }
       if (method === 'GET' && url === '/api/services') {
         respond({ success: true, data: collectionServices });
         return;

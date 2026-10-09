@@ -28,3 +28,16 @@ export const AGENT_DECK_CORRELATION_HEADER = 'x-agent-deck-correlation-id';
  * the client as stranded forever.
  */
 export const AGENT_DECK_RECOVERED_SESSION_HEADER = 'x-agent-deck-recovered-session';
+
+/**
+ * Bridge-owned liveness capability marker (NOT-191). Sent by bridges that keep
+ * a client-owned heartbeat (periodic MCP `ping`) so an idle-but-connected
+ * session proves life without tool activity. The server tells these sessions
+ * apart from legacy clients — which send no such header — and stops its own
+ * periodic live-display touch for them, so an abandoned bridge can no longer
+ * defeat the stale-entry sweep while a live idle one stays visible.
+ */
+export const AGENT_DECK_BRIDGE_LIVENESS_HEADER = 'x-agent-deck-bridge-liveness';
+
+/** Header value advertising the v1 bridge-owned `ping` heartbeat contract. */
+export const AGENT_DECK_BRIDGE_LIVENESS_V1 = '1';

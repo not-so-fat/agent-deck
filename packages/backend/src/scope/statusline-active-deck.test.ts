@@ -311,6 +311,54 @@ describe('statusline follows the session-active deck (NOT-233)', () => {
     ]);
   });
 
+  it('NOT-191: when one bridge stops pulsing, the lease returns the status line to the exact deck', async () => {
+    // Two live sessions disagreeing hold the neutral fallback; once the deck-B
+    // bridge goes silent past the lease, the remaining status line names deck
+    // A again instead of staying on `multiple session decks`.
+    const staleMs = 60_000;
+    const t0 = Date.parse('2026-09-15T12:00:00.000Z');
+    let fakeNow = t0;
+    const isoAt = (ms: number) => new Date(ms).toISOString();
+    const { fastify, store, registry, deckA, deckB } = await buildApp({
+      nowMs: () => fakeNow,
+      staleMs,
+    });
+    const workspaceRoot = makeWorkspaceRoot();
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-not191-a',
+      workspaceRoot,
+      deckId: deckA.id,
+      deckName: DECK_A_NAME,
+      updatedAt: isoAt(t0),
+    });
+    await bindLiveSession(registry, store, {
+      mcpSessionId: 'mcp-not191-b',
+      workspaceRoot,
+      deckId: deckB.id,
+      deckName: DECK_B_NAME,
+      updatedAt: isoAt(t0),
+    });
+
+    expect((await getDisplay(fastify, workspaceRoot)).displayLine).toContain(
+      'multiple session decks',
+    );
+
+    // Bridge A pulses near the lease edge, so both still count.
+    fakeNow = t0 + staleMs - 1;
+    expect(registry.touch('mcp-not191-a', isoAt(fakeNow))).toBe(true);
+    expect((await getDisplay(fastify, workspaceRoot)).displayLine).toContain(
+      'multiple session decks',
+    );
+
+    // Past bridge B's lease the survivor's exact deck returns.
+    fakeNow = t0 + staleMs + 1;
+    const display = await getDisplay(fastify, workspaceRoot);
+    expect(display.deckId).toBe(deckA.id);
+    expect(display.deckName).toBe(DECK_A_NAME);
+    expect(display.displayLine).not.toContain('multiple session decks');
+    expect(registry.list().map((entry) => entry.mcpSessionId)).toEqual(['mcp-not191-a']);
+  });
+
   it('workspace-default switch moves the statusline to the new deck', async () => {
     const { fastify, store, registry, deckA, deckB } = await buildApp();
     const workspaceRoot = makeWorkspaceRoot();

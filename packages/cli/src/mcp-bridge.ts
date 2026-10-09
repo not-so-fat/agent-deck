@@ -12,6 +12,8 @@
  * request that failed. The stdio client upstream never sees the gap.
  */
 import {
+  AGENT_DECK_BRIDGE_LIVENESS_HEADER,
+  AGENT_DECK_BRIDGE_LIVENESS_V1,
   AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_RECOVERED_SESSION_HEADER,
 } from '@agent-deck/shared';
@@ -47,6 +49,24 @@ export type McpBridgeOptions = {
   streamRetryDelayMs?: number;
   /** How long `run()` waits for in-flight requests after the host closes stdin. */
   drainTimeoutMs?: number;
+  /**
+   * Cadence of the bridge-owned liveness heartbeat (NOT-191). After the
+   * handshake succeeds the bridge sends an internal MCP `ping` on this
+   * cadence so an idle-but-connected session stays visible without tool
+   * activity. `0` disables the heartbeat (legacy behavior). Tests inject a
+   * short value with fake timers.
+   */
+  heartbeatIntervalMs?: number;
+  /** Random jitter added to every heartbeat delay. `0` disables jitter. */
+  heartbeatJitterMs?: number;
+  /** Bound on one heartbeat ping before it counts as failed (backoff). */
+  heartbeatTimeoutMs?: number;
+  /** Bound on the best-effort session-close `DELETE` during shutdown. */
+  deleteTimeoutMs?: number;
+  /** Random source for heartbeat jitter (tests inject a constant). */
+  random?: () => number;
+  /** Clock for the shutdown drain deadline (tests inject a fake clock). */
+  now?: () => number;
   fetchImpl?: typeof fetch;
   /**
    * Observe a completed MCP tool call. It runs after the result has been handed to
@@ -65,6 +85,22 @@ const SESSION_HEADER = 'mcp-session-id';
 const MCP_ACCEPT = 'application/json, text/event-stream';
 
 const DEFAULT_DRAIN_TIMEOUT_MS = 2_000;
+
+/**
+ * NOT-191: bridge-owned liveness heartbeat. A live-but-idle host sends no
+ * tool calls, so without a pulse its session would expire out of the
+ * live-display registry while still connected. The ping is an ordinary MCP
+ * request the SDK answers with `{}`, consumed inside the bridge — the host
+ * never sees it on stdout. Five minutes keeps well inside the 30-minute
+ * display lease with room for a missed beat.
+ */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60_000;
+export const DEFAULT_HEARTBEAT_JITTER_MS = 30_000;
+export const DEFAULT_HEARTBEAT_TIMEOUT_MS = 10_000;
+/** Consecutive ping failures back the delay off multiplicatively up to this factor. */
+const HEARTBEAT_BACKOFF_MAX_FACTOR = 4;
+/** Bound on the clean-shutdown session-close `DELETE` — never hangs the host. */
+export const DEFAULT_CLOSE_DELETE_TIMEOUT_MS = 2_000;
 
 /**
  * Pre-NOT-101 servers answered an unknown session with 400 + this JSON-RPC message
@@ -252,6 +288,14 @@ export class McpStdioHttpBridge {
   private clientHandlesToolListChanged = false;
   private streamAbort: AbortController | undefined;
   private closed = false;
+  /**
+   * NOT-191: set when shutdown begins — before the drain in `run()`, or in
+   * `close()` for a direct shutdown. The heartbeat and every recovery path
+   * bail out once this is set, so a tick firing (or a ping in flight) around
+   * the shutdown `DELETE` can never re-initialize a replacement session that
+   * would then sit abandoned until the lease/TTL sweep.
+   */
+  private shuttingDown = false;
   private recovering: Promise<boolean> | undefined;
   /** The in-flight `initialize` exchange; later messages wait for it, not for each other. */
   private handshake: Promise<void> | undefined;
@@ -259,6 +303,18 @@ export class McpStdioHttpBridge {
   private readonly inFlight = new Set<Promise<void>>();
   /** How many times we re-initialized after a restart — otherwise invisible, so the tests read it. */
   private recoveryCount = 0;
+  /**
+   * NOT-191 heartbeat state. The timer is a single self-rescheduling chain —
+   * one tick at a time, so a slow ping can never overlap the next — and it
+   * deliberately stays out of `inFlight`: a pulse must neither delay shutdown
+   * nor hold a session-close `DELETE` back.
+   */
+  private heartbeatTimer: NodeJS.Timeout | undefined;
+  private heartbeatSeq = 0;
+  private heartbeatFailures = 0;
+  private heartbeatAbort: AbortController | undefined;
+  /** The shutdown `DELETE` goes out at most once, however `close()` is reached. */
+  private closeDeleteSent = false;
 
   constructor(options: McpBridgeOptions) {
     this.options = options;
@@ -304,7 +360,23 @@ export class McpStdioHttpBridge {
       }
     } finally {
       reader.close();
-      await this.drain();
+      // NOT-191: a clean host shutdown closes the server-side transport
+      // session too — but only once every in-flight host request has landed.
+      // When the drain times out the session is left for the lease/TTL sweep
+      // rather than deleted under running work. The pulse stops before the
+      // drain, not after the DELETE: a tick in that window would otherwise
+      // see the deleted session 404 and re-initialize a replacement that no
+      // host shutdown would ever close.
+      this.shuttingDown = true;
+      this.stopHeartbeat();
+      const drained = await this.drain();
+      if (drained) {
+        await this.sendCloseDelete();
+      } else {
+        this.log(
+          '[agent-deck] bridge: skipping session close notification — requests still in flight',
+        );
+      }
       this.close();
     }
   }
@@ -322,15 +394,20 @@ export class McpStdioHttpBridge {
     void task.then(() => this.inFlight.delete(task));
   }
 
-  /** Give in-flight exchanges a bounded chance to finish once stdin is gone. */
-  private async drain(): Promise<void> {
+  /**
+   * Give in-flight exchanges a bounded chance to finish once stdin is gone.
+   * Returns whether the drain completed — `run()` only sends the session-close
+   * `DELETE` on a full drain, never under running work.
+   */
+  private async drain(): Promise<boolean> {
     const timeoutMs = this.options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
+    const now = this.options.now ?? Date.now;
+    const deadline = now() + timeoutMs;
     while (this.inFlight.size > 0) {
-      const remaining = deadline - Date.now();
+      const remaining = deadline - now();
       if (remaining <= 0) {
         this.log(`[agent-deck] bridge: ${this.inFlight.size} request(s) still open at shutdown`);
-        return;
+        return false;
       }
       const timer = deadlineTimer(remaining);
       try {
@@ -339,12 +416,180 @@ export class McpStdioHttpBridge {
         timer.cancel();
       }
     }
+    return true;
   }
 
   close(): void {
+    if (this.closed) {
+      return;
+    }
     this.closed = true;
+    this.shuttingDown = true;
+    this.stopHeartbeat();
+    // Best effort and once-only: `run()` already sent it on a drained
+    // shutdown, and a direct `close()` with work in flight skips it — the
+    // lease/TTL sweep reclaims that session instead.
+    void this.sendCloseDelete();
     this.streamAbort?.abort();
     this.streamAbort = undefined;
+  }
+
+  /**
+   * NOT-191: bounded best-effort MCP session close. The server keeps
+   * transport sessions in memory and only drops them on `DELETE` (or the
+   * idle sweep), so without this a clean host shutdown would leave its
+   * binding visible until the display lease ran out. Never throws, never
+   * sends twice, and never sends while a host request is in flight.
+   */
+  private async sendCloseDelete(): Promise<void> {
+    if (this.closeDeleteSent || !this.sessionId || this.inFlight.size > 0) {
+      return;
+    }
+    this.closeDeleteSent = true;
+    const timeoutMs = this.options.deleteTimeoutMs ?? DEFAULT_CLOSE_DELETE_TIMEOUT_MS;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
+    try {
+      await this.fetchImpl(this.url, {
+        method: 'DELETE',
+        headers: this.requestHeaders(),
+        signal: abort.signal,
+      });
+    } catch (error) {
+      this.log(`[agent-deck] bridge: session close notification failed: ${describeError(error)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * NOT-191: start (or restart) the bridge-owned liveness heartbeat. Called
+   * once the handshake has produced a session id; ticks pause while a
+   * recovery owns the session and resume on whatever session it won.
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    if (this.closed || this.shuttingDown) {
+      return;
+    }
+    if ((this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS) <= 0) {
+      return;
+    }
+    this.heartbeatFailures = 0;
+    this.scheduleHeartbeat(this.nextHeartbeatDelayMs());
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    this.heartbeatAbort?.abort();
+    this.heartbeatAbort = undefined;
+  }
+
+  private nextHeartbeatDelayMs(): number {
+    const base = this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    const jitterMs = this.options.heartbeatJitterMs ?? DEFAULT_HEARTBEAT_JITTER_MS;
+    const backoff = Math.min(base * 2 ** this.heartbeatFailures, base * HEARTBEAT_BACKOFF_MAX_FACTOR);
+    const random = this.options.random ?? Math.random;
+    return backoff + Math.floor(random() * Math.max(0, jitterMs));
+  }
+
+  private scheduleHeartbeat(delayMs: number): void {
+    if (this.closed || this.shuttingDown) {
+      return;
+    }
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+    }
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = undefined;
+      void this.runHeartbeat();
+    }, delayMs);
+    this.heartbeatTimer.unref?.();
+  }
+
+  /**
+   * One heartbeat tick. The ping goes out on the current session and its
+   * answer is consumed here — never written to host stdout. A 404 takes the
+   * same session-expired recovery path as a host request, so an idle bridge
+   * survives a backend restart without host activity; anything else that
+   * fails just backs off and tries again later. The next tick is always
+   * rescheduled, so one bad beat can never silently stop the pulse.
+   */
+  private async runHeartbeat(): Promise<void> {
+    try {
+      await this.runHeartbeatOnce();
+    } catch (error) {
+      this.log(`[agent-deck] bridge: heartbeat failed: ${describeError(error)}`);
+      this.heartbeatFailures += 1;
+    }
+    if (!this.closed && !this.shuttingDown) {
+      this.scheduleHeartbeat(this.nextHeartbeatDelayMs());
+    }
+  }
+
+  private async runHeartbeatOnce(): Promise<void> {
+    if (this.closed || this.shuttingDown) {
+      return;
+    }
+    const sessionId = this.sessionId;
+    if (!sessionId) {
+      return;
+    }
+    if (this.recovering || this.handshake) {
+      // A recovery owns the session right now; its handshake is proof of
+      // life enough, and a ping on the half-open session would only race it.
+      return;
+    }
+    // Namespaced like the binding probe so it can never collide with a host
+    // request id; the answer is read here and never forwarded upstream.
+    this.heartbeatSeq += 1;
+    const id = `agent-deck-bridge/heartbeat-${this.heartbeatSeq}`;
+    const timeoutMs = this.options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
+    const abort = new AbortController();
+    this.heartbeatAbort = abort;
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
+    try {
+      const response = await this.fetchImpl(this.url, {
+        method: 'POST',
+        headers: this.requestHeaders(),
+        body: JSON.stringify({ jsonrpc: '2.0', id, method: 'ping' }),
+        signal: abort.signal,
+      });
+      const bodyText = await readBodyText(response);
+      if (isSessionInvalidResponse(response.status, bodyText ?? '')) {
+        if (this.closed || this.shuttingDown) {
+          // The ping was already in flight when shutdown began — most
+          // likely it landed after the session-close DELETE. Recovering
+          // now would mint a session nobody will ever close.
+          return;
+        }
+        this.log(
+          `[agent-deck] bridge: heartbeat found MCP session ${sessionId} expired ` +
+            `(HTTP ${response.status}) — re-initializing.`,
+        );
+        const recovered = await this.ensureRecovered(sessionId);
+        this.heartbeatFailures = recovered ? 0 : this.heartbeatFailures + 1;
+        return;
+      }
+      if (!response.ok) {
+        this.log(`[agent-deck] bridge: heartbeat ping returned HTTP ${response.status}`);
+        this.heartbeatFailures += 1;
+        return;
+      }
+      this.captureSessionId(response);
+      this.heartbeatFailures = 0;
+    } catch (error) {
+      this.log(`[agent-deck] bridge: heartbeat ping failed: ${describeError(error)}`);
+      this.heartbeatFailures += 1;
+    } finally {
+      clearTimeout(timer);
+      if (this.heartbeatAbort === abort) {
+        this.heartbeatAbort = undefined;
+      }
+    }
   }
 
   /**
@@ -425,6 +670,10 @@ export class McpStdioHttpBridge {
       ...this.launchHeaders,
       'Content-Type': 'application/json',
       Accept: MCP_ACCEPT,
+      // NOT-191: marks this bridge as heartbeat-capable so the server can
+      // tell the client-owned pulse apart from legacy clients. Older servers
+      // ignore unknown headers.
+      [AGENT_DECK_BRIDGE_LIVENESS_HEADER]: AGENT_DECK_BRIDGE_LIVENESS_V1,
     };
     if (this.sessionId) {
       headers[SESSION_HEADER] = this.sessionId;
@@ -612,6 +861,9 @@ export class McpStdioHttpBridge {
 
     if (isInitializeRequest(message)) {
       this.startServerStream();
+      // The handshake produced a session id (captured above), so the idle
+      // pulse can start — it keeps proving life until `close()` stops it.
+      this.startHeartbeat();
     }
   }
 
@@ -711,6 +963,12 @@ export class McpStdioHttpBridge {
    * the server, where it shows up as another stranded client.
    */
   private async ensureRecovered(sentWithSession: string | undefined): Promise<boolean> {
+    if (this.closed || this.shuttingDown) {
+      // Shutdown owns the session now: a replacement would outlive the
+      // close DELETE (or the drain that decided to skip it) and sit
+      // abandoned until the lease/TTL sweep.
+      return false;
+    }
     if (this.recovering) {
       // Someone is already re-initializing; that handshake is this one's answer.
       return this.recovering;
@@ -735,6 +993,9 @@ export class McpStdioHttpBridge {
   }
 
   private async runRecovery(): Promise<boolean> {
+    if (this.closed || this.shuttingDown) {
+      return false;
+    }
     const initialize = this.cachedInitialize;
     if (!initialize) {
       this.log('[agent-deck] bridge: cannot re-initialize — no initialize request seen yet');
@@ -755,6 +1016,11 @@ export class McpStdioHttpBridge {
     // The folder assignment may have moved to another deck while we were up; the
     // handshake has to go out with the binding that is current now.
     await this.refreshLaunchTarget();
+    if (this.closed || this.shuttingDown) {
+      // Shutdown began while the recovery was still preparing — stop before
+      // the handshake mints a session nobody will close.
+      return false;
+    }
 
     let response: Response;
     try {
@@ -945,7 +1211,12 @@ export class McpStdioHttpBridge {
     try {
       const response = await this.fetchImpl(this.url, {
         method: 'GET',
-        headers: { ...this.launchHeaders, Accept: 'text/event-stream', [SESSION_HEADER]: sessionId! },
+        headers: {
+          ...this.launchHeaders,
+          Accept: 'text/event-stream',
+          [SESSION_HEADER]: sessionId!,
+          [AGENT_DECK_BRIDGE_LIVENESS_HEADER]: AGENT_DECK_BRIDGE_LIVENESS_V1,
+        },
         signal: abort.signal,
       });
 
