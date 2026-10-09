@@ -1543,6 +1543,135 @@ describe('McpStdioHttpBridge heartbeat (NOT-191)', () => {
 
     await finish();
   });
+
+  it('a heartbeat tick during drain sends no ping and recovers nothing', async () => {
+    vi.useFakeTimers();
+    // The stub models the DELETE: once the bridge closes the session, the old
+    // id 404s — so any stray tick after the DELETE would take the recovery
+    // path and mint an abandoned replacement.
+    let session: string | undefined = 'session-a';
+    let initializes = 0;
+    let deletes = 0;
+    const pings: Array<{ sessionId?: string }> = [];
+    let releaseTool: () => void = () => {};
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const fetchImpl = (async (_url: any, init: any): Promise<Response> => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (init?.method === 'GET') {
+        return new Response('', { status: 405 });
+      }
+      if (init?.method === 'DELETE') {
+        deletes += 1;
+        if (headers['mcp-session-id'] === session) {
+          session = undefined;
+        }
+        return new Response(null, { status: 200 });
+      }
+      const body = JSON.parse(init.body as string);
+      if (body.method === 'initialize') {
+        initializes += 1;
+        session = `session-${initializes}`;
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { ok: true } }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json', 'mcp-session-id': session },
+          },
+        );
+      }
+      if (headers['mcp-session-id'] !== session) {
+        return new Response(
+          JSON.stringify({ jsonrpc: '2.0', error: { code: -32001 }, id: null }),
+          { status: 404, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (body.method === 'ping') {
+        pings.push({ sessionId: headers['mcp-session-id'] });
+      }
+      if (body.method === 'tools/call') {
+        await toolGate;
+      }
+      if (body.id === undefined) {
+        return new Response('', { status: 202 });
+      }
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { pong: true } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const out: any[] = [];
+    let buffer = '';
+    stdout.on('data', (chunk) => {
+      buffer += chunk.toString();
+      let index = buffer.indexOf('\n');
+      while (index !== -1) {
+        const line = buffer.slice(0, index).trim();
+        buffer = buffer.slice(index + 1);
+        if (line) {
+          out.push(JSON.parse(line));
+        }
+        index = buffer.indexOf('\n');
+      }
+    });
+    const bridge = new McpStdioHttpBridge({
+      url: 'http://stub/mcp',
+      headers: { 'x-agent-deck-deck-id': 'deck-1' },
+      stdin,
+      stdout,
+      log: () => {},
+      heartbeatIntervalMs: 1_000,
+      heartbeatJitterMs: 0,
+      random: () => 0,
+      // The drain must stay open across the cadences advanced below.
+      drainTimeoutMs: 60_000,
+      fetchImpl,
+    });
+    const running = bridge.run();
+    const send = (message: Record<string, unknown>) => stdin.write(`${JSON.stringify(message)}\n`);
+    const waitForOut = async (id: number) => {
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const match = out.find((message) => message.id === id);
+        if (match) {
+          return match;
+        }
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      throw new Error(`no response for id ${id}`);
+    };
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitForOut(1);
+    expect(initializes).toBe(1);
+
+    // A slow host request is still running when stdin closes, so the drain
+    // stays open across several heartbeat cadences.
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'slow' } });
+    await vi.advanceTimersByTimeAsync(50);
+    const finishing = (stdin.end(), running);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(pings).toHaveLength(0);
+    expect(initializes).toBe(1);
+
+    releaseTool();
+    await finishing;
+
+    // The slow request landed, exactly one DELETE closed the original
+    // session, and no tick after the DELETE re-initialized a replacement.
+    expect(out.find((message) => message.id === 2)?.result).toEqual({ pong: true });
+    expect(deletes).toBe(1);
+    expect(initializes).toBe(1);
+    expect(pings).toHaveLength(0);
+    expect(bridge.getRecoveryCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pings).toHaveLength(0);
+    expect(initializes).toBe(1);
+  });
 });
 
 describe('McpStdioHttpBridge clean shutdown (NOT-191)', () => {
