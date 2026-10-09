@@ -478,4 +478,75 @@ describe('MCP remote grant conformance over real HTTP (NOT-318)', () => {
     expect(bound.isError).toBe(false);
     expect(bound.data.id).toBe(backend.deckA.id);
   });
+
+  it('NOT-191: expiring a grant-owned session disconnects only its runtime session; the grant re-initializes', async () => {
+    // Same stack as setup() but with a short transport TTL on a fake clock,
+    // so the expiry is the idle sweep rather than a revoke.
+    const grantDb = new Database(':memory:');
+    grantDbs.push(grantDb);
+    const backend = await buildListeningBackend(grantDb);
+    backends.push(backend);
+    const clock = { now: Date.now() };
+    const server = new AgentDeckMCPServer(0, backend.backendUrl, 'standard', '127.0.0.1', {
+      grantStore: backend.grantStore,
+      now: () => clock.now,
+      transportIdleTtlMs: 1_000,
+      transportSweepIntervalMs: 0,
+    });
+    await server.start();
+    mcpServers.push(server);
+    const port = server.getPort();
+    await waitForMcpHealth(port);
+
+    const issued = backend.grantStore.issueGrant({
+      label: 'expiry-reuse',
+      defaultDeck: backend.deckA.id,
+      allowedDecks: [backend.deckA.id],
+    });
+    const auth = { authorization: `Bearer ${issued.token}` };
+    const init = await postInitialize(port, auth, 1);
+    expect(init.status).toBe(200);
+    await init.json();
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const bound = await callToolOverHttp(port, sessionId!, auth, 'get_bound_deck', {}, 2);
+    expect(bound.isError).toBe(false);
+    expect(bound.data.id).toBe(backend.deckA.id);
+    expect(backend.store.findActiveRuntimeSessionByMcpSessionId(sessionId!)).not.toBeNull();
+
+    clock.now += 60_000;
+    await (
+      server as unknown as { sweepIdleTransports: () => Promise<void> }
+    ).sweepIdleTransports();
+
+    // The old session answers the spec expiry signal...
+    const stale = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId!,
+        ...auth,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} }),
+    });
+    expect(stale.status).toBe(404);
+    await stale.arrayBuffer();
+
+    // ...its runtime session is disconnected, but the reusable grant is untouched...
+    expect(backend.store.findActiveRuntimeSessionByMcpSessionId(sessionId!)).toBeNull();
+    expect(backend.grantStore.getGrant(issued.grant.id)).not.toBeNull();
+
+    // ...so the same Bearer [REDACTED] a replacement session on the same deck.
+    const reinit = await postInitialize(port, auth, 4);
+    expect(reinit.status).toBe(200);
+    await reinit.json();
+    const replacementId = reinit.headers.get('mcp-session-id');
+    expect(replacementId).toBeTruthy();
+    expect(replacementId).not.toBe(sessionId);
+    const rebound = await callToolOverHttp(port, replacementId!, auth, 'get_bound_deck', {}, 5);
+    expect(rebound.isError).toBe(false);
+    expect(rebound.data.id).toBe(backend.deckA.id);
+  });
 });

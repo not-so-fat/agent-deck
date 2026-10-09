@@ -1,12 +1,21 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import {
+  AGENT_DECK_BRIDGE_LIVENESS_HEADER,
+  AGENT_DECK_BRIDGE_LIVENESS_V1,
+  AGENT_DECK_DECK_ID_HEADER,
+} from '@agent-deck/shared';
+import {
   AgentDeckMCPServer,
   DEFAULT_LIVE_TOUCH_KEEPALIVE_MS,
+  DEFAULT_TRANSPORT_IDLE_TTL_MS,
+  DEFAULT_TRANSPORT_SWEEP_INTERVAL_MS,
+  DEFAULT_UNREGISTER_CONCURRENCY,
   LIVE_TOUCH_KEEPALIVE_ENV_VAR,
   MCP_INITIALIZE_RATE_LIMIT,
   MCP_INITIALIZE_RATE_WINDOW_MS,
   resolveLiveTouchKeepAliveMs,
 } from './mcp-server';
+import type { McpSessionBindingStore } from './mcp-session-binding';
 import { installStrictConsoleCapture } from './mcp-tools/test-harness';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
@@ -451,6 +460,9 @@ type StubBackend = {
   port: number;
   liveDisplayBodies: any[];
   touches: string[];
+  unregisters: string[];
+  connects: any[];
+  disconnects: any[];
   unhandled: string[];
   close: () => Promise<void>;
 };
@@ -458,6 +470,9 @@ type StubBackend = {
 function startStubBackend(): Promise<StubBackend> {
   const liveDisplayBodies: any[] = [];
   const touches: string[] = [];
+  const unregisters: string[] = [];
+  const connects: any[] = [];
+  const disconnects: any[] = [];
   const unhandled: string[] = [];
   const deck = {
     id: STUB_DECK_ID,
@@ -498,11 +513,32 @@ function startStubBackend(): Promise<StubBackend> {
         return;
       }
       if (req.method === 'DELETE' && /^\/api\/scope\/live-display\/[^/]+$/.test(url)) {
+        unregisters.push(url);
         respond({ success: true });
         return;
       }
       if (req.method === 'POST' && url === '/api/scope/deck-workspace') {
         respond({ success: true, data: { ok: true } });
+        return;
+      }
+      // NOT-191: launch-deck trust handshake so cleanup tests can bind a
+      // session with a runtime session id (existing tests never call these).
+      if (req.method === 'POST' && url === '/api/trusted-session/mcp/connect-deck') {
+        const parsed = JSON.parse(raw || '{}');
+        connects.push(parsed);
+        respond({
+          success: true,
+          data: { sessionId: `runtime-${parsed.mcpSessionId ?? 'x'}`, deckId: parsed.deckId, mode: 'normal' },
+        });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/trusted-session/mcp/disconnect-deck') {
+        disconnects.push(JSON.parse(raw || '{}'));
+        respond({ success: true, data: { revoked: true } });
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/trusted-session/runtime-session') {
+        respond({ success: true, data: { mode: 'normal', deckId: STUB_DECK_ID } });
         return;
       }
       unhandled.push(`${req.method} ${url}`);
@@ -518,6 +554,9 @@ function startStubBackend(): Promise<StubBackend> {
         port,
         liveDisplayBodies,
         touches,
+        unregisters,
+        connects,
+        disconnects,
         unhandled,
         close: () => new Promise((done) => server.close(() => done())),
       });
@@ -598,6 +637,79 @@ describe('session badge flow (stub backend)', () => {
     await callTool(badgePort, sessionId, 'get_session_binding', {}, 202);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(stub.touches.length).toBeGreaterThan(before);
+  });
+
+  it('NOT-191: a clean DELETE removes the transport, binding, badge, and live-display row', async () => {
+    const internals = badgeServer as unknown as {
+      sessions: Map<string, unknown>;
+      sessionBinding: McpSessionBindingStore;
+      badgeBySession: Map<string, string>;
+      lastTouchAtMs: Map<string, number>;
+      lastClientActivityAtMs: Map<string, number>;
+    };
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: STUB_DECK_ID };
+    const init = await fetch(`http://127.0.0.1:${badgePort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        ...deckHeaders,
+      },
+      body: JSON.stringify(initializePayload(400)),
+    });
+    expect(init.status).toBe(200);
+    await init.arrayBuffer();
+    const sessionId = init.headers.get('mcp-session-id')!;
+    expect(internals.sessions.has(sessionId)).toBe(true);
+    // The launch handshake bound a trusted runtime session.
+    expect(internals.sessionBinding.getBinding(sessionId).runtimeSessionId).toBe(
+      `runtime-${sessionId}`,
+    );
+    // The fire-and-forget live-display registration lands the badge.
+    for (let attempt = 0; attempt < 50 && !internals.badgeBySession.has(sessionId); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(internals.badgeBySession.get(sessionId)).toBe('fox');
+
+    const closed = await fetch(`http://127.0.0.1:${badgePort}/mcp`, {
+      method: 'DELETE',
+      headers: { Accept: MCP_ACCEPT, 'mcp-session-id': sessionId, ...deckHeaders },
+    });
+    expect(closed.status).toBe(200);
+    await closed.arrayBuffer();
+
+    for (
+      let attempt = 0;
+      attempt < 50 && internals.sessions.has(sessionId);
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(internals.sessions.has(sessionId)).toBe(false);
+    expect(internals.badgeBySession.has(sessionId)).toBe(false);
+    expect(internals.lastTouchAtMs.has(sessionId)).toBe(false);
+    expect(internals.lastClientActivityAtMs.has(sessionId)).toBe(false);
+    expect(internals.sessionBinding.getBinding(sessionId).runtimeSessionId).toBeUndefined();
+    expect(internals.sessionBinding.hasSessionDeckOverride(sessionId)).toBe(false);
+    expect(internals.sessionBinding.isLaunchSession(sessionId)).toBe(false);
+    expect(
+      stub.unregisters.some((url) => url.includes(encodeURIComponent(sessionId))),
+    ).toBe(true);
+    expect(stub.disconnects.some((body) => body.mcpSessionId === sessionId)).toBe(true);
+
+    // And the closed session answers the spec expiry signal afterwards.
+    const late = await fetch(`http://127.0.0.1:${badgePort}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId,
+        ...deckHeaders,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 401, method: 'tools/list', params: {} }),
+    });
+    expect(late.status).toBe(404);
+    await late.arrayBuffer();
   });
 });
 
@@ -776,6 +888,69 @@ describe('live-display keep-alive (NOT-309)', () => {
     }
   });
 
+  it('skips heartbeat-capable sessions but keeps touching legacy ones', async () => {
+    // NOT-191: the server-owned keep-alive is compatibility behavior for
+    // legacy/unknown clients only. A capable bridge owns the pulse, so a
+    // server touch for it would defeat the stale sweep after an abandon.
+    const stub = await startStubBackend();
+    const previous = process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+    process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = '50';
+    const server = new AgentDeckMCPServer(0, `http://127.0.0.1:${stub.port}`);
+    const consoleCapture = installStrictConsoleCapture();
+    await server.start();
+    try {
+      const port = server.getPort();
+      await waitForMcpHealth(port);
+
+      const legacyInit = await postInitialize(port, 310);
+      const legacyId = legacyInit.headers.get('mcp-session-id')!;
+      await callTool(port, legacyId, 'bind_workspace', {
+        workspaceRoot: '/tmp/keepalive-legacy',
+        deckId: STUB_DECK_ID,
+      }, 311);
+
+      const capableInit = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: MCP_ACCEPT,
+          [AGENT_DECK_BRIDGE_LIVENESS_HEADER]: AGENT_DECK_BRIDGE_LIVENESS_V1,
+        },
+        body: JSON.stringify(initializePayload(320)),
+      });
+      expect(capableInit.status).toBe(200);
+      const capableId = capableInit.headers.get('mcp-session-id')!;
+      await callTool(port, capableId, 'bind_workspace', {
+        workspaceRoot: '/tmp/keepalive-capable',
+        deckId: STUB_DECK_ID,
+      }, 321);
+
+      // Let the keep-alive fire several times with no further tool calls.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const touches = [...stub.touches];
+      expect(touches.some((url) => url.includes(encodeURIComponent(legacyId)))).toBe(true);
+      expect(touches.some((url) => url.includes(encodeURIComponent(capableId)))).toBe(false);
+
+      // ...while a client pulse on the capable session still refreshes it.
+      const before = stub.touches.length;
+      await callTool(port, capableId, 'get_session_binding', {}, 322);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(stub.touches.length).toBeGreaterThan(before);
+      expect(stub.touches.some((url) => url.includes(encodeURIComponent(capableId)))).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
+      } else {
+        process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR] = previous;
+      }
+      await server.stop();
+      await stub.close();
+      expect(stub.unhandled, `Unhandled stub routes: ${stub.unhandled.join(', ')}`).toEqual([]);
+      consoleCapture.restore();
+      consoleCapture.assertClean();
+    }
+  });
+
   it('an idle but connected session keeps touching with no tool calls', async () => {
     const stub = await startStubBackend();
     const previous = process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR];
@@ -808,6 +983,412 @@ describe('live-display keep-alive (NOT-309)', () => {
       expect(stub.unhandled, `Unhandled stub routes: ${stub.unhandled.join(', ')}`).toEqual([]);
       consoleCapture.restore();
       consoleCapture.assertClean();
+    }
+  });
+});
+
+type LifecycleInternals = {
+  sessions: Map<string, { transport: { close: () => Promise<void>; handleRequest?: (...args: unknown[]) => Promise<void> } }>;
+  sessionBinding: McpSessionBindingStore;
+  badgeBySession: Map<string, string>;
+  lastTouchAtMs: Map<string, number>;
+  lastClientActivityAtMs: Map<string, number>;
+  heartbeatCapableSessions: Set<string>;
+  inFlightRequests: Map<string, number>;
+  pendingSessionClose: Set<string>;
+  cleanupTasks: Map<string, Promise<boolean>>;
+  closedSessionIds: Set<string>;
+  unregisterPeak: number;
+  noteClientActivity: (id: string, req: { headers: Record<string, string> }) => void;
+  touchAllLiveDisplays: () => void;
+  sweepIdleTransports: () => Promise<void>;
+  startCleanupSession: (id: string, opts: { closeTransport: boolean }) => Promise<boolean>;
+  handleTransportPost: (id: string, req: unknown, res: unknown) => Promise<void>;
+  handleMcpSessionRequest: (req: unknown, res: unknown) => Promise<void>;
+};
+
+type RecordedBackendCall = { url: string; method: string; body?: string };
+
+function fakeTransport(extra?: {
+  close?: () => Promise<void>;
+  handleRequest?: (...args: unknown[]) => Promise<void>;
+}) {
+  return {
+    close: extra?.close ?? (async () => {}),
+    ...(extra?.handleRequest ? { handleRequest: extra.handleRequest } : {}),
+  };
+}
+
+function lifecycleServer(clock: { now: number }, options?: { ttlMs?: number }) {
+  const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1', undefined, '127.0.0.1', {
+    now: () => clock.now,
+    transportIdleTtlMs: options?.ttlMs ?? 1_000,
+    transportSweepIntervalMs: 0,
+    unregisterTimeoutMs: 50,
+    liveTouchKeepAliveMs: 0,
+  });
+  return { server, internals: server as unknown as LifecycleInternals };
+}
+
+function okBackend(calls: RecordedBackendCall[]) {
+  return async (url: unknown, init?: { method?: string; body?: unknown }) => {
+    calls.push({ url: String(url), method: init?.method ?? 'GET', body: init?.body as string });
+    return { ok: true, json: async () => ({ success: true, data: {} }) };
+  };
+}
+
+async function waitForGone(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('timed out waiting for session cleanup');
+}
+
+describe('transport session lifecycle without sockets (NOT-191)', () => {
+  it('pins the lifecycle defaults: 24h TTL, 60s sweep, 8 concurrent unregisters', () => {
+    expect(DEFAULT_TRANSPORT_IDLE_TTL_MS).toBe(24 * 60 * 60_000);
+    expect(DEFAULT_TRANSPORT_SWEEP_INTERVAL_MS).toBe(60_000);
+    expect(DEFAULT_UNREGISTER_CONCURRENCY).toBe(8);
+  });
+
+  it('keeps a session at TTL - 1ms and removes it at the TTL', async () => {
+    const clock = { now: 1_000_000 };
+    const { internals } = lifecycleServer(clock, { ttlMs: DEFAULT_TRANSPORT_IDLE_TTL_MS });
+    const calls: RecordedBackendCall[] = [];
+    vi.stubGlobal('fetch', okBackend(calls));
+    try {
+      internals.sessions.set('s1', { transport: fakeTransport() });
+      internals.lastClientActivityAtMs.set('s1', clock.now);
+
+      clock.now += DEFAULT_TRANSPORT_IDLE_TTL_MS - 1;
+      await internals.sweepIdleTransports();
+      expect(internals.sessions.has('s1')).toBe(true);
+
+      clock.now += 1;
+      await internals.sweepIdleTransports();
+      expect(internals.sessions.has('s1')).toBe(false);
+      expect(internals.closedSessionIds.has('s1')).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('server-generated legacy touches never reset transport activity', async () => {
+    const clock = { now: 2_000_000 };
+    const { internals } = lifecycleServer(clock, { ttlMs: 1_000 });
+    const calls: RecordedBackendCall[] = [];
+    vi.stubGlobal('fetch', okBackend(calls));
+    try {
+      internals.sessions.set('legacy', { transport: fakeTransport() });
+      internals.badgeBySession.set('legacy', 'fox');
+      internals.lastClientActivityAtMs.set('legacy', clock.now);
+
+      // Compatibility touches keep firing for the legacy session...
+      clock.now += 500;
+      internals.touchAllLiveDisplays();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(calls.some((call) => call.url.includes('/touch'))).toBe(true);
+      // ...but transport activity still reads the last real client traffic.
+      expect(internals.lastClientActivityAtMs.get('legacy')).toBe(2_000_000);
+
+      // So the TTL reclaims it on schedule despite the touches.
+      clock.now += 600;
+      await internals.sweepIdleTransports();
+      expect(internals.sessions.has('legacy')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a capable-bridge pulse resets transport activity and skips server touches', async () => {
+    const clock = { now: 3_000_000 };
+    const { internals } = lifecycleServer(clock, { ttlMs: 1_000 });
+    const calls: RecordedBackendCall[] = [];
+    vi.stubGlobal('fetch', okBackend(calls));
+    try {
+      internals.sessions.set('capable', { transport: fakeTransport() });
+      internals.sessions.set('legacy', { transport: fakeTransport() });
+      internals.badgeBySession.set('capable', 'fox');
+      internals.badgeBySession.set('legacy', 'owl');
+      internals.lastClientActivityAtMs.set('capable', clock.now);
+      internals.lastClientActivityAtMs.set('legacy', clock.now);
+
+      // The capability marker on any client request adopts the session.
+      internals.noteClientActivity('capable', {
+        headers: { [AGENT_DECK_BRIDGE_LIVENESS_HEADER]: AGENT_DECK_BRIDGE_LIVENESS_V1 },
+      });
+      expect(internals.heartbeatCapableSessions.has('capable')).toBe(true);
+
+      internals.touchAllLiveDisplays();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const touched = calls.filter((call) => call.url.includes('/touch')).map((call) => call.url);
+      expect(touched.some((url) => url.includes('legacy'))).toBe(true);
+      expect(touched.some((url) => url.includes('capable'))).toBe(false);
+
+      // A later pulse moves transport activity forward; the legacy session
+      // expires on its original activity while the capable one survives.
+      clock.now += 900;
+      internals.noteClientActivity('capable', {
+        headers: { [AGENT_DECK_BRIDGE_LIVENESS_HEADER]: AGENT_DECK_BRIDGE_LIVENESS_V1 },
+      });
+      clock.now += 200;
+      await internals.sweepIdleTransports();
+      expect(internals.sessions.has('capable')).toBe(true);
+      expect(internals.sessions.has('legacy')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an in-flight host request blocks TTL expiry until it completes', async () => {
+    const clock = { now: 4_000_000 };
+    const { internals } = lifecycleServer(clock, { ttlMs: 1_000 });
+    const calls: RecordedBackendCall[] = [];
+    vi.stubGlobal('fetch', okBackend(calls));
+    try {
+      let releaseTool: () => void = () => {};
+      const toolGate = new Promise<void>((resolve) => {
+        releaseTool = resolve;
+      });
+      internals.sessions.set(
+        's1',
+        {
+          transport: fakeTransport({
+            handleRequest: async () => {
+              await toolGate;
+            },
+          }),
+        },
+      );
+      internals.lastClientActivityAtMs.set('s1', clock.now);
+
+      const inFlight = internals.handleTransportPost('s1', {}, {});
+      clock.now += 5_000;
+      await internals.sweepIdleTransports();
+      expect(internals.sessions.has('s1')).toBe(true);
+
+      releaseTool();
+      await inFlight;
+      await internals.sweepIdleTransports();
+      expect(internals.sessions.has('s1')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a DELETE during an in-flight request defers until the request lands', async () => {
+    const previousSkip = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '1';
+    const clock = { now: 5_000_000 };
+    const { internals } = lifecycleServer(clock, { ttlMs: 60_000 });
+    const calls: RecordedBackendCall[] = [];
+    vi.stubGlobal('fetch', okBackend(calls));
+    try {
+      let releaseTool: () => void = () => {};
+      const toolGate = new Promise<void>((resolve) => {
+        releaseTool = resolve;
+      });
+      const closed: string[] = [];
+      internals.sessions.set(
+        's1',
+        {
+          transport: fakeTransport({
+            handleRequest: async () => {
+              await toolGate;
+            },
+            close: async () => {
+              closed.push('s1');
+            },
+          }),
+        },
+      );
+      internals.lastClientActivityAtMs.set('s1', clock.now);
+
+      const inFlight = internals.handleTransportPost('s1', {}, {});
+      let statusCode = 0;
+      await internals.handleMcpSessionRequest(
+        { method: 'DELETE', headers: { 'mcp-session-id': 's1' } },
+        { status: (code: number) => ((statusCode = code), { end: () => {}, json: () => {}, send: () => {} }) },
+      );
+      expect(statusCode).toBe(200);
+      expect(internals.pendingSessionClose.has('s1')).toBe(true);
+      expect(internals.sessions.has('s1')).toBe(true);
+
+      // The deferred close runs as soon as the last request lands — no sweep needed.
+      releaseTool();
+      await inFlight;
+      await waitForGone(() => !internals.sessions.has('s1'));
+      expect(closed).toEqual(['s1']);
+    } finally {
+      vi.unstubAllGlobals();
+      if (previousSkip === undefined) {
+        delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+      } else {
+        process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkip;
+      }
+    }
+  });
+
+  it('cleanup removes every session-owned registry entry exactly once', async () => {
+    const clock = { now: 6_000_000 };
+    const { internals } = lifecycleServer(clock);
+    const calls: RecordedBackendCall[] = [];
+    vi.stubGlobal('fetch', okBackend(calls));
+    try {
+      let closes = 0;
+      internals.sessions.set('s1', { transport: fakeTransport({ close: async () => { closes += 1; } }) });
+      internals.sessionBinding.setGrantSession('s1', {
+        grantId: 'grant-1',
+        label: 'label',
+        defaultDeck: 'deck-1',
+        allowedDecks: ['deck-1'],
+        runtimeSessionId: 'runtime-1',
+        deckId: 'deck-1',
+        workspaceRoot: '/tmp/repo',
+        mode: 'normal',
+      });
+      internals.badgeBySession.set('s1', 'fox');
+      internals.lastTouchAtMs.set('s1', clock.now);
+      internals.lastClientActivityAtMs.set('s1', clock.now);
+      internals.heartbeatCapableSessions.add('s1');
+
+      // A sweep racing `transport.onclose` joins the same run — one close,
+      // one unregister, one runtime disconnect.
+      const [first, second] = await Promise.all([
+        internals.startCleanupSession('s1', { closeTransport: true }),
+        internals.startCleanupSession('s1', { closeTransport: false }),
+      ]);
+      expect(first).toBe(true);
+      expect(second).toBe(true);
+      expect(closes).toBe(1);
+
+      expect(internals.sessions.has('s1')).toBe(false);
+      expect(internals.badgeBySession.has('s1')).toBe(false);
+      expect(internals.lastTouchAtMs.has('s1')).toBe(false);
+      expect(internals.lastClientActivityAtMs.has('s1')).toBe(false);
+      expect(internals.heartbeatCapableSessions.has('s1')).toBe(false);
+      expect(internals.sessionBinding.getBinding('s1').runtimeSessionId).toBeUndefined();
+      expect(internals.sessionBinding.getGrantScope('s1')).toBeUndefined();
+      expect(internals.sessionBinding.isGrantSession('s1')).toBe(false);
+
+      const disconnects = calls.filter((call) =>
+        call.url.endsWith('/api/trusted-session/mcp/disconnect-deck'),
+      );
+      expect(disconnects).toHaveLength(1);
+      expect(disconnects[0].body).toContain('s1');
+      const unregisters = calls.filter(
+        (call) => call.method === 'DELETE' && call.url.includes('/api/scope/live-display/s1'),
+      );
+      expect(unregisters).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a 100-session sweep never exceeds eight concurrent unregisters', async () => {
+    const clock = { now: 7_000_000 };
+    const { internals } = lifecycleServer(clock, { ttlMs: 1_000 });
+    let active = 0;
+    let peak = 0;
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      if (String(url).includes('/api/scope/live-display/') && (init?.method ?? 'GET') === 'DELETE') {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        const id = `sweep-${index}`;
+        internals.sessions.set(id, { transport: fakeTransport() });
+        internals.lastClientActivityAtMs.set(id, clock.now);
+      }
+      clock.now += 60_000;
+      await internals.sweepIdleTransports();
+      expect(internals.sessions.size).toBe(0);
+      expect(peak).toBeLessThanOrEqual(8);
+      expect(peak).toBeGreaterThan(1);
+      expect(internals.unregisterPeak).toBeLessThanOrEqual(8);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('failing unregisters collapse into one attempted/succeeded/failed summary', async () => {
+    const clock = { now: 8_000_000 };
+    const { server, internals } = lifecycleServer(clock, { ttlMs: 1_000 });
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      if (String(url).includes('/api/scope/live-display/') && (init?.method ?? 'GET') === 'DELETE') {
+        return { ok: false, json: async () => ({}) as never, text: async () => 'nope' };
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    const warnings: string[] = [];
+    const errors: unknown[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((message?: unknown) => {
+      warnings.push(String(message));
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args);
+    });
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        const id = `fail-${index}`;
+        internals.sessions.set(id, { transport: fakeTransport() });
+        internals.lastClientActivityAtMs.set(id, clock.now);
+      }
+      clock.now += 60_000;
+      await internals.sweepIdleTransports();
+      expect(internals.sessions.size).toBe(0);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('transport-sweep');
+      expect(warnings[0]).toContain('attempted=5');
+      expect(warnings[0]).toContain('succeeded=0');
+      expect(warnings[0]).toContain('failed=5');
+      // Quiet teardown: no per-session stack traces through console.error.
+      expect(errors).toHaveLength(0);
+      expect(server).toBeTruthy();
+    } finally {
+      vi.unstubAllGlobals();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('stop() without a listener still cleans sessions and reports one summary', async () => {
+    const clock = { now: 9_000_000 };
+    const { server, internals } = lifecycleServer(clock, { ttlMs: 1_000 });
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      if (String(url).includes('/api/scope/live-display/') && (init?.method ?? 'GET') === 'DELETE') {
+        return { ok: false, json: async () => ({}) as never, text: async () => 'nope' };
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    const warnings: string[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((message?: unknown) => {
+      warnings.push(String(message));
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      for (let index = 0; index < 3; index += 1) {
+        const id = `stop-${index}`;
+        internals.sessions.set(id, { transport: fakeTransport() });
+        internals.lastClientActivityAtMs.set(id, clock.now);
+      }
+      await server.stop();
+      expect(internals.sessions.size).toBe(0);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('server-shutdown');
+      expect(warnings[0]).toContain('attempted=3');
+    } finally {
+      vi.unstubAllGlobals();
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
     }
   });
 });

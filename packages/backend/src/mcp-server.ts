@@ -837,7 +837,8 @@ export class AgentDeckMCPServer {
         if (lastActivity === undefined) {
           continue;
         }
-        if (now - lastActivity > this.transportIdleTtlMs) {
+        // `>=`: a session idle for exactly the TTL is already past retention.
+        if (now - lastActivity >= this.transportIdleTtlMs) {
           candidates.push(sessionId);
         }
       }

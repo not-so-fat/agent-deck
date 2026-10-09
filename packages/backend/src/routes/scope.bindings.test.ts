@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AGENT_DECK_AGENT_CLIENT, AGENT_DECK_CLIENT_HEADER } from '@agent-deck/shared';
-import { LiveDisplayRegistry } from '../scope/live-display-registry';
+import { LiveDisplayRegistry, type LiveDisplayRegistryOptions } from '../scope/live-display-registry';
 import type { TrustedSessionStore } from '../trusted-session/store';
 import { registerScopeRoutes } from './scope';
 
@@ -19,10 +19,10 @@ const liveDisplayBody = {
   updatedAt: new Date(Date.now() - 60_000).toISOString(),
 };
 
-async function buildApp() {
+async function buildApp(registryOptions: LiveDisplayRegistryOptions = {}) {
   const app = Fastify();
   app.decorate('db', {} as never);
-  app.decorate('liveDisplayRegistry', new LiveDisplayRegistry());
+  app.decorate('liveDisplayRegistry', new LiveDisplayRegistry(registryOptions));
   app.decorate('trustedSessionStore', {
     getRuntimeSessionModeByMcpSessionId: () => null,
     getRuntimeSessionModesByMcpSessionIds: () => new Map(),
@@ -162,5 +162,56 @@ describe('scope bindings routes', () => {
     const rows = response.json().data as Array<Record<string, unknown>>;
     expect(rows).toHaveLength(1);
     expect(rows[0].deckName).toBe('Product Design');
+  });
+
+  it('NOT-191: a pulsing session stays listed while a stopped one ages out within the lease', async () => {
+    // Fake clock on a short lease: session-1 is a live idle bridge whose
+    // heartbeat keeps pulsing; session-2 is a bridge that died without
+    // sending DELETE. Both count until the lease edge; past it, only the
+    // pulsing session remains in the active-session count.
+    const staleMs = 60_000;
+    const t0 = Date.parse('2026-09-15T12:00:00.000Z');
+    let fakeNow = t0;
+    const isoAt = (ms: number) => new Date(ms).toISOString();
+    app = await buildApp({ nowMs: () => fakeNow, staleMs });
+
+    for (const mcpSessionId of ['session-1', 'session-2']) {
+      const registered = await app.inject({
+        method: 'POST',
+        url: '/api/scope/live-display',
+        headers: agentHeaders,
+        payload: { ...liveDisplayBody, mcpSessionId, updatedAt: isoAt(t0) },
+      });
+      expect(registered.statusCode).toBe(200);
+    }
+    const listIds = async () => {
+      const response = await app.inject({ method: 'GET', url: '/api/scope/bindings' });
+      expect(response.statusCode).toBe(200);
+      return (response.json().data as Array<{ badge: string }>).map((row) => row.badge).sort();
+    };
+
+    // Just inside the lease both sessions still count.
+    fakeNow = t0 + staleMs - 1;
+    const pulse = await app.inject({
+      method: 'POST',
+      url: '/api/scope/live-display/session-1/touch',
+      headers: agentHeaders,
+      payload: { at: isoAt(fakeNow) },
+    });
+    expect(pulse.json().data.found).toBe(true);
+    expect(await listIds()).toHaveLength(2);
+
+    // Past session-2's lease only the pulsing session remains.
+    fakeNow = t0 + staleMs + 1;
+    expect(await listIds()).toHaveLength(1);
+
+    // And the stopped session's touch now misses — it was swept, not kept.
+    const miss = await app.inject({
+      method: 'POST',
+      url: '/api/scope/live-display/session-2/touch',
+      headers: agentHeaders,
+      payload: { at: isoAt(fakeNow) },
+    });
+    expect(miss.json().data.found).toBe(false);
   });
 });

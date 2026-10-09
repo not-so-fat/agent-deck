@@ -8,6 +8,7 @@
  * the bridge never has to do anything.
  */
 import { PassThrough } from 'node:stream';
+import http from 'node:http';
 import net from 'node:net';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
@@ -45,9 +46,13 @@ function isAddressInUse(error: unknown): boolean {
  * Bind this exact port, which the restart half of the test depends on. A parallel
  * vitest worker can hold it for a moment, so retry briefly before giving up.
  */
-async function startServer(port: number): Promise<AgentDeckMCPServer> {
+async function startServer(
+  port: number,
+  backendUrl: string = UNREACHABLE_BACKEND,
+  serverOptions?: ConstructorParameters<typeof AgentDeckMCPServer>[4],
+): Promise<AgentDeckMCPServer> {
   for (let attempt = 0; ; attempt += 1) {
-    const server = new AgentDeckMCPServer(port, UNREACHABLE_BACKEND);
+    const server = new AgentDeckMCPServer(port, backendUrl, undefined, '127.0.0.1', serverOptions);
     try {
       await server.start();
       return server;
@@ -64,11 +69,14 @@ async function startServer(port: number): Promise<AgentDeckMCPServer> {
  * A free port is only free until someone else takes it — `findFreePort` closes its
  * probe socket before we listen. Take the next candidate when that happens.
  */
-async function startServerOnFreePort(): Promise<{ server: AgentDeckMCPServer; port: number }> {
+async function startServerOnFreePort(
+  backendUrl: string = UNREACHABLE_BACKEND,
+  serverOptions?: ConstructorParameters<typeof AgentDeckMCPServer>[4],
+): Promise<{ server: AgentDeckMCPServer; port: number }> {
   for (let attempt = 0; ; attempt += 1) {
     const port = await findFreePort();
     try {
-      return { server: await startServer(port), port };
+      return { server: await startServer(port, backendUrl, serverOptions), port };
     } catch (error) {
       if (!isAddressInUse(error) || attempt >= 4) {
         throw error;
@@ -241,5 +249,231 @@ describe('MCP bridge survives a server restart', () => {
     expect(formatMcpSessionStatus(readMcpSessionHealth(health)).join('\n')).toContain(
       '1 client still using',
     );
+  });
+});
+
+const STUB_DECK_ID = '22222222-2222-4222-8222-222222222222';
+
+type RestartStubBackend = {
+  url: string;
+  unregisters: string[];
+  disconnects: any[];
+  close: () => Promise<void>;
+};
+
+/**
+ * NOT-191: just enough backend for the bridge↔server lifecycle — deck reads,
+ * live-display register/touch/unregister, and the launch-deck trust
+ * handshake — so the tests can watch every session-owned registry empty.
+ */
+async function startStubBackend(): Promise<RestartStubBackend> {
+  const unregisters: string[] = [];
+  const disconnects: any[] = [];
+  const deck = {
+    id: STUB_DECK_ID,
+    name: 'Stub Deck',
+    services: [],
+    credentials: [],
+    playbooks: [],
+  };
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+    });
+    req.on('end', () => {
+      const respond = (body: unknown, status = 200) => {
+        res.statusCode = status;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(body));
+      };
+      const url = req.url ?? '';
+      if (req.method === 'GET' && (url === '/api/scope/deck' || url === `/api/decks/${STUB_DECK_ID}`)) {
+        respond({ success: true, data: deck });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/scope/live-display') {
+        respond({ success: true, data: { badge: 'fox' } });
+        return;
+      }
+      if (req.method === 'POST' && /^\/api\/scope\/live-display\/.+\/touch$/.test(url)) {
+        respond({ success: true, data: { found: true } });
+        return;
+      }
+      if (req.method === 'DELETE' && /^\/api\/scope\/live-display\/[^/]+$/.test(url)) {
+        unregisters.push(url);
+        respond({ success: true });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/trusted-session/mcp/connect-deck') {
+        const parsed = JSON.parse(raw || '{}');
+        respond({
+          success: true,
+          data: { sessionId: `runtime-${parsed.mcpSessionId ?? 'x'}`, deckId: parsed.deckId, mode: 'normal' },
+        });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/trusted-session/mcp/disconnect-deck') {
+        disconnects.push(JSON.parse(raw || '{}'));
+        respond({ success: true, data: { revoked: true } });
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/trusted-session/runtime-session') {
+        respond({ success: true, data: { mode: 'normal', deckId: STUB_DECK_ID } });
+        return;
+      }
+      respond({ success: false, error: `stub: unhandled ${req.method} ${url}` }, 500);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    unregisters,
+    disconnects,
+    close: () => new Promise((done) => server.close(() => done())),
+  };
+}
+
+async function waitForCondition(check: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+describe('MCP bridge session lifecycle over real HTTP (NOT-191)', () => {
+  const cleanups: Array<() => Promise<void>> = [];
+
+  beforeAll(() => {
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '1';
+  });
+
+  afterEach(async () => {
+    while (cleanups.length > 0) {
+      await cleanups.pop()!();
+    }
+  });
+
+  it('clean stdin shutdown removes the session from every server registry', async () => {
+    const stub = await startStubBackend();
+    cleanups.push(() => stub.close());
+    const { server, port } = await startServerOnFreePort(stub.url);
+    cleanups.push(async () => {
+      await server.stop();
+    });
+
+    const channel = new ClientChannel();
+    const bridge = new McpStdioHttpBridge({
+      url: `http://127.0.0.1:${port}/mcp`,
+      headers: { 'x-agent-deck-deck-id': STUB_DECK_ID },
+      stdin: channel.stdin,
+      stdout: channel.stdout,
+      log: () => {},
+      streamRetryDelayMs: 25,
+      heartbeatIntervalMs: 0,
+    });
+    const running = bridge.run();
+    cleanups.push(async () => {
+      channel.stdin.end();
+      bridge.close();
+      await running;
+    });
+
+    channel.send(initializeMessage(1));
+    await channel.waitFor(1);
+    channel.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    channel.send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    await channel.waitFor(2);
+
+    const sessionId = bridge.getSessionId()!;
+    expect(sessionId).toBeTruthy();
+    const internals = server as unknown as {
+      sessions: Map<string, unknown>;
+      sessionBinding: { getBinding: (id: string) => { runtimeSessionId?: string } };
+      badgeBySession: Map<string, string>;
+      lastTouchAtMs: Map<string, number>;
+      lastClientActivityAtMs: Map<string, number>;
+    };
+    expect(internals.sessions.has(sessionId)).toBe(true);
+    expect(internals.sessionBinding.getBinding(sessionId).runtimeSessionId).toBe(
+      `runtime-${sessionId}`,
+    );
+    await waitForCondition(
+      () => internals.badgeBySession.has(sessionId),
+      'live-display registration',
+    );
+
+    channel.stdin.end();
+    await running;
+
+    // The shutdown DELETE ran the unified cleanup: transport, binding,
+    // badge, touch, activity, runtime session, and live-display row.
+    await waitForCondition(() => !internals.sessions.has(sessionId), 'session cleanup');
+    expect(internals.badgeBySession.has(sessionId)).toBe(false);
+    expect(internals.lastTouchAtMs.has(sessionId)).toBe(false);
+    expect(internals.lastClientActivityAtMs.has(sessionId)).toBe(false);
+    expect(internals.sessionBinding.getBinding(sessionId).runtimeSessionId).toBeUndefined();
+    expect(stub.unregisters.some((url) => url.includes(encodeURIComponent(sessionId)))).toBe(true);
+    expect(stub.disconnects.some((body) => body.mcpSessionId === sessionId)).toBe(true);
+  });
+
+  it('re-initializes on the same deck after the transport TTL expires the session', async () => {
+    const stub = await startStubBackend();
+    cleanups.push(() => stub.close());
+    const clock = { now: Date.now() };
+    const { server, port } = await startServerOnFreePort(stub.url, {
+      now: () => clock.now,
+      transportIdleTtlMs: 1_000,
+      transportSweepIntervalMs: 0,
+    });
+    cleanups.push(async () => {
+      await server.stop();
+    });
+
+    const channel = new ClientChannel();
+    const bridge = new McpStdioHttpBridge({
+      url: `http://127.0.0.1:${port}/mcp`,
+      headers: { 'x-agent-deck-deck-id': STUB_DECK_ID },
+      stdin: channel.stdin,
+      stdout: channel.stdout,
+      log: () => {},
+      streamRetryDelayMs: 25,
+      heartbeatIntervalMs: 0,
+    });
+    const running = bridge.run();
+    cleanups.push(async () => {
+      channel.stdin.end();
+      bridge.close();
+      await running;
+    });
+
+    channel.send(initializeMessage(1));
+    await channel.waitFor(1);
+    channel.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    channel.send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    await channel.waitFor(2);
+    expect(bridge.getBoundDeckId()).toBe(STUB_DECK_ID);
+    const sessionBefore = bridge.getSessionId()!;
+
+    clock.now += 60_000;
+    await (
+      server as unknown as { sweepIdleTransports: () => Promise<void> }
+    ).sweepIdleTransports();
+
+    // The next host request takes the existing 404/session-expired recovery
+    // path and lands back on the same effective deck.
+    channel.send({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+    const afterExpiry = await channel.waitFor(3);
+    expect(afterExpiry.error).toBeUndefined();
+    expect(afterExpiry.result?.tools?.length).toBeGreaterThan(0);
+    expect(bridge.getRecoveryCount()).toBe(1);
+    expect(bridge.getSessionId()).not.toBe(sessionBefore);
+    expect(bridge.getBoundDeckId()).toBe(STUB_DECK_ID);
   });
 });

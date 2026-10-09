@@ -1,5 +1,9 @@
 import { PassThrough } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  AGENT_DECK_BRIDGE_LIVENESS_HEADER,
+  AGENT_DECK_BRIDGE_LIVENESS_V1,
+} from '@agent-deck/shared';
 
 import {
   McpStdioHttpBridge,
@@ -1220,5 +1224,467 @@ describe('McpStdioHttpBridge message pipelining', () => {
     // The follow-up carried the session id the handshake had just established.
     expect(response.result).toEqual({ pong: true });
     expect(state.calls[1].sessionId).toBe('session-a');
+  });
+});
+
+type HttpCall = {
+  method: string;
+  headers: Record<string, string>;
+  body?: any;
+};
+
+/**
+ * NOT-191 driver: records every HTTP call (including the shutdown DELETE the
+ * base stub cannot parse) and runs under fake timers so the heartbeat cadence
+ * is exact. `waitForOut` polls host stdout by advancing the clock instead of
+ * sleeping, so nothing here depends on wall time.
+ */
+async function driveHeartbeatBridge(
+  state: BridgeState,
+  overrides?: Partial<McpBridgeOptions>,
+) {
+  const calls: HttpCall[] = [];
+  const inner = stubFetch(state);
+  const fetchImpl = (async (url: any, init: any): Promise<Response> => {
+    const headers = { ...((init?.headers ?? {}) as Record<string, string>) };
+    if (init?.method === 'DELETE') {
+      calls.push({ method: 'DELETE', headers });
+      return new Response(null, { status: 200 });
+    }
+    if (init?.method === 'POST') {
+      calls.push({ method: 'POST', headers, body: JSON.parse(init.body as string) });
+    } else {
+      calls.push({ method: init?.method ?? 'GET', headers });
+    }
+    return inner(url, init);
+  }) as unknown as typeof fetch;
+
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const out: any[] = [];
+  let buffer = '';
+  stdout.on('data', (chunk) => {
+    buffer += chunk.toString();
+    let index = buffer.indexOf('\n');
+    while (index !== -1) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (line) {
+        out.push(JSON.parse(line));
+      }
+      index = buffer.indexOf('\n');
+    }
+  });
+
+  const bridge = new McpStdioHttpBridge({
+    url: 'http://stub/mcp',
+    headers: { 'x-agent-deck-deck-id': 'deck-1' },
+    stdin,
+    stdout,
+    log: () => {},
+    heartbeatIntervalMs: 1_000,
+    heartbeatJitterMs: 0,
+    random: () => 0,
+    fetchImpl,
+    ...overrides,
+  });
+  const running = bridge.run();
+
+  const send = (message: Record<string, unknown>) => stdin.write(`${JSON.stringify(message)}\n`);
+  const waitForOut = async (id: number | string) => {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const match = out.find((message) => message.id === id);
+      if (match) {
+        return match;
+      }
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    throw new Error(`no response for id ${String(id)}`);
+  };
+  const pings = () => calls.filter((call) => call.method === 'POST' && call.body?.method === 'ping');
+  const deletes = () => calls.filter((call) => call.method === 'DELETE');
+
+  return {
+    bridge,
+    calls,
+    send,
+    waitForOut,
+    out,
+    pings,
+    deletes,
+    finish: async () => (stdin.end(), running),
+  };
+}
+
+describe('McpStdioHttpBridge heartbeat (NOT-191)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('emits an internal ping on the injected cadence and never to host stdout', async () => {
+    vi.useFakeTimers();
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    const { send, waitForOut, out, pings, calls, finish } = await driveHeartbeatBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitForOut(1);
+    expect(pings()).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(pings()).toHaveLength(1);
+    expect(pings()[0].body.id).toBe('agent-deck-bridge/heartbeat-1');
+    // The reply is consumed inside the bridge — the host sees only its own messages.
+    expect(out.every((message) => message.id !== 'agent-deck-bridge/heartbeat-1')).toBe(true);
+    // The pulse rides the live session and carries the capability marker.
+    expect(pings()[0].headers['mcp-session-id']).toBe('session-a');
+    expect(pings()[0].headers[AGENT_DECK_BRIDGE_LIVENESS_HEADER]).toBe(
+      AGENT_DECK_BRIDGE_LIVENESS_V1,
+    );
+    // The handshake announced the capability too, so the server marks the
+    // session heartbeat-capable from the start.
+    const initialize = calls.find((call) => call.body?.method === 'initialize');
+    expect(initialize?.headers[AGENT_DECK_BRIDGE_LIVENESS_HEADER]).toBe(
+      AGENT_DECK_BRIDGE_LIVENESS_V1,
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(pings()).toHaveLength(2);
+    expect(pings()[1].body.id).toBe('agent-deck-bridge/heartbeat-2');
+    expect(out.every((message) => String(message.id ?? '').startsWith('agent-deck-bridge/'))).toBe(
+      false,
+    );
+
+    await finish();
+  });
+
+  it('uses bridge-owned request ids that cannot collide with host ids', async () => {
+    vi.useFakeTimers();
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    const { send, waitForOut, out, pings, finish } = await driveHeartbeatBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitForOut(1);
+    // A host ping of its own goes through the normal path, untouched.
+    send({ jsonrpc: '2.0', id: 2, method: 'ping', params: {} });
+    expect((await waitForOut(2)).result).toEqual({ pong: true });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const bridgePings = pings().filter((ping) =>
+      String(ping.body.id).startsWith('agent-deck-bridge/heartbeat-'),
+    );
+    expect(bridgePings).toHaveLength(1);
+    expect(bridgePings[0].body.id).toBe('agent-deck-bridge/heartbeat-1');
+
+    // Host ids stay numeric and answered; the bridge id never appears upstream.
+    expect(out.map((message) => message.id).sort()).toEqual([1, 2]);
+    await finish();
+  });
+
+  it('pauses while a recovery owns the session and resumes on the new one', async () => {
+    vi.useFakeTimers();
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    let releaseInit: () => void = () => {};
+    const initGate = new Promise<void>((resolve) => {
+      releaseInit = resolve;
+    });
+    let initializeCount = 0;
+    const inner = stubFetch(state);
+    const gatedFetch = (async (url: any, init: any): Promise<Response> => {
+      const body = init?.method === 'POST' ? (JSON.parse(init.body as string) as any) : undefined;
+      if (body?.method === 'initialize') {
+        initializeCount += 1;
+        if (initializeCount > 1) {
+          await initGate;
+        }
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    // Reuse the heartbeat driver shape with the gated fetch: record pings here.
+    const seen: HttpCall[] = [];
+    const recordingFetch = (async (url: any, init: any): Promise<Response> => {
+      if (init?.method === 'POST') {
+        seen.push({
+          method: 'POST',
+          headers: { ...init.headers },
+          body: JSON.parse(init.body as string),
+        });
+      }
+      return gatedFetch(url, init);
+    }) as unknown as typeof fetch;
+
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const out: any[] = [];
+    let buffer = '';
+    stdout.on('data', (chunk) => {
+      buffer += chunk.toString();
+      let index = buffer.indexOf('\n');
+      while (index !== -1) {
+        const line = buffer.slice(0, index).trim();
+        buffer = buffer.slice(index + 1);
+        if (line) {
+          out.push(JSON.parse(line));
+        }
+        index = buffer.indexOf('\n');
+      }
+    });
+    const bridge = new McpStdioHttpBridge({
+      url: 'http://stub/mcp',
+      headers: { 'x-agent-deck-deck-id': 'deck-1' },
+      stdin,
+      stdout,
+      log: () => {},
+      heartbeatIntervalMs: 1_000,
+      heartbeatJitterMs: 0,
+      random: () => 0,
+      fetchImpl: recordingFetch,
+    });
+    const running = bridge.run();
+    const send = (message: Record<string, unknown>) => stdin.write(`${JSON.stringify(message)}\n`);
+    const waitForOut = async (id: number) => {
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const match = out.find((message) => message.id === id);
+        if (match) {
+          return match;
+        }
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      throw new Error(`no response for id ${id}`);
+    };
+    const heartbeatPings = () => seen.filter((call) => call.body?.method === 'ping');
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitForOut(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(heartbeatPings()).toHaveLength(1);
+
+    // The server restarts; the next host request goes stale and recovery
+    // starts, but its handshake hangs on the gate.
+    state.sessionId = 'session-b';
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(bridge.getRecoveryCount()).toBe(0);
+
+    // Ticks during the recovery send nothing — the handshake in flight is
+    // proof of life enough, and a ping would only race it.
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(heartbeatPings()).toHaveLength(1);
+
+    releaseInit();
+    expect((await waitForOut(2)).result).toEqual({ pong: true });
+    expect(bridge.getRecoveryCount()).toBe(1);
+
+    // The pulse resumes on the replacement session.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(heartbeatPings()).toHaveLength(2);
+    expect(heartbeatPings()[1].headers['mcp-session-id']).toBe('session-b');
+
+    stdin.end();
+    await running;
+  });
+
+  it('backs off on ping failure without touching host stdout', async () => {
+    vi.useFakeTimers();
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    let failures = 0;
+    const inner = stubFetch(state);
+    const flakyFetch = (async (url: any, init: any): Promise<Response> => {
+      const body = init?.method === 'POST' ? (JSON.parse(init.body as string) as any) : undefined;
+      if (body?.method === 'ping') {
+        failures += 1;
+        return new Response('boom', { status: 500 });
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { send, waitForOut, out, finish } = await driveHeartbeatBridge(state, {
+      fetchImpl: flakyFetch,
+    });
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitForOut(1);
+
+    // First failure backs the next delay off to 2x; no second ping at 1x.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(failures).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(failures).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(failures).toBe(2);
+    expect(out.map((message) => message.id)).toEqual([1]);
+
+    await finish();
+  });
+
+  it('stops the timer on close and sends nothing afterwards', async () => {
+    vi.useFakeTimers();
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    const { bridge, send, waitForOut, pings, finish } = await driveHeartbeatBridge(state);
+
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitForOut(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(pings()).toHaveLength(1);
+
+    bridge.close();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pings()).toHaveLength(1);
+
+    await finish();
+  });
+
+  it('sends no heartbeat before the handshake establishes a session', async () => {
+    vi.useFakeTimers();
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    const { pings, finish } = await driveHeartbeatBridge(state);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pings()).toHaveLength(0);
+
+    await finish();
+  });
+});
+
+describe('McpStdioHttpBridge clean shutdown (NOT-191)', () => {
+  it('drains in-flight host requests, then sends one bounded DELETE', async () => {
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    const order: string[] = [];
+    let releaseTool: () => void = () => {};
+    const toolGate = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    const inner = stubFetch(state);
+    const fetchImpl = (async (url: any, init: any): Promise<Response> => {
+      if (init?.method === 'DELETE') {
+        order.push('delete');
+        expect((init.headers as Record<string, string>)['mcp-session-id']).toBe('session-a');
+        return new Response(null, { status: 200 });
+      }
+      const body = init?.method === 'POST' ? (JSON.parse(init.body as string) as any) : undefined;
+      if (body?.method === 'tools/call') {
+        await toolGate;
+        order.push('tool');
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { send, waitFor, out, finish } = await driveBridge(state, fetchImpl, {
+      heartbeatIntervalMs: 0,
+    });
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'slow' } });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const finishing = finish();
+    // stdin is gone but the tool call still hangs: no DELETE may go out yet.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(order).toEqual([]);
+
+    releaseTool();
+    await finishing;
+
+    expect(out.find((message) => message.id === 2)?.result).toEqual({ pong: true });
+    // The host request landed first; exactly one DELETE closed the session.
+    expect(order).toEqual(['tool', 'delete']);
+  });
+
+  it('sends no DELETE when the drain times out, and still exits', async () => {
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    let deletes = 0;
+    const inner = stubFetch(state);
+    const fetchImpl = (async (url: any, init: any): Promise<Response> => {
+      if (init?.method === 'DELETE') {
+        deletes += 1;
+        return new Response(null, { status: 200 });
+      }
+      const body = init?.method === 'POST' ? (JSON.parse(init.body as string) as any) : undefined;
+      if (body?.method === 'tools/call') {
+        await new Promise(() => {});
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { send, waitFor, finish } = await driveBridge(state, fetchImpl, {
+      heartbeatIntervalMs: 0,
+      drainTimeoutMs: 30,
+    });
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'never' } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Deleting under running work is forbidden — the lease/TTL sweep owns it.
+    await finish();
+    expect(deletes).toBe(0);
+  });
+
+  it('a hanging DELETE cannot hang host shutdown', async () => {
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    const inner = stubFetch(state);
+    const fetchImpl = (async (url: any, init: any): Promise<Response> => {
+      if (init?.method === 'DELETE') {
+        await new Promise((_, reject) => {
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        });
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { send, waitFor, finish } = await driveBridge(state, fetchImpl, {
+      heartbeatIntervalMs: 0,
+      deleteTimeoutMs: 30,
+    });
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+
+    const startedAt = Date.now();
+    await finish();
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it('close() is idempotent: one DELETE however it is reached', async () => {
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    let deletes = 0;
+    const inner = stubFetch(state);
+    const fetchImpl = (async (url: any, init: any): Promise<Response> => {
+      if (init?.method === 'DELETE') {
+        deletes += 1;
+        return new Response(null, { status: 200 });
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { bridge, send, waitFor, finish } = await driveBridge(state, fetchImpl, {
+      heartbeatIntervalMs: 0,
+    });
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+    await waitFor(1);
+
+    bridge.close();
+    bridge.close();
+    bridge.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await finish();
+    expect(deletes).toBe(1);
+  });
+
+  it('run() without a handshake sends no DELETE', async () => {
+    const state: BridgeState = { sessionId: 'session-a', calls: [] };
+    let deletes = 0;
+    const inner = stubFetch(state);
+    const fetchImpl = (async (url: any, init: any): Promise<Response> => {
+      if (init?.method === 'DELETE') {
+        deletes += 1;
+        return new Response(null, { status: 200 });
+      }
+      return inner(url, init);
+    }) as unknown as typeof fetch;
+
+    const { finish } = await driveBridge(state, fetchImpl, { heartbeatIntervalMs: 0 });
+    await finish();
+    expect(deletes).toBe(0);
   });
 });
