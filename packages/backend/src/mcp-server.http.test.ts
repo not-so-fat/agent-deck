@@ -1396,4 +1396,67 @@ describe('transport session lifecycle without sockets (NOT-191)', () => {
       logSpy.mockRestore();
     }
   });
+
+  it('stop() with a live listener bounds shutdown unregisters and releases the port', async () => {
+    const clock = { now: 10_000_000 };
+    const server = new AgentDeckMCPServer(0, 'http://127.0.0.1:1', undefined, '127.0.0.1', {
+      now: () => clock.now,
+      transportIdleTtlMs: 1_000,
+      transportSweepIntervalMs: 0,
+      unregisterTimeoutMs: 5_000,
+      liveTouchKeepAliveMs: 0,
+    });
+    const internals = server as unknown as LifecycleInternals;
+    let active = 0;
+    let peak = 0;
+    vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string }) => {
+      if (String(url).includes('/api/scope/live-display/') && (init?.method ?? 'GET') === 'DELETE') {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+      }
+      return { ok: true, json: async () => ({ success: true, data: {} }) };
+    });
+    const warnings: string[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((message?: unknown) => {
+      warnings.push(String(message));
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await server.start();
+      const port = server.getPort();
+      expect(port).toBeGreaterThan(0);
+
+      // More sessions than the bound, so the shutdown path must serialize —
+      // the same peak-concurrency evidence the sweep test records.
+      for (let index = 0; index < 12; index += 1) {
+        const id = `shutdown-${index}`;
+        internals.sessions.set(id, { transport: fakeTransport() });
+        internals.lastClientActivityAtMs.set(id, clock.now);
+      }
+      await server.stop();
+      expect(internals.sessions.size).toBe(0);
+      expect(peak).toBeLessThanOrEqual(8);
+      expect(peak).toBeGreaterThan(1);
+      expect(internals.unregisterPeak).toBeLessThanOrEqual(8);
+      expect(warnings).toHaveLength(0);
+
+      // The listener is gone: a fresh server binds exactly the released port.
+      const rebound = new AgentDeckMCPServer(port, 'http://127.0.0.1:1', undefined, '127.0.0.1', {
+        now: () => clock.now,
+        transportSweepIntervalMs: 0,
+        liveTouchKeepAliveMs: 0,
+      });
+      await rebound.start();
+      expect(rebound.getPort()).toBe(port);
+      await rebound.stop();
+    } finally {
+      vi.unstubAllGlobals();
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
 });
