@@ -2,6 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
+  AGENT_DECK_BRIDGE_LIVENESS_HEADER,
+  AGENT_DECK_BRIDGE_LIVENESS_V1,
   AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_RECOVERED_SESSION_HEADER,
@@ -75,6 +77,17 @@ function readCorrelationIdHeader(req: Request): string | undefined {
   return value || undefined;
 }
 
+/**
+ * NOT-191: whether the request comes from a heartbeat-capable bridge. The
+ * marker rides every request the new bridge sends (handshake, tool calls,
+ * pulses, stream, close); legacy clients never send it, so absence means
+ * "unknown/legacy" and keeps the server-owned keep-alive touch.
+ */
+function hasBridgeLivenessHeader(req: Request): boolean {
+  const raw = req.headers[AGENT_DECK_BRIDGE_LIVENESS_HEADER];
+  return typeof raw === 'string' && raw.trim() === AGENT_DECK_BRIDGE_LIVENESS_V1;
+}
+
 type McpSession = {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
@@ -125,6 +138,25 @@ function readBearerToken(req: Request): string | null {
  */
 export const DEFAULT_LIVE_TOUCH_KEEPALIVE_MS = 5 * 60_000;
 export const LIVE_TOUCH_KEEPALIVE_ENV_VAR = 'AGENT_DECK_MCP_LIVE_TOUCH_KEEPALIVE_MS';
+
+/**
+ * NOT-191: idle retention for MCP transport sessions. A session with no
+ * client traffic — no tool calls, no heartbeat pulse — is closed and fully
+ * cleaned once it has been idle this long. Twenty-four hours keeps a laptop
+ * asleep overnight recoverable (the bridge re-initializes on wake) while
+ * still reclaiming transports abandoned by crashed hosts. Kept separate
+ * from the 30-minute live-display lease on purpose: the display is what the
+ * status line reads, the transport is just retained state.
+ */
+export const DEFAULT_TRANSPORT_IDLE_TTL_MS = 24 * 60 * 60_000;
+/** Cadence of the idle-transport sweep. */
+export const DEFAULT_TRANSPORT_SWEEP_INTERVAL_MS = 60_000;
+/**
+ * NOT-191: bound on concurrent live-display unregisters, shared by the idle
+ * sweep and server shutdown so a mass expiry cannot fan out into hundreds of
+ * simultaneous backend calls.
+ */
+export const DEFAULT_UNREGISTER_CONCURRENCY = 8;
 
 export function resolveLiveTouchKeepAliveMs(raw: string | undefined, staleMs: number): number {
   const fallback =
@@ -185,8 +217,51 @@ export class AgentDeckMCPServer {
   private lastTouchAtMs = new Map<string, number>();
   /** NOT-309: keep-alive timer proving idle-but-connected sessions still live. */
   private liveTouchKeepAliveTimer: NodeJS.Timeout | null = null;
-  /** In-flight live-display unregisters so `stop()` can drain them before closing. */
-  private unregisterTasks = new Map<string, Promise<void>>();
+  /**
+   * NOT-191: session cleanups in flight, keyed by MCP session id. Doubles as
+   * the re-entrancy guard — `transport.onclose` and the sweep/stop paths all
+   * funnel through `startCleanupSession`, and a second call for the same id
+   * joins the first instead of unregistering twice. Resolves to whether the
+   * live-display unregister succeeded (for aggregate batch summaries).
+   */
+  private cleanupTasks = new Map<string, Promise<boolean>>();
+  /** NOT-191: clock for activity/TTL bookkeeping (tests inject a fake clock). */
+  private readonly nowFn: () => number;
+  /** NOT-191: idle bound for transport retention (24h default; `0` disables). */
+  private readonly transportIdleTtlMs: number;
+  /** NOT-191: cadence of the idle-transport sweep (`0` disables the timer). */
+  private readonly transportSweepIntervalMs: number;
+  /** NOT-191: bound on concurrent live-display unregisters (sweep + shutdown). */
+  private readonly unregisterConcurrency: number;
+  /** NOT-191: bound on one live-display unregister (option or env override). */
+  private readonly unregisterTimeoutMsValue: number;
+  /** NOT-191: keep-alive override (tests); otherwise the env resolution wins. */
+  private readonly liveTouchKeepAliveMsOverride: number | undefined;
+  /**
+   * NOT-191: last real client traffic per session — tool calls, handshakes,
+   * stream connects, heartbeat pulses. Server-generated keep-alive touches
+   * never write here, so they cannot extend transport retention.
+   */
+  private lastClientActivityAtMs = new Map<string, number>();
+  /** NOT-191: sessions whose bridge owns the heartbeat (no server touch needed). */
+  private heartbeatCapableSessions = new Set<string>();
+  /** NOT-191: POST requests currently inside `transport.handleRequest` per session. */
+  private inFlightRequests = new Map<string, number>();
+  /**
+   * NOT-191: sessions whose `DELETE` arrived while a host request was in
+   * flight. The close is deferred — never executed under running work — and
+   * runs when the last in-flight request lands or the next sweep finds the
+   * session idle.
+   */
+  private pendingSessionClose = new Set<string>();
+  /** NOT-191: idle-transport sweep timer. */
+  private transportSweepTimer: NodeJS.Timeout | null = null;
+  /** NOT-191: re-entrancy guard so a slow sweep never overlaps the next tick. */
+  private transportSweepRunning = false;
+  /** NOT-191: unregister semaphore state; `unregisterPeak` is read by tests. */
+  private unregisterActive = 0;
+  private unregisterPeak = 0;
+  private unregisterWaiters: Array<() => void> = [];
   /** Changes on every process start — how a client detects it outlived the server. */
   private readonly instanceId = randomUUID();
   private readonly startedAt = new Date().toISOString();
@@ -229,6 +304,16 @@ export class AgentDeckMCPServer {
       grantStore?: ClientGrantStore | null;
       auditStore?: AuditStore | null;
       now?: () => number;
+      /** NOT-191: idle bound for transport retention (`0` disables TTL expiry). */
+      transportIdleTtlMs?: number;
+      /** NOT-191: idle-sweep cadence (`0` disables the timer). */
+      transportSweepIntervalMs?: number;
+      /** NOT-191: bound on concurrent live-display unregisters. */
+      unregisterConcurrency?: number;
+      /** NOT-191: bound on one live-display unregister (overrides the env var). */
+      unregisterTimeoutMs?: number;
+      /** NOT-191: live-touch keep-alive cadence (overrides the env var). */
+      liveTouchKeepAliveMs?: number;
     },
   ) {
     this.port = port;
@@ -238,6 +323,14 @@ export class AgentDeckMCPServer {
     this.grantStoreOverride = options?.grantStore;
     this.auditStoreOverride = options?.auditStore;
     this.initializeLimiter = new RequestLimiter(MCP_INITIALIZE_RATE_WINDOW_MS, options?.now);
+    this.nowFn = options?.now ?? Date.now;
+    this.transportIdleTtlMs = options?.transportIdleTtlMs ?? DEFAULT_TRANSPORT_IDLE_TTL_MS;
+    this.transportSweepIntervalMs =
+      options?.transportSweepIntervalMs ?? DEFAULT_TRANSPORT_SWEEP_INTERVAL_MS;
+    this.unregisterConcurrency = options?.unregisterConcurrency ?? DEFAULT_UNREGISTER_CONCURRENCY;
+    this.unregisterTimeoutMsValue =
+      options?.unregisterTimeoutMs ?? AgentDeckMCPServer.unregisterTimeoutMs();
+    this.liveTouchKeepAliveMsOverride = options?.liveTouchKeepAliveMs;
 
     this.app = express();
     this.app.use(
@@ -442,6 +535,27 @@ export class AgentDeckMCPServer {
 
   private static readonly TOUCH_DEBOUNCE_MS = 5_000;
 
+  /** NOT-191: injected clock for activity/TTL bookkeeping. */
+  private nowMs(): number {
+    return this.nowFn();
+  }
+
+  /**
+   * NOT-191: record real client traffic — a tool call, handshake, stream
+   * connect, or heartbeat pulse — as transport activity, and adopt the
+   * bridge-liveness capability whenever the marker is present. Called only
+   * for authenticated requests on a live session; server-generated
+   * keep-alive touches never come through here, so they cannot extend the
+   * transport idle TTL. A client pulse also refreshes the display lease via
+   * the per-request `touchLiveDisplay` at the same call sites.
+   */
+  private noteClientActivity(sessionId: string, req: Request): void {
+    this.lastClientActivityAtMs.set(sessionId, this.nowMs());
+    if (hasBridgeLivenessHeader(req)) {
+      this.heartbeatCapableSessions.add(sessionId);
+    }
+  }
+
   /**
    * Fire-and-forget lastActivityAt bump; only for sessions this process
    * registered (badge-holding). `force` bypasses the per-request debounce —
@@ -459,7 +573,7 @@ export class AgentDeckMCPServer {
     if (!this.badgeBySession.has(sessionId)) {
       return;
     }
-    const now = Date.now();
+    const now = this.nowMs();
     if (
       !force &&
       now - (this.lastTouchAtMs.get(sessionId) ?? 0) < AgentDeckMCPServer.TOUCH_DEBOUNCE_MS
@@ -472,7 +586,7 @@ export class AgentDeckMCPServer {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ at: new Date().toISOString() }),
+        body: JSON.stringify({ at: new Date(now).toISOString() }),
       },
       sessionId,
     )
@@ -507,9 +621,17 @@ export class AgentDeckMCPServer {
    * no tool calls. Only badge-holding (registered) sessions are touched; the
    * backend ignores touches for sessions it never saw, so unassigned or
    * half-initialized sessions are harmless no-ops by construction.
+   *
+   * NOT-191: heartbeat-capable sessions are skipped — their bridge owns the
+   * pulse now, and a server-generated touch here is what used to defeat the
+   * stale sweep for abandoned bridges. Legacy/unknown sessions keep the
+   * compatibility touch, but it never counts as transport activity.
    */
   private touchAllLiveDisplays(): void {
     for (const sessionId of this.sessions.keys()) {
+      if (this.heartbeatCapableSessions.has(sessionId)) {
+        continue;
+      }
       this.touchLiveDisplay(sessionId, true);
     }
   }
@@ -517,10 +639,9 @@ export class AgentDeckMCPServer {
   private startLiveDisplayKeepAlive(): void {
     this.stopLiveDisplayKeepAlive();
     const staleMs = resolveLiveDisplayStaleMs(process.env.LIVE_DISPLAY_STALE_MS);
-    const intervalMs = resolveLiveTouchKeepAliveMs(
-      process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR],
-      staleMs,
-    );
+    const intervalMs =
+      this.liveTouchKeepAliveMsOverride ??
+      resolveLiveTouchKeepAliveMs(process.env[LIVE_TOUCH_KEEPALIVE_ENV_VAR], staleMs);
     if (intervalMs <= 0) {
       return;
     }
@@ -538,22 +659,247 @@ export class AgentDeckMCPServer {
     }
   }
 
-  private async unregisterLiveDisplay(sessionId: string): Promise<void> {
+  /**
+   * NOT-191: one live-display unregister, bounded and silent. Returns whether
+   * it succeeded; failures aggregate into a single batch summary at the sweep
+   * and shutdown call sites instead of one stack trace per session. Runs
+   * while the session binding still resolves — `runCleanupSession` clears it
+   * only after this returns.
+   */
+  private async unregisterLiveDisplayQuiet(sessionId: string): Promise<boolean> {
     const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      AgentDeckMCPServer.unregisterTimeoutMs(),
-    );
+    const timer = setTimeout(() => controller.abort(), this.unregisterTimeoutMsValue);
+    timer.unref?.();
     try {
       await this.callBackendAPI(
         `/api/scope/live-display/${encodeURIComponent(sessionId)}`,
         { method: 'DELETE', signal: controller.signal },
         sessionId,
+        { quiet: true },
       );
+      return true;
     } catch {
-      // Best effort when MCP session closes (includes abort on hung backend).
+      // Best effort when an MCP session closes (includes abort on hung backend).
+      return false;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  /**
+   * NOT-191: run `fn` under the shared unregister semaphore so the idle
+   * sweep and server shutdown together never exceed the bound, however many
+   * sessions expire at once.
+   */
+  private async withUnregisterSlot<T>(fn: () => Promise<T>): Promise<T> {
+    const limit = Math.max(1, this.unregisterConcurrency);
+    while (this.unregisterActive >= limit) {
+      await new Promise<void>((resolve) => {
+        this.unregisterWaiters.push(resolve);
+      });
+    }
+    this.unregisterActive += 1;
+    this.unregisterPeak = Math.max(this.unregisterPeak, this.unregisterActive);
+    try {
+      return await fn();
+    } finally {
+      this.unregisterActive -= 1;
+      const next = this.unregisterWaiters.shift();
+      next?.();
+    }
+  }
+
+  /**
+   * NOT-191: one aggregate line for a batch of unregisters — attempted,
+   * succeeded, failed — logged only when something failed. A clean batch
+   * stays silent; a failing one never logs per-session stacks.
+   */
+  private logUnregisterSummary(reason: string, results: boolean[]): void {
+    const failed = results.filter((ok) => !ok).length;
+    if (failed === 0) {
+      return;
+    }
+    console.warn(
+      `[agent-deck] live-display unregister (${reason}): ` +
+        `attempted=${results.length} succeeded=${results.length - failed} failed=${failed}`,
+    );
+  }
+
+  /**
+   * NOT-191 session cleanup. Every transport/session end funnels through
+   * here — `transport.onclose` (clean `DELETE`), the idle sweep, deferred
+   * closes, and server shutdown — so no path can strand part of a session's
+   * state. Removes the transport/server entry, disconnects the trusted
+   * runtime session (revoking nothing reusable — the grant row stays valid
+   * for the next handshake), unregisters the live display under the shared
+   * concurrency bound, then clears the binding, badge, touch, activity,
+   * capability, and in-flight bookkeeping. Idempotent per session id: a
+   * second call joins the first.
+   */
+  private startCleanupSession(
+    sessionId: string,
+    opts: { closeTransport: boolean },
+  ): Promise<boolean> {
+    const existing = this.cleanupTasks.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+    if (this.closedSessionIds.has(sessionId)) {
+      return Promise.resolve(true);
+    }
+    const task = this.runCleanupSession(sessionId, opts);
+    this.cleanupTasks.set(sessionId, task);
+    const release = () => {
+      if (this.cleanupTasks.get(sessionId) === task) {
+        this.cleanupTasks.delete(sessionId);
+      }
+    };
+    void task.then(release, release);
+    return task;
+  }
+
+  private async runCleanupSession(
+    sessionId: string,
+    opts: { closeTransport: boolean },
+  ): Promise<boolean> {
+    // Synchronous prefix — no awaits before the maps below are updated, so a
+    // request interleaving at any later await already sees the session gone.
+    const session = this.sessions.get(sessionId);
+    this.sessions.delete(sessionId);
+    this.rememberClosedSession(sessionId);
+    this.pendingSessionClose.delete(sessionId);
+    this.lastClientActivityAtMs.delete(sessionId);
+    this.heartbeatCapableSessions.delete(sessionId);
+    this.inFlightRequests.delete(sessionId);
+
+    if (opts.closeTransport && session) {
+      try {
+        // The transport's `onclose` re-enters `startCleanupSession`, which
+        // joins this run via `cleanupTasks` instead of cleaning twice.
+        await session.transport.close();
+      } catch {
+        // Best effort — the maps above are already consistent.
+      }
+    }
+
+    // Best effort, before the binding is cleared: the launch/grant check
+    // below reads it, and the live-display DELETE authenticates through it.
+    try {
+      await this.disconnectTrustedSession(sessionId);
+    } catch {
+      // Best-effort cleanup.
+    }
+
+    let unregistered: boolean;
+    try {
+      unregistered = await this.withUnregisterSlot(() =>
+        this.unregisterLiveDisplayQuiet(sessionId),
+      );
+    } catch {
+      unregistered = false;
+    }
+
+    this.sessionBinding.clearSession(sessionId);
+    this.badgeBySession.delete(sessionId);
+    this.lastTouchAtMs.delete(sessionId);
+    return unregistered;
+  }
+
+  /**
+   * NOT-191: close every session that is idle past the transport TTL or has
+   * a deferred close pending — unless a host request is in flight, in which
+   * case it waits for the next sweep. Unregisters run concurrently under the
+   * shared bound and their failures collapse into one summary line.
+   */
+  private async sweepIdleTransports(): Promise<void> {
+    if (this.transportSweepRunning) {
+      return;
+    }
+    this.transportSweepRunning = true;
+    try {
+      const now = this.nowMs();
+      const candidates: string[] = [];
+      for (const sessionId of this.sessions.keys()) {
+        if (this.cleanupTasks.has(sessionId) || this.closedSessionIds.has(sessionId)) {
+          continue;
+        }
+        if ((this.inFlightRequests.get(sessionId) ?? 0) > 0) {
+          continue;
+        }
+        if (this.pendingSessionClose.has(sessionId)) {
+          candidates.push(sessionId);
+          continue;
+        }
+        if (this.transportIdleTtlMs <= 0) {
+          continue;
+        }
+        const lastActivity = this.lastClientActivityAtMs.get(sessionId);
+        if (lastActivity === undefined) {
+          continue;
+        }
+        if (now - lastActivity > this.transportIdleTtlMs) {
+          candidates.push(sessionId);
+        }
+      }
+      if (candidates.length === 0) {
+        return;
+      }
+      const results = await Promise.all(
+        candidates.map((sessionId) =>
+          this.startCleanupSession(sessionId, { closeTransport: true }),
+        ),
+      );
+      this.logUnregisterSummary('transport-sweep', results);
+    } finally {
+      this.transportSweepRunning = false;
+    }
+  }
+
+  private startTransportSweep(): void {
+    this.stopTransportSweep();
+    if (this.transportSweepIntervalMs <= 0) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void this.sweepIdleTransports().catch(() => {});
+    }, this.transportSweepIntervalMs);
+    timer.unref?.();
+    this.transportSweepTimer = timer;
+  }
+
+  private stopTransportSweep(): void {
+    if (this.transportSweepTimer) {
+      clearInterval(this.transportSweepTimer);
+      this.transportSweepTimer = null;
+    }
+  }
+
+  /**
+   * NOT-191: run one POST inside the per-session in-flight guard. A session
+   * with work in flight is never expired or deleted; when the last request
+   * lands, a deferred close runs immediately instead of waiting for the
+   * sweep. (The long-lived GET stream is deliberately not counted — it stays
+   * open for the session's whole life, so counting it would pin every
+   * session against the TTL forever.)
+   */
+  private async handleTransportPost(sessionId: string, req: Request, res: Response): Promise<void> {
+    this.inFlightRequests.set(sessionId, (this.inFlightRequests.get(sessionId) ?? 0) + 1);
+    try {
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        await session.transport.handleRequest(req, res, req.body);
+      }
+    } finally {
+      const remaining = (this.inFlightRequests.get(sessionId) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.inFlightRequests.delete(sessionId);
+        if (this.pendingSessionClose.has(sessionId)) {
+          this.pendingSessionClose.delete(sessionId);
+          void this.startCleanupSession(sessionId, { closeTransport: true });
+        }
+      } else {
+        this.inFlightRequests.set(sessionId, remaining);
+      }
     }
   }
 
@@ -561,6 +907,7 @@ export class AgentDeckMCPServer {
     endpoint: string,
     init: RequestInit = {},
     sessionId: string,
+    opts?: { quiet?: boolean },
   ): Promise<any> {
     try {
       const headers = this.sessionBinding.getAgentHeaders(sessionId);
@@ -596,7 +943,11 @@ export class AgentDeckMCPServer {
       // Fallback: return as-is if not wrapped
       return body;
     } catch (error) {
-      console.error(`Failed to call backend API ${endpoint}:`, error);
+      // NOT-191: quiet mode keeps best-effort teardown (unregister) from
+      // logging one stack trace per session; batch callers log one summary.
+      if (!opts?.quiet) {
+        console.error(`Failed to call backend API ${endpoint}:`, error);
+      }
       throw error;
     }
   }
@@ -1355,7 +1706,7 @@ export class AgentDeckMCPServer {
     }
   }
 
-  private async disconnectTrustedSession(sessionId: string, _req: Request): Promise<void> {
+  private async disconnectTrustedSession(sessionId: string, _req?: Request): Promise<void> {
     if (this.sessionBinding.isLaunchSession(sessionId) || this.sessionBinding.isGrantSession(sessionId)) {
       try {
         await fetch(`${this.backendUrl}/api/trusted-session/mcp/disconnect-deck`, {
@@ -1504,8 +1855,16 @@ export class AgentDeckMCPServer {
           return;
         }
       }
+      // The auth above awaits, so re-check: a sweep may have expired the
+      // session while it ran, and answering on a dead transport would hang.
+      const live = this.sessions.get(sessionIdHeader);
+      if (!live) {
+        this.sendSessionNotFound(sessionIdHeader, res);
+        return;
+      }
+      this.noteClientActivity(sessionIdHeader, req);
       this.touchLiveDisplay(sessionIdHeader);
-      await existing.transport.handleRequest(req, res, req.body);
+      await this.handleTransportPost(sessionIdHeader, req, res);
       return;
     }
 
@@ -1630,17 +1989,11 @@ export class AgentDeckMCPServer {
     transport.onclose = () => {
       const closedSessionId = transport.sessionId;
       if (closedSessionId) {
-        this.sessions.delete(closedSessionId);
-        this.rememberClosedSession(closedSessionId);
-        // Unregister while session headers still resolve — clearSession would drop
-        // the runtime session id and live-display DELETE would 401.
-        const task = this.unregisterLiveDisplay(closedSessionId).finally(() => {
-          this.sessionBinding.clearSession(closedSessionId);
-          this.badgeBySession.delete(closedSessionId);
-          this.lastTouchAtMs.delete(closedSessionId);
-          this.unregisterTasks.delete(closedSessionId);
-        });
-        this.unregisterTasks.set(closedSessionId, task);
+        // NOT-191: every close funnels through the unified cleanup — the
+        // transport/server entry, trusted runtime session, binding, badge,
+        // touch, activity, and live-display row all go together. A sweep or
+        // deferred close already running for this id is joined, not doubled.
+        void this.startCleanupSession(closedSessionId, { closeTransport: false });
       }
     };
 
@@ -1673,6 +2026,9 @@ export class AgentDeckMCPServer {
       // The replacement session is live, so the session this client lost to the
       // restart is genuinely recovered and no longer a stranded client.
       this.markStaleSessionRecovered(req);
+      // NOT-191: the handshake is the session's first client activity, and it
+      // is also where a heartbeat-capable bridge is first recognized.
+      this.noteClientActivity(transport.sessionId, req);
       if (!this.sessionBinding.isUnassigned(transport.sessionId)) {
         void this.registerLiveDisplay(transport.sessionId).catch(() => {});
       }
@@ -1715,8 +2071,23 @@ export class AgentDeckMCPServer {
       }
     }
 
+    // The auth above awaits — same re-check as the POST path.
+    const live = this.sessions.get(sessionId);
+    if (!live) {
+      this.sendSessionNotFound(sessionId, res);
+      return;
+    }
+    this.noteClientActivity(sessionId, req);
+    if (req.method === 'DELETE' && (this.inFlightRequests.get(sessionId) ?? 0) > 0) {
+      // NOT-191: never delete a session under running work. The close is
+      // deferred and runs when the last in-flight request lands (or on the
+      // next sweep); the 200 acknowledges the request, not the teardown.
+      this.pendingSessionClose.add(sessionId);
+      res.status(200).end();
+      return;
+    }
     this.touchLiveDisplay(sessionId);
-    await session.transport.handleRequest(req, res);
+    await live.transport.handleRequest(req, res);
   }
 
   async start() {
@@ -1761,6 +2132,7 @@ export class AgentDeckMCPServer {
         this.httpServer = httpServer;
       });
       this.startLiveDisplayKeepAlive();
+      this.startTransportSweep();
 
       return this.app;
     } catch (error) {
@@ -1773,17 +2145,23 @@ export class AgentDeckMCPServer {
   async stop() {
     try {
       this.stopLiveDisplayKeepAlive();
-      for (const [sessionId, session] of this.sessions) {
-        try {
-          await session.transport.close();
-        } catch (error) {
-          console.error(`Error closing MCP session ${sessionId}:`, error);
-        }
-      }
-      this.sessions.clear();
-      // Drain fire-and-forget live-display unregisters before tearing down HTTP —
-      // otherwise tests close the stub backend and see ECONNRESET console.error noise.
-      await Promise.all([...this.unregisterTasks.values()]);
+      this.stopTransportSweep();
+      // NOT-191: every open session goes through the unified cleanup, so
+      // shutdown removes the same state a clean DELETE would — transport,
+      // trusted runtime session, binding, badge, and live-display row.
+      // Cleanups run concurrently with unregisters under the shared bound,
+      // and their failures collapse into one summary line.
+      const sessionIds = [...this.sessions.keys()];
+      const results = await Promise.all(
+        sessionIds.map((sessionId) =>
+          this.startCleanupSession(sessionId, { closeTransport: true }),
+        ),
+      );
+      // Drain cleanups that started outside the snapshot (a close racing
+      // shutdown) before tearing down HTTP — otherwise tests close the stub
+      // backend and see ECONNRESET console.error noise.
+      await Promise.all([...this.cleanupTasks.values()]);
+      this.logUnregisterSummary('server-shutdown', results);
 
       // Release the port too, otherwise a restart on the same port races the old
       // listener and the "did it come back?" probe can't tell the two apart.
