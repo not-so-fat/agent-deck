@@ -678,11 +678,16 @@ describe('session badge flow (stub backend)', () => {
     expect(closed.status).toBe(200);
     await closed.arrayBuffer();
 
-    for (
-      let attempt = 0;
-      attempt < 50 && internals.sessions.has(sessionId);
-      attempt += 1
-    ) {
+    // The transport map clears in cleanup's synchronous prefix, but the badge,
+    // binding, and backend calls clear after the disconnect/unregister
+    // round-trips — poll for the fully-cleaned terminal state, not the map.
+    const cleanedUp = () =>
+      !internals.sessions.has(sessionId) &&
+      !internals.badgeBySession.has(sessionId) &&
+      internals.sessionBinding.getBinding(sessionId).runtimeSessionId === undefined &&
+      stub.unregisters.some((url) => url.includes(encodeURIComponent(sessionId))) &&
+      stub.disconnects.some((body) => body.mcpSessionId === sessionId);
+    for (let attempt = 0; attempt < 100 && !cleanedUp(); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     expect(internals.sessions.has(sessionId)).toBe(false);

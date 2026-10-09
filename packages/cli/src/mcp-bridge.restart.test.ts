@@ -413,8 +413,19 @@ describe('MCP bridge session lifecycle over real HTTP (NOT-191)', () => {
     await running;
 
     // The shutdown DELETE ran the unified cleanup: transport, binding,
-    // badge, touch, activity, runtime session, and live-display row.
-    await waitForCondition(() => !internals.sessions.has(sessionId), 'session cleanup');
+    // badge, touch, activity, runtime session, and live-display row. The
+    // transport map clears in cleanup's synchronous prefix while the rest
+    // clears after the disconnect/unregister round-trips, so wait for the
+    // fully-cleaned terminal state rather than the map alone.
+    await waitForCondition(
+      () =>
+        !internals.sessions.has(sessionId) &&
+        !internals.badgeBySession.has(sessionId) &&
+        internals.sessionBinding.getBinding(sessionId).runtimeSessionId === undefined &&
+        stub.unregisters.some((url) => url.includes(encodeURIComponent(sessionId))) &&
+        stub.disconnects.some((body) => body.mcpSessionId === sessionId),
+      'session cleanup',
+    );
     expect(internals.badgeBySession.has(sessionId)).toBe(false);
     expect(internals.lastTouchAtMs.has(sessionId)).toBe(false);
     expect(internals.lastClientActivityAtMs.has(sessionId)).toBe(false);
