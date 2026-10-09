@@ -729,12 +729,14 @@ export class AgentDeckMCPServer {
    * NOT-191 session cleanup. Every transport/session end funnels through
    * here — `transport.onclose` (clean `DELETE`), the idle sweep, deferred
    * closes, and server shutdown — so no path can strand part of a session's
-   * state. Removes the transport/server entry, disconnects the trusted
+   * state. Removes the transport/server entry, unregisters the live display
+   * under the shared concurrency bound, then disconnects the trusted
    * runtime session (revoking nothing reusable — the grant row stays valid
-   * for the next handshake), unregisters the live display under the shared
-   * concurrency bound, then clears the binding, badge, touch, activity,
-   * capability, and in-flight bookkeeping. Idempotent per session id: a
-   * second call joins the first.
+   * for the next handshake), and finally clears the binding, badge, touch,
+   * activity, capability, and in-flight bookkeeping. The unregister runs
+   * before the disconnect because it authenticates with the runtime session
+   * the disconnect revokes. Idempotent per session id: a second call joins
+   * the first.
    */
   private startCleanupSession(
     sessionId: string,
@@ -782,14 +784,11 @@ export class AgentDeckMCPServer {
       }
     }
 
-    // Best effort, before the binding is cleared: the launch/grant check
-    // below reads it, and the live-display DELETE authenticates through it.
-    try {
-      await this.disconnectTrustedSession(sessionId);
-    } catch {
-      // Best-effort cleanup.
-    }
-
+    // Best effort, before the binding is cleared: the live-display DELETE
+    // authenticates through the runtime session header, and the disconnect
+    // below revokes that session — so the unregister must run first, while
+    // the session is still valid. (Disconnect is a public endpoint keyed by
+    // mcpSessionId, so it needs no valid session of its own.)
     let unregistered: boolean;
     try {
       unregistered = await this.withUnregisterSlot(() =>
@@ -797,6 +796,12 @@ export class AgentDeckMCPServer {
       );
     } catch {
       unregistered = false;
+    }
+
+    try {
+      await this.disconnectTrustedSession(sessionId);
+    } catch {
+      // Best-effort cleanup.
     }
 
     this.sessionBinding.clearSession(sessionId);
