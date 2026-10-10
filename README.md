@@ -65,7 +65,7 @@ Your host needs an Agent Deck MCP transport—not direct registrations for Linea
 
 Use `agent-deck use <deck>` for ordinary IDE folders so `mcp-launch` can select the deck before MCP initializes. Launch-selected unattended sessions may supply the deck header directly and intentionally omit the assignment file.
 
-`setup` also installs the terminal status line by default (`--no-statusline` to skip).
+`setup` also installs the terminal status line by default for Cursor CLI and Claude Code (`--no-statusline` to skip). Muse has no Agent Deck status line.
 
 #### Codex
 
@@ -96,6 +96,16 @@ agent-deck setup --client claude    # once
 Optional per repo: `agent-deck use my-deck` → `.mcp.json`, stubs under `.claude/skills/agent-deck-*/`
 
 **Restart Claude Code**, then `claude mcp list` — `agent-deck` should be **Connected**.
+
+#### Muse
+
+```bash
+agent-deck setup --client muse    # once: MCP + native bootstrap skills
+```
+
+Optional per repo: `agent-deck use my-deck --client muse` → `.mcp.json` + `.agent-deck/use.json`; `agent-deck setup --client muse --scope project` merges root `AGENTS.md` (trust the workspace so Muse loads it).
+
+**Start a new Muse process** (restart Muse) after setup, then `/mcp` should show `agent-deck`. First turn: the agent calls `get_session_context` once and shows exactly one verbatim `display_summary` line. Muse has no Agent Deck status line or plugin install — the transcript receipt is the binding record.
 
 If you use `use` and accept playbook patches that change **triggers**, run `agent-deck use --refresh` in that repo (or ask the agent to).
 
@@ -212,6 +222,7 @@ Port conflicts: `agent-deck status` · `agent-deck start --force`
 | **Codex AGENTS.md** | `agent-deck setup --client codex` marker-merges global guidance; `--scope project` targets the current repo |
 | **Claude Code** | `/plugin marketplace add` via `.claude-plugin/` |
 | **Cursor** | `agent-deck setup --client cursor` |
+| **Muse** | `agent-deck setup --client muse` installs native bootstrap skills; `--scope project` merges root `AGENTS.md` (workspace trust required) |
 
 ## What's next
 

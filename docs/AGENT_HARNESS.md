@@ -1,6 +1,6 @@
-# Agent harness (AGENTS.md, CLAUDE.md & Cursor rules)
+# Agent harness (AGENTS.md, CLAUDE.md, Cursor rules & Muse skills)
 
-**Audience:** Agent Deck users on Codex, Claude Code, or Cursor
+**Audience:** Agent Deck users on Codex, Claude Code, Cursor, or Muse
 **Status:** Installed automatically by `agent-deck setup`  
 **Related:** [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md), [examples/agent-harness/](./examples/agent-harness/)
 
@@ -20,6 +20,8 @@ Agent Deck exposes **tools** (MCP). Your agent’s **control plane** (`AGENTS.md
 | **Cursor** | project | `.cursor/rules/agent-deck.mdc` |
 | **Claude Code** | global | `~/.claude/CLAUDE.md` (merged between `agent-deck:harness` markers) |
 | **Claude Code** | project | `./CLAUDE.md` (same merge) |
+| **Muse** | global (default) | Native skills under `$XDG_CONFIG_HOME/muse/skills/agent-deck-*/SKILL.md` (fallback `~/.config/muse/skills/`), stamped `<!-- agent-deck:managed-skill -->` |
+| **Muse** | project | `./AGENTS.md` (same marker merge; Muse loads root `AGENTS.md` after workspace trust) |
 | **Claude Desktop** | — | MCP only; use Claude Code/Cursor harness if you use those too |
 
 ```bash
@@ -29,7 +31,11 @@ npx @agent-deck/cli setup --client cursor    # MCP + global harness
 npx @agent-deck/cli setup --client claude   # MCP + harness + status line (default)
 npx @agent-deck/cli setup --client claude --no-statusline   # skip prompt footer
 npx @agent-deck/cli setup --client cursor --scope project   # project MCP + project harness
+npx @agent-deck/cli setup --client muse     # MCP + native bootstrap skills (no status line, no plugin install)
+npx @agent-deck/cli setup --client muse --scope project   # project MCP + root AGENTS.md merge
 ```
+
+**Muse flow:** `agent-deck setup --client muse` writes the MCP transport plus the three canonical bootstrap skills (`agent-deck-session`, `agent-deck-playbooks`, `agent-deck-setup`) from the CLI release artifact. Optional per repo: `agent-deck use <deck> --client muse` writes `.mcp.json` + `.agent-deck/use.json`, and `agent-deck setup --client muse --scope project` merges the full harness into root `AGENTS.md`. Trust the workspace so Muse loads `AGENTS.md`, then **start a new Muse process** (restart Muse) so MCP + skills reload. Verify with `/mcp` — `agent-deck` should appear. First turn: the agent calls `get_session_context` once and shows exactly one verbatim `display_summary` line. There is no Muse status line or plugin install — the transcript receipt is the binding record.
 
 **Order of operations:** when Agent Deck MCP is configured for the current session, or `.agent-deck/use.json` indicates that it is expected, it is a hard gate. The folder's deck comes from that assignment file (written by `agent-deck use <deck>`); the connection carries it — the agent does not pick a deck. Launch-selected sessions with no assignment file are covered too. On the **first turn**, the harness requires one `get_session_context` call before repo inspection or task action, shows **exactly one transcript line** rendering `display_summary` verbatim, then loads every playbook whose trigger matches the task.
 
@@ -51,7 +57,7 @@ Prefer `agent-deck setup --client claude` (writes the script + merges JSON). Do 
 
 Re-running `setup` **updates** the harness in place (idempotent).
 
-**Diagnosing a missing or stale harness:** `agent-deck status` and `agent-deck doctor` both print a read-only `Agent harness:` section naming each affected client/file and the exact repair command (`agent-deck setup --client cursor|claude|codex`). Without a current harness the agent never learns the first-turn receipt, so repair it and restart the host.
+**Diagnosing a missing or stale harness:** `agent-deck status` and `agent-deck doctor` both print a read-only `Agent harness:` section naming each affected client/file and the exact repair command (`agent-deck setup --client cursor|claude|codex|muse`). Muse is current only when all three managed skills are present and current; a missing or stale skill names its `SKILL.md` path. Without a current harness the agent never learns the first-turn receipt, so repair it and restart the host (Muse: start a new process and re-check `/mcp`).
 
 **Stale MCP tool list in Cursor:** Cursor caches tool descriptors per MCP server name. After upgrading Agent Deck, restart Cursor (or toggle MCP off/on in Settings) so removed tools like `setup_repo_deck` disappear. If you use both `agent-deck` (`:1110`) and `agent-deck-dev` (`:3001`), refresh **both** — a stopped or old dev server can leave ghost tools visible.
 
@@ -63,9 +69,11 @@ Re-running `setup` **updates** the harness in place (idempotent).
 | **Cursor skills** (`.cursor/skills/`, `~/.cursor/skills/`) | **Never touched** |
 | **Claude `CLAUDE.md`** | **Merge only** — appends an `agent-deck:harness` block, or replaces **only** that block on re-setup; your other sections stay |
 | **Codex `AGENTS.md`** | **Merge only** — global or project file; content outside `agent-deck:harness` markers stays untouched |
+| **Muse skills** (`muse/skills/agent-deck-*/SKILL.md`) | **Managed only** — create missing, refresh stale managed, leave current unchanged; a same-name user-authored skill (no `agent-deck:managed-skill` stamp) fails setup with its path instead of overwriting |
+| **Muse project `AGENTS.md`** | **Merge only** — same markers as Codex; content outside stays untouched; requires workspace trust |
 | **`agent-deck.mdc`** | Merge like CLAUDE.md — custom frontmatter and notes outside the harness markers are kept |
 
-Add your own notes above/below the harness markers in `agent-deck.mdc`, or anywhere in `CLAUDE.md` outside the markers.
+Add your own notes above/below the harness markers in `agent-deck.mdc`, or anywhere in `CLAUDE.md`/`AGENTS.md` outside the markers. Never hand-edit between Muse skill stamps — re-run `agent-deck setup --client muse` to refresh.
 
 ---
 
@@ -137,6 +145,7 @@ Status vocabulary: **Verified** (observed on the named host build), **Unsupporte
 | Codex | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 | Claude Code | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 | Cursor | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
+| Muse | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 
 No claim is made here about host initialize-instruction behavior until a workstation run records it above.
 
@@ -146,6 +155,7 @@ No claim is made here about host initialize-instruction behavior until a worksta
 
 - **Cursor:** edit `agent-deck.mdc`; `description` in frontmatter is what the rule picker shows (like a skill one-liner).  
 - **Claude:** edit the `## Agent Deck` section between `<!-- agent-deck:harness:start/end -->` markers so `setup` can refresh without clobbering your other CLAUDE.md notes.  
+- **Muse:** global skills are managed files — do not hand-edit; project `AGENTS.md` follows the same marker rule as Codex (edits outside the markers survive refresh).  
 - **Customize:** edit the file after setup; re-run `setup` only when you want the stock template refreshed.
 
 ---
