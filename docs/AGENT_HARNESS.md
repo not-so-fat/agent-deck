@@ -145,9 +145,25 @@ Status vocabulary: **Verified** (observed on the named host build), **Unsupporte
 | Codex | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 | Claude Code | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 | Cursor | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
-| Muse | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
+| Muse Code 1.4.3 | Unknown — the 2026-10-10 release smoke used project `AGENTS.md` for bootstrap and did not isolate initialize `instructions`; run steps 1–5 to classify | Verified live on PR #169 head `b3b49b12`: `/mcp` showed `agent-deck` connected, the first turn called `get_session_context` once, and the exact receipt was emitted once |
 
 No claim is made here about host initialize-instruction behavior until a workstation run records it above.
+
+### Muse release smoke evidence (2026-10-10)
+
+The live operator smoke ran on macOS with Muse Code `1.4.3-R5018.1` against PR #169 head `b3b49b121922e1ddf7a7564a8f97154ca734277e`:
+
+1. Built `@agent-deck/shared`, `@agent-deck/backend`, and `@agent-deck/cli` from that exact head.
+2. Ran the built CLI's global `setup --client muse --no-menubar` twice. The first run created all three managed skills; the second reported `Muse skills already current`.
+3. Ran `use planner --client muse`, then `setup --client muse --scope project --no-menubar` in the checkout.
+4. Started a fresh trusted Muse process. `/mcp` reported server `agent-deck` as `connected` and listed `get_session_context` among its tools.
+5. On the first agent turn, Muse loaded the project `AGENTS.md`, called `get_session_context` exactly once, and committed this single-line binding receipt:
+
+```text
+◆ planner · 1 MCP · 0 keys · 13 playbooks · ⌘s165
+```
+
+The redacted local session export recorded a clean exit, one user turn, the successful tool result, and the exact assistant message above. This proves the release-path exit predicate for Muse transport, native bootstrap guidance, trusted project rules, and the canonical session receipt. It does not classify Muse's separate initialize-`instructions` behavior or the hot-switch matrix in steps 1–5.
 
 ---
 
