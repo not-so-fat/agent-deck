@@ -32,7 +32,7 @@ if [[ ! -f "$CLI_DIST/bin.js" ]]; then
 fi
 
 # --- 1. Tarball must include installer modules ---
-for required in bin.js statusline.js statusline-setup.js setup.js install.js; do
+for required in bin.js statusline.js statusline-setup.js setup.js install.js muse-skills.js agent-harness.js; do
   if [[ ! -f "$CLI_DIST/$required" ]]; then
     fail "dist/$required missing from CLI build (would not ship on npm)"
   fi
@@ -42,7 +42,12 @@ for required in managed/paths.js managed/activate.js managed/updater.js managed/
     fail "dist/$required missing from CLI build (managed install)"
   fi
 done
-pass "CLI dist contains statusline + setup + managed install modules"
+for skill in agent-deck-session agent-deck-playbooks agent-deck-setup; do
+  if [[ ! -f "$CLI_DIST/muse-skills/$skill/SKILL.md" ]]; then
+    fail "dist/muse-skills/$skill/SKILL.md missing from CLI build (run npm run build)"
+  fi
+done
+pass "CLI dist contains statusline + setup + managed install modules + muse skills"
 
 # --- 2. npm pack fidelity ---
 PACK_DIR="$(mktemp -d)"
@@ -58,6 +63,17 @@ tar -xzf "$TGZ_PATH" -C "$PACK_DIR"
 PKG_ROOT="$PACK_DIR/package"
 [[ -f "$PKG_ROOT/dist/statusline-setup.js" ]] || fail "packed tarball missing dist/statusline-setup.js"
 pass "npm pack includes statusline-setup.js"
+
+# --- 2b. Packed tarball ships Muse skills byte-identical to canonical sources ---
+for skill in agent-deck-session agent-deck-playbooks agent-deck-setup; do
+  PACKED_SKILL="$PKG_ROOT/dist/muse-skills/$skill/SKILL.md"
+  CANONICAL_SKILL="$ROOT_DIR/skills/$skill/SKILL.md"
+  [[ -f "$PACKED_SKILL" ]] || fail "packed tarball missing dist/muse-skills/$skill/SKILL.md"
+  if ! cmp -s "$PACKED_SKILL" "$CANONICAL_SKILL"; then
+    fail "packed dist/muse-skills/$skill/SKILL.md differs from canonical skills/$skill/SKILL.md"
+  fi
+done
+pass "packed tarball muse skills match canonical sources"
 
 # --- 3. setup --client claude in clean HOME (built dist = tarball payload) ---
 SETUP_OUT="$LOG_DIR/release-smoke-setup.log"
@@ -172,7 +188,110 @@ if grep -qE 'list_playbooks|list_bound_deck_services|add_service_to_bound_deck|s
 fi
 pass "Cursor harness uses get_bound_deck (no removed tool names)"
 
-# --- 5d. Menubar plugin script contract (any OS; setup skips non-macOS) ---
+# --- 5d. Muse setup in clean HOME installs skills + MCP settings (NOT-388) ---
+unset XDG_CONFIG_HOME
+MUSE_SETUP_OUT="$LOG_DIR/release-smoke-muse-setup.log"
+if ! node "$CLI_DIST/bin.js" setup --client muse --no-menubar >"$MUSE_SETUP_OUT" 2>&1; then
+  cat "$MUSE_SETUP_OUT" >>"$LOG"
+  fail "setup --client muse failed (see $MUSE_SETUP_OUT)"
+fi
+pass "setup --client muse ran (see $MUSE_SETUP_OUT)"
+
+MUSE_SETTINGS="$SMOKE_HOME/.config/muse/settings.json"
+[[ -f "$MUSE_SETTINGS" ]] || fail "Muse settings not written: $MUSE_SETTINGS"
+if ! grep -q '"schema_version": 1' "$MUSE_SETTINGS"; then
+  fail "Muse settings.json missing schema_version 1"
+fi
+if ! grep -q 'mcp-launch' "$MUSE_SETTINGS"; then
+  fail "Muse settings.json missing agent-deck mcp-launch entry"
+fi
+pass "Muse settings wire agent-deck mcp-launch"
+
+for skill in agent-deck-session agent-deck-playbooks agent-deck-setup; do
+  SKILL_PATH="$SMOKE_HOME/.config/muse/skills/$skill/SKILL.md"
+  [[ -f "$SKILL_PATH" ]] || fail "Muse skill missing: $SKILL_PATH"
+  if ! grep -q "name: $skill" "$SKILL_PATH"; then
+    fail "Muse skill $skill missing frontmatter name"
+  fi
+  if ! grep -q 'agent-deck:managed-skill' "$SKILL_PATH"; then
+    fail "Muse skill $skill missing managed stamp"
+  fi
+done
+pass "Muse bootstrap skills installed under .config/muse/skills"
+
+if ! grep -q 'agent-deck use <deck> --client muse' "$MUSE_SETUP_OUT"; then
+  fail "muse next steps must mention agent-deck use <deck> --client muse"
+fi
+if ! grep -q '/mcp' "$MUSE_SETUP_OUT"; then
+  fail "muse next steps must mention /mcp verification"
+fi
+if ! grep -qi 'workspace trust' "$MUSE_SETUP_OUT"; then
+  fail "muse next steps must mention workspace trust"
+fi
+if ! grep -q 'new Muse process' "$MUSE_SETUP_OUT"; then
+  fail "muse next steps must mention starting a new Muse process"
+fi
+if ! grep -q 'get_session_context' "$MUSE_SETUP_OUT"; then
+  fail "muse next steps must mention the first-turn get_session_context receipt"
+fi
+pass "muse next steps cover use, trust, reload, /mcp, and receipt"
+
+# Idempotent: second run changes no Muse bytes.
+MUSE_BEFORE="$LOG_DIR/release-smoke-muse-before.sha"
+(find "$SMOKE_HOME/.config/muse" -type f -exec sha256sum {} + | sort) >"$MUSE_BEFORE"
+if ! node "$CLI_DIST/bin.js" setup --client muse --no-menubar >"$MUSE_SETUP_OUT" 2>&1; then
+  cat "$MUSE_SETUP_OUT" >>"$LOG"
+  fail "second setup --client muse failed (see $MUSE_SETUP_OUT)"
+fi
+MUSE_AFTER="$LOG_DIR/release-smoke-muse-after.sha"
+(find "$SMOKE_HOME/.config/muse" -type f -exec sha256sum {} + | sort) >"$MUSE_AFTER"
+if ! cmp -s "$MUSE_BEFORE" "$MUSE_AFTER"; then
+  fail "second setup --client muse changed Muse files (must be idempotent)"
+fi
+pass "second muse setup changed no bytes"
+
+# --- 5e. CLI help + docs show the Muse flow and deny a status line/plugin ---
+HELP_OUT="$LOG_DIR/release-smoke-help.log"
+node "$CLI_DIST/bin.js" setup --help >"$HELP_OUT" 2>&1 || fail "setup --help failed"
+if ! grep -q 'agent-deck setup --client muse' "$HELP_OUT"; then
+  fail "CLI help must show agent-deck setup --client muse"
+fi
+if ! grep -q 'No Muse status line' "$HELP_OUT"; then
+  fail "CLI help must state there is no Muse status line"
+fi
+if grep -qE 'Muse status line installed|install the Muse plugin|Muse plugin marketplace' "$HELP_OUT"; then
+  fail "CLI help must not claim a Muse status line or plugin install"
+fi
+pass "CLI help shows muse setup and denies status line/plugin"
+
+README="$ROOT_DIR/README.md"
+HARNESS_DOC="$ROOT_DIR/docs/AGENT_HARNESS.md"
+for doc in "$README" "$HARNESS_DOC"; do
+  if ! grep -q 'agent-deck setup --client muse' "$doc"; then
+    fail "$doc must show agent-deck setup --client muse"
+  fi
+  if ! grep -q 'agent-deck use.*--client muse' "$doc"; then
+    fail "$doc must show agent-deck use <deck> --client muse"
+  fi
+  if ! grep -q '/mcp' "$doc"; then
+    fail "$doc must mention /mcp verification"
+  fi
+  if ! grep -q 'get_session_context' "$doc"; then
+    fail "$doc must mention the first-turn get_session_context receipt"
+  fi
+  if ! grep -qi 'no .*muse status line\|muse has no .*status line\|there is no muse status line' "$doc"; then
+    fail "$doc must state there is no Muse status line"
+  fi
+  if grep -qE 'Muse status line installed|install the Muse plugin|Muse plugin marketplace' "$doc"; then
+    fail "$doc must not claim a Muse status line or plugin install"
+  fi
+done
+if ! grep -q -- '--scope project' "$README"; then
+  fail "README must show optional --scope project for muse"
+fi
+pass "README + AGENT_HARNESS show the muse flow without status line/plugin claims"
+
+# --- 5f. Menubar plugin script contract (any OS; setup skips non-macOS) ---
 MENUBAR_DIR="$SMOKE_HOME/swiftbar-plugins"
 mkdir -p "$MENUBAR_DIR"
 export AGENT_DECK_SWIFTBAR_DIR="$MENUBAR_DIR"
