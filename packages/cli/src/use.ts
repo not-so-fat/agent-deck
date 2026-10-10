@@ -31,7 +31,7 @@ import {
   isHomeStoreWriteError,
 } from './home-write';
 
-export type UseClientTarget = 'cursor' | 'claude' | 'both';
+export type UseClientTarget = 'cursor' | 'claude' | 'muse' | 'both';
 
 export interface UseOptions {
   deckRef?: string;
@@ -92,7 +92,7 @@ function parseUseClient(value: string | undefined): UseClientTarget | null {
   if (!value || value === 'both') {
     return 'both';
   }
-  if (value === 'cursor' || value === 'claude') {
+  if (value === 'cursor' || value === 'claude' || value === 'muse') {
     return value;
   }
   return null;
@@ -113,7 +113,7 @@ export function parseUseArgs(args: string[]): UseOptions | { error: string } {
     } else if (arg === '--client') {
       const parsed = parseUseClient(args[++i]);
       if (!parsed) {
-        return { error: '--client must be cursor, claude, or both' };
+        return { error: '--client must be cursor, claude, muse, or both' };
       }
       clients = parsed;
     } else if (arg === '--host') {
@@ -159,7 +159,18 @@ function clientsToWrite(target: UseClientTarget): McpClient[] {
   if (target === 'claude') {
     return ['claude'];
   }
+  if (target === 'muse') {
+    return ['muse'];
+  }
   return ['cursor', 'claude'];
+}
+
+/** Muse writes no Cursor- or Claude-only stub files; legacy `both` still covers both. */
+function stubTargets(target: UseClientTarget): { cursor: boolean; claude: boolean } {
+  return {
+    cursor: target === 'cursor' || target === 'both',
+    claude: target === 'claude' || target === 'both',
+  };
 }
 
 function writeProjectMcpConfigs(
@@ -230,10 +241,7 @@ async function runUseWorkspaceOnlyRepair(
   }
   ensureGitExcluded(parsed.workspaceRoot);
   const stubs = emptyStubSync(parsed.workspaceRoot);
-  const cleanup = cleanupLegacyStubs(parsed.workspaceRoot, {
-    cursor: parsed.clients !== 'claude',
-    claude: parsed.clients !== 'cursor',
-  });
+  const cleanup = cleanupLegacyStubs(parsed.workspaceRoot, stubTargets(parsed.clients));
   if ('error' in cleanup) {
     return cleanup;
   }
@@ -293,14 +301,8 @@ async function runUseFullPath(
     }
   }
 
-  const stubs = syncPlaybookStubs(parsed.workspaceRoot, playbooks, {
-    cursor: parsed.clients !== 'claude',
-    claude: parsed.clients !== 'cursor',
-  });
-  const cleanup = cleanupLegacyStubs(parsed.workspaceRoot, {
-    cursor: parsed.clients !== 'claude',
-    claude: parsed.clients !== 'cursor',
-  });
+  const stubs = syncPlaybookStubs(parsed.workspaceRoot, playbooks, stubTargets(parsed.clients));
+  const cleanup = cleanupLegacyStubs(parsed.workspaceRoot, stubTargets(parsed.clients));
   if ('error' in cleanup) {
     return cleanup;
   }
@@ -396,7 +398,7 @@ export async function runUseCommand(args: string[]): Promise<number> {
   if ('error' in parsed) {
     if (parsed.error === 'help') {
       console.log(`Usage:
-  agent-deck use <deck> [--client cursor|claude|both] [--host HOST] [--mcp-port PORT] [--no-mcp]
+  agent-deck use <deck> [--client cursor|claude|muse|both] [--host HOST] [--mcp-port PORT] [--no-mcp]
   agent-deck use --refresh
 
 Writes project MCP config (one agent-deck entry), .agent-deck/use.json, and thin playbook trigger stubs.

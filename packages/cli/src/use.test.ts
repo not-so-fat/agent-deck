@@ -60,6 +60,22 @@ describe('agent-deck use', () => {
     expect(parseUseArgs(['--refresh'])).toMatchObject({ refresh: true });
   });
 
+  it.each([
+    { args: ['dev'], clients: 'both' },
+    { args: ['dev', '--client', 'cursor'], clients: 'cursor' },
+    { args: ['dev', '--client', 'claude'], clients: 'claude' },
+    { args: ['dev', '--client', 'muse'], clients: 'muse' },
+    { args: ['dev', '--client', 'both'], clients: 'both' },
+  ])('NOT-387: parseUseArgs accepts --client $clients', ({ args, clients }) => {
+    expect(parseUseArgs(args)).toMatchObject({ deckRef: 'dev', clients });
+  });
+
+  it('NOT-387: parseUseArgs rejects unknown clients', () => {
+    expect(parseUseArgs(['dev', '--client', 'codex'])).toEqual({
+      error: '--client must be cursor, claude, muse, or both',
+    });
+  });
+
   it('writes v3 assignment and exclude lines without per-playbook stubs or grant endpoints', async () => {
     const workspace = makeWorkspace();
     execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
@@ -418,6 +434,75 @@ describe('agent-deck use', () => {
     };
     expect(mcp.mcpServers['agent-deck']?.env?.AGENT_DECK_WORKSPACE).toBe(workspace);
     expect(createCollectionAdminMock).toHaveBeenCalled();
+  });
+
+  it('NOT-387: use --client muse writes use.json plus .mcp.json only, idempotently', async () => {
+    const workspace = makeWorkspace();
+    execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
+    const fakeHome = makeWorkspace();
+    const fakeXdg = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = fakeXdg;
+
+    const parsed = parseUseArgs(['dev', '--client', 'muse']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const first = await runUse({ ...parsed, workspaceRoot: workspace });
+      expect('error' in first).toBe(false);
+      if ('error' in first) {
+        return;
+      }
+
+      expect(first.deck).toEqual({ id: 'deck-1', name: 'dev' });
+      expect(first.mcp).toEqual([{ client: 'muse', path: path.join(workspace, '.mcp.json') }]);
+
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),
+      ) as { version: number; deckId: string; deckName: string };
+      expect(manifest.version).toBe(3);
+      expect(manifest.deckId).toBe('deck-1');
+      expect(manifest.deckName).toBe('dev');
+
+      const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      // Exact launcher fields only — toEqual fails on any extra field.
+      expect(mcp.mcpServers['agent-deck']).toEqual({
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: {
+          AGENT_DECK_MCP_PORT: String(parsed.mcpPort),
+          AGENT_DECK_HOST: parsed.host,
+        },
+      });
+
+      // No Cursor- or Claude-only files, and no other host configs touched.
+      expect(fs.existsSync(path.join(workspace, '.cursor'))).toBe(false);
+      expect(fs.existsSync(path.join(workspace, '.claude'))).toBe(false);
+      expect(fs.existsSync(path.join(fakeHome, '.cursor', 'mcp.json'))).toBe(false);
+      expect(fs.existsSync(path.join(fakeXdg, 'muse', 'settings.json'))).toBe(false);
+
+      const useJsonBefore = fs.readFileSync(
+        path.join(workspace, '.agent-deck', 'use.json'),
+        'utf8',
+      );
+      const mcpBefore = fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8');
+      const second = await runUse({ ...parsed, workspaceRoot: workspace });
+      expect('error' in second).toBe(false);
+      expect(
+        fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),
+      ).toBe(useJsonBefore);
+      expect(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8')).toBe(mcpBefore);
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+    }
   });
 
   it('exits with an explicit sandbox/home-write message when the home store is required', async () => {

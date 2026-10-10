@@ -356,3 +356,217 @@ describe('setup statusline defaults', () => {
   },
   );
 });
+
+describe('NOT-387 muse setup', () => {
+  const MUSE_ARGS = [
+    '--client',
+    'muse',
+    '--scope',
+    'global',
+    '--host',
+    '127.0.0.1',
+    '--mcp-port',
+    '1110',
+    '--no-statusline',
+    '--no-menubar',
+  ];
+
+  async function runWithXdg(
+    xdg: string | undefined,
+    home: string,
+    args: string[],
+  ): Promise<{ code: number; logged: string }> {
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    if (xdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = xdg;
+    vi.spyOn(os, 'homedir').mockReturnValue(home);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const code = await runSetup(args);
+      return { code, logged: log.mock.calls.flat().join('\n') };
+    } finally {
+      log.mockRestore();
+      vi.restoreAllMocks();
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+    }
+  }
+
+  it('skips status line for Muse by default and honors explicit flags', () => {
+    expect(resolveSetupStatusline('muse')).toBe(false);
+    expect(resolveSetupStatusline('muse', false)).toBe(false);
+    expect(resolveSetupStatusline('muse', true)).toBe(true);
+    expect(resolveSetupMenubar('muse', false)).toBe(false);
+  });
+
+  it('lists muse in the missing-client error and keeps claude-desktop project rejected', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await runSetup(['--scope', 'global', '--no-menubar'])).toBe(1);
+      expect(error.mock.calls.flat().join('\n')).toContain('muse');
+      error.mockClear();
+      expect(
+        await runSetup(['--client', 'claude-desktop', '--scope', 'project', '--no-menubar']),
+      ).toBe(1);
+      expect(error.mock.calls.flat().join('\n')).toContain('--scope project is only supported');
+    } finally {
+      error.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  it('writes global Muse settings through XDG_CONFIG_HOME idempotently', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-home-'));
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-xdg-'));
+    const settingsPath = path.join(tmpXdg, 'muse', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      `${JSON.stringify(
+        {
+          theme: 'dark',
+          mcpServers: {
+            memory: { command: 'npx', args: ['-y', 'memory'] },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    try {
+      const first = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
+      expect(first.code).toBe(0);
+      expect(first.logged).toContain('Restart Muse so the agent-deck MCP server loads');
+      expect(first.logged).toContain('MCP endpoint → http://127.0.0.1:1110/mcp');
+      const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+      // Unrelated settings and servers survive parsing byte-equivalent.
+      expect(written.theme).toBe('dark');
+      expect((written.mcpServers as Record<string, unknown>).memory).toEqual({
+        command: 'npx',
+        args: ['-y', 'memory'],
+      });
+      expect(written.schema_version).toBe(1);
+      // Exact launcher fields only — toEqual fails on any extra field.
+      expect((written.mcpServers as Record<string, unknown>)['agent-deck']).toEqual({
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+      });
+      // No Muse files leak into the mocked home.
+      expect(fs.existsSync(path.join(tmpHome, '.config', 'muse', 'settings.json'))).toBe(false);
+
+      const beforeSecond = fs.readFileSync(settingsPath, 'utf8');
+      const second = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
+      expect(second.code).toBe(0);
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe(beforeSecond);
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to ~/.config/muse when XDG_CONFIG_HOME is unset', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-fallback-'));
+    const settingsPath = path.join(tmpHome, '.config', 'muse', 'settings.json');
+    try {
+      const { code } = await runWithXdg(undefined, tmpHome, MUSE_ARGS);
+      expect(code).toBe(0);
+      const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+      expect(written.schema_version).toBe(1);
+      expect((written.mcpServers as Record<string, unknown>)['agent-deck']).toEqual({
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+      });
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('merges project .mcp.json and leaves other project servers unchanged', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-project-'));
+    const mcpPath = path.join(workspace, '.mcp.json');
+    fs.writeFileSync(
+      mcpPath,
+      `${JSON.stringify({ mcpServers: { memory: { command: 'npx', args: ['-y', 'memory'] } } }, null, 2)}\n`,
+    );
+    const args = [
+      '--client',
+      'muse',
+      '--scope',
+      'project',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await runSetup(args)).toBe(0);
+      const written = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>;
+      expect(written).toEqual({
+        mcpServers: {
+          memory: { command: 'npx', args: ['-y', 'memory'] },
+          'agent-deck': {
+            command: 'agent-deck',
+            args: ['mcp-launch'],
+            env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+          },
+        },
+      });
+      // No harness or global files for Muse project setup.
+      expect(fs.existsSync(path.join(workspace, '.cursor'))).toBe(false);
+      expect(fs.existsSync(path.join(workspace, 'CLAUDE.md'))).toBe(false);
+
+      const beforeSecond = fs.readFileSync(mcpPath, 'utf8');
+      expect(await runSetup(args)).toBe(0);
+      expect(fs.readFileSync(mcpPath, 'utf8')).toBe(beforeSecond);
+    } finally {
+      cwd.mockRestore();
+      log.mockRestore();
+      vi.restoreAllMocks();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves settings untouched and exits 1 on an incompatible schema_version', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-schema-'));
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-sxdg-'));
+    const settingsPath = path.join(tmpXdg, 'muse', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const original = `${JSON.stringify(
+      {
+        schema_version: 2,
+        mcpServers: { memory: { command: 'npx', args: ['-y', 'memory'] } },
+      },
+      null,
+      2,
+    )}\n`;
+    fs.writeFileSync(settingsPath, original);
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await runSetup(MUSE_ARGS)).toBe(1);
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe(original);
+      const errored = error.mock.calls.flat().join('\n');
+      expect(errored).toContain(settingsPath);
+      expect(errored).toContain('expected 1');
+    } finally {
+      error.mockRestore();
+      log.mockRestore();
+      vi.restoreAllMocks();
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+});
