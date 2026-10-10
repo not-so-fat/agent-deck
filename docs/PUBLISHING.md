@@ -74,7 +74,7 @@ npx @agent-deck/cli start
 # opens dashboard with a secure session; --no-open for headless
 ```
 
-**Release integration smoke** (`scripts/release-smoke.sh`) simulates what a user gets from npm: pack CLI, `setup --client claude` in a clean `HOME`, assert `statusline.sh` + `settings.json` exist, stdout is one clean line. Playbook: [examples/playbooks/npm-release-integration-smoke.md](./examples/playbooks/npm-release-integration-smoke.md).
+**Release integration smoke** (`scripts/release-smoke.sh`) simulates what a user gets from npm: pack CLI, verify the tarball ships `dist/muse-skills/*/SKILL.md` byte-identical to root `skills/*/SKILL.md`, run `setup --client claude` and `setup --client muse` in a clean `HOME`, assert `statusline.sh` + `settings.json` plus Muse MCP settings + three managed skills exist, stdout is one clean line. Playbook: [examples/playbooks/npm-release-integration-smoke.md](./examples/playbooks/npm-release-integration-smoke.md).
 
 Dashboard: opened by `start` / `agent-deck open`; `status` never prints the disposable bootstrap URL (API listens on `http://127.0.0.1:1111`)
 MCP: `http://127.0.0.1:1110/mcp`
@@ -124,12 +124,12 @@ Users still run **`npx @agent-deck/cli start`** locally — the registry entry d
 
 ## Distribution (what users install)
 
-Agent Deck is **one engine** (`@agent-deck/cli`). Deck **display** is **terminal-only** (Claude Code / Cursor CLI prompt footer via `statusLine`).
+Agent Deck is **one engine** (`@agent-deck/cli`). Deck **display** is **terminal-only** (Claude Code / Cursor CLI prompt footer via `statusLine`; Muse has no status line).
 
 | Artifact | Required? | Channel | What it does |
 |----------|-----------|---------|--------------|
-| **`@agent-deck/cli`** | **Yes** | npm | Backend API, MCP server, dashboard, vault, `setup`, `start`, `credential`, `exec` |
-| **CLI status line** | No (default on) | `~/.cursor/cli-config.json` or `~/.claude/settings.json` | Prompt footer for **terminal** agents only |
+| **`@agent-deck/cli`** | **Yes** | npm | Backend API, MCP server, dashboard, vault, `setup`, `start`, `credential`, `exec` (ships `dist/muse-skills/*/SKILL.md` copied from root `skills/` at build) |
+| **CLI status line** | No (default on for Cursor/Claude) | `~/.cursor/cli-config.json` or `~/.claude/settings.json` | Prompt footer for **terminal** agents only (not Muse) |
 
 ### User paths
 
@@ -144,6 +144,8 @@ Writes MCP config, starts backend, and (by default) installs the terminal status
 **Claude Code / Cursor CLI terminal:** status line appears above the prompt when the host runs `statusLine.command` (see [PRD_DECK_DISPLAY.md](./PRD_DECK_DISPLAY.md)).
 
 **Cursor IDE Agent chat:** no deck display API — use MCP `get_session_binding` or dashboard. Out of scope.
+
+**Muse:** no status line or plugin install. `agent-deck setup --client muse` writes MCP + native bootstrap skills; `--scope project` merges root `AGENTS.md` (workspace trust required). Start a new Muse process after setup and verify `/mcp` shows `agent-deck`.
 
 **Monorepo contributors:** `npm run dev:all` instead of `agent-deck start`; statusline tries API port `8000` then `1111`.
 
@@ -174,8 +176,10 @@ claude mcp add --scope user agent-deck -- agent-deck mcp-launch
 | Claude Code | `agent-deck setup --client claude` (uses `claude mcp add` with the stdio `mcp-launch` bridge → `~/.claude.json`; fallback writes the same entry — **not** `settings.json`) |
 | Claude Code (project) | `agent-deck setup --client claude --scope project` → `.mcp.json` |
 | Claude Desktop | `agent-deck setup --client claude-desktop` (Agent Deck's built-in stdio bridge) |
+| Muse (global) | `agent-deck setup --client muse` → MCP settings + three native bootstrap skills (no status line, no plugin) |
+| Muse (project) | `agent-deck setup --client muse --scope project` → `.mcp.json` + root `AGENTS.md` merge (trust the workspace) |
 
-Add `--start` to launch Agent Deck after writing config.
+Add `--start` to launch Agent Deck after writing config. Per-repo assignment: `agent-deck use <deck> --client muse`. After Muse setup, start a new Muse process and check `/mcp`; the first turn calls `get_session_context` once and shows exactly one verbatim `display_summary` line.
 
 ### Managed install + auto-upgrade
 

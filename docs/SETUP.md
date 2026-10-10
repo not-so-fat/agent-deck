@@ -95,9 +95,10 @@ npm link -w @agent-deck/cli   # optional: `agent-deck` on PATH → local build
 npm run setup:dev -- --client cursor --start
 npm run setup:dev -- --client claude
 npm run setup:dev -- --client codex
+npm run setup:dev -- --client muse
 ```
 
-On **macOS**, `setup` now **defaults to menubar** (SwiftBar plugin + status line + MCP + harness):
+On **macOS**, `setup` now **defaults to menubar** (SwiftBar plugin + status line where supported + MCP + harness):
 
 - Interactive terminal: tries `brew install --cask swiftbar` when SwiftBar is missing
 - Sets SwiftBar’s plugin folder via `defaults write` (no manual Preferences step)
@@ -114,6 +115,7 @@ curl -fsSL https://raw.githubusercontent.com/not-so-fat/agent_deck/main/scripts/
 export PATH="$HOME/.local/bin:$PATH"
 agent-deck setup --client cursor --start
 agent-deck setup --client codex
+agent-deck setup --client muse
 
 # One-shot without curl:
 # npx @agent-deck/cli@latest install && npx @agent-deck/cli@latest setup --client cursor --start
@@ -125,7 +127,17 @@ See [PUBLISHING.md](./PUBLISHING.md) and [README](../README.md). Design: [manage
 
 ### IDE deck indicator (optional)
 
-MCP alone does **not** show the bound deck in Cursor IDE Agent chat. Terminal status line (Claude Code / Cursor CLI footer) is installed by default via `setup` — see [Distribution](./PUBLISHING.md#distribution-what-users-install).
+MCP alone does **not** show the bound deck in Cursor IDE Agent chat. Terminal status line (Claude Code / Cursor CLI footer) is installed by default via `setup` — see [Distribution](./PUBLISHING.md#distribution-what-users-install). Muse has no Agent Deck status line.
+
+### Muse (global skills + project AGENTS.md)
+
+```bash
+agent-deck setup --client muse                 # once: MCP + native bootstrap skills
+agent-deck setup --client muse --scope project # optional: merge root AGENTS.md in this repo
+agent-deck use my-deck --client muse           # optional per repo: .mcp.json + .agent-deck/use.json
+```
+
+Global skills live under `$XDG_CONFIG_HOME/muse/skills/agent-deck-*/SKILL.md` (fallback `~/.config/muse/skills/`). Project `AGENTS.md` loads only after workspace trust — accept trust when Muse prompts, then **start a new Muse process** (restart Muse) so MCP + skills reload. Verify with `/mcp` (`agent-deck` should appear). First turn: the agent calls `get_session_context` once and shows exactly one verbatim `display_summary` line. There is no Muse status line or plugin install — do not expect a terminal footer.
 
 ## Ports
 

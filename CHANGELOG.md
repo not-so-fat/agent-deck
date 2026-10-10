@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Feature: Muse bootstrap skills + project harness (NOT-388)
+
+- `agent-deck setup --client muse` now installs the MCP transport plus the three canonical native bootstrap skills (`agent-deck-session`, `agent-deck-playbooks`, `agent-deck-setup`) from the CLI release artifact into `$XDG_CONFIG_HOME/muse/skills/` (fallback `~/.config/muse/skills/`). Managed copies carry an `agent-deck:managed-skill` stamp; setup creates missing skills, refreshes stale managed skills, leaves current skills unchanged, and fails with the collision path instead of overwriting a same-name user-authored skill.
+- `agent-deck setup --client muse --scope project` marker-merges the full current harness into root `AGENTS.md`, preserving bytes outside the managed markers (Muse loads it after workspace trust).
+- `agent-deck status` and `doctor` report Muse as current only when all three managed skills are present and current, naming the affected `SKILL.md` and `agent-deck setup --client muse` otherwise.
+- The published `@agent-deck/cli` tarball ships `dist/muse-skills/*/SKILL.md` copied from root `skills/` at build (no second hand-maintained copy); `scripts/release-smoke.sh` asserts tarball fidelity plus clean-home Muse setup.
+- After setup, trust the workspace, start a new Muse process so MCP + skills reload, verify `/mcp` shows `agent-deck`, and expect the first turn to call `get_session_context` once with exactly one verbatim `display_summary` line. There is no Muse status line or plugin install.
+
 ## 2.0.0 — 2026-10-08
 
 ### Feature: deck operating instructions (NOT-374, NOT-375, NOT-376, NOT-377, NOT-379)

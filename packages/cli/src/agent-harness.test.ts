@@ -9,6 +9,7 @@ import {
   buildCodexHarnessBlock,
   buildCursorHarnessFile,
   buildCursorHarnessInner,
+  buildMuseHarnessBlock,
   CURSOR_RULE_FILENAME,
   diagnoseAllHarnesses,
   diagnoseHarness,
@@ -326,6 +327,7 @@ describe('NOT-189 one-call session context bootstrap', () => {
     buildClaudeHarnessBlock('global'),
     buildClaudeHarnessBlock('project'),
     buildCodexHarnessBlock('global'),
+    buildMuseHarnessBlock('project'),
     buildCursorHarnessFile('global'),
     buildCursorHarnessFile('project'),
   ];
@@ -364,6 +366,7 @@ describe('NOT-206 static runtime discovery', () => {
     buildClaudeHarnessBlock('global'),
     buildClaudeHarnessBlock('project'),
     buildCodexHarnessBlock('global'),
+    buildMuseHarnessBlock('project'),
     buildCursorHarnessFile('global'),
     buildCursorHarnessFile('project'),
   ];
@@ -539,6 +542,7 @@ describe('NOT-295 canonical session receipt', () => {
     ['claude/project', buildClaudeHarnessBlock('project')],
     ['codex/global', buildCodexHarnessBlock('global')],
     ['codex/project', buildCodexHarnessBlock('project')],
+    ['muse/project', buildMuseHarnessBlock('project')],
   ];
 
   it('requires get_session_context before repo reads/task commands with exactly one verbatim display_summary line', () => {
@@ -601,12 +605,16 @@ describe('NOT-295 canonical session receipt', () => {
 describe('NOT-295 harness freshness diagnostic', () => {
   let tmpHome: string | undefined;
   let previousCodexHome: string | undefined;
+  let previousXdg: string | undefined;
 
   afterEach(() => {
     vi.restoreAllMocks();
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousCodexHome;
     previousCodexHome = undefined;
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+    previousXdg = undefined;
     if (tmpHome) {
       fs.rmSync(tmpHome, { recursive: true, force: true });
       tmpHome = undefined;
@@ -617,6 +625,8 @@ describe('NOT-295 harness freshness diagnostic', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-diagnose-'));
     previousCodexHome = process.env.CODEX_HOME;
     delete process.env.CODEX_HOME;
+    previousXdg = process.env.XDG_CONFIG_HOME;
+    delete process.env.XDG_CONFIG_HOME;
     vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
     return tmpHome;
   }
@@ -676,15 +686,16 @@ describe('NOT-295 harness freshness diagnostic', () => {
   it('diagnoseAllHarnesses reports every client in one read-only pass', () => {
     useTmpHome();
     const all = diagnoseAllHarnesses('global');
-    expect(all.map((diagnosis) => diagnosis.client)).toEqual(['cursor', 'claude', 'codex']);
+    expect(all.map((diagnosis) => diagnosis.client)).toEqual(['cursor', 'claude', 'codex', 'muse']);
     expect(all.every((diagnosis) => diagnosis.status === 'missing')).toBe(true);
     expect(all.map((diagnosis) => diagnosis.repairCommand)).toEqual([
       'agent-deck setup --client cursor',
       'agent-deck setup --client claude',
       'agent-deck setup --client codex',
+      'agent-deck setup --client muse',
     ]);
     const joined = formatHarnessDiagnosis(all, { color: false }).join('\n');
-    expect(joined).toContain('3 repairs needed');
+    expect(joined).toContain('4 repairs needed');
     expect(joined).toContain('Restart each repaired host');
   });
 
@@ -700,6 +711,10 @@ describe('NOT-295 harness freshness diagnostic', () => {
         'exactly one transcript line',
       );
     }
+    const museInstalled = installAgentHarness('muse', 'global');
+    expect(museInstalled.installed).toBe(true);
+    expect(museInstalled.action).toBe('created');
+    expect(diagnoseHarness('muse', 'global').status).toBe('current');
     const joined = formatHarnessDiagnosis(diagnoseAllHarnesses('global'), { color: false }).join('\n');
     expect(joined).toBe('Agent harness: all current');
   });
@@ -727,6 +742,7 @@ describe('NOT-375 deck operating instructions contract', () => {
     ['claude/project', buildClaudeHarnessBlock('project')],
     ['codex/global', buildCodexHarnessBlock('global')],
     ['codex/project', buildCodexHarnessBlock('project')],
+    ['muse/project', buildMuseHarnessBlock('project')],
   ];
 
   it('first turn reads and follows the non-empty deck instructions', () => {
@@ -773,5 +789,193 @@ describe('NOT-375 deck operating instructions contract', () => {
       expect(text, label).not.toContain('create execution tickets');
       expect(text, label).not.toContain('SMOKE-');
     }
+  });
+});
+
+describe('NOT-388 muse project harness (AGENTS.md marker merge)', () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  function useTmpCwd(): string {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-muse-harness-'));
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    return tmpDir;
+  }
+
+  it('merges the full current harness into root AGENTS.md', () => {
+    const cwd = useTmpCwd();
+    expect(resolveHarnessPath('muse', 'project')).toBe(path.join(cwd, 'AGENTS.md'));
+    const result = installAgentHarness('muse', 'project');
+    expect(result.installed).toBe(true);
+    expect(result.action).toBe('created');
+    const written = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
+    expect(written).toContain(HARNESS_MARKER_START);
+    expect(written).toContain(HARNESS_MARKER_END);
+    expect(written).toContain(buildMuseHarnessBlock('project'));
+    // First-turn receipt plus deck operating-instructions contract.
+    expect(written).toContain('call `get_session_context` once');
+    expect(written).toContain('exactly one transcript line');
+    expect(written).toContain('display_summary');
+    expect(written).toContain('Deck operating instructions');
+    expect(written).toContain('`operatingInstructions`');
+    expect(written).toContain('stop applying immediately');
+  });
+
+  it('preserves content before and after the managed block and is idempotent', () => {
+    const cwd = useTmpCwd();
+    const target = path.join(cwd, 'AGENTS.md');
+    fs.writeFileSync(target, '# Team conventions\n\nKeep this.\n', 'utf8');
+    const first = installAgentHarness('muse', 'project');
+    expect(first.action).toBe('updated');
+    const written = fs.readFileSync(target, 'utf8');
+    expect(written).toContain('# Team conventions');
+    expect(written).toContain('Keep this.');
+
+    fs.writeFileSync(target, `${written}\n# Footer notes\n`, 'utf8');
+    const second = installAgentHarness('muse', 'project');
+    expect(second.action).toBe('unchanged');
+    const afterSecond = fs.readFileSync(target, 'utf8');
+    expect(afterSecond).toContain('# Team conventions');
+    expect(afterSecond).toContain('# Footer notes');
+
+    const third = installAgentHarness('muse', 'project');
+    expect(third.action).toBe('unchanged');
+    expect(fs.readFileSync(target, 'utf8')).toBe(afterSecond);
+  });
+
+  it('refreshes a stale managed block byte-for-byte outside the markers', () => {
+    const cwd = useTmpCwd();
+    const target = path.join(cwd, 'AGENTS.md');
+    const before = '# Team conventions\n\n\n';
+    const after = '\n\n\n# More notes';
+    fs.writeFileSync(
+      target,
+      `${before}${HARNESS_MARKER_START}\nold harness\n${HARNESS_MARKER_END}${after}`,
+      'utf8',
+    );
+    const result = installAgentHarness('muse', 'project');
+    expect(result.action).toBe('updated');
+    const written = fs.readFileSync(target, 'utf8');
+    expect(written.slice(0, written.indexOf(HARNESS_MARKER_START))).toBe(before);
+    expect(
+      written.slice(written.indexOf(HARNESS_MARKER_END) + HARNESS_MARKER_END.length),
+    ).toBe(after);
+    expect(written).not.toContain('old harness');
+    expect(written).toContain('exactly one transcript line');
+    const repeat = installAgentHarness('muse', 'project');
+    expect(repeat.action).toBe('unchanged');
+    expect(fs.readFileSync(target, 'utf8')).toBe(written);
+  });
+
+  it('diagnoses project AGENTS.md as missing, stale, or current without writing', () => {
+    const cwd = useTmpCwd();
+    const target = path.join(cwd, 'AGENTS.md');
+    const missing = diagnoseHarness('muse', 'project');
+    expect(missing.status).toBe('missing');
+    expect(missing.path).toBe(target);
+    expect(missing.repairCommand).toBe('agent-deck setup --client muse');
+    expect(fs.existsSync(target)).toBe(false);
+
+    fs.writeFileSync(
+      target,
+      `# Notes\n\n${HARNESS_MARKER_START}\nold\n${HARNESS_MARKER_END}\n`,
+      'utf8',
+    );
+    const stale = diagnoseHarness('muse', 'project');
+    expect(stale.status).toBe('stale');
+    expect(stale.path).toBe(target);
+    expect(stale.repairCommand).toBe('agent-deck setup --client muse');
+
+    expect(installAgentHarness('muse', 'project').action).toBe('updated');
+    expect(diagnoseHarness('muse', 'project').status).toBe('current');
+  });
+});
+
+describe('NOT-388 muse global skills diagnosis', () => {
+  let tmpHome: string | undefined;
+  let tmpXdg: string | undefined;
+  let previousXdg: string | undefined;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousXdg;
+    previousXdg = undefined;
+    if (tmpHome) {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      tmpHome = undefined;
+    }
+    if (tmpXdg) {
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+      tmpXdg = undefined;
+    }
+  });
+
+  function useTmpXdg(): { home: string; xdg: string } {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-muse-diag-home-'));
+    tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-muse-diag-xdg-'));
+    previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    return { home: tmpHome, xdg: tmpXdg };
+  }
+
+  it('reports missing with the affected path and exact repair command, creating nothing', () => {
+    const { xdg } = useTmpXdg();
+    const diagnosis = diagnoseHarness('muse', 'global');
+    expect(diagnosis.status).toBe('missing');
+    expect(diagnosis.repairCommand).toBe('agent-deck setup --client muse');
+    expect(diagnosis.path).toBe(
+      path.join(xdg, 'muse', 'skills', 'agent-deck-session', 'SKILL.md'),
+    );
+    expect(fs.existsSync(path.join(xdg, 'muse', 'skills'))).toBe(false);
+    const joined = formatHarnessDiagnosis([diagnosis], { color: false, homeDir: '/not-home' }).join(
+      '\n',
+    );
+    expect(joined).toContain(`MISSING muse  ${diagnosis.path}`);
+    expect(joined).toContain('Run: agent-deck setup --client muse');
+  });
+
+  it('reports stale when any managed skill is outdated, naming the affected path', () => {
+    const { xdg } = useTmpXdg();
+    const installed = installAgentHarness('muse', 'global');
+    expect(installed.installed).toBe(true);
+    const stalePath = path.join(xdg, 'muse', 'skills', 'agent-deck-playbooks', 'SKILL.md');
+    const before = fs.readFileSync(stalePath, 'utf8');
+    expect(before).toContain('get_playbook');
+    expect(before).toContain('<!-- agent-deck:managed-skill -->');
+    fs.writeFileSync(stalePath, '# stale\n\n<!-- agent-deck:managed-skill -->\n', 'utf8');
+    const diagnosis = diagnoseHarness('muse', 'global');
+    expect(diagnosis.status).toBe('stale');
+    expect(diagnosis.path).toBe(stalePath);
+    expect(diagnosis.repairCommand).toBe('agent-deck setup --client muse');
+    const joined = formatHarnessDiagnosis([diagnosis], { color: false, homeDir: '/not-home' }).join(
+      '\n',
+    );
+    expect(joined).toContain(`STALE muse  ${stalePath}`);
+    expect(joined).toContain('Run: agent-deck setup --client muse');
+    // Read-only: the stale bytes are untouched by diagnosis.
+    expect(fs.readFileSync(stalePath, 'utf8')).toContain('# stale');
+  });
+
+  it('reports current only when all three managed skills are present and current', () => {
+    useTmpXdg();
+    expect(installAgentHarness('muse', 'global').installed).toBe(true);
+    expect(diagnoseHarness('muse', 'global').status).toBe('current');
+    // A user-authored collision flips the summary to stale without mutation.
+    const { xdg } = { xdg: tmpXdg as string };
+    const collisionPath = path.join(xdg, 'muse', 'skills', 'agent-deck-setup', 'SKILL.md');
+    fs.writeFileSync(collisionPath, '# user-authored\n', 'utf8');
+    const diagnosis = diagnoseHarness('muse', 'global');
+    expect(diagnosis.status).toBe('stale');
+    expect(diagnosis.path).toBe(collisionPath);
+    expect(fs.readFileSync(collisionPath, 'utf8')).toBe('# user-authored\n');
   });
 });

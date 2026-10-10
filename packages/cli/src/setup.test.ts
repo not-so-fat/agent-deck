@@ -438,7 +438,10 @@ describe('NOT-387 muse setup', () => {
     try {
       const first = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
       expect(first.code).toBe(0);
-      expect(first.logged).toContain('Restart Muse so the agent-deck MCP server loads');
+      expect(first.logged).toContain('Start a new Muse process');
+      expect(first.logged).toContain('/mcp');
+      expect(first.logged).toContain('workspace trust');
+      expect(first.logged).toContain('agent-deck use <deck> --client muse');
       expect(first.logged).toContain('MCP endpoint → http://127.0.0.1:1110/mcp');
       const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
       // Unrelated settings and servers survive parsing byte-equivalent.
@@ -462,6 +465,73 @@ describe('NOT-387 muse setup', () => {
       expect(second.code).toBe(0);
       expect(fs.readFileSync(settingsPath, 'utf8')).toBe(beforeSecond);
     } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-388: clean global muse setup installs three skills, second run changes nothing', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-skills-home-'));
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-skills-xdg-'));
+    const snapshot = (dir: string): Map<string, string> => {
+      const out = new Map<string, string>();
+      const walk = (current: string) => {
+        if (!fs.existsSync(current)) return;
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          const full = path.join(current, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else out.set(path.relative(dir, full), fs.readFileSync(full, 'utf8'));
+        }
+      };
+      walk(dir);
+      return out;
+    };
+    try {
+      const first = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
+      expect(first.code).toBe(0);
+      for (const id of ['agent-deck-session', 'agent-deck-playbooks', 'agent-deck-setup']) {
+        const skillPath = path.join(tmpXdg, 'muse', 'skills', id, 'SKILL.md');
+        expect(fs.existsSync(skillPath)).toBe(true);
+        const content = fs.readFileSync(skillPath, 'utf8');
+        expect(content).toContain(`name: ${id}`);
+        expect(content).toContain('<!-- agent-deck:managed-skill -->');
+      }
+      const before = snapshot(path.join(tmpXdg, 'muse'));
+      expect(before.size).toBeGreaterThanOrEqual(4); // settings.json + 3 skills
+      const second = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
+      expect(second.code).toBe(0);
+      expect(snapshot(path.join(tmpXdg, 'muse'))).toEqual(before);
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-388: muse skill collision exits 1, names the path, and leaves bytes unchanged', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-coll-home-'));
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-coll-xdg-'));
+    const collisionPath = path.join(tmpXdg, 'muse', 'skills', 'agent-deck-setup', 'SKILL.md');
+    fs.mkdirSync(path.dirname(collisionPath), { recursive: true });
+    const userBytes = '# My own setup notes\n\nKeep me.\n';
+    fs.writeFileSync(collisionPath, userBytes, 'utf8');
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await runSetup(MUSE_ARGS)).toBe(1);
+      const errored = error.mock.calls.flat().join('\n');
+      expect(errored).toContain(collisionPath);
+      expect(errored).toContain('agent-deck setup --client muse');
+      expect(fs.readFileSync(collisionPath, 'utf8')).toBe(userBytes);
+      expect(fs.existsSync(path.join(tmpXdg, 'muse', 'skills', 'agent-deck-session'))).toBe(false);
+    } finally {
+      error.mockRestore();
+      log.mockRestore();
+      vi.restoreAllMocks();
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
       fs.rmSync(tmpHome, { recursive: true, force: true });
       fs.rmSync(tmpXdg, { recursive: true, force: true });
     }
@@ -519,13 +589,21 @@ describe('NOT-387 muse setup', () => {
           },
         },
       });
-      // No harness or global files for Muse project setup.
+      // Project harness merges root AGENTS.md; no Cursor/Claude-only files.
       expect(fs.existsSync(path.join(workspace, '.cursor'))).toBe(false);
       expect(fs.existsSync(path.join(workspace, 'CLAUDE.md'))).toBe(false);
+      const agentsPath = path.join(workspace, 'AGENTS.md');
+      expect(fs.existsSync(agentsPath)).toBe(true);
+      const agents = fs.readFileSync(agentsPath, 'utf8');
+      expect(agents).toContain('<!-- agent-deck:harness:start -->');
+      expect(agents).toContain('call `get_session_context` once');
+      expect(agents).toContain('display_summary');
 
       const beforeSecond = fs.readFileSync(mcpPath, 'utf8');
+      const agentsBefore = fs.readFileSync(agentsPath, 'utf8');
       expect(await runSetup(args)).toBe(0);
       expect(fs.readFileSync(mcpPath, 'utf8')).toBe(beforeSecond);
+      expect(fs.readFileSync(agentsPath, 'utf8')).toBe(agentsBefore);
     } finally {
       cwd.mockRestore();
       log.mockRestore();
