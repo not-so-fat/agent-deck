@@ -215,8 +215,10 @@ Options:
   --no-menubar      Skip SwiftBar menu bar plugin (default: on for macOS)
   --menubar         Force menu bar plugin (also works alone, without --client)
 
-Setup installs host guidance, MCP config where the host owns it, terminal status line, and on macOS: SwiftBar plugin.
+Setup installs host guidance, MCP config where the host owns it, and on macOS: SwiftBar plugin.
+Terminal status line only for Cursor CLI and Claude Code (--statusline/--no-statusline).
 Codex MCP transport is supplied by the separately installed Agent Deck plugin; Codex setup merges AGENTS.md only.
+Muse global setup installs native bootstrap skills; --scope project merges root AGENTS.md (trust the workspace so Muse loads it). No Muse status line or plugin install.
 (+ Homebrew SwiftBar install when run interactively in a terminal).`);
 }
 
@@ -244,6 +246,10 @@ async function finishSetup(
   }
 
   const harness = installAgentHarness(client, scope);
+  if (harness.error) {
+    console.error(harness.error);
+    return 1;
+  }
   console.log(harness.message);
   if (!harness.installed && client === 'claude-desktop') {
     console.log('  See docs/AGENT_HARNESS.md if you also use Claude Code or Cursor.');
@@ -272,7 +278,7 @@ async function finishSetup(
     }
   }
 
-  printNextSteps(endpoint, shouldStart, client, withStatusline, withMenubar);
+  printNextSteps(endpoint, shouldStart, client, scope, withStatusline, withMenubar);
   return shouldStart ? 2 : 0;
 }
 
@@ -363,6 +369,7 @@ function printNextSteps(
   endpoint: McpEndpoint,
   shouldStart: boolean,
   client: SetupClient,
+  scope: SetupScope = 'global',
   withStatusline = false,
   withMenubar = false,
 ): void {
@@ -384,7 +391,15 @@ function printNextSteps(
   } else if (client === 'muse') {
     console.log(`  ${step}. MCP endpoint → ${buildMcpUrl(endpoint)}`);
     step += 1;
-    console.log(`  ${step}. Restart Muse so the agent-deck MCP server loads`);
+    if (scope === 'project') {
+      console.log(`  ${step}. Trust this workspace so Muse loads root AGENTS.md, then start a new Muse process so MCP + guidance reload`);
+    } else {
+      console.log(`  ${step}. Start a new Muse process so the agent-deck MCP server + bootstrap skills load (restart Muse)`);
+    }
+    step += 1;
+    console.log(`  ${step}. Run \`agent-deck use <deck> --client muse\` in each folder that needs a persistent assignment`);
+    step += 1;
+    console.log(`  ${step}. In Muse, \`/mcp\` should show agent-deck; accept workspace trust when prompted (no Agent Deck status line for Muse)`);
   } else {
     console.log(`  ${step}. MCP endpoint → ${buildMcpUrl(endpoint)}`);
     step += 1;

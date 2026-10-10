@@ -32,7 +32,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node ../../scripts/copy-muse-skills.mjs",
     "dev": "tsx src/bin.ts",
     "clean": "rm -rf dist",
     "type-check": "tsc --noEmit",

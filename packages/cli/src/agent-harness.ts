@@ -3,6 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { McpClient, SetupScope } from './mcp-config';
+import {
+  installMuseSkills,
+  resolveMuseSkillsDir,
+  summarizeMuseSkillsDiagnosis,
+} from './muse-skills';
 import { terminalColorsEnabled, terminalStyle } from './terminal-style';
 
 export type HarnessClient = McpClient | 'codex';
@@ -79,6 +84,11 @@ export function buildClaudeHarnessBlock(scope: SetupScope): string {
 
 /** Codex uses the same protocol guidance, merged into AGENTS.md. */
 export function buildCodexHarnessBlock(scope: SetupScope): string {
+  return buildClaudeHarnessBlock(scope);
+}
+
+/** Muse project scope merges the same full harness into root AGENTS.md. */
+export function buildMuseHarnessBlock(scope: SetupScope): string {
   return buildClaudeHarnessBlock(scope);
 }
 
@@ -171,6 +181,13 @@ export function resolveHarnessPath(client: HarnessClient, scope: SetupScope): st
     return scope === 'project' ? path.join(cwd, 'AGENTS.md') : path.join(codexHome, 'AGENTS.md');
   }
 
+  if (client === 'muse') {
+    if (scope === 'project') {
+      return path.join(cwd, 'AGENTS.md');
+    }
+    return resolveMuseSkillsDir(home);
+  }
+
   return null;
 }
 
@@ -179,6 +196,7 @@ export type HarnessInstallResult = {
   path?: string;
   action?: 'created' | 'updated' | 'unchanged';
   message: string;
+  error?: string;
 };
 
 function readTextFile(filePath: string): string {
@@ -197,11 +215,30 @@ function writeTextFile(filePath: string, content: string): void {
 }
 
 export function installAgentHarness(client: HarnessClient, scope: SetupScope): HarnessInstallResult {
-  if (client === 'muse') {
-    // NOT-387 writes MCP config only; Muse session guidance ships in NOT-388.
+  if (client === 'muse' && scope === 'global') {
+    const skills = installMuseSkills();
+    if (!skills.ok) {
+      return {
+        installed: false,
+        path: skills.collisionPath,
+        message: skills.error,
+        error: skills.error,
+      };
+    }
+    const values = Object.values(skills.actions);
+    const action = values.every((value) => value === 'unchanged')
+      ? 'unchanged'
+      : values.some((value) => value === 'updated')
+        ? 'updated'
+        : 'created';
     return {
-      installed: false,
-      message: 'Skipped agent harness for Muse (setup writes MCP config only).',
+      installed: true,
+      path: skills.dir,
+      action,
+      message:
+        action === 'unchanged'
+          ? `Muse skills already current → ${skills.dir}`
+          : `${skills.message} (other skills untouched)`,
     };
   }
   const harnessPath = resolveHarnessPath(client, scope);
@@ -209,7 +246,7 @@ export function installAgentHarness(client: HarnessClient, scope: SetupScope): H
     return {
       installed: false,
       message:
-        'Agent harness applies to Cursor, Claude Code, and Codex. For Claude Desktop, add the same snippets from docs/AGENT_HARNESS.md to your Claude Code global CLAUDE.md if you use both.',
+        'Agent harness applies to Cursor, Claude Code, Codex, and Muse. For Claude Desktop, add the same snippets from docs/AGENT_HARNESS.md to your Claude Code global CLAUDE.md if you use both.',
     };
   }
 
@@ -231,7 +268,12 @@ export function installAgentHarness(client: HarnessClient, scope: SetupScope): H
     };
   }
 
-  const block = client === 'codex' ? buildCodexHarnessBlock(scope) : buildClaudeHarnessBlock(scope);
+  const block =
+    client === 'codex'
+      ? buildCodexHarnessBlock(scope)
+      : client === 'muse'
+        ? buildMuseHarnessBlock(scope)
+        : buildClaudeHarnessBlock(scope);
   const existing = readTextFile(harnessPath);
   const { content, changed } = mergeClaudeHarness(existing, block);
   const action = !existing.trim() ? 'created' : changed ? 'updated' : 'unchanged';
@@ -239,6 +281,7 @@ export function installAgentHarness(client: HarnessClient, scope: SetupScope): H
     writeTextFile(harnessPath, content);
   }
 
+  const hostFile = client === 'codex' || client === 'muse' ? 'AGENTS.md' : 'CLAUDE.md';
   return {
     installed: true,
     path: harnessPath,
@@ -246,7 +289,7 @@ export function installAgentHarness(client: HarnessClient, scope: SetupScope): H
     message:
       action === 'unchanged'
         ? `Agent harness already current → ${harnessPath}`
-        : `Installed agent harness → ${harnessPath} (rest of ${client === 'codex' ? 'AGENTS.md' : 'CLAUDE.md'} untouched)`,
+        : `Installed agent harness → ${harnessPath} (rest of ${hostFile} untouched)`,
   };
 }
 
@@ -263,7 +306,13 @@ function expectedHarnessInner(client: HarnessClient, scope: SetupScope): string 
   if (client === 'cursor') {
     return buildCursorHarnessInner(scope);
   }
-  return client === 'codex' ? buildCodexHarnessBlock(scope) : buildClaudeHarnessBlock(scope);
+  if (client === 'codex') {
+    return buildCodexHarnessBlock(scope);
+  }
+  if (client === 'muse') {
+    return buildMuseHarnessBlock(scope);
+  }
+  return buildClaudeHarnessBlock(scope);
 }
 
 function extractManagedHarnessBlock(content: string): string | null {
@@ -281,8 +330,12 @@ function extractManagedHarnessBlock(content: string): string | null {
  * frontmatter, and other rules/skills cannot flag a file as stale.
  */
 export function diagnoseHarness(client: HarnessClient, scope: SetupScope): HarnessDiagnosis {
-  const harnessPath = resolveHarnessPath(client, scope);
   const repairCommand = `agent-deck setup --client ${client}`;
+  if (client === 'muse' && scope === 'global') {
+    const summary = summarizeMuseSkillsDiagnosis();
+    return { client, path: summary.path, status: summary.status, repairCommand };
+  }
+  const harnessPath = resolveHarnessPath(client, scope);
   if (!harnessPath) {
     return { client, path: '', status: 'missing', repairCommand };
   }
@@ -303,7 +356,7 @@ export function diagnoseHarness(client: HarnessClient, scope: SetupScope): Harne
 
 /** Read-only freshness check for every supported harness client. */
 export function diagnoseAllHarnesses(scope: SetupScope = 'global'): HarnessDiagnosis[] {
-  const clients: HarnessClient[] = ['cursor', 'claude', 'codex'];
+  const clients: HarnessClient[] = ['cursor', 'claude', 'codex', 'muse'];
   return clients.map((client) => diagnoseHarness(client, scope));
 }
 
