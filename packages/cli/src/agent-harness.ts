@@ -197,6 +197,13 @@ function writeTextFile(filePath: string, content: string): void {
 }
 
 export function installAgentHarness(client: HarnessClient, scope: SetupScope): HarnessInstallResult {
+  if (client === 'muse') {
+    // NOT-387 writes MCP config only; Muse session guidance ships in NOT-388.
+    return {
+      installed: false,
+      message: 'Skipped agent harness for Muse (setup writes MCP config only).',
+    };
+  }
   const harnessPath = resolveHarnessPath(client, scope);
   if (!harnessPath) {
     return {

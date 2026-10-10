@@ -5,6 +5,7 @@ import {
   buildAgentDeckEntry,
   buildMcpUrl,
   mergeMcpServerConfig,
+  mergeMuseServerConfig,
   readCursorWorkspaceRoot,
   readJsonFile,
   resolveConfigPath,
@@ -40,7 +41,13 @@ function parseClient(value: string | undefined): SetupClient | null {
     return 'claude';
   }
 
-  if (normalized === 'cursor' || normalized === 'claude' || normalized === 'claude-desktop' || normalized === 'codex') {
+  if (
+    normalized === 'cursor' ||
+    normalized === 'claude' ||
+    normalized === 'claude-desktop' ||
+    normalized === 'codex' ||
+    normalized === 'muse'
+  ) {
     return normalized;
   }
 
@@ -92,11 +99,17 @@ function parseSetupArgs(args: string[]): SetupOptions | { error: string } {
     if (menubar === true) {
       return { client: null, scope, host, mcpPort, start, statusline: false, menubar: true };
     }
-    return { error: '--client is required (codex, cursor, claude, or claude-desktop)' };
+    return { error: '--client is required (codex, cursor, claude, claude-desktop, or muse)' };
   }
 
-  if (client !== 'cursor' && client !== 'claude' && client !== 'codex' && scope === 'project') {
-    return { error: '--scope project is only supported for codex, cursor, and claude' };
+  if (
+    client !== 'cursor' &&
+    client !== 'claude' &&
+    client !== 'codex' &&
+    client !== 'muse' &&
+    scope === 'project'
+  ) {
+    return { error: '--scope project is only supported for codex, cursor, claude, and muse' };
   }
 
   if (!Number.isFinite(mcpPort)) {
@@ -182,17 +195,18 @@ async function tryClaudeCliAdd(
 
 export function printSetupUsage(): void {
   console.log(`Usage:
-  agent-deck setup --client codex|cursor|claude|claude-desktop [--scope global|project] [--mcp-port PORT] [--start]
+  agent-deck setup --client codex|cursor|claude|claude-desktop|muse [--scope global|project] [--mcp-port PORT] [--start]
   agent-deck setup --menubar
 
 Recommended (macOS, both terminal agents + menu bar):
   agent-deck setup --client codex --start
   agent-deck setup --client cursor --start
   agent-deck setup --client claude
+  agent-deck setup --client muse
 
 Options:
   --client          Agent host to configure (required unless --menubar alone)
-  --scope           global (default) or project — project for codex/cursor/claude
+  --scope           global (default) or project — project for codex/cursor/claude/muse
   --host            MCP host (default 127.0.0.1 or AGENT_DECK_HOST)
   --mcp-port        MCP port (default ${CLI_DEFAULT_MCP_PORT} or AGENT_DECK_MCP_PORT)
   --start           Start Agent Deck after writing config
@@ -323,7 +337,17 @@ export async function runSetup(args: string[]): Promise<number> {
         : readCursorWorkspaceRoot(existingEntry)
       : undefined;
   const entry = buildAgentDeckEntry(client, endpoint, { workspaceRoot });
-  const merged = mergeMcpServerConfig(existingConfig, entry);
+  let merged: Record<string, unknown>;
+  if (client === 'muse' && scope === 'global') {
+    try {
+      merged = mergeMuseServerConfig(existingConfig, entry, configPath);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+  } else {
+    merged = mergeMcpServerConfig(existingConfig, entry);
+  }
   writeJsonFile(configPath, merged);
 
   console.log(`Wrote agent-deck MCP config → ${configPath}`);
@@ -357,6 +381,10 @@ function printNextSteps(
     console.log(`  ${step}. Run \`agent-deck use <deck>\` in each IDE folder that needs a persistent assignment`);
     step += 1;
     console.log(`  ${step}. Start a new Codex task so MCP + AGENTS.md guidance reload`);
+  } else if (client === 'muse') {
+    console.log(`  ${step}. MCP endpoint → ${buildMcpUrl(endpoint)}`);
+    step += 1;
+    console.log(`  ${step}. Restart Muse so the agent-deck MCP server loads`);
   } else {
     console.log(`  ${step}. MCP endpoint → ${buildMcpUrl(endpoint)}`);
     step += 1;

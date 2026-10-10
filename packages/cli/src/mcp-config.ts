@@ -8,8 +8,11 @@ import { sanitizeJsonText } from './strip-ansi';
 export const CURSOR_MCP_RECOVERY_HINT =
   "If Agent Deck tools are missing in Cursor, don't use `mcp_auth` — run `agent-deck use <deck> --client cursor` in the project folder, then reload Cursor MCP.";
 
-export type McpClient = 'cursor' | 'claude' | 'claude-desktop';
+export type McpClient = 'cursor' | 'claude' | 'claude-desktop' | 'muse';
 export type SetupScope = 'global' | 'project';
+
+/** Muse user settings require this exact schema version (NOT-387). */
+export const MUSE_SCHEMA_VERSION = 1;
 
 export interface McpEndpoint {
   host: string;
@@ -18,6 +21,12 @@ export interface McpEndpoint {
 
 export function buildMcpUrl({ host, mcpPort }: McpEndpoint): string {
   return `http://${host}:${mcpPort}/mcp`;
+}
+
+/** Muse honors XDG_CONFIG_HOME for its user settings; otherwise ~/.config. */
+export function resolveMuseGlobalConfigDir(home: string = os.homedir()): string {
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  return xdg ? xdg : path.join(home, '.config');
 }
 
 export function resolveConfigPath(
@@ -44,6 +53,11 @@ export function resolveConfigPath(
         return path.join(process.env.APPDATA ?? home, 'Claude', 'claude_desktop_config.json');
       }
       return path.join(home, '.config', 'Claude', 'claude_desktop_config.json');
+    case 'muse':
+      if (scope === 'project') {
+        return path.join(cwd, '.mcp.json');
+      }
+      return path.join(resolveMuseGlobalConfigDir(home), 'muse', 'settings.json');
     default:
       throw new Error(`Unsupported client: ${client satisfies never}`);
   }
@@ -62,6 +76,23 @@ export function buildAgentDeckEntry(
     return {
       command: 'agent-deck',
       args: ['mcp-launch'],
+    };
+  }
+
+  if (client === 'muse') {
+    // Muse may rewrite its settings file, so rely only on the preserved
+    // command/args/env fields: no cwd, type, required, or timeout fields.
+    // No AGENT_DECK_WORKSPACE pin either — an omitted cwd means the Muse
+    // session working directory, so mcp-launch resolves the active
+    // workspace's .agent-deck/use.json dynamically. options.workspaceRoot
+    // is deliberately ignored for both scopes.
+    return {
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+      env: {
+        AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
+        AGENT_DECK_HOST: endpoint.host,
+      },
     };
   }
 
@@ -337,6 +368,31 @@ export function readJsonFile(filePath: string): Record<string, unknown> {
   }
 
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * Merge into Muse global settings: sets schema_version when absent, rejects
+ * an incompatible existing schema version with an actionable error (caller
+ * must leave the file untouched), and preserves every unrelated root key
+ * and MCP server. Project .mcp.json uses the plain merge — it has no
+ * schema_version and is shared with Claude Code.
+ */
+export function mergeMuseServerConfig(
+  existing: Record<string, unknown>,
+  entry: Record<string, unknown>,
+  configPath: string,
+): Record<string, unknown> {
+  const schemaVersion = existing.schema_version;
+  if (schemaVersion !== undefined && schemaVersion !== MUSE_SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported schema_version in ${configPath}: expected ${MUSE_SCHEMA_VERSION}, found ${JSON.stringify(schemaVersion)}. ` +
+        'Update Muse or fix the file manually, then re-run setup.',
+    );
+  }
+  return {
+    ...mergeMcpServerConfig(existing, entry),
+    schema_version: MUSE_SCHEMA_VERSION,
+  };
 }
 
 export function mergeMcpServerConfig(
