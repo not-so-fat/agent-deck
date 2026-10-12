@@ -93,7 +93,7 @@ The example brief below only asks for a summary of the sample repo. It runs unde
 
 ### 1. Launch detached (`run --detach`)
 
-From the sample folder bound in step 4:
+`--cwd` must be the sample folder bound in step 4 (the folder where `agent-deck use friend` was run — `run` checks the binding of `--cwd`, not the shell's current folder):
 
 ```bash
 agent-deck run friend --client claude --cwd /path/to/a/sample/repo --prompt "List the top-level files and directories in this working directory and summarize in at most five sentences what this project appears to do. Do not create, modify, or delete any files." --tools readonly --detach
