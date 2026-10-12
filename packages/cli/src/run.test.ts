@@ -187,7 +187,7 @@ describe('agent-deck run (NOT-400)', () => {
     expect(lines.at(-1)).toMatchObject({ t: 'end', sessionId: 'ses_resume' });
   });
 
-  it.each(['cursor', 'muse'])('--client %s exits non-zero without calling query()', async (client) => {
+  it.each(['muse'])('--client %s exits non-zero without calling query()', async (client) => {
     const cwd = makeDir('agent-deck-run-cwd-');
     const homeDir = makeDir('agent-deck-run-home-');
     const deps = makeDeps(cwd, homeDir);

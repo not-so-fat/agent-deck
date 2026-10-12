@@ -36,6 +36,7 @@ import {
   type RunQueryOptions,
 } from './run-claude';
 import { createCodexAdapter, type CodexAdapterDeps } from './run-codex';
+import { createCursorAdapter, type CursorAdapterDeps } from './run-cursor';
 
 // Tool profiles stay owned by the shared run code (re-exported so existing
 // `from './run'` imports keep working).
@@ -51,6 +52,7 @@ export {
 export type { RunClient } from './run-adapter';
 export type { ClaudeAdapterDeps, RunQueryFn, RunQueryMessage, RunQueryOptions } from './run-claude';
 export type { CodexAdapterDeps } from './run-codex';
+export type { CursorAdapterDeps } from './run-cursor';
 
 export type RunOptions = {
   deckRef: string;
@@ -115,7 +117,7 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
   if (!client) {
     return { error: missingRunClientMessage() };
   }
-  if (client !== 'claude' && client !== 'codex') {
+  if (client !== 'claude' && client !== 'codex' && client !== 'cursor') {
     return { error: runClientMessage(client) };
   }
   if (!cwd) {
@@ -174,6 +176,8 @@ export type RunDeps = {
   claude?: ClaudeAdapterDeps;
   /** Injected in tests; production spawns the real `codex` binary. */
   codex?: CodexAdapterDeps;
+  /** Injected in tests; production spawns the real `cursor-agent` binary. */
+  cursor?: CursorAdapterDeps;
   resolveDeck?: (ref: string) => Promise<{ id: string; name: string } | null>;
   resolveLaunchPlan?: typeof resolveMcpLaunchPlan;
   homeDir?: string;
@@ -303,6 +307,9 @@ function resolveAdapter(client: RunClient, deps: RunDeps): ClientAdapter {
   if (client === 'codex') {
     return createCodexAdapter(deps.codex ?? {});
   }
+  if (client === 'cursor') {
+    return createCursorAdapter(deps.cursor ?? {});
+  }
   const query = selectClaudeQuery(deps);
   return createClaudeAdapter({
     ...deps.claude,
@@ -424,7 +431,7 @@ export async function validateRunPrereqs(
 
 export function printRunHelp(): void {
   console.log(`Usage:
-  agent-deck run <deck> --client claude|codex --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
+  agent-deck run <deck> --client claude|codex|cursor --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
   agent-deck run status <runId> [--json]
   agent-deck run log <runId> [--tail <n>] [--follow] [--json]
   agent-deck run list [--json] [--limit <n>]
@@ -433,8 +440,10 @@ Starts a local agent session bound to <deck> and streams a JSONL log.
 The folder's assignment must already name <deck> (agent-deck use <deck>);
 run never rewrites .agent-deck/use.json and fails closed on a mismatch.
 
-  --client claude|codex  Required. cursor and muse adapters are not available yet.
+  --client claude|codex|cursor  Required. muse adapter is not available yet.
                          codex maps --tools to -s read-only|workspace-write.
+                         cursor maps --tools edit to --force (readonly passes
+                         no write flag); all log lines land when the run ends.
   --cwd <dir>            Required. Session working directory.
   --prompt <text>        Brief text (exactly one of --prompt/--prompt-file).
   --prompt-file <path>   Brief read from a file.
