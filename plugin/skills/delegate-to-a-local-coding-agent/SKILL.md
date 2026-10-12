@@ -9,10 +9,16 @@ description: >-
 
 Goal: the coding session does the work; you own the brief, the review, and the follow-up. Never just relay its summary.
 
-## Prerequisites
-- agent-deck >= 2.1.0 on the target machine (`agent-deck --version`; `agent-deck doctor` if anything looks off, `agent-deck setup` on a fresh machine).
-- The client CLI (`claude`, `codex`, `cursor-agent`, or `muse`) installed and signed in on that machine.
-- You (the orchestrator) can run shell commands on that machine. If not, stop and say so.
+## 0. Check prerequisites first
+Before writing any brief, confirm on the target machine (read-only):
+```sh
+agent-deck --version          # >= 2.1.0
+agent-deck status             # Status: running
+agent-deck deck list          # the deck the user named exists
+<client> --version            # claude | codex | cursor-agent | muse
+claude auth status | codex login status | cursor-agent status   # signed in
+```
+You must be able to run shell commands on that machine; if not, stop and say so. If anything fails, stop and tell the human exactly what is missing and the fix (see the **Set up agent-deck locally** skill: install `npx @agent-deck/cli@latest install`, upgrade `agent-deck upgrade`, start `agent-deck start --daemon`, `agent-deck doctor`, client install and sign-in, create or import a deck). Don't start a run that will fail midway.
 
 ## 1. Pick deck and client
 The user names the deck; never pick or change it yourself. Use the client they ask for (`claude|codex|cursor|muse`). Pick the tool profile: `readonly` for research, planning, and review; `edit` only for coding work.
