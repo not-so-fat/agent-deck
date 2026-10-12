@@ -180,10 +180,20 @@ function fakeMuseSpawn(
 }
 
 function okMuseProbe(): MuseProbe {
-  return (bin: string, argv: string[]) =>
-    argv[0] === '--version'
-      ? { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' }
-      : { code: 1, stdout: '', stderr: '' };
+  return (bin: string, argv: string[]) => {
+    if (argv[0] === '--version') {
+      return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+    }
+    if (argv[0] === 'exec' && argv[1] === '--help') {
+      return {
+        code: 0,
+        stdout:
+          'Usage: muse exec [options]\n  --disable-write  Disable non-shell workspace file writes\n  --disable-shell  Disable workspace shell execution\n',
+        stderr: '',
+      };
+    }
+    return { code: 1, stdout: '', stderr: '' };
+  };
 }
 
 function okMuseReadFile(): MuseFileReader {

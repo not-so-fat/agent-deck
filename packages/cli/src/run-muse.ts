@@ -26,7 +26,11 @@
  * - `--permission-profile` selects ONLY enterprise-plane profiles: 1.4.4
  *   ships with none, user settings.json has no such key ("profile does not
  *   exist" for every candidate id), so the adapter never passes it. Tool
- *   profiles map to Muse's own enforcement flags instead (see below).
+ *   profiles map to Muse's own enforcement flags instead (see below). A
+ *   literal `--permission-profile` mapping would fail closed on every
+ *   default (`readonly`) run, so the product call is capability flags with
+ *   runtime verification: readonly fails closed unless the installed muse
+ *   lists both enforcement flags in `muse exec --help`.
  * - Signed-in preflight is `providers.meta` in the Muse auth file (or
  *   META_API_KEY), which makes no model call; there is no `login status`
  *   subcommand.
@@ -85,6 +89,24 @@ export const MUSE_FORBIDDEN_FLAGS: readonly string[] = [
 
 export function resolveMuseBin(): string {
   return process.env.MUSE_BIN?.trim() || 'muse';
+}
+
+/**
+ * Readonly enforcement is structural AND verified: the flags exist in
+ * `muse exec --help` output (Muse Code 1.4.4), and planStart fails closed
+ * when the installed muse does not list them, so readonly never silently
+ * runs under default permissions. Help text, not a model call.
+ */
+export function museReadonlyFlagsSupported(
+  probe: (bin: string, argv: string[]) => { code: number; stdout: string; stderr: string },
+  bin: string,
+): boolean {
+  const help = probe(bin, ['exec', '--help']);
+  if (help.code !== 0) {
+    return false;
+  }
+  const text = `${help.stdout}\n${help.stderr}`;
+  return MUSE_READONLY_FLAGS.every((flag) => text.includes(flag));
 }
 
 export type MuseArgvArgs = {
@@ -469,6 +491,15 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
           remedy:
             `Invalid --resume id ${JSON.stringify(args.resumeId)}: session ids never start with '-'. ` +
             'Pass the session id printed as sessionId in a previous run log.',
+        };
+      }
+      if (args.tools === 'readonly' && !museReadonlyFlagsSupported(probe, bin)) {
+        return {
+          ok: false,
+          remedy:
+            'muse readonly enforcement unavailable: this muse build does not list --disable-write --disable-shell ' +
+            'in `muse exec --help`. Upgrade to Muse Code 1.4+, then retry. ' +
+            'Refusing to run --tools readonly under default permissions.',
         };
       }
       if (!hasMuseMcpEntry(args.cwd, readFile)) {

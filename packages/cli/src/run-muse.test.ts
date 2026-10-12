@@ -17,7 +17,8 @@
  * profiles and every candidate id errors "profile does not exist" — so tool
  * profiles map to Muse's own enforcement flags (readonly:
  * `--disable-write --disable-shell`; edit: default bounded flags) instead
- * of profile ids, and `--permission-profile` is never emitted.
+ * of profile ids, and `--permission-profile` is never emitted. Readonly
+ * fails closed at planStart unless `muse exec --help` lists both flags.
  *
  * Mapping evidence (Muse Code 1.4.4, 1.4.4-R5419.1): `muse --version`, `muse
  * --help` (approval on-request default, `--permission-profile` selects a
@@ -45,6 +46,7 @@ import {
   mergeMuseLines,
   museEventsFromLine,
   museNoticeFromStderr,
+  museReadonlyFlagsSupported,
   type MuseFileReader,
   type MuseLineContext,
   type MuseProbe,
@@ -130,11 +132,19 @@ function fakeMuseSpawn(
   return { spawn: spawn as unknown as MuseSpawn, calls };
 }
 
+export const MUSE_EXEC_HELP_FIXTURE =
+  'Usage: muse exec [options]\n  --disable-write  Disable non-shell workspace file writes\n  --disable-shell  Disable workspace shell execution\n';
+
 function okMuseProbe(): MuseProbe {
-  return (bin: string, argv: string[]) =>
-    argv[0] === '--version'
-      ? { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' }
-      : { code: 1, stdout: '', stderr: '' };
+  return (bin: string, argv: string[]) => {
+    if (argv[0] === '--version') {
+      return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+    }
+    if (argv[0] === 'exec' && argv[1] === '--help') {
+      return { code: 0, stdout: MUSE_EXEC_HELP_FIXTURE, stderr: '' };
+    }
+    return { code: 1, stdout: '', stderr: '' };
+  };
 }
 
 const AUTH_JSON = JSON.stringify({
@@ -452,6 +462,43 @@ describe('muse argv and tool profiles (NOT-407)', () => {
     const editArgv = buildMuseArgv({ prompt: 'p', tools: 'edit' });
     expect(editArgv).not.toContain('--disable-write');
     expect(editArgv).not.toContain('--disable-shell');
+  });
+
+  it('a missing read-only enforcement makes readonly exit non-zero before any model call', async () => {
+    // The installed muse does not list the enforcement flags (older/newer
+    // build without --disable-write/--disable-shell): planStart fails
+    // closed with a remedy and the run never spawns. Edit is unaffected
+    // (it uses the default bounded permissions by design).
+    const noFlagsProbe: MuseProbe = (bin, argv) => {
+      if (argv[0] === '--version') {
+        return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+      }
+      if (argv[0] === 'exec' && argv[1] === '--help') {
+        return { code: 0, stdout: 'Usage: muse exec [options]\n  --json  Output JSONL\n', stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    };
+    expect(museReadonlyFlagsSupported(okMuseProbe(), 'muse')).toBe(true);
+    expect(museReadonlyFlagsSupported(noFlagsProbe, 'muse')).toBe(false);
+
+    const cwd = makeDir('agent-deck-muse-cwd-');
+    const homeDir = makeDir('agent-deck-muse-home-');
+    const deps = makeDeps(cwd, homeDir, { probe: noFlagsProbe });
+
+    const code = await runRunCommand(museArgs(cwd, ['--tools', 'readonly']), deps);
+
+    expect(code).not.toBe(0);
+    expect(deps.calls).toHaveLength(0);
+    expect(errors.join('\n')).toMatch(/readonly enforcement unavailable/);
+    expect(errors.join('\n')).toMatch(/Upgrade to Muse Code/);
+    expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+
+    // Same build, edit still starts (no enforcement flags to verify).
+    const editCwd = makeDir('agent-deck-muse-cwd-');
+    const editHome = makeDir('agent-deck-muse-home-');
+    const editDeps = makeDeps(editCwd, editHome, { probe: noFlagsProbe });
+    expect(await runRunCommand(museArgs(editCwd, ['--tools', 'edit']), editDeps)).toBe(0);
+    expect(editDeps.calls).toHaveLength(1);
   });
 
   it('no generated argv ever contains a permission bypass or --permission-profile', () => {
