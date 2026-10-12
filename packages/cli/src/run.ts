@@ -348,18 +348,20 @@ function writeMeta(metaPath: string, meta: RunMeta): void {
  * token when the log positively shows a deck other than the requested one;
  * a missing receipt is not a mismatch (the pre-start assignment gate is the
  * fail-closed check; this is a second net for a mis-bound session).
+ * The fragments are joined before scanning: real clients stream token-level
+ * deltas, so one receipt line can arrive split across many text events and a
+ * per-fragment scan would miss the mismatch.
  */
 export function findReceiptDeckMismatch(
   texts: readonly string[],
   deck: { id: string; name: string },
 ): string | null {
-  for (const text of texts) {
-    const pattern = /◆\s*([^·\r\n]+?)\s*·/g;
-    for (const match of text.matchAll(pattern)) {
-      const token = match[1].trim();
-      if (token && token !== deck.name && token !== deck.id) {
-        return token;
-      }
+  const joined = texts.join('');
+  const pattern = /◆\s*([^·\r\n]+?)\s*·/g;
+  for (const match of joined.matchAll(pattern)) {
+    const token = match[1].trim();
+    if (token && token !== deck.name && token !== deck.id) {
+      return token;
     }
   }
   return null;

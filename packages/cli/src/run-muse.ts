@@ -3,8 +3,12 @@
  *
  * Drives `muse exec --json` (start) and `muse exec --json --session-id <id>`
  * (resume) as a child process and maps the JSONL stream onto normalized
- * events. Verified against Muse Code 1.4.4 (1.4.4-R5419.1, `muse exec
- * --help`, echo-provider captures in /tmp/smoke):
+ * events. Verified against Muse Code 1.4.4 (1.4.4-R5419.1) via `muse
+ * --version`, `muse --help`, `muse exec --help`, `muse mcp --help`, `muse mcp
+ * login --help`, `muse config --help`, and echo-provider captures in
+ * /tmp/smoke. Tool mapping for this version: readonly passes
+ * `--disable-write --disable-shell`; edit passes no extra flags (Muse's
+ * default bounded permissions: approval on-request, sandbox on):
  *
  * - Every stdout record carries `stream: {kind: "session", id}`; that id is
  *   the session id. Assistant text streams as `run.output.delta`
@@ -471,7 +475,8 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
         return {
           ok: false,
           remedy:
-            'agent-deck MCP server is not registered with Muse: run `agent-deck setup --client muse`, then retry.',
+            'agent-deck MCP server is not registered with Muse: run `agent-deck setup --client muse` to register it, ' +
+            'then retry. If Muse reports the server needs authorization, run `muse mcp login agent-deck` (see `muse mcp --help`).',
         };
       }
       // Never trust the workspace from run: no --trust-workspace/--yolo, so

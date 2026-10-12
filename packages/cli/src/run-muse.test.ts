@@ -18,6 +18,15 @@
  * profiles map to Muse's own enforcement flags (readonly:
  * `--disable-write --disable-shell`; edit: default bounded flags) instead
  * of profile ids, and `--permission-profile` is never emitted.
+ *
+ * Mapping evidence (Muse Code 1.4.4, 1.4.4-R5419.1): `muse --version`, `muse
+ * --help` (approval on-request default, `--permission-profile` selects a
+ * named profile), `muse exec --help` (`--disable-write` blocks non-shell
+ * workspace writes, `--disable-shell` blocks workspace shell execution,
+ * approval and sandbox ON by default), `muse mcp --help` / `muse mcp login
+ * --help` (`muse mcp login <server>` is the OAuth login command; the
+ * agent-deck entry is named `agent-deck`), `muse config --help` (profiles
+ * live in enterprise plane documents, not user settings).
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -604,7 +613,7 @@ describe('muse preflight and trust (NOT-407)', () => {
     expect(deps.calls).toHaveLength(1);
   });
 
-  it('a missing agent-deck MCP entry fails closed with the setup remedy before spawning', async () => {
+  it('a missing agent-deck MCP entry fails closed with the setup + mcp login remedy before spawning', async () => {
     const cwd = makeDir('agent-deck-muse-cwd-');
     const homeDir = makeDir('agent-deck-muse-home-');
     const readFile = fakeMuseReadFile(cwd, {
@@ -618,6 +627,7 @@ describe('muse preflight and trust (NOT-407)', () => {
     expect(code).not.toBe(0);
     expect(deps.calls).toHaveLength(0);
     expect(errors.join('\n')).toContain('agent-deck setup --client muse');
+    expect(errors.join('\n')).toContain('muse mcp login agent-deck');
     expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
     // Both scopes were consulted before failing: global settings and the
     // cwd project .mcp.json.
@@ -686,6 +696,29 @@ describe('muse session receipt (NOT-407)', () => {
 
     expect(await runRunCommand(museArgs(cwd), deps)).toBe(0);
     expect(readMeta(logPathFromStdout())).toMatchObject({ state: 'ended' });
+  });
+
+  it('a receipt split across output deltas still ends the run error', async () => {
+    const cwd = makeDir('agent-deck-muse-cwd-');
+    const homeDir = makeDir('agent-deck-muse-home-');
+    // Token-level streaming: the deck token and the closing `·` land in
+    // different deltas, so no single text event matches the receipt pattern.
+    const deps = makeDeps(cwd, homeDir, {
+      lines: successStream('ses_split', [
+        deltaLine('ses_split', 'here is your context ◆ oth'),
+        deltaLine('ses_split', 'er · 1 MCP · 0 keys · 0 playbooks'),
+      ]),
+    });
+
+    const code = await runRunCommand(museArgs(cwd), deps);
+
+    expect(code).not.toBe(0);
+    expect(errors.join('\n')).toContain('"other"');
+    expect(errors.join('\n')).toContain('agent-deck use planner');
+    expect(readMeta(logPathFromStdout())).toMatchObject({
+      state: 'error',
+      sessionId: 'ses_split',
+    });
   });
 });
 
