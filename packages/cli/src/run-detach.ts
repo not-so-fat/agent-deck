@@ -19,7 +19,14 @@ import path from 'node:path';
 
 import { resolveCliEntry } from './daemon-logs';
 import { agentDeckHome } from './managed/paths';
-import { newRunId, validateRunPrereqs, type RunDeps, type RunMeta, type RunOptions } from './run';
+import {
+  newRunId,
+  validateRunPrereqs,
+  writeRunMeta,
+  type RunDeps,
+  type RunMeta,
+  type RunOptions,
+} from './run';
 
 /** Bounded starter return: never wait longer than this for the first log line. */
 export const DETACH_FIRST_LINE_TIMEOUT_MS = 5000;
@@ -197,7 +204,7 @@ export async function startDetachedRun(
     startedAt: new Date().toISOString(),
     state: 'running',
   };
-  fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+  writeRunMeta(metaPath, meta);
 
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -253,7 +260,7 @@ export async function startDetachedRun(
     const current = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as RunMeta;
     if (current.runId === runId && current.state === 'running') {
       current.state = 'error';
-      fs.writeFileSync(metaPath, `${JSON.stringify(current, null, 2)}\n`, 'utf8');
+      writeRunMeta(metaPath, current);
     }
   } catch {
     // The diagnostic above is the deliverable; meta bookkeeping never fails it.

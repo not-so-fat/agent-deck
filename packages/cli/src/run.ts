@@ -315,8 +315,23 @@ export function newRunId(): string {
   return `run-${stamp}-${randomBytes(3).toString('hex')}`;
 }
 
+/**
+ * Atomic run-record write: readers (`run status`, detach tests, orchestrators)
+ * poll meta.json while the run child rewrites it, and a plain writeFileSync
+ * truncates before writing — a concurrent read lands on empty/partial bytes
+ * and JSON.parse throws. Writing to a sibling temp file and renaming keeps
+ * every observed state a complete document (rename is atomic on POSIX and
+ * Windows). The pid suffix keeps the starter's and the child's temp files
+ * distinct when both target the same meta.json.
+ */
+export function writeRunMeta(metaPath: string, meta: RunMeta): void {
+  const tmpPath = `${metaPath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+  fs.renameSync(tmpPath, metaPath);
+}
+
 function writeMeta(metaPath: string, meta: RunMeta): void {
-  fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+  writeRunMeta(metaPath, meta);
 }
 
 /**
