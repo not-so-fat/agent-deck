@@ -2,6 +2,8 @@
 
 Canonical install and environment reference. For OAuth / hosting / Slack confusion, start with **[OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md)**.
 
+To delegate a task to a local session on a deck, `agent-deck run` launches a signed-in client bound to that deck — see [DELEGATION.md](./DELEGATION.md) for per-client flags, resume, and trust behavior.
+
 ## Prerequisites
 
 - **Git**

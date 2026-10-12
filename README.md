@@ -172,6 +172,8 @@ For contributors, dev ports (`:3000` / `:8000` / `:3001`) and env vars → [Setu
 
 **CLI:** `agent-deck use` · `agent-deck export` / `import` · `credential` · `exec` (inject keys) · `upgrade`
 
+To delegate a task to a local agent session on a deck, `agent-deck run` launches a signed-in client bound to that deck — see [DELEGATION.md](docs/DELEGATION.md) for per-client flags, resume, and trust behavior.
+
 ### Data & portability
 
 Collection and decks live as files under `~/.agent-deck/` (playbooks as `.md`, services/decks as JSON, credential metadata as YAML). For ongoing multi-machine sync without cloud hosting, use **[Git-backed file-store sync](#same-decks-across-machines)** (recommended). For a one-shot move or sharing a deck template without Git, use `.agent-deck.json` export/import ([format](docs/STORE_FORMAT.md) · [export PRD](docs/PRD_EXPORT_IMPORT.md)).

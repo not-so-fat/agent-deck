@@ -61,7 +61,8 @@ proxy: route the public dashboard origin to `127.0.0.1:8000` and the MCP hostnam
 port directly. After TLS is configured, open `AGENT_DECK_PUBLIC_URL`, verify the owner sign-in
 page loads, and verify `https://deck.example.com/readyz` returns 200. Record that dated VPS
 check in the pull request; it is an operator gate, not a CI claim. Use the
-`docs/VPS-DEPLOY-LOG.md` template for the dated log until the operator completes it.
+[VPS deploy log template](#operator-gate-vps-deploy-log-not-337-template) below
+for the dated log until the operator completes it.
 
 ## Health semantics
 
@@ -103,3 +104,46 @@ The same contract works on any PaaS that supports two commands from one OCI imag
 service DNS, and one persistent disk visible to both processes. If a provider cannot present
 one disk to both roles, use the single-host Compose deployment; do not create independent
 SQLite copies or add provider-specific storage behavior to core code.
+
+## Operator gate: VPS deploy log (NOT-337 template)
+
+(Merged here from `docs/VPS-DEPLOY-LOG.md` under NOT-424; that file is removed
+so this doc pays for `docs/DELEGATION.md` under the one-in-one-out rule in
+`docs/README.md`. Content below is verbatim except the section pointer, which
+now reads "above".)
+
+Status: **PENDING** — to be completed by the operator on a fresh VPS. This log is
+the acceptance evidence for AC5 and the WS5 exit predicate. CI cannot satisfy it.
+
+### Environment
+
+- Date (UTC):
+- Host (provider, size, region):
+- OS / Docker Engine / Compose plugin versions:
+- Deployed commit (immutable tag or SHA, used for both `AGENT_DECK_IMAGE` and `AGENT_DECK_VERSION`):
+
+### Steps run (from the Docker Compose on a VPS section above)
+
+```bash
+docker compose build --pull backend
+docker compose up -d --scale backend=1 --scale mcp=1
+docker compose ps
+curl --fail http://127.0.0.1:8000/readyz
+```
+
+### Observed results (paste)
+
+- `docker compose ps` output (exactly one `backend` and one `mcp`, both healthy):
+- `curl http://127.0.0.1:8000/readyz` output (expect `{"status":"ready"}`, HTTP 200):
+- Public dashboard sign-in page load at `$AGENT_DECK_PUBLIC_URL` (note HTTPS status):
+- `curl https://deck.example.com/readyz` output (expect HTTP 200):
+
+### Single-replica check
+
+- Confirm `--scale backend=1 --scale mcp=1`, one `/data` volume shared by both
+  roles, and the backend-to-MCP hop on the private compose network only.
+
+### Secrets handling
+
+Do not paste `AGENT_DECK_VAULT_KEY` or `AGENT_DECK_OWNER_BOOTSTRAP_SECRET` values
+into this log. Record only that each was set from the secret manager.
