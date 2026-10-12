@@ -1,0 +1,7 @@
+{
+  "name": "agent-deck",
+  "owner": { "name": "not-so-fat" },
+  "plugins": [
+    { "name": "agent-deck-delegation", "source": "./", "description": "Delegate coding, research, and review tasks to a local Claude Code, Codex, Cursor, or muse session through agent-deck run, then monitor, review, and resume it with feedback until the result is right." }
+  ]
+}

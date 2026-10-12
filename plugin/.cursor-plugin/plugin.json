@@ -1,0 +1,13 @@
+{
+  "name": "agent-deck-delegation",
+  "displayName": "Agent Deck Delegation",
+  "version": "0.1.0",
+  "description": "Delegate coding, research, and review tasks to a local Claude Code, Codex, Cursor, or muse session through agent-deck run, then monitor, review, and resume it with feedback until the result is right.",
+  "author": { "name": "not-so-fat" },
+  "homepage": "https://github.com/not-so-fat/agent_deck/tree/main/plugin",
+  "repository": "https://github.com/not-so-fat/agent_deck",
+  "license": "MIT",
+  "keywords": ["agent-deck", "delegation", "claude-code", "codex", "cursor", "orchestration"],
+  "category": "developer-tools",
+  "skills": "./skills/"
+}
