@@ -2,7 +2,7 @@
   "name": "agent-deck",
   "displayName": "Agent Deck",
   "version": "2.1.0",
-  "description": "Decks of MCP tools, keys, and self-improving playbooks that bind per-workspace.",
+  "description": "Decks of MCP tools, keys, and self-improving playbooks that bind per workspace, plus skills to set up Agent Deck and delegate tasks to local Claude Code, Codex, Cursor, or muse sessions.",
   "author": {
     "name": "not-so-fat",
     "url": "https://github.com/not-so-fat"
@@ -10,14 +10,23 @@
   "homepage": "https://github.com/not-so-fat/agent-deck",
   "repository": "https://github.com/not-so-fat/agent-deck",
   "license": "MIT",
-  "logo": "./assets/icon.svg",
+  "logo": "assets/icon.svg",
   "keywords": [
-    "mcp",
-    "playbooks",
     "agent-context",
-    "delegation"
+    "claude-code",
+    "codex",
+    "delegation",
+    "mcp",
+    "orchestration",
+    "playbooks",
+    "skills"
   ],
   "category": "developer-tools",
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json"
+  "mcpServers": "./.mcp.json",
+  "tags": [
+    "mcp",
+    "playbooks",
+    "delegation"
+  ]
 }
