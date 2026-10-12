@@ -26,6 +26,7 @@ import { runReindexCommand, runStoreCommand } from './store';
 import { runUpgrade } from './upgrade';
 import { runInstall } from './install';
 import { runUseCommand } from './use';
+import { runRunCommand } from './run';
 import { runMcpLaunch } from './mcp-launcher';
 import { getAgentDeckVersion } from './version';
 import { terminalColorsEnabled, terminalStyle } from './terminal-style';
@@ -54,6 +55,7 @@ function printUsage() {
   agent-deck menubar
   agent-deck setup --client codex|cursor|claude|claude-desktop|muse [--scope global|project] [--start]
   agent-deck use <deck> [--client cursor|claude|muse|both] [--refresh] [--mcp-port PORT]
+  agent-deck run <deck> --client claude --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>]
   agent-deck install [--to VERSION] [--migrate-cli] [--purge-global]
   agent-deck upgrade [--check] [--to VERSION]
   agent-deck doctor
@@ -85,6 +87,7 @@ const TOP_LEVEL_COMMANDS = [
   'menubar',
   'setup',
   'use',
+  'run',
   'install',
   'upgrade',
   'doctor',
@@ -424,6 +427,8 @@ export async function runCli(argv: string[]): Promise<number> {
     }
     case 'use':
       return runUseCommand(rest);
+    case 'run':
+      return runRunCommand(rest);
     case 'mcp-launch':
       return runMcpLaunch();
     case 'install':
