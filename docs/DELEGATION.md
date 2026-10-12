@@ -94,6 +94,15 @@ whose pid is gone reads as `died`), `sessionId`, `startedAt`, `lastLogTs`, and
 JSONL, `--tail` limits, `--follow` streams until `end`/`error`); `run list`
 shows recent runs newest first (default limit 20).
 
+Polling cadence: the `agent-deck-run` skill polls `run status` every 30
+seconds and caps feedback at 3 resume rounds before escalating to the human
+(owner decision, NOT-432). The interval comes from three real read-only
+planner/Codex runs on one workstation (2026-10-12), each ending `ended`:
+`run-20261012T180930-b3e06c` in 66.787s, `run-20261012T180929-365f84` in
+70.065s, and `run-20261012T180928-aa4fe8` in 196.119s. All three still read
+`running` at ~42–44s; two had ended by ~67–71s and the long run ended at
+196.119s, so each end was seen within one 30-second poll.
+
 ## Fail-closed modes and remedies
 
 Every gate below exits non-zero before or without a usable session, printing
