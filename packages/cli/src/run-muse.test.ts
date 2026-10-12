@@ -132,7 +132,7 @@ function fakeMuseSpawn(
   return { spawn: spawn as unknown as MuseSpawn, calls };
 }
 
-export const MUSE_EXEC_HELP_FIXTURE =
+const MUSE_EXEC_HELP_FIXTURE =
   'Usage: muse exec [options]\n  --disable-write  Disable non-shell workspace file writes\n  --disable-shell  Disable workspace shell execution\n';
 
 function okMuseProbe(): MuseProbe {

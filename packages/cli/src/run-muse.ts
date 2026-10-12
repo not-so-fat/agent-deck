@@ -76,8 +76,6 @@ export const MUSE_FLAGS_FOR_PROFILE: Record<RunToolsProfile, readonly string[]> 
   edit: MUSE_EDIT_FLAGS,
 };
 
-export const MUSE_JSONL_VERSION_NOTE = 'Muse Code 1.4.4 (1.4.4-R5419.1)';
-
 /** Flags that must never appear in generated argv (bypass checks or trust). */
 export const MUSE_FORBIDDEN_FLAGS: readonly string[] = [
   '--yolo',
