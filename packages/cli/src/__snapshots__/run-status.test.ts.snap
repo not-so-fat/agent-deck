@@ -1,0 +1,14 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`agent-deck run status (NOT-402) > --json output of status has the keys runId/deck/client/state/sessionId/startedAt/logPath and is stable (snapshot) 1`] = `
+{
+  "client": "claude",
+  "deck": "deck-planner",
+  "lastLogTs": "2026-10-09T09:00:04.000Z",
+  "logPath": "<home>/runs/run-snapshot/run.jsonl",
+  "runId": "run-snapshot",
+  "sessionId": "ses_snap",
+  "startedAt": "2026-10-09T09:00:00.000Z",
+  "state": "ended",
+}
+`;
