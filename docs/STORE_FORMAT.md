@@ -127,6 +127,18 @@ The migration writes through symlinks safely: when `manifest.json` or a store di
 
 **Agent Deck never runs git.** Users manage version control themselves.
 
+None of these paths is mandatory. Pick by how you want persistence to work:
+
+| Path | Purpose |
+|------|---------|
+| **Git-backed file-store sync (recommended)** | Local-first: same decks across machines **without** hosting Agent Deck in the cloud |
+| **Personal cloud hosting (optional)** | Always-on authenticated MCP endpoint when you want Agent Deck reachable remotely |
+| **Export / import (one-shot)** | Move or share a layout once — not ongoing sync (see [Related mechanisms](#related-mechanisms)) |
+
+**Recommended non-cloud workflow:** put the Agent Deck store (`~/.agent-deck/` in production) in a **private Git repository you own**. Commit and push on one machine after edits; pull on another; then run `agent-deck reindex` or restart the backend. **Agent Deck never runs Git** and does not resolve merge conflicts — fix conflicts in Git, then reindex.
+
+**Safe to commit:** `manifest.json` plus the documented card/deck directories (`playbooks/`, `services/`, `credentials/`, `decks/`). Credential files are metadata only. **Keep machine-local / uncommitted:** SQLite and cache files (`*.db`, `*.db-*`), Keychain secrets, and OAuth tokens (re-enter or reconnect on each new machine).
+
 1. Commit the store subdirectories and `manifest.json`. Do not commit the whole home directory if it also holds logs or cache artifacts.
 2. Add a `.gitignore` in your store repo (or home) to exclude the SQLite cache and other local-only files:
 
