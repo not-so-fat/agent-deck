@@ -34,6 +34,11 @@ Before declining for missing tools (Slack, Linear, GitHub, etc.), use agent-deck
 
 **Deck admin (create/edit deck):** Normal agents get \`ADMIN_REQUIRED\`. Call \`request_admin_elevation\`; user approves in the dashboard/menubar. After approval, \`mode\` is \`agent-admin\` until lease expiry or \`exit_admin_mode\`. Surface shared-deck workspace counts before mutating a deck used elsewhere. Deck switches never use elevation — request them with \`switch_deck\` and wait for human approval.
 
+**Delegating to another session:** When the user asks to hand a task to another local session, delegate with \`agent-deck run\`.
+The orchestrator must not choose the deck — the user names it; never pick or change it yourself.
+Choose \`--tools readonly\` unless the brief owner says \`edit\`, and never raise the profile on your own.
+For the brief–launch–monitor–review–resume protocol read the \`agent-deck-run\` skill (\`skills/agent-deck-run/SKILL.md\`); for per-client flags, resume ids, and trust behavior read \`docs/DELEGATION.md\`.
+
 **Playbooks — runtime discovery (no generated stubs):** Playbook triggers and bodies live only on the bound deck — \`agent-deck use\` and bind/switch write no per-playbook files, so switching decks never requires regenerating workspace files for discovery. On every task, match the task against the playbook \`triggers\` returned by \`get_bound_deck\` and call \`get_playbook\` for every match before acting. A playbook that exists only on the newly active deck is discovered the same way (\`get_bound_deck\` lists its triggers; \`get_playbook\` fetches its body) — never rely on checked-in stub or skill files, which may belong to a previously bound deck. **Never** mirror playbook bodies into \`.cursor/skills/\`, rules, or Claude skills — one source of truth on the deck.
 
 ### When user asks for a playbook task

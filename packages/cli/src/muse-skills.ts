@@ -8,6 +8,7 @@ export const MUSE_SKILL_IDS = [
   'agent-deck-session',
   'agent-deck-playbooks',
   'agent-deck-setup',
+  'agent-deck-run',
 ] as const;
 
 export type MuseSkillId = (typeof MUSE_SKILL_IDS)[number];

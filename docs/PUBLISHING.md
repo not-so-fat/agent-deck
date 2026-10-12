@@ -74,7 +74,7 @@ npx @agent-deck/cli start
 # opens dashboard with a secure session; --no-open for headless
 ```
 
-**Release integration smoke** (`scripts/release-smoke.sh`) simulates what a user gets from npm: pack CLI, verify the tarball ships `dist/muse-skills/*/SKILL.md` byte-identical to root `skills/*/SKILL.md`, run `setup --client claude` and `setup --client muse` in a clean `HOME`, assert `statusline.sh` + `settings.json` plus Muse MCP settings + three managed skills exist, stdout is one clean line. Playbook: [examples/playbooks/npm-release-integration-smoke.md](./examples/playbooks/npm-release-integration-smoke.md).
+**Release integration smoke** (`scripts/release-smoke.sh`) simulates what a user gets from npm: pack CLI, verify the tarball ships `dist/muse-skills/*/SKILL.md` byte-identical to root `skills/*/SKILL.md`, run `setup --client claude` and `setup --client muse` in a clean `HOME`, assert `statusline.sh` + `settings.json` plus Muse MCP settings + four managed skills exist, stdout is one clean line. Playbook: [examples/playbooks/npm-release-integration-smoke.md](./examples/playbooks/npm-release-integration-smoke.md).
 
 Dashboard: opened by `start` / `agent-deck open`; `status` never prints the disposable bootstrap URL (API listens on `http://127.0.0.1:1111`)
 MCP: `http://127.0.0.1:1110/mcp`

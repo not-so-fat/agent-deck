@@ -238,6 +238,45 @@ describe('agent-harness templates', () => {
   });
 });
 
+describe('NOT-425 delegating to another session', () => {
+  const texts = (): Array<[string, string]> => [
+    ['cursor/global', buildCursorHarnessFile('global')],
+    ['cursor/project', buildCursorHarnessFile('project')],
+    ['claude/global', buildClaudeHarnessBlock('global')],
+    ['claude/project', buildClaudeHarnessBlock('project')],
+    ['codex/global', buildCodexHarnessBlock('global')],
+    ['codex/project', buildCodexHarnessBlock('project')],
+    ['muse/project', buildMuseHarnessBlock('project')],
+  ];
+
+  function delegationParagraph(text: string): string {
+    const start = text.indexOf('**Delegating to another session:**');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = text.indexOf('\n\n', start);
+    return text.slice(start, end === -1 ? undefined : end);
+  }
+
+  it('mentions agent-deck run with the safety defaults in global and project scope', () => {
+    for (const [label, text] of texts()) {
+      const paragraph = delegationParagraph(text);
+      expect(paragraph, label).toContain('agent-deck run');
+      expect(paragraph, label).toContain('--tools readonly');
+      expect(paragraph, label).toContain('must not choose the deck');
+      expect(paragraph, label).toContain('skills/agent-deck-run/SKILL.md');
+      expect(paragraph, label).toContain('docs/DELEGATION.md');
+    }
+  });
+
+  it('keeps the paragraph short with no copied protocol step list', () => {
+    for (const [label, text] of texts()) {
+      const paragraph = delegationParagraph(text);
+      const lines = paragraph.split('\n').filter((line) => line.trim().length > 0);
+      expect(lines.length, `${label} paragraph line count`).toBeLessThanOrEqual(6);
+      expect(paragraph, label).not.toMatch(/^\d+\.\s/m);
+    }
+  });
+});
+
 describe('mergeClaudeHarness', () => {
   it('appends harness block when missing', () => {
     const { content, changed } = mergeClaudeHarness('# My notes\n', buildClaudeHarnessBlock('global'));
@@ -965,7 +1004,7 @@ describe('NOT-388 muse global skills diagnosis', () => {
     expect(fs.readFileSync(stalePath, 'utf8')).toContain('# stale');
   });
 
-  it('reports current only when all three managed skills are present and current', () => {
+  it('reports current only when all four managed skills are present and current', () => {
     useTmpXdg();
     expect(installAgentHarness('muse', 'global').installed).toBe(true);
     expect(diagnoseHarness('muse', 'global').status).toBe('current');
