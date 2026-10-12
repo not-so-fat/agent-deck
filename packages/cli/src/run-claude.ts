@@ -59,13 +59,16 @@ export function loadClaudeSdkQuery(): RunQueryFn {
 export type ClaudeAdapterDeps = {
   /** Injected in tests; production lazily requires the Claude Agent SDK. */
   query?: RunQueryFn;
+  /** Override the SDK loader (tests use this to fail preflight deterministically). */
+  loadQuery?: () => RunQueryFn;
 };
 
 export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter {
   let cachedQuery: RunQueryFn | undefined = deps.query;
+  const loadQuery = deps.loadQuery ?? loadClaudeSdkQuery;
   const getQuery = (): RunQueryFn => {
     if (!cachedQuery) {
-      cachedQuery = loadClaudeSdkQuery();
+      cachedQuery = loadQuery();
     }
     return cachedQuery;
   };

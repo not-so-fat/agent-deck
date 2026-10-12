@@ -25,7 +25,7 @@ import {
   type RunClient,
   type RunToolsProfile,
 } from './run-adapter';
-import { createClaudeAdapter, type RunQueryFn } from './run-claude';
+import { createClaudeAdapter, type ClaudeAdapterDeps, type RunQueryFn } from './run-claude';
 import { createCodexAdapter, type CodexAdapterDeps } from './run-codex';
 
 // Tool profiles stay owned by the shared run code (re-exported so existing
@@ -40,7 +40,7 @@ export {
   type RunToolsProfile,
 } from './run-adapter';
 export type { RunClient } from './run-adapter';
-export type { RunQueryFn, RunQueryMessage, RunQueryOptions } from './run-claude';
+export type { ClaudeAdapterDeps, RunQueryFn, RunQueryMessage, RunQueryOptions } from './run-claude';
 export type { CodexAdapterDeps } from './run-codex';
 
 export type RunOptions = {
@@ -148,8 +148,10 @@ export type RunMeta = {
 };
 
 export type RunDeps = {
-  /** Injected in tests; production lazily requires the Claude Agent SDK. */
+  /** NOT-400 seam, kept for compatibility: injected `query()` for the Claude adapter. */
   query?: RunQueryFn;
+  /** Injected in tests; production lazily requires the Claude Agent SDK. */
+  claude?: ClaudeAdapterDeps;
   /** Injected in tests; production spawns the real `codex` binary. */
   codex?: CodexAdapterDeps;
   resolveDeck?: (ref: string) => Promise<{ id: string; name: string } | null>;
@@ -165,7 +167,10 @@ function resolveAdapter(client: RunClient, deps: RunDeps): ClientAdapter {
   if (client === 'codex') {
     return createCodexAdapter(deps.codex ?? {});
   }
-  return createClaudeAdapter(deps.query ? { query: deps.query } : {});
+  return createClaudeAdapter({
+    ...deps.claude,
+    ...(deps.query ? { query: deps.query } : {}),
+  });
 }
 
 export function newRunId(): string {
