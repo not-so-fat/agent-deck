@@ -30,7 +30,7 @@ Leave the user's uncommitted changes alone; use a separate git worktree or branc
 
 ## 1. Write the brief
 
-Write the brief to a file. It must state the goal, the constraints, the definition of done, what the session must not do, and the tool profile the brief owner chose, and "if unclear, end your turn with the question". For code changes, the definition of done includes committing and pushing a named branch. Keep the user's decisions; mark any number you invent as an unconfirmed placeholder. Never put secrets in the brief.
+Write the brief to a file. It must state the goal, the constraints, the definition of done, what the session must not do, and the tool profile the brief owner chose, and "if unclear, end your turn with the question". For code changes, the definition of done includes committing and pushing a named branch. Keep the user's decisions; label any number you had to assume as an assumption. Never put secrets in the brief.
 
 ## 2. Launch detached
 
@@ -42,11 +42,11 @@ agent-deck run <deck> --client <client> --cwd <dir> --prompt-file <brief-file> -
 
 Supported `--client` values are `claude`, `codex`, `cursor`, `muse`; `agent-deck run --help` lists the clients. The examples use `claude`; substitute your client. Read the `runId`, pid, and log path from the `run <runId> detached: pid <pid> log <path>` line. If the launch fails closed on a deck binding mismatch, stop and report to the human instead of rebinding.
 
-For per-client flags, resume ids, tool mappings, and trust behavior, see [docs/DELEGATION.md](../../docs/DELEGATION.md).
+For per-client flags, resume ids, tool mappings, and trust behavior, see `docs/DELEGATION.md` in the agent-deck repository.
 
 ## 3. Monitor
 
-Poll until the state leaves `running`. Suggested poll interval: 30 seconds (unconfirmed — no measured run durations yet; NOT-429 operator runs will justify the value against `run status --json` durations).
+Poll until the state leaves `running`. Poll about every 30 seconds; longer tasks can use a longer interval.
 
 ```sh
 agent-deck run status <runId>
@@ -70,13 +70,13 @@ Resume the same session with a feedback brief that quotes the gap found in step 
 agent-deck run <deck> --client <client> --cwd <dir> --prompt-file <feedback-file> --tools readonly --resume <sessionId> --detach
 ```
 
-Repeat steps 3-5 until the goal is met or a round cap is hit (placeholder: 3 feedback rounds, unconfirmed — awaiting owner confirmation per NOT-429), then report to the human.
+Repeat steps 3-5 until the goal is met or about 3 feedback rounds have passed without progress; then bring the blocker to the human.
 
 ### Corrections from a delegated run
-- The party that observed and made the correction files it: the orchestrator files `propose_playbook_patch` on its own bound deck <TBD: owner confirms who files>; the delegated session files only when a human corrects it directly.
+- The party that observed and made the correction files it: the orchestrator files `propose_playbook_patch` on its own bound deck; the delegated session files only when a human corrects it directly.
 - Evidence quotes the review gap as `user_feedback_excerpt` plus `runId`, `sessionId`, tool profile, and log path; no secrets in evidence.
 - Clearly general lesson: `update` with `add_item` (or `create` when no playbook covers it); not yet general: `signal_only`.
-- Cross-deck: `create`/`signal_only` land on the caller's bound deck and `get_playbook` reads only that deck (`packages/backend/src/mcp-tools/register.ts:758`, `packages/backend/src/routes/playbooks.ts:185`), so for a playbook on another deck file `signal_only` with the ids above.
+- Cross-deck: `create`/`signal_only` land on the caller's bound deck and `get_playbook` reads only that deck, so for a playbook on another deck file `signal_only` with the ids above.
 
 ## Hard rules
 
