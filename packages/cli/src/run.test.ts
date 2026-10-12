@@ -188,19 +188,19 @@ describe('agent-deck run (NOT-400)', () => {
     expect(lines.at(-1)).toMatchObject({ t: 'end', sessionId: 'ses_resume' });
   });
 
-  it.each(['muse'])('--client %s exits non-zero without calling query()', async (client) => {
+  it('an unknown --client exits non-zero without calling query()', async () => {
     const cwd = makeDir('agent-deck-run-cwd-');
     const homeDir = makeDir('agent-deck-run-home-');
     const deps = makeDeps(cwd, homeDir);
 
     const code = await runRunCommand(
-      ['planner', '--client', client, '--cwd', cwd, '--prompt', 'brief'],
+      ['planner', '--client', 'clippy', '--cwd', cwd, '--prompt', 'brief'],
       deps,
     );
 
     expect(code).not.toBe(0);
     expect(deps.query).not.toHaveBeenCalled();
-    expect(errors.join('\n')).toMatch(/not available yet/);
+    expect(errors.join('\n')).toMatch(/must be one of/);
   });
 
   it('deck mismatch exits non-zero before any query() call', async () => {

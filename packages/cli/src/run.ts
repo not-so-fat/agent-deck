@@ -38,6 +38,7 @@ import {
 } from './run-claude';
 import { createCodexAdapter, type CodexAdapterDeps } from './run-codex';
 import { createCursorAdapter, type CursorAdapterDeps } from './run-cursor';
+import { createMuseAdapter, type MuseAdapterDeps } from './run-muse';
 
 // Tool profiles stay owned by the shared run code (re-exported so existing
 // `from './run'` imports keep working).
@@ -54,6 +55,7 @@ export type { RunClient } from './run-adapter';
 export type { ClaudeAdapterDeps, RunQueryFn, RunQueryMessage, RunQueryOptions } from './run-claude';
 export type { CodexAdapterDeps } from './run-codex';
 export type { CursorAdapterDeps } from './run-cursor';
+export type { MuseAdapterDeps } from './run-muse';
 
 export type RunOptions = {
   deckRef: string;
@@ -118,7 +120,7 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
   if (!client) {
     return { error: missingRunClientMessage() };
   }
-  if (client !== 'claude' && client !== 'codex' && client !== 'cursor') {
+  if (client !== 'claude' && client !== 'codex' && client !== 'cursor' && client !== 'muse') {
     return { error: runClientMessage(client) };
   }
   if (!cwd) {
@@ -179,6 +181,8 @@ export type RunDeps = {
   codex?: CodexAdapterDeps;
   /** Injected in tests; production spawns the real `cursor-agent` binary. */
   cursor?: CursorAdapterDeps;
+  /** Injected in tests; production spawns the real `muse` binary. */
+  muse?: MuseAdapterDeps;
   resolveDeck?: (ref: string) => Promise<{ id: string; name: string } | null>;
   resolveLaunchPlan?: typeof resolveMcpLaunchPlan;
   homeDir?: string;
@@ -405,6 +409,9 @@ function resolveAdapter(client: RunClient, deps: RunDeps): ClientAdapter {
   if (client === 'cursor') {
     return createCursorAdapter(deps.cursor ?? {});
   }
+  if (client === 'muse') {
+    return createMuseAdapter(deps.muse ?? {});
+  }
   const query = selectClaudeQuery(deps);
   return createClaudeAdapter({
     ...deps.claude,
@@ -443,18 +450,20 @@ function writeMeta(metaPath: string, meta: RunMeta): void {
  * token when the log positively shows a deck other than the requested one;
  * a missing receipt is not a mismatch (the pre-start assignment gate is the
  * fail-closed check; this is a second net for a mis-bound session).
+ * The fragments are joined before scanning: real clients stream token-level
+ * deltas, so one receipt line can arrive split across many text events and a
+ * per-fragment scan would miss the mismatch.
  */
 export function findReceiptDeckMismatch(
   texts: readonly string[],
   deck: { id: string; name: string },
 ): string | null {
-  for (const text of texts) {
-    const pattern = /◆\s*([^·\r\n]+?)\s*·/g;
-    for (const match of text.matchAll(pattern)) {
-      const token = match[1].trim();
-      if (token && token !== deck.name && token !== deck.id) {
-        return token;
-      }
+  const joined = texts.join('');
+  const pattern = /◆\s*([^·\r\n]+?)\s*·/g;
+  for (const match of joined.matchAll(pattern)) {
+    const token = match[1].trim();
+    if (token && token !== deck.name && token !== deck.id) {
+      return token;
     }
   }
   return null;
@@ -544,7 +553,7 @@ export async function validateRunPrereqs(
 
 export function printRunHelp(): void {
   console.log(`Usage:
-  agent-deck run <deck> --client claude|codex|cursor --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
+  agent-deck run <deck> --client claude|codex|cursor|muse --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
   agent-deck run status <runId> [--json]
   agent-deck run log <runId> [--tail <n>] [--follow] [--json]
   agent-deck run list [--json] [--limit <n>]
@@ -557,10 +566,13 @@ Claude runs require the Claude Code CLI on this machine, signed in
 A set ANTHROPIC_API_KEY skips the sign-in check (the SDK accepts the
 key instead); API-key setup is otherwise out of scope for this path.
 
-  --client claude|codex|cursor  Required. muse adapter is not available yet.
-                         codex maps --tools to -s read-only|workspace-write.
+  --client claude|codex|cursor|muse
+                         Required.
+                         codex maps --tools to -s read-only|workspace-write;
                          cursor maps --tools edit to --force (readonly passes
-                         no write flag); all log lines land when the run ends.
+                         no write flag); all log lines land when the run ends;
+                         muse maps readonly to --disable-write --disable-shell
+                         (edit uses the default bounded permissions).
   --cwd <dir>            Required. Session working directory.
   --prompt <text>        Brief text (exactly one of --prompt/--prompt-file).
   --prompt-file <path>   Brief read from a file.

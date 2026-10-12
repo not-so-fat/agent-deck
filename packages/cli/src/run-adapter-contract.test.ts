@@ -1,8 +1,8 @@
 /**
- * Shared ClientAdapter contract (NOT-404), run against the Claude, Codex, and
- * Cursor adapters with fake client processes: normalized events, session id
- * capture, resume pass-through, tool-profile mapping, preflight failure
- * before start, deck mismatch before start.
+ * Shared ClientAdapter contract (NOT-404), run against the Claude, Codex,
+ * Cursor, and Muse adapters with fake client processes: normalized events,
+ * session id capture, resume pass-through, tool-profile mapping, preflight
+ * failure before start, deck mismatch before start.
  *
  * Every supported client must have a case below (asserted); a new adapter
  * extends the contract by adding a case, without touching run/log/status.
@@ -25,6 +25,7 @@ import {
 import { createClaudeAdapter, type RunQueryFn, type RunQueryMessage } from './run-claude';
 import { createCodexAdapter, type CodexProbe, type CodexSpawn } from './run-codex';
 import { createCursorAdapter, type CursorProbe, type CursorSpawn } from './run-cursor';
+import { createMuseAdapter, type MuseFileReader, type MuseProbe, type MuseSpawn } from './run-muse';
 import { runRunCommand, type RunDeps } from './run';
 
 const DECK = { id: 'deck-planner', name: 'planner' };
@@ -42,6 +43,18 @@ const CURSOR_FIXTURE_TEXT = fs
   .readFileSync(fileURLToPath(new URL('./run-cursor.fixture.json', import.meta.url)), 'utf8')
   .trim();
 const CURSOR_SESSION_ID = (JSON.parse(CURSOR_FIXTURE_TEXT) as { session_id: string }).session_id;
+
+// Verbatim capture from the owner's Mac (Muse Code 1.4.4, echo provider,
+// /tmp/smoke, "remember kiwi"): every record carries
+// stream {kind: "session", id}, one run.output.delta carries the answer, the
+// final run.terminal.completed carries the result.
+const MUSE_FIXTURE_LINES = fs
+  .readFileSync(fileURLToPath(new URL('./run-muse.fixture.jsonl', import.meta.url)), 'utf8')
+  .trim()
+  .split('\n');
+const MUSE_SESSION_ID = (
+  JSON.parse(MUSE_FIXTURE_LINES[0]) as { stream: { kind: string; id: string } }
+).stream.id;
 
 const CLAUDE_SESSION_ID = 'ses_contract';
 
@@ -146,10 +159,60 @@ function okCursorProbe(): CursorProbe {
       : { code: 0, stdout: '{"status":"authenticated","isAuthenticated":true}\n', stderr: '' };
 }
 
+function fakeMuseSpawn(
+  lines: string[] = MUSE_FIXTURE_LINES,
+  code = 0,
+): { spawn: MuseSpawn; calls: Array<{ bin: string; argv: string[]; cwd: string }> } {
+  const calls: Array<{ bin: string; argv: string[]; cwd: string }> = [];
+  const spawn = vi.fn((bin: string, argv: string[], opts: { cwd: string }) => {
+    calls.push({ bin, argv, cwd: opts.cwd });
+    return {
+      stdout: (async function* (): AsyncGenerator<string> {
+        yield* lines;
+      })(),
+      stderr: (async function* (): AsyncGenerator<string> {
+        // No stderr output; warnings are covered in run-muse.test.ts.
+      })(),
+      wait: async () => ({ code, stderrTail: '' }),
+    };
+  });
+  return { spawn: spawn as unknown as MuseSpawn, calls };
+}
+
+function okMuseProbe(): MuseProbe {
+  return (bin: string, argv: string[]) => {
+    if (argv[0] === '--version') {
+      return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+    }
+    if (argv[0] === 'exec' && argv[1] === '--help') {
+      return {
+        code: 0,
+        stdout:
+          'Usage: muse exec [options]\n  --disable-write  Disable non-shell workspace file writes\n  --disable-shell  Disable workspace shell execution\n',
+        stderr: '',
+      };
+    }
+    return { code: 1, stdout: '', stderr: '' };
+  };
+}
+
+function okMuseReadFile(): MuseFileReader {
+  return (filePath: string) => {
+    if (filePath.endsWith(`${path.sep}muse${path.sep}auth.json`)) {
+      return JSON.stringify({ schema_version: 1, providers: { meta: { mechanism: 'oauth' } } });
+    }
+    if (filePath.endsWith('settings.json') || filePath.endsWith('.mcp.json')) {
+      return JSON.stringify({ mcpServers: { 'agent-deck': { command: 'agent-deck' } } });
+    }
+    return null;
+  };
+}
+
 type ClientLaunchRecord =
   | { client: 'claude'; prompt: string; options: Record<string, unknown> }
   | { client: 'codex'; bin: string; argv: string[]; cwd: string }
-  | { client: 'cursor'; bin: string; argv: string[]; cwd: string };
+  | { client: 'cursor'; bin: string; argv: string[]; cwd: string }
+  | { client: 'muse'; bin: string; argv: string[]; cwd: string };
 
 type ContractCase = {
   id: RunClient;
@@ -262,6 +325,38 @@ function makeCursorCase(): ContractCase {
   };
 }
 
+function makeMuseCase(): ContractCase {
+  const { spawn, calls } = fakeMuseSpawn();
+  const adapter = createMuseAdapter({ probe: okMuseProbe(), spawn, readFile: okMuseReadFile() });
+  const baseArgs: AdapterStartArgs = { cwd: '/tmp/contract', prompt: 'brief', tools: 'readonly' };
+  return {
+    id: 'muse',
+    adapter,
+    expectedKinds: ['text', 'result'],
+    expectedSessionId: MUSE_SESSION_ID,
+    clientInvocations: () => calls.length,
+    launch: async (overrides = {}) => {
+      for await (const _event of adapter.start({ ...baseArgs, ...overrides })) {
+        // Drain; the launch record is the assertion surface.
+      }
+      const last = calls.at(-1) ?? { bin: '', argv: [] as string[], cwd: '' };
+      return { client: 'muse', bin: last.bin, argv: last.argv, cwd: last.cwd };
+    },
+    runArgs: (cwd, extra = []) => ['planner', '--client', 'muse', '--cwd', cwd, ...extra],
+    runDeps: (cwd, homeDir) => {
+      const { spawn: runSpawn } = fakeMuseSpawn();
+      return {
+        muse: { probe: okMuseProbe(), spawn: runSpawn, readFile: okMuseReadFile() },
+        resolveDeck: async () => ({ ...DECK }),
+        resolveLaunchPlan: async () => matchingPlan(cwd),
+        homeDir,
+      };
+    },
+    clientRunCalls: (deps) =>
+      (deps.muse?.spawn as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+  };
+}
+
 function matchingPlan(cwd: string): McpLaunchPlan {
   return {
     workspaceRoot: cwd,
@@ -302,6 +397,7 @@ const CASES = [
   { id: 'claude', make: makeClaudeCase },
   { id: 'codex', make: makeCodexCase },
   { id: 'cursor', make: makeCursorCase },
+  { id: 'muse', make: makeMuseCase },
 ] as const;
 
 describe('adapter contract coverage', () => {
@@ -370,6 +466,15 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       const sep = record.argv.indexOf('--');
       expect(sep).toBeGreaterThan(flag);
       expect(record.argv.slice(sep + 1)).toEqual(['brief']);
+    } else if (record.client === 'muse') {
+      expect(record.argv[0]).toBe('exec');
+      expect(record.argv).toContain('--session-id');
+      expect(record.argv[record.argv.indexOf('--session-id') + 1]).toBe('resume_contract_1');
+      // The prompt is a positional after the `--` terminator, so it can
+      // never be parsed as a muse option.
+      const sep = record.argv.indexOf('--');
+      expect(sep).toBeGreaterThan(0);
+      expect(record.argv.slice(sep + 1)).toEqual(['brief']);
     } else {
       expect.unreachable('unknown client record');
     }
@@ -403,6 +508,22 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       for (const record of [readonlyRecord, editRecord]) {
         expect(record.argv).not.toContain('--yolo');
         expect(record.argv).not.toContain('--approve-mcps');
+      }
+    } else if (readonlyRecord.client === 'muse' && editRecord.client === 'muse') {
+      expect(readonlyRecord.argv).toContain('--disable-write');
+      expect(readonlyRecord.argv).toContain('--disable-shell');
+      expect(editRecord.argv).not.toContain('--disable-write');
+      expect(editRecord.argv).not.toContain('--disable-shell');
+      for (const record of [readonlyRecord, editRecord]) {
+        for (const forbidden of [
+          '--yolo',
+          '--trust-workspace',
+          '--disable-approval',
+          '--disable-sandbox',
+          '--permission-profile',
+        ]) {
+          expect(record.argv).not.toContain(forbidden);
+        }
       }
     } else {
       expect.unreachable('mixed client records');
@@ -449,6 +570,22 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       const code = await runRunCommand(kase.runArgs(cwd, ['--prompt', 'brief']), deps);
       expect(code).not.toBe(0);
       expect(errors.join('\n')).toMatch(/cursor-agent CLI not found/);
+      expect(invocations()).toBe(0);
+      return;
+    }
+    if (kase.id === 'muse') {
+      const { spawn } = fakeMuseSpawn();
+      const probe = vi.fn(() => ({ code: 127, stdout: '', stderr: '' }));
+      deps = {
+        muse: { probe, spawn, readFile: okMuseReadFile() },
+        resolveDeck: async () => ({ ...DECK }),
+        resolveLaunchPlan: async () => matchingPlan(cwd),
+        homeDir,
+      };
+      invocations = () => (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const code = await runRunCommand(kase.runArgs(cwd, ['--prompt', 'brief']), deps);
+      expect(code).not.toBe(0);
+      expect(errors.join('\n')).toMatch(/muse CLI not found/);
       expect(invocations()).toBe(0);
       return;
     }
