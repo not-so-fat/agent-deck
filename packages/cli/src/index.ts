@@ -55,7 +55,7 @@ function printUsage() {
   agent-deck menubar
   agent-deck setup --client codex|cursor|claude|claude-desktop|muse [--scope global|project] [--start]
   agent-deck use <deck> [--client cursor|claude|muse|both] [--refresh] [--mcp-port PORT]
-  agent-deck run <deck> --client claude --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>]
+  agent-deck run <deck> --client claude --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
   agent-deck run status <runId> [--json]
   agent-deck run log <runId> [--tail <n>] [--follow] [--json]
   agent-deck run list [--json] [--limit <n>]
