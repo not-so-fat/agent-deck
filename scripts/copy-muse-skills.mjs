@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');
-const skills = ['agent-deck-session', 'agent-deck-playbooks', 'agent-deck-setup'];
+const skills = ['agent-deck-session', 'agent-deck-playbooks', 'agent-deck-setup', 'agent-deck-run'];
 const destRoot = path.join(root, 'packages', 'cli', 'dist', 'muse-skills');
 
 for (const id of skills) {

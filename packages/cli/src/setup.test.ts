@@ -470,7 +470,7 @@ describe('NOT-387 muse setup', () => {
     }
   });
 
-  it('NOT-388: clean global muse setup installs three skills, second run changes nothing', async () => {
+  it('NOT-388/NOT-425: clean global muse setup installs four skills, second run changes nothing', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-skills-home-'));
     const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-skills-xdg-'));
     const snapshot = (dir: string): Map<string, string> => {
@@ -489,7 +489,7 @@ describe('NOT-387 muse setup', () => {
     try {
       const first = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
       expect(first.code).toBe(0);
-      for (const id of ['agent-deck-session', 'agent-deck-playbooks', 'agent-deck-setup']) {
+      for (const id of ['agent-deck-session', 'agent-deck-playbooks', 'agent-deck-setup', 'agent-deck-run']) {
         const skillPath = path.join(tmpXdg, 'muse', 'skills', id, 'SKILL.md');
         expect(fs.existsSync(skillPath)).toBe(true);
         const content = fs.readFileSync(skillPath, 'utf8');
@@ -497,7 +497,7 @@ describe('NOT-387 muse setup', () => {
         expect(content).toContain('<!-- agent-deck:managed-skill -->');
       }
       const before = snapshot(path.join(tmpXdg, 'muse'));
-      expect(before.size).toBeGreaterThanOrEqual(4); // settings.json + 3 skills
+      expect(before.size).toBeGreaterThanOrEqual(5); // settings.json + 4 skills
       const second = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
       expect(second.code).toBe(0);
       expect(snapshot(path.join(tmpXdg, 'muse'))).toEqual(before);

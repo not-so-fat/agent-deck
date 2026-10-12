@@ -18,7 +18,7 @@ import {
 } from './muse-skills';
 
 describe('muse-skills resources', () => {
-  it('loads all three canonical templates from root skills/ in dev', () => {
+  it('loads all four canonical templates from root skills/ in dev', () => {
     for (const id of MUSE_SKILL_IDS) {
       const template = readMuseSkillTemplate(id);
       expect(template).toContain(`name: ${id}`);
@@ -130,7 +130,7 @@ describe('installMuseSkills', () => {
     return out;
   }
 
-  it('creates all three managed skills on a clean home', () => {
+  it('creates all four managed skills on a clean home', () => {
     useTmpXdg();
     const result = installMuseSkills();
     expect(result.ok).toBe(true);
@@ -139,6 +139,7 @@ describe('installMuseSkills', () => {
       'agent-deck-session': 'created',
       'agent-deck-playbooks': 'created',
       'agent-deck-setup': 'created',
+      'agent-deck-run': 'created',
     });
     for (const id of MUSE_SKILL_IDS) {
       const skillPath = path.join(tmpXdg, 'muse', 'skills', id, 'SKILL.md');
@@ -151,12 +152,26 @@ describe('installMuseSkills', () => {
     expect(fs.existsSync(path.join(tmpHome, '.config', 'muse', 'skills'))).toBe(false);
   });
 
+  it('NOT-425: installs agent-deck-run under ~/.config/muse/skills when XDG_CONFIG_HOME is unset', () => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-muse-run-home-'));
+    previousXdg = process.env.XDG_CONFIG_HOME;
+    delete process.env.XDG_CONFIG_HOME;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    const result = installMuseSkills();
+    expect(result.ok).toBe(true);
+    const skillPath = path.join(tmpHome, '.config', 'muse', 'skills', 'agent-deck-run', 'SKILL.md');
+    expect(fs.existsSync(skillPath)).toBe(true);
+    const content = fs.readFileSync(skillPath, 'utf8');
+    expect(content).toContain('name: agent-deck-run');
+    expect(content).toContain(MUSE_MANAGED_SKILL_MARKER);
+  });
+
   it('second run performs no content change (idempotent file tree)', () => {
     useTmpXdg();
     const first = installMuseSkills();
     expect(first.ok).toBe(true);
     const before = snapshotTree(path.join(tmpXdg, 'muse', 'skills'));
-    expect(before.size).toBe(3);
+    expect(before.size).toBe(4);
     const second = installMuseSkills();
     expect(second.ok).toBe(true);
     if (!second.ok) return;
@@ -164,6 +179,7 @@ describe('installMuseSkills', () => {
       'agent-deck-session': 'unchanged',
       'agent-deck-playbooks': 'unchanged',
       'agent-deck-setup': 'unchanged',
+      'agent-deck-run': 'unchanged',
     });
     const after = snapshotTree(path.join(tmpXdg, 'muse', 'skills'));
     expect(after).toEqual(before);
@@ -184,6 +200,7 @@ describe('installMuseSkills', () => {
     expect(result.actions['agent-deck-session']).toBe('updated');
     expect(result.actions['agent-deck-playbooks']).toBe('unchanged');
     expect(result.actions['agent-deck-setup']).toBe('unchanged');
+    expect(result.actions['agent-deck-run']).toBe('unchanged');
     expect(fs.readFileSync(stalePath, 'utf8')).toBe(
       buildMuseManagedSkillContent(readMuseSkillTemplate('agent-deck-session')),
     );
@@ -245,7 +262,7 @@ describe('diagnoseMuseSkills (read-only)', () => {
   it('reports missing when no skills exist and creates nothing', () => {
     useTmpXdg();
     const diagnoses = diagnoseMuseSkills();
-    expect(diagnoses.map((d) => d.status)).toEqual(['missing', 'missing', 'missing']);
+    expect(diagnoses.map((d) => d.status)).toEqual(['missing', 'missing', 'missing', 'missing']);
     const summary = summarizeMuseSkillsDiagnosis(diagnoses);
     expect(summary.status).toBe('missing');
     expect(summary.path).toBe(path.join(tmpXdg, 'muse', 'skills', 'agent-deck-session', 'SKILL.md'));
@@ -280,7 +297,7 @@ describe('diagnoseMuseSkills (read-only)', () => {
     expect(fs.readFileSync(collisionPath, 'utf8')).toBe('# user-authored\n');
   });
 
-  it('reports current only when all three skills are present and current', () => {
+  it('reports current only when all four skills are present and current', () => {
     useTmpXdg();
     expect(installMuseSkills().ok).toBe(true);
     expect(diagnoseMuseSkills().every((d) => d.status === 'current')).toBe(true);

@@ -42,7 +42,7 @@ for required in managed/paths.js managed/activate.js managed/updater.js managed/
     fail "dist/$required missing from CLI build (managed install)"
   fi
 done
-for skill in agent-deck-session agent-deck-playbooks agent-deck-setup; do
+for skill in agent-deck-session agent-deck-playbooks agent-deck-setup agent-deck-run; do
   if [[ ! -f "$CLI_DIST/muse-skills/$skill/SKILL.md" ]]; then
     fail "dist/muse-skills/$skill/SKILL.md missing from CLI build (run npm run build)"
   fi
@@ -65,7 +65,7 @@ PKG_ROOT="$PACK_DIR/package"
 pass "npm pack includes statusline-setup.js"
 
 # --- 2b. Packed tarball ships Muse skills byte-identical to canonical sources ---
-for skill in agent-deck-session agent-deck-playbooks agent-deck-setup; do
+for skill in agent-deck-session agent-deck-playbooks agent-deck-setup agent-deck-run; do
   PACKED_SKILL="$PKG_ROOT/dist/muse-skills/$skill/SKILL.md"
   CANONICAL_SKILL="$ROOT_DIR/skills/$skill/SKILL.md"
   [[ -f "$PACKED_SKILL" ]] || fail "packed tarball missing dist/muse-skills/$skill/SKILL.md"
@@ -207,7 +207,7 @@ if ! grep -q 'mcp-launch' "$MUSE_SETTINGS"; then
 fi
 pass "Muse settings wire agent-deck mcp-launch"
 
-for skill in agent-deck-session agent-deck-playbooks agent-deck-setup; do
+for skill in agent-deck-session agent-deck-playbooks agent-deck-setup agent-deck-run; do
   SKILL_PATH="$SMOKE_HOME/.config/muse/skills/$skill/SKILL.md"
   [[ -f "$SKILL_PATH" ]] || fail "Muse skill missing: $SKILL_PATH"
   if ! grep -q "name: $skill" "$SKILL_PATH"; then
