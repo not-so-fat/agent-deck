@@ -6,9 +6,9 @@
   },
   "plugins": [
     {
-      "name": "agent-deck-delegation",
-      "source": "./plugin",
-      "description": "Delegate tasks to a local Claude Code, Codex, Cursor, or muse session via agent-deck run, then monitor, review, and resume with feedback."
+      "name": "agent-deck",
+      "source": "./",
+      "description": "Decks of MCP tools, keys, and self-improving playbooks that bind per-workspace."
     }
   ]
 }

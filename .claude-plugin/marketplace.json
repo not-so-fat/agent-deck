@@ -14,16 +14,6 @@
         "name": "not-so-fat",
         "url": "https://github.com/not-so-fat"
       }
-    },
-    {
-      "name": "agent-deck-delegation",
-      "source": "./plugin",
-      "description": "Delegate tasks to a local Claude Code, Codex, Cursor, or muse session via agent-deck run, then monitor, review, and resume with feedback.",
-      "version": "0.1.0",
-      "author": {
-        "name": "not-so-fat",
-        "url": "https://github.com/not-so-fat"
-      }
     }
   ]
 }
