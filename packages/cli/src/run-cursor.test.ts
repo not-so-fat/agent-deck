@@ -32,11 +32,15 @@ import { runRunCommand, type RunDeps, type RunMeta } from './run';
 
 const DECK = { id: 'deck-planner', name: 'planner' };
 
-// Reconstructed fixture: {"session_id","result"} per the smoke-test facts.
+// Reconstructed fixture: {"session_id","result"} per the smoke-test facts,
+// with a planner receipt line so start-path successes pass the mandatory
+// deck-receipt check (repair round 2).
 const CURSOR_FIXTURE_TEXT = fs
   .readFileSync(fileURLToPath(new URL('./run-cursor.fixture.json', import.meta.url)), 'utf8')
   .trim();
 const CURSOR_SESSION_ID = (JSON.parse(CURSOR_FIXTURE_TEXT) as { session_id: string }).session_id;
+const CURSOR_RECEIPT = '◆ planner · 1 MCP · 0 keys · 1 playbooks';
+const withReceipt = (text: string): string => `${text}\n${CURSOR_RECEIPT}`;
 
 const tmpDirs: string[] = [];
 let logs: string[];
@@ -164,7 +168,9 @@ describe('cursor fixture mapping (NOT-406)', () => {
     expect(code).toBe(0);
     const lines = readJsonLines(logPathFromStdout());
     expect(lines.map((line) => line.t)).toEqual(['text', 'result', 'end']);
-    expect(lines[0]).toMatchObject({ t: 'text', text: 'contract hello' });
+    expect(lines[0]).toMatchObject({ t: 'text' });
+    expect(String(lines[0]['text'])).toContain('contract hello');
+    expect(String(lines[0]['text'])).toContain(CURSOR_RECEIPT);
     expect(lines[1]).toMatchObject({ t: 'result', sessionId: CURSOR_SESSION_ID, subtype: 'success' });
     expect(lines[2]).toMatchObject({ t: 'end', sessionId: CURSOR_SESSION_ID });
     expect(readMeta(logPathFromStdout())).toMatchObject({
@@ -180,7 +186,7 @@ describe('cursor fixture mapping (NOT-406)', () => {
     const deps = makeDeps(cwd, homeDir, {
       stdout: cursorLine({
         session_id: 'cursor_warned',
-        result: 'done with warnings',
+        result: withReceipt('done with warnings'),
         warnings: ['slow model, consider retrying'],
       }),
     });
@@ -199,7 +205,7 @@ describe('cursor fixture mapping (NOT-406)', () => {
     const deps = makeDeps(cwd, homeDir, {
       stdout: cursorLine({
         session_id: 'cursor_tools',
-        result: 'used tools',
+        result: withReceipt('used tools'),
         tool_calls: [{ name: 'get_session_context' }, 'Read'],
       }),
     });
@@ -417,6 +423,39 @@ describe('cursor workspace trust and empty results (NOT-406)', () => {
     expect(readMeta(logPathFromStdout())).toMatchObject({ state: 'error' });
   });
 
+  it('an empty-string result carrying a session id ends error, never success', async () => {
+    const cwd = makeDir('agent-deck-cursor-cwd-');
+    const homeDir = makeDir('agent-deck-cursor-home-');
+    const deps = makeDeps(cwd, homeDir, {
+      stdout: cursorLine({ session_id: 'cursor_empty_string', result: '' }),
+    });
+
+    const code = await runRunCommand(cursorArgs(cwd), deps);
+
+    expect(code).not.toBe(0);
+    const lines = readJsonLines(logPathFromStdout());
+    expect(lines.map((line) => line.t)).toEqual(['error']);
+    expect(String(lines[0]['message'])).toMatch(/empty result/);
+    expect(readMeta(logPathFromStdout())).toMatchObject({ state: 'error' });
+  });
+
+  it('an empty result object on --resume ends error (resume id is not content)', async () => {
+    const cwd = makeDir('agent-deck-cursor-cwd-');
+    const homeDir = makeDir('agent-deck-cursor-home-');
+    const deps = makeDeps(cwd, homeDir, { stdout: cursorLine({}) });
+
+    const code = await runRunCommand(cursorArgs(cwd, ['--resume', 'resumed_chat_9']), deps);
+
+    expect(code).not.toBe(0);
+    const lines = readJsonLines(logPathFromStdout());
+    expect(lines.map((line) => line.t)).toEqual(['error']);
+    expect(String(lines[0]['message'])).toMatch(/empty result/);
+    expect(readMeta(logPathFromStdout())).toMatchObject({
+      state: 'error',
+      sessionId: 'resumed_chat_9',
+    });
+  });
+
   it('non-JSON stdout ends error with the raw head', async () => {
     const cwd = makeDir('agent-deck-cursor-cwd-');
     const homeDir = makeDir('agent-deck-cursor-home-');
@@ -527,6 +566,39 @@ describe('cursor session receipt (NOT-406)', () => {
     expect(await runRunCommand(cursorArgs(cwd), deps)).toBe(0);
     expect(readMeta(logPathFromStdout())).toMatchObject({ state: 'ended' });
   });
+
+  it('a success with no receipt line ends error with a remedy', async () => {
+    const cwd = makeDir('agent-deck-cursor-cwd-');
+    const homeDir = makeDir('agent-deck-cursor-home-');
+    const deps = makeDeps(cwd, homeDir, {
+      stdout: cursorLine({ session_id: 'cursor_no_receipt', result: 'did work, no receipt' }),
+    });
+
+    const code = await runRunCommand(cursorArgs(cwd), deps);
+
+    expect(code).not.toBe(0);
+    const lines = readJsonLines(logPathFromStdout());
+    expect(lines.map((line) => line.t)).toEqual(['error']);
+    expect(String(lines[0]['message'])).toMatch(/no deck receipt/);
+    expect(String(lines[0]['message'])).toContain('get_session_context');
+    expect(readMeta(logPathFromStdout())).toMatchObject({ state: 'error' });
+  });
+
+  it('a resume without a receipt still ends ended (first-turn receipt only)', async () => {
+    const cwd = makeDir('agent-deck-cursor-cwd-');
+    const homeDir = makeDir('agent-deck-cursor-home-');
+    const deps = makeDeps(cwd, homeDir, {
+      stdout: cursorLine({ session_id: CURSOR_SESSION_ID, result: 'kiwi' }),
+    });
+
+    const code = await runRunCommand(cursorArgs(cwd, ['--resume', CURSOR_SESSION_ID]), deps);
+
+    expect(code).toBe(0);
+    expect(readMeta(logPathFromStdout())).toMatchObject({
+      state: 'ended',
+      sessionId: CURSOR_SESSION_ID,
+    });
+  });
 });
 
 describe('cursor output parser edges (NOT-406)', () => {
@@ -535,16 +607,16 @@ describe('cursor output parser edges (NOT-406)', () => {
   }
 
   it('accepts session id and answer aliases', () => {
-    expect(parse(cursorLine({ chatId: 'c1', text: 'hi' }))).toEqual([
-      { kind: 'text', text: 'hi', sessionId: 'c1' },
+    expect(parse(cursorLine({ chatId: 'c1', text: withReceipt('hi') }))).toEqual([
+      { kind: 'text', text: withReceipt('hi'), sessionId: 'c1' },
       {
         kind: 'result',
         subtype: 'success',
-        result: { chatId: 'c1', text: 'hi' },
+        result: { chatId: 'c1', text: withReceipt('hi') },
         sessionId: 'c1',
       },
     ]);
-    expect(parse(cursorLine({ sessionId: 'c2', message: 'yo' }))[0]).toMatchObject({
+    expect(parse(cursorLine({ sessionId: 'c2', message: withReceipt('yo') }))[0]).toMatchObject({
       kind: 'text',
       sessionId: 'c2',
     });
@@ -561,7 +633,7 @@ describe('cursor output parser edges (NOT-406)', () => {
       cursorLine({
         session_id: 'c3',
         content: [
-          { type: 'text', text: 'working' },
+          { type: 'text', text: withReceipt('working') },
           { type: 'tool_use', name: 'Read' },
         ],
       }),
@@ -572,10 +644,38 @@ describe('cursor output parser edges (NOT-406)', () => {
   });
 
   it('non-JSON lines around the result object become notices', () => {
-    const events = parse(`starting up\n${cursorLine({ session_id: 'c4', result: 'ok' })}`);
+    const events = parse(`starting up\n${cursorLine({ session_id: 'c4', result: withReceipt('ok') })}`);
 
     expect(events.map((event) => event.kind)).toEqual(['notice', 'text', 'result']);
     expect(events[0]).toMatchObject({ kind: 'notice', sessionId: 'c4' });
+  });
+
+  it('is_error true marks the run failed even with answer text', () => {
+    const events = parse(
+      cursorLine({ session_id: 'c5', result: withReceipt('partial'), is_error: true }),
+    );
+
+    expect(events.at(-1)).toMatchObject({
+      kind: 'result',
+      subtype: 'failed',
+      sessionId: 'c5',
+    });
+  });
+
+  it('a non-success subtype marks the run failed', () => {
+    const events = parse(
+      cursorLine({ session_id: 'c6', result: withReceipt('nope'), subtype: 'error' }),
+    );
+
+    expect(events.at(-1)).toMatchObject({ kind: 'result', sessionId: 'c6' });
+    expect((events.at(-1) as { subtype: string }).subtype).not.toBe('success');
+  });
+
+  it('a bare id is not accepted as the session id', () => {
+    const events = parse(cursorLine({ id: 'req_123', result: withReceipt('hello') }));
+
+    expect(events.at(-1)).toMatchObject({ kind: 'result' });
+    expect(events.at(-1)).not.toHaveProperty('sessionId');
   });
 
   it('the cursor adapter reports id cursor and always records the trust grant', async () => {

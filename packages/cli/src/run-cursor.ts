@@ -18,6 +18,11 @@
  *   `--force`. `--yolo` (an alias for `--force`) is never passed and no
  *   option can select it; `--approve-mcps` is never passed (separate owner
  *   decision required).
+ * - Deck receipt is mandatory on start (not resume): a success whose output
+ *   lacks a `◆ ... ·` display_summary line fails closed as `error`, because
+ *   Cursor's global MCP entry is last-workspace-wins and a missing receipt
+ *   would otherwise look like a correctly bound run. Resume is exempt (the
+ *   harness prints the receipt on the first turn only).
  * - `--force` means "allow commands unless explicitly denied" (auto-approval),
  *   and `-p` help says print mode "has access to all tools, including write
  *   and shell", so whether readonly truly cannot write is settled by the
@@ -255,12 +260,16 @@ function toolNames(value: unknown): string[] {
  * the result object's `session_id` becomes `sessionId`; the answer text
  * becomes one `text` event; tool arrays become `tool` events; warning arrays
  * become `notice` events; the full object becomes the `result` payload
- * (subtype `success`, or `failed` when the object carries `error`).
+ * (subtype `success`, or `failed` when the object carries `error`,
+ * `is_error: true`, or a non-`success` subtype).
  *
  * Throws (so the shared run code marks the run `error`) on "Workspace Trust
- * Required", on empty output at exit 0, on non-JSON output, and on a result
- * object with no session id, text, tool, or error content. Never returns an
- * empty event list: success always ends with a `result` event.
+ * Required", on empty output at exit 0, on non-JSON output, on a result
+ * object with no answer text, tool call, or error content (a bare session
+ * id, including the resume-id fallback, is not content), and — on start
+ * only, not resume — on a success whose output lacks a `◆ ... ·` deck
+ * receipt line. Never returns an empty event list: success always ends with
+ * a `result` event.
  */
 export function cursorEventsFromOutput(
   stdout: string,
@@ -314,23 +323,30 @@ export function cursorEventsFromOutput(
     );
   }
 
+  // Session aliases are chat-id shaped only: a bare `id` may be a request
+  // or message id rather than the chat id, which would resume the wrong
+  // session.
   const sessionId =
-    firstString(resultObject, ['session_id', 'sessionId', 'chat_id', 'chatId', 'id']) ??
+    firstString(resultObject, ['session_id', 'sessionId', 'chat_id', 'chatId']) ??
     opts.resumeId ??
     null;
   const withSession = sessionId ? { sessionId } : {};
 
   const errorValue = resultObject.error;
   const errorText = nonEmptyString(errorValue);
-  if (errorText || asRecord(errorValue)) {
+  const isErrorFlag = resultObject.is_error === true;
+  const subtypeRaw = nonEmptyString(resultObject.subtype);
+  const nonSuccessSubtype =
+    subtypeRaw && subtypeRaw !== 'success' ? subtypeRaw : null;
+  if (errorText || asRecord(errorValue) || isErrorFlag || nonSuccessSubtype) {
     return [
       ...notices.map((notice) =>
         sessionId ? { ...notice, sessionId } : notice,
       ),
       {
         kind: 'result',
-        subtype: 'failed',
-        result: errorValue,
+        subtype: nonSuccessSubtype ?? 'failed',
+        result: errorValue ?? resultObject,
         ...withSession,
       },
     ];
@@ -383,11 +399,27 @@ export function cursorEventsFromOutput(
     events.push({ kind: 'tool', name: name.slice(0, 200), ...withSession });
   }
 
+  // A bare session id (including the resume-id fallback) is not content:
+  // `{"session_id":"x","result":""}` and `{}` on --resume are empty results.
   const hasContent =
-    sessionId !== null || answerText !== null || tools.length > 0 || events.some((event) => event.kind === 'text' || event.kind === 'tool');
+    answerText !== null ||
+    tools.length > 0 ||
+    events.some((event) => event.kind === 'text' || event.kind === 'tool');
   if (!hasContent) {
     throw new Error(
-      'cursor-agent returned an empty result (exit 0): the result object has no session id, text, or tool calls — retry the run; if it persists, re-run the prompt by hand to see the raw error.',
+      'cursor-agent returned an empty result (exit 0): the result object has no answer text or tool calls — retry the run; if it persists, re-run the prompt by hand to see the raw error.',
+    );
+  }
+
+  // Mandatory deck receipt on start: without a `◆ ... ·` display_summary
+  // line the run cannot prove it bound to the requested deck (Cursor's
+  // global MCP entry is last-workspace-wins). Resume is exempt — the
+  // harness prints the receipt on the first turn only, so a resumed turn
+  // legitimately carries no new receipt. A present-but-wrong receipt is
+  // caught by the shared mismatch check in run.ts.
+  if (opts.resumeId === undefined && !/◆\s*[^·\r\n]+?\s*·/.test(stdout)) {
+    throw new Error(
+      "cursor-agent run produced no deck receipt (missing ◆ display_summary line): the session may be bound to another folder's deck. Ask the agent to call get_session_context and print display_summary verbatim, then retry.",
     );
   }
 
