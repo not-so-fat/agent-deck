@@ -409,6 +409,9 @@ export async function validateRunPrereqs(
 export function printRunHelp(): void {
   console.log(`Usage:
   agent-deck run <deck> --client claude --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
+  agent-deck run status <runId> [--json]
+  agent-deck run log <runId> [--tail <n>] [--follow] [--json]
+  agent-deck run list [--json] [--limit <n>]
 
 Starts a local Claude Code session bound to <deck> and streams a JSONL log.
 The folder's assignment must already name <deck> (agent-deck use <deck>);
@@ -427,7 +430,13 @@ run never rewrites .agent-deck/use.json and fails closed on a mismatch.
   --detach             Start in the background in a new session, so the run
                          survives this shell disconnecting. Prints runId, pid,
                          and the log path, then exits. Every other flag is
-                         passed to the run unchanged. Stop it with kill <pid>.`);
+                         passed to the run unchanged. Stop it with kill <pid>.
+
+Poll a run without parsing files by hand:
+
+  status <runId>         State (running|ended|error|died), sessionId, log path.
+  log <runId>            One readable line per event; --json prints raw JSONL.
+  list                   Recent runs, newest first (default limit 20).`);
 }
 
 export async function runRun(options: RunOptions, deps: RunDeps = {}): Promise<number> {
@@ -538,7 +547,25 @@ export async function runRun(options: RunOptions, deps: RunDeps = {}): Promise<n
   return success ? 0 : 1;
 }
 
-export async function runRunCommand(args: string[], deps: RunDeps = {}): Promise<number> {
+export async function runRunCommand(
+  args: string[],
+  deps: RunDeps & { followPollMs?: number } = {},
+): Promise<number> {
+  // Poll subcommands (NOT-402) share the `run` prefix with launch (NOT-400).
+  const [head, ...tail] = args;
+  if (head === 'status' || head === 'log' || head === 'list') {
+    const inspect = await import('./run-status');
+    if (head === 'status') {
+      return inspect.runRunStatusCommand(tail, { homeDir: deps.homeDir });
+    }
+    if (head === 'log') {
+      return inspect.runRunLogCommand(tail, {
+        homeDir: deps.homeDir,
+        ...(deps.followPollMs !== undefined ? { followPollMs: deps.followPollMs } : {}),
+      });
+    }
+    return inspect.runRunListCommand(tail, { homeDir: deps.homeDir });
+  }
   const parsed = parseRunArgs(args);
   if ('error' in parsed) {
     if (parsed.error === 'help') {
