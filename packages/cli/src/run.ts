@@ -66,6 +66,9 @@ export type RunOptions = {
   tools: RunToolsProfile;
   log?: string;
   resume?: string;
+  detach: boolean;
+  /** Internal: the starter passes the allocated run id so the child reuses it. */
+  runIdOverride?: string;
 };
 
 export function parseRunArgs(args: string[]): RunOptions | { error: string } {
@@ -77,6 +80,8 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
   let tools = 'readonly';
   let log: string | undefined;
   let resume: string | undefined;
+  let detach = false;
+  let runIdOverride: string | undefined;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -94,6 +99,10 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
       log = args[++i];
     } else if (arg === '--resume') {
       resume = args[++i];
+    } else if (arg === '--detach') {
+      detach = true;
+    } else if (arg === '--_run-id') {
+      runIdOverride = args[++i];
     } else if (arg === '--help' || arg === '-h') {
       return { error: 'help' };
     } else if (arg.startsWith('-')) {
@@ -139,6 +148,8 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
     tools,
     ...(log ? { log: path.resolve(log) } : {}),
     ...(resume ? { resume } : {}),
+    detach,
+    ...(runIdOverride ? { runIdOverride } : {}),
   };
 }
 
@@ -193,6 +204,93 @@ export type RunDeps = {
   homeDir?: string;
 };
 
+/**
+ * Test-only fake runner for the `run --detach` integration suite. The detached
+ * child is a real process, so dependency injection cannot reach it; instead the
+ * suite points AGENT_DECK_RUN_FAKE at a JSON behavior file and both the starter
+ * (deck lookup) and the child (deck lookup + model stream) honor it. Explicit
+ * `deps` always win, so unit tests are unaffected. Never set in production.
+ */
+export const RUN_FAKE_ENV = 'AGENT_DECK_RUN_FAKE';
+
+export type RunFakeBehavior = {
+  deckId?: string;
+  deckName?: string;
+  /** success: yield text then a success result; fail: throw; crash: exit silently-ish. */
+  mode?: 'success' | 'fail' | 'crash';
+  lineDelayMs?: number;
+  endDelayMs?: number;
+  sessionId?: string;
+  text?: string;
+  error?: string;
+  exitCode?: number;
+  crashStderr?: string;
+  /** When set, the received { prompt, options } are recorded here as JSON. */
+  recordOptionsPath?: string;
+};
+
+export function loadRunFakeBehavior(): RunFakeBehavior | null {
+  const file = process.env[RUN_FAKE_ENV]?.trim();
+  if (!file) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as RunFakeBehavior;
+  } catch {
+    throw new Error(`Cannot read ${RUN_FAKE_ENV} behavior file: ${file}`);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function fakeQueryFromBehavior(behavior: RunFakeBehavior): RunQueryFn {
+  const sessionId = behavior.sessionId ?? 'ses_fake';
+  return async function* ({ prompt, options }: {
+    prompt: string;
+    options: RunQueryOptions;
+  }): AsyncGenerator<RunQueryMessage> {
+    if (behavior.recordOptionsPath) {
+      fs.mkdirSync(path.dirname(behavior.recordOptionsPath), { recursive: true });
+      fs.writeFileSync(
+        behavior.recordOptionsPath,
+        `${JSON.stringify({ prompt, options }, null, 2)}\n`,
+        'utf8',
+      );
+    }
+    if (behavior.mode === 'crash') {
+      // A crash leaves no log line behind: sync write, then out with no yield.
+      fs.writeSync(2, `${behavior.crashStderr ?? 'fake runner crashed'}\n`);
+      process.exit(behavior.exitCode ?? 1);
+    }
+    if (behavior.lineDelayMs) {
+      await sleep(behavior.lineDelayMs);
+    }
+    if (behavior.mode === 'fail') {
+      throw new Error(behavior.error ?? 'fake runner failed');
+    }
+    yield {
+      type: 'assistant',
+      session_id: sessionId,
+      message: { content: [{ type: 'text', text: behavior.text ?? 'fake runner here' }] },
+    };
+    if (behavior.endDelayMs) {
+      await sleep(behavior.endDelayMs);
+    }
+    yield { type: 'result', subtype: 'success', session_id: sessionId, result: 'fake ok' };
+  };
+}
+
+function fakeResolveDeckFromBehavior(
+  behavior: RunFakeBehavior,
+): (ref: string) => Promise<{ id: string; name: string } | null> {
+  return async (ref: string) => ({
+    id: behavior.deckId ?? 'deck-fake',
+    name: behavior.deckName ?? ref,
+  });
+}
+
 function loadSdkQuery(): RunQueryFn {
   try {
     const sdkPath = require.resolve('@anthropic-ai/claude-agent-sdk', {
@@ -224,9 +322,93 @@ function writeMeta(metaPath: string, meta: RunMeta): void {
   fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
 }
 
+export type RunPrereqDeps = Pick<RunDeps, 'resolveDeck' | 'resolveLaunchPlan'>;
+
+function selectResolveDeck(
+  deps: RunPrereqDeps,
+): (ref: string) => Promise<{ id: string; name: string } | null> {
+  if (deps.resolveDeck) {
+    return deps.resolveDeck;
+  }
+  const fake = loadRunFakeBehavior();
+  return fake ? fakeResolveDeckFromBehavior(fake) : defaultResolveDeck;
+}
+
+function selectRunQuery(deps: RunDeps): RunQueryFn {
+  if (deps.query) {
+    return deps.query;
+  }
+  const fake = loadRunFakeBehavior();
+  return fake ? fakeQueryFromBehavior(fake) : loadSdkQuery();
+}
+
+/**
+ * Everything a run must prove before it may start streaming: a readable brief,
+ * an existing cwd, a known deck, and a folder assignment already bound to that
+ * deck. Shared by the foreground run and the `--detach` starter so both fail
+ * closed on the same inputs with the same messages.
+ */
+export async function validateRunPrereqs(
+  options: RunOptions,
+  deps: RunPrereqDeps = {},
+): Promise<
+  { promptText: string; deck: { id: string; name: string } } | { error: string }
+> {
+  const resolveDeck = selectResolveDeck(deps);
+  const resolveLaunchPlan = deps.resolveLaunchPlan ?? resolveMcpLaunchPlan;
+
+  let promptText: string;
+  if (options.promptFile !== undefined) {
+    try {
+      promptText = fs.readFileSync(options.promptFile, 'utf8');
+    } catch {
+      return { error: `Cannot read prompt file: ${options.promptFile}` };
+    }
+  } else {
+    promptText = options.prompt ?? '';
+  }
+  if (!promptText.trim()) {
+    return { error: 'Prompt is empty: pass a non-empty --prompt or --prompt-file' };
+  }
+
+  let cwdStat: fs.Stats;
+  try {
+    cwdStat = fs.statSync(options.cwd);
+  } catch {
+    return { error: `--cwd does not exist: ${options.cwd}` };
+  }
+  if (!cwdStat.isDirectory()) {
+    return { error: `--cwd is not a directory: ${options.cwd}` };
+  }
+
+  const deck = await resolveDeck(options.deckRef);
+  if (!deck) {
+    return { error: `Deck not found: ${options.deckRef}` };
+  }
+
+  // Fail closed before any model call: the session's MCP launch must already
+  // resolve to the requested deck. Never rewrite the folder assignment here.
+  const plan = await resolveLaunchPlan(options.cwd);
+  if (plan.deckId !== deck.id) {
+    if (!plan.deckId) {
+      return {
+        error:
+          `No deck assigned in ${options.cwd}: run \`agent-deck use ${options.deckRef}\` there first, then retry. Refusing to start an unbound session.`,
+      };
+    }
+    return {
+      error:
+        `Folder ${options.cwd} is bound to "${plan.deckName ?? plan.deckId}" (${plan.deckId}), not "${options.deckRef}". ` +
+        `Run \`agent-deck use ${options.deckRef}\` in that folder to rebind it, then retry. Refusing to start a mis-bound session.`,
+    };
+  }
+
+  return { promptText, deck };
+}
+
 export function printRunHelp(): void {
   console.log(`Usage:
-  agent-deck run <deck> --client claude --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>]
+  agent-deck run <deck> --client claude --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
 
 Starts a local Claude Code session bound to <deck> and streams a JSONL log.
 The folder's assignment must already name <deck> (agent-deck use <deck>);
@@ -241,68 +423,26 @@ run never rewrites .agent-deck/use.json and fails closed on a mismatch.
   --log <path>           Log file. Default: ~/.agent-deck/runs/<runId>/run.jsonl
                          (meta.json sits next to the log in both cases).
   --resume <sessionId>   Continue a previous Claude session id. The profile
-                         passed on this invocation applies; nothing is inherited.`);
+                         passed on this invocation applies; nothing is inherited.
+  --detach             Start in the background in a new session, so the run
+                         survives this shell disconnecting. Prints runId, pid,
+                         and the log path, then exits. Every other flag is
+                         passed to the run unchanged. Stop it with kill <pid>.`);
 }
 
 export async function runRun(options: RunOptions, deps: RunDeps = {}): Promise<number> {
-  const resolveDeck = deps.resolveDeck ?? defaultResolveDeck;
-  const resolveLaunchPlan = deps.resolveLaunchPlan ?? resolveMcpLaunchPlan;
   const homeDir = deps.homeDir ?? agentDeckHome();
 
-  let promptText: string;
-  if (options.promptFile !== undefined) {
-    try {
-      promptText = fs.readFileSync(options.promptFile, 'utf8');
-    } catch {
-      console.error(`Cannot read prompt file: ${options.promptFile}`);
-      return 1;
-    }
-  } else {
-    promptText = options.prompt ?? '';
-  }
-  if (!promptText.trim()) {
-    console.error('Prompt is empty: pass a non-empty --prompt or --prompt-file');
+  const prereq = await validateRunPrereqs(options, deps);
+  if ('error' in prereq) {
+    console.error(prereq.error);
     return 1;
   }
+  const { promptText, deck } = prereq;
 
-  let cwdStat: fs.Stats;
-  try {
-    cwdStat = fs.statSync(options.cwd);
-  } catch {
-    console.error(`--cwd does not exist: ${options.cwd}`);
-    return 1;
-  }
-  if (!cwdStat.isDirectory()) {
-    console.error(`--cwd is not a directory: ${options.cwd}`);
-    return 1;
-  }
+  const query = selectRunQuery(deps);
 
-  const deck = await resolveDeck(options.deckRef);
-  if (!deck) {
-    console.error(`Deck not found: ${options.deckRef}`);
-    return 1;
-  }
-
-  // Fail closed before any model call: the session's MCP launch must already
-  // resolve to the requested deck. Never rewrite the folder assignment here.
-  const plan = await resolveLaunchPlan(options.cwd);
-  if (plan.deckId !== deck.id) {
-    if (!plan.deckId) {
-      console.error(
-        `No deck assigned in ${options.cwd}: run \`agent-deck use ${options.deckRef}\` there first, then retry. Refusing to start an unbound session.`,
-      );
-    } else {
-      console.error(
-        `Folder ${options.cwd} is bound to "${plan.deckName ?? plan.deckId}" (${plan.deckId}), not "${options.deckRef}". ` +
-          `Run \`agent-deck use ${options.deckRef}\` in that folder to rebind it, then retry. Refusing to start a mis-bound session.`,
-      );
-    }
-    return 1;
-  }
-
-  const query = deps.query ?? loadSdkQuery();
-
-  const runId = newRunId();
+  const runId = options.runIdOverride ?? newRunId();
   const logPath = options.log ?? path.join(homeDir, 'runs', runId, 'run.jsonl');
   const metaPath = path.join(path.dirname(logPath), 'meta.json');
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -409,6 +549,10 @@ export async function runRunCommand(args: string[], deps: RunDeps = {}): Promise
     return 1;
   }
   try {
+    if (parsed.detach) {
+      const { startDetachedRun } = await import('./run-detach');
+      return await startDetachedRun(args, parsed, deps);
+    }
     return await runRun(parsed, deps);
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
