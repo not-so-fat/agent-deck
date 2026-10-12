@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-10-12
+
+### Feature: `agent-deck run` — delegate a task to another local session (NOT-400 to NOT-407, NOT-423 to NOT-426)
+
+- `agent-deck run` launches a headless agent session on a deck you name, writes a JSONL log, and supports resume. `--detach` starts it in the background so it survives the caller disconnecting; `run status`, `run log` and `run list` let a polling orchestrator follow it (NOT-400, NOT-401, NOT-402).
+- Client adapters: Claude Code, Codex, Cursor (`cursor-agent` headless with resume) and Muse Code (`muse exec` headless with resume) (NOT-404, NOT-406, NOT-407).
+- The `agent-deck-run` orchestrator skill ships with the CLI, and setup-managed clients install it (NOT-403, NOT-425). Friend path documented end to end: install, sign in to your own Claude Code, first delegated run on a clean machine (NOT-405).
+- New `docs/DELEGATION.md` per-client reference (flags, resume ids, trust behavior); guidance for corrections from a delegated run (NOT-424, NOT-426); the Muse `agent-deck-playbooks` skill carries the full self-improvement loop (NOT-427).
+- README cut to about half its length, with detail moved to owner docs (NOT-428).
+
+### Fix: idle MCP sessions (NOT-191)
+
+- Idle MCP sessions now expire and live-display shutdown cleanup is bounded; see `docs/MCP_SESSION_LIFECYCLE.md`.
 
 ### Feature: Muse bootstrap skills + project harness (NOT-388)
 
