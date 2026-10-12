@@ -25,6 +25,8 @@ agent-deck run <deck> --client <client> --cwd <dir> --prompt-file <brief-file> -
 
 Supported `--client` values are `claude`, `codex`, `cursor`, `muse`; `agent-deck run --help` lists the clients. The examples use `claude`; substitute your client. Read the `runId`, pid, and log path from the `run <runId> detached: pid <pid> log <path>` line. If the launch fails closed on a deck binding mismatch, stop and report to the human instead of rebinding.
 
+For per-client flags, resume ids, tool mappings, and trust behavior, see [docs/DELEGATION.md](../../docs/DELEGATION.md).
+
 ## 3. Monitor
 
 Poll until the state leaves `running`. Suggested poll interval: 30 seconds (unconfirmed).
