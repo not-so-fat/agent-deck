@@ -537,22 +537,6 @@ describe('codex session receipt (NOT-404)', () => {
 });
 
 describe('run --client routing (NOT-404)', () => {
-  it.each(['cursor'])('--client %s exits non-zero naming the supported clients', async (client) => {
-    const cwd = makeDir('agent-deck-codex-cwd-');
-    const homeDir = makeDir('agent-deck-codex-home-');
-    const deps = makeDeps(cwd, homeDir);
-
-    const code = await runRunCommand(
-      ['planner', '--client', client, '--cwd', cwd, '--prompt', 'brief'],
-      deps,
-    );
-
-    expect(code).not.toBe(0);
-    expect(deps.calls).toHaveLength(0);
-    expect(errors.join('\n')).toMatch(/not available yet/);
-    expect(errors.join('\n')).toContain('claude, codex, muse');
-  });
-
   it('an unknown client exits non-zero listing the supported clients', async () => {
     const cwd = makeDir('agent-deck-codex-cwd-');
     const homeDir = makeDir('agent-deck-codex-home-');
@@ -565,7 +549,7 @@ describe('run --client routing (NOT-404)', () => {
 
     expect(code).not.toBe(0);
     expect(deps.calls).toHaveLength(0);
-    expect(errors.join('\n')).toContain('claude, codex, muse');
+    expect(errors.join('\n')).toContain('claude, codex, cursor, muse');
   });
 });
 

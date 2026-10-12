@@ -1,6 +1,6 @@
 /**
  * Shared ClientAdapter contract (NOT-404), run against the Claude, Codex,
- * and Muse adapters with fake client processes: normalized events,
+ * Cursor, and Muse adapters with fake client processes: normalized events,
  * session id capture, resume pass-through, tool-profile mapping, preflight
  * failure before start, deck mismatch before start.
  *
@@ -24,6 +24,7 @@ import {
 } from './run-adapter';
 import { createClaudeAdapter, type RunQueryFn, type RunQueryMessage } from './run-claude';
 import { createCodexAdapter, type CodexProbe, type CodexSpawn } from './run-codex';
+import { createCursorAdapter, type CursorProbe, type CursorSpawn } from './run-cursor';
 import { createMuseAdapter, type MuseFileReader, type MuseProbe, type MuseSpawn } from './run-muse';
 import { runRunCommand, type RunDeps } from './run';
 
@@ -36,6 +37,12 @@ const CODEX_FIXTURE_LINES = fs
   .trim()
   .split('\n');
 const CODEX_THREAD_ID = (JSON.parse(CODEX_FIXTURE_LINES[0]) as { thread_id: string }).thread_id;
+
+// Reconstructed from the owner's smoke-test facts (see run-cursor.test.ts header).
+const CURSOR_FIXTURE_TEXT = fs
+  .readFileSync(fileURLToPath(new URL('./run-cursor.fixture.json', import.meta.url)), 'utf8')
+  .trim();
+const CURSOR_SESSION_ID = (JSON.parse(CURSOR_FIXTURE_TEXT) as { session_id: string }).session_id;
 
 // Verbatim capture from the owner's Mac (Muse Code 1.4.4, echo provider,
 // /tmp/smoke, "remember kiwi"): every record carries
@@ -128,6 +135,30 @@ function okCodexProbe(): CodexProbe {
       : { code: 0, stdout: '', stderr: 'Logged in using ChatGPT\n' };
 }
 
+function fakeCursorSpawn(
+  stdout: string = CURSOR_FIXTURE_TEXT,
+  code = 0,
+): { spawn: CursorSpawn; calls: Array<{ bin: string; argv: string[]; cwd: string }> } {
+  const calls: Array<{ bin: string; argv: string[]; cwd: string }> = [];
+  const spawn = vi.fn((bin: string, argv: string[], opts: { cwd: string }) => {
+    calls.push({ bin, argv, cwd: opts.cwd });
+    return {
+      stdout: (async function* (): AsyncGenerator<string> {
+        yield* stdout.split('\n');
+      })(),
+      wait: async () => ({ code, stderrTail: '' }),
+    };
+  });
+  return { spawn: spawn as unknown as CursorSpawn, calls };
+}
+
+function okCursorProbe(): CursorProbe {
+  return (bin: string, argv: string[]) =>
+    argv[0] === '--version'
+      ? { code: 0, stdout: '2026.10.01-e373342\n', stderr: '' }
+      : { code: 0, stdout: '{"status":"authenticated","isAuthenticated":true}\n', stderr: '' };
+}
+
 function fakeMuseSpawn(
   lines: string[] = MUSE_FIXTURE_LINES,
   code = 0,
@@ -170,6 +201,7 @@ function okMuseReadFile(): MuseFileReader {
 type ClientLaunchRecord =
   | { client: 'claude'; prompt: string; options: Record<string, unknown> }
   | { client: 'codex'; bin: string; argv: string[]; cwd: string }
+  | { client: 'cursor'; bin: string; argv: string[]; cwd: string }
   | { client: 'muse'; bin: string; argv: string[]; cwd: string };
 
 type ContractCase = {
@@ -248,6 +280,38 @@ function makeCodexCase(): ContractCase {
   };
 }
 
+function makeCursorCase(): ContractCase {
+  const { spawn, calls } = fakeCursorSpawn();
+  const adapter = createCursorAdapter({ probe: okCursorProbe(), spawn });
+  const baseArgs: AdapterStartArgs = { cwd: '/tmp/contract', prompt: 'brief', tools: 'readonly' };
+  return {
+    id: 'cursor',
+    adapter,
+    expectedKinds: ['text', 'result'],
+    expectedSessionId: CURSOR_SESSION_ID,
+    clientInvocations: () => calls.length,
+    launch: async (overrides = {}) => {
+      for await (const _event of adapter.start({ ...baseArgs, ...overrides })) {
+        // Drain; the launch record is the assertion surface.
+      }
+      const last = calls.at(-1) ?? { bin: '', argv: [] as string[], cwd: '' };
+      return { client: 'cursor', bin: last.bin, argv: last.argv, cwd: last.cwd };
+    },
+    runArgs: (cwd, extra = []) => ['planner', '--client', 'cursor', '--cwd', cwd, ...extra],
+    runDeps: (cwd, homeDir) => {
+      const { spawn: runSpawn } = fakeCursorSpawn();
+      return {
+        cursor: { probe: okCursorProbe(), spawn: runSpawn },
+        resolveDeck: async () => ({ ...DECK }),
+        resolveLaunchPlan: async () => matchingPlan(cwd),
+        homeDir,
+      };
+    },
+    clientRunCalls: (deps) =>
+      (deps.cursor?.spawn as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+  };
+}
+
 function makeMuseCase(): ContractCase {
   const { spawn, calls } = fakeMuseSpawn();
   const adapter = createMuseAdapter({ probe: okMuseProbe(), spawn, readFile: okMuseReadFile() });
@@ -319,6 +383,7 @@ function expectWellFormed(event: NormalizedEvent): void {
 const CASES = [
   { id: 'claude', make: makeClaudeCase },
   { id: 'codex', make: makeCodexCase },
+  { id: 'cursor', make: makeCursorCase },
   { id: 'muse', make: makeMuseCase },
 ] as const;
 
@@ -379,7 +444,16 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       const sep = record.argv.indexOf('--');
       expect(sep).toBeGreaterThan(0);
       expect(record.argv.slice(sep + 1)).toEqual(['resume_contract_1', 'brief']);
-    } else {
+    } else if (record.client === 'cursor') {
+      const flag = record.argv.indexOf('--resume');
+      expect(flag).toBeGreaterThan(0);
+      expect(record.argv[flag + 1]).toBe('resume_contract_1');
+      // The prompt is a positional after the `--` terminator, so a
+      // dash-leading brief cannot be parsed as a cursor-agent option.
+      const sep = record.argv.indexOf('--');
+      expect(sep).toBeGreaterThan(flag);
+      expect(record.argv.slice(sep + 1)).toEqual(['brief']);
+    } else if (record.client === 'muse') {
       expect(record.argv[0]).toBe('exec');
       expect(record.argv).toContain('--session-id');
       expect(record.argv[record.argv.indexOf('--session-id') + 1]).toBe('resume_contract_1');
@@ -388,6 +462,8 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       const sep = record.argv.indexOf('--');
       expect(sep).toBeGreaterThan(0);
       expect(record.argv.slice(sep + 1)).toEqual(['brief']);
+    } else {
+      expect.unreachable('unknown client record');
     }
   });
 
@@ -410,6 +486,15 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       expect(editRecord.argv).toContain('workspace-write');
       for (const record of [readonlyRecord, editRecord]) {
         expect(record.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+      }
+    } else if (readonlyRecord.client === 'cursor' && editRecord.client === 'cursor') {
+      expect(readonlyRecord.argv).toContain('--trust');
+      expect(readonlyRecord.argv).not.toContain('--force');
+      expect(editRecord.argv).toContain('--trust');
+      expect(editRecord.argv).toContain('--force');
+      for (const record of [readonlyRecord, editRecord]) {
+        expect(record.argv).not.toContain('--yolo');
+        expect(record.argv).not.toContain('--approve-mcps');
       }
     } else if (readonlyRecord.client === 'muse' && editRecord.client === 'muse') {
       expect(readonlyRecord.argv).toContain('--disable-write');
@@ -454,6 +539,22 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       expect(errors.join('\n')).toContain('contract sdk missing');
       // Preflight probed once; start never ran, so the loader ran exactly once.
       expect(invocations()).toBe(1);
+      return;
+    }
+    if (kase.id === 'cursor') {
+      const { spawn } = fakeCursorSpawn();
+      const probe = vi.fn(() => ({ code: 127, stdout: '', stderr: '' }));
+      deps = {
+        cursor: { probe, spawn },
+        resolveDeck: async () => ({ ...DECK }),
+        resolveLaunchPlan: async () => matchingPlan(cwd),
+        homeDir,
+      };
+      invocations = () => (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const code = await runRunCommand(kase.runArgs(cwd, ['--prompt', 'brief']), deps);
+      expect(code).not.toBe(0);
+      expect(errors.join('\n')).toMatch(/cursor-agent CLI not found/);
+      expect(invocations()).toBe(0);
       return;
     }
     if (kase.id === 'muse') {
