@@ -8,7 +8,10 @@
     {
       "name": "agent-deck",
       "source": "./",
-      "description": "Decks of MCP tools, keys, and self-improving playbooks that bind per-workspace."
+      "description": "Decks of MCP tools, keys, and self-improving playbooks that bind per workspace, plus skills to set up Agent Deck and delegate tasks to local Claude Code, Codex, Cursor, or muse sessions."
     }
-  ]
+  ],
+  "metadata": {
+    "description": "Agent Deck plugin for Cursor"
+  }
 }
