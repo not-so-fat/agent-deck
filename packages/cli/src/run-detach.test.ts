@@ -125,6 +125,11 @@ describe('run --detach arg handling (NOT-401)', () => {
     expect(logs.join('\n')).toContain('--detach');
   });
 
+  it('run --help documents the ANTHROPIC_API_KEY preflight exception', () => {
+    printRunHelp();
+    expect(logs.join('\n')).toContain('ANTHROPIC_API_KEY');
+  });
+
   it('forwards every starter flag verbatim, minus --detach, plus --log and --_run-id', () => {
     const child = buildDetachedChildArgs(
       ['planner', '--client', 'claude', '--cwd', '/w', '--prompt', 'hi', '--tools', 'edit', '--detach'],
@@ -243,6 +248,7 @@ function starterDeps(
       deckName: DECK.name,
       headers: [],
     })) as unknown as RunDeps['resolveLaunchPlan'],
+    claudeProbe: vi.fn(async () => ({ ok: true as const })),
     homeDir,
     cliEntry: '/fake/bin.js',
     ...overrides,

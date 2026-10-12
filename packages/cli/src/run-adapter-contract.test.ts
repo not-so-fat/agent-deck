@@ -190,6 +190,9 @@ function makeClaudeCase(): ContractCase {
       resolveDeck: async () => ({ ...DECK }),
       resolveLaunchPlan: async () => matchingPlan(cwd),
       homeDir,
+      // The contract covers the adapter, not the NOT-405 CLI preflight;
+      // stub the probe passing so the test never depends on machine state.
+      claudeProbe: vi.fn(async () => ({ ok: true as const })),
     }),
     clientRunCalls: (deps) => (deps.query as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
   };
@@ -421,6 +424,9 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
         resolveDeck: async () => ({ ...DECK }),
         resolveLaunchPlan: async () => matchingPlan(cwd),
         homeDir,
+        // Pass the NOT-405 CLI preflight so the adapter preflight under
+        // test is what fails (machine-independent: no real `claude` probe).
+        claudeProbe: vi.fn(async () => ({ ok: true as const })),
       };
       invocations = () => loadQuery.mock.calls.length;
       const code = await runRunCommand(kase.runArgs(cwd, ['--prompt', 'brief']), deps);
