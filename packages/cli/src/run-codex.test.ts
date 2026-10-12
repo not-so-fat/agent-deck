@@ -271,10 +271,10 @@ describe('codex argv and tool profiles (NOT-404)', () => {
   const PROMPT = 'remember kiwi';
 
   it.each([
-    ['readonly', true, ['exec', '--json', '-s', 'read-only', PROMPT]],
-    ['edit', true, ['exec', '--json', '-s', 'workspace-write', PROMPT]],
-    ['readonly', false, ['exec', '--json', '--skip-git-repo-check', '-s', 'read-only', PROMPT]],
-    ['edit', false, ['exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', PROMPT]],
+    ['readonly', true, ['exec', '--json', '-s', 'read-only', '--', PROMPT]],
+    ['edit', true, ['exec', '--json', '-s', 'workspace-write', '--', PROMPT]],
+    ['readonly', false, ['exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '--', PROMPT]],
+    ['edit', false, ['exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', '--', PROMPT]],
   ])('start argv for --tools %s (git repo: %s)', (tools, insideGitRepo, expected) => {
     expect(
       buildCodexArgv({
@@ -293,7 +293,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     expect(await runRunCommand(codexArgs(cwd, ['--tools', 'readonly']), deps)).toBe(0);
 
     expect(deps.calls).toHaveLength(1);
-    expect(deps.calls[0].argv).toEqual(['exec', '--json', '-s', 'read-only', 'remember kiwi']);
+    expect(deps.calls[0].argv).toEqual(['exec', '--json', '-s', 'read-only', '--', 'remember kiwi']);
     expect(deps.calls[0].cwd).toBe(cwd);
     expect(readMeta(logPathFromStdout())).toMatchObject({ tools: 'readonly' });
   });
@@ -305,7 +305,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
 
     expect(await runRunCommand(codexArgs(cwd, ['--tools', 'edit']), deps)).toBe(0);
 
-    expect(deps.calls[0].argv).toEqual(['exec', '--json', '-s', 'workspace-write', 'remember kiwi']);
+    expect(deps.calls[0].argv).toEqual(['exec', '--json', '-s', 'workspace-write', '--', 'remember kiwi']);
     expect(readMeta(logPathFromStdout())).toMatchObject({ tools: 'edit' });
   });
 
@@ -322,6 +322,49 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     }
   });
 
+  it.each([
+    '- bullet brief',
+    '---\nfrontmatter brief',
+    '--dangerously-bypass-approvals-and-sandbox',
+    '-csandbox_mode=bypass',
+  ])('a dash-leading prompt %j is passed after a -- terminator', (prompt) => {
+    for (const resumeId of [undefined, 'thread_abc']) {
+      const argv = buildCodexArgv({
+        prompt,
+        tools: 'readonly',
+        insideGitRepo: true,
+        ...(resumeId ? { resumeId } : {}),
+      });
+      // The prompt is the last argv element and is preceded by `--`, so clap
+      // parses it as a positional even when it starts with `-`.
+      expect(argv.at(-1)).toBe(prompt);
+      expect(argv.at(-2)).toBe('--');
+      expect(argv.filter((arg) => arg === '--')).toHaveLength(1);
+      // A prompt that spells a codex flag must never become a parsed option:
+      // everything before `--` is a known fixed flag.
+      const beforePrompt = argv.slice(0, -1);
+      expect(beforePrompt.filter((arg) => arg.startsWith('-') && arg !== '--')).toEqual(
+        resumeId ? ['--json'] : ['--json', '-s'],
+      );
+    }
+  });
+
+  it('a dash-leading prompt reaches the spawned argv verbatim on a real run', async () => {
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const homeDir = makeDir('agent-deck-codex-home-');
+    const deps = makeDeps(cwd, homeDir);
+
+    expect(
+      await runRunCommand(
+        ['planner', '--client', 'codex', '--cwd', cwd, '--prompt', '--dangerously-bypass-approvals-and-sandbox'],
+        deps,
+      ),
+    ).toBe(0);
+
+    expect(deps.calls[0].argv.at(-2)).toBe('--');
+    expect(deps.calls[0].argv.at(-1)).toBe('--dangerously-bypass-approvals-and-sandbox');
+  });
+
   it('resume passes the thread id to codex exec resume and keeps the session id', async () => {
     const cwd = makeDir('agent-deck-codex-cwd-');
     const homeDir = makeDir('agent-deck-codex-home-');
@@ -334,7 +377,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     const code = await runRunCommand(codexArgs(cwd, ['--resume', CODEX_THREAD_ID]), deps);
 
     expect(code).toBe(0);
-    expect(deps.calls[0].argv).toEqual(['exec', 'resume', CODEX_THREAD_ID, '--json', 'remember kiwi']);
+    expect(deps.calls[0].argv).toEqual(['exec', 'resume', CODEX_THREAD_ID, '--json', '--', 'remember kiwi']);
     const lines = readJsonLines(logPathFromStdout());
     expect(lines.map((line) => line.t)).toEqual(['notice', 'text', 'result', 'end']);
     expect(String(lines[0]['message'])).toContain('keeps its original sandbox');

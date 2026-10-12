@@ -50,9 +50,12 @@ export type CodexArgvArgs = {
 
 /**
  * Pure argv builder (everything after the `codex` binary). Start:
- * `exec --json [--skip-git-repo-check] -s <mode> <prompt>`; resume:
- * `exec resume <thread> --json [--skip-git-repo-check] <prompt>`.
+ * `exec --json [--skip-git-repo-check] -s <mode> -- <prompt>`; resume:
+ * `exec resume <thread> --json [--skip-git-repo-check] -- <prompt>`.
  * Resume takes no `-s`: the thread keeps its original sandbox.
+ * The `--` terminator keeps dash-leading prompts (markdown bullets, YAML
+ * frontmatter, or a literal `--dangerously-...` string) from being parsed
+ * as codex options.
  */
 export function buildCodexArgv(args: CodexArgvArgs): string[] {
   const argv = ['exec'];
@@ -67,7 +70,7 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
   if (!resuming) {
     argv.push('-s', CODEX_SANDBOX_FOR_PROFILE[args.tools]);
   }
-  argv.push(args.prompt);
+  argv.push('--', args.prompt);
   return argv;
 }
 
