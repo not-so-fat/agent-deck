@@ -22,7 +22,7 @@ To launch a local agent session bound to a deck from the CLI, `agent-deck run` d
 | **Cursor** | project | `.cursor/rules/agent-deck.mdc` |
 | **Claude Code** | global | `~/.claude/CLAUDE.md` (merged between `agent-deck:harness` markers) |
 | **Claude Code** | project | `./CLAUDE.md` (same merge) |
-| **Muse** | global (default) | Native skills under `$XDG_CONFIG_HOME/muse/skills/agent-deck-*/SKILL.md` (fallback `~/.config/muse/skills/`), stamped `<!-- agent-deck:managed-skill -->` |
+| **Muse** | global (default) | Native skills under `$XDG_CONFIG_HOME/muse/skills/agent-deck-*/SKILL.md` (fallback `~/.config/muse/skills/`), stamped `<!-- agent-deck:managed-skill -->`; `agent-deck-playbooks` carries the full self-improvement loop (Update / Genesis / `signal_only` / dashboard-prompt curation) — `--scope project` additionally merges the full bootstrap harness into `./AGENTS.md` |
 | **Muse** | project | `./AGENTS.md` (same marker merge; Muse loads root `AGENTS.md` after workspace trust) |
 | **Claude Desktop** | — | MCP only; use Claude Code/Cursor harness if you use those too |
 

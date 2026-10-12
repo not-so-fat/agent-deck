@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { buildClaudeHarnessBlock, installAgentHarness } from './agent-harness';
 import {
   buildMuseManagedSkillContent,
   diagnoseMuseSkills,
@@ -210,6 +211,32 @@ describe('installMuseSkills', () => {
         'utf8',
       ),
     ).toBe(currentBefore);
+  });
+
+  it('NOT-427: global setup installs the full self-improvement loop into agent-deck-playbooks', () => {
+    useTmpXdg();
+    const harness = installAgentHarness('muse', 'global');
+    expect(harness.installed).toBe(true);
+    const skillPath = path.join(tmpXdg, 'muse', 'skills', 'agent-deck-playbooks', 'SKILL.md');
+    const installed = fs.readFileSync(skillPath, 'utf8');
+    // Acceptance greps: genesis, signal_only, and the curation paragraph.
+    expect(installed).toContain('Genesis case');
+    expect(installed).toContain('signal_only');
+    expect(installed).toContain('Curate from a pasted dashboard prompt');
+    expect(installed).toContain('signal_ids');
+    // Update-case enrichment ships too (openPatches/supersedes, not the slim bullet).
+    expect(installed).toContain('Update case');
+    expect(installed).toContain('openPatches');
+    expect(installed).toContain('supersedes');
+    // Verbatim parity with GLOBAL_BODY: the whole self-improvement region,
+    // sliced from the exported harness block, appears unchanged (NOT-427
+    // distributes the rules text; it never rewords it).
+    const block = buildClaudeHarnessBlock('global');
+    const start = block.indexOf('**When the user corrects your output**');
+    const end = block.indexOf('**Explicit user-directed playbook edits**');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(installed).toContain(block.slice(start, end).trim());
   });
 
   it('never overwrites a same-name user-authored skill and changes no bytes', () => {
