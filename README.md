@@ -73,6 +73,19 @@ agent-deck run mydeck --client claude --cwd /path/to/repo --prompt-file ./brief.
 
 Per-client flags, resume, and trust behavior: [DELEGATION.md](docs/DELEGATION.md).
 
+## Install as an agent plugin
+
+The repo root is one plugin: one `skills/` folder (`agent-deck-session`, `agent-deck-playbooks`, `agent-deck-setup`, `agent-deck-run`) plus `.mcp.json`, described by a manifest per client. Prerequisites for delegation: agent-deck >= 2.1.0 and the daemon running (see Quick Start), and the client CLI you delegate to, installed and signed in. The `agent-deck-setup` skill checks these and tells you what is missing.
+
+| Client | Install | Manifest |
+| --- | --- | --- |
+| Claude Code | `/plugin marketplace add not-so-fat/agent-deck`, then `/plugin install agent-deck@agent-deck` | `.claude-plugin/plugin.json` + `marketplace.json` |
+| Cursor | add `not-so-fat/agent-deck` as a plugin marketplace and install **agent-deck** | `.cursor-plugin/plugin.json` + `marketplace.json` |
+| Codex | `codex plugin marketplace add not-so-fat/agent-deck`, then `codex plugin add agent-deck@agent-deck` | `.codex-plugin/plugin.json` (Codex reads the marketplace from `.claude-plugin/marketplace.json`) |
+| muse | `agent-deck setup --client muse` (installs the four skills into `~/.config/muse/skills/`), or `muse plugins install <clone path>` (muse imports `.claude-plugin/plugin.json`) | `.claude-plugin/plugin.json` |
+
+Skills are never copied by hand: the muse copies come from root `skills/` via `scripts/copy-muse-skills.mjs` at build time and `agent-deck setup --client muse` at install time.
+
 ## Everyday commands
 
 ```bash

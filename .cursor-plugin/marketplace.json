@@ -1,0 +1,14 @@
+{
+  "name": "agent-deck",
+  "owner": {
+    "name": "not-so-fat",
+    "url": "https://github.com/not-so-fat"
+  },
+  "plugins": [
+    {
+      "name": "agent-deck",
+      "source": "./",
+      "description": "Decks of MCP tools, keys, and self-improving playbooks that bind per-workspace."
+    }
+  ]
+}

@@ -1,19 +1,36 @@
 ---
 name: agent-deck-run
-description: Use when delegating a task to a local coding session on a named deck: brief it, launch it detached with agent-deck run, monitor it, review the result against the goal, and resume it with feedback until done.
+description: "Use when delegating a task to a local coding session on a named deck: brief it, launch it detached with agent-deck run, monitor it, review the result against the goal, and resume it with feedback until done."
 ---
 
 # Agent Deck run (orchestrator)
 
 You are the caller of a session, not the session. Follow the five steps below.
 
-## Prerequisite
+## 0. Check prerequisites first
 
-You must be able to run shell commands on the machine where the coding tool is signed in; otherwise stop and tell the human you cannot use this skill.
+You must be able to run shell commands on the machine where the coding tool is signed in; otherwise stop and tell the human you cannot use this skill. Then check, read-only, before writing any brief:
+
+```sh
+agent-deck --version      # >= 2.1.0
+agent-deck status         # Status: running
+agent-deck deck list      # the deck the user named exists
+claude auth status        # or: codex login status | cursor-agent status | muse --version
+```
+
+If anything fails, stop and tell the human exactly what is missing and how to fix it (the `agent-deck-setup` skill lists the fixes). Do not start a run that will fail midway.
+
+Bind the working folder once; `run` refuses an unbound folder ("No deck assigned in <dir>: run `agent-deck use <deck>` there first"):
+
+```sh
+cd <dir> && agent-deck use <deck> --client <client>
+```
+
+Leave the user's uncommitted changes alone; use a separate git worktree or branch when the repo is dirty.
 
 ## 1. Write the brief
 
-Write the brief to a file. It must state the goal, the constraints, the definition of done, what the session must not do, and the tool profile the brief owner chose. Never put secrets in the brief.
+Write the brief to a file. It must state the goal, the constraints, the definition of done, what the session must not do, and the tool profile the brief owner chose, and "if unclear, end your turn with the question". For code changes, the definition of done includes committing and pushing a named branch. Keep the user's decisions; mark any number you invent as an unconfirmed placeholder. Never put secrets in the brief.
 
 ## 2. Launch detached
 
@@ -39,11 +56,11 @@ agent-deck run log <runId> --tail 50
 agent-deck run list
 ```
 
-Read the `state` field (`running|ended|error|died`), the `sessionId`, and the log path. Stop rule: on `died` or `error`, stop polling, read the tail of the log for the failure, and report to the human.
+Log lines look like `<ts> text|tool|result|end ...`; a finished run ends with `result success sessionId=<id> <final text>` and `end sessionId=<id>`. Read `text` lines for questions; answer from verified facts or ask the human. Read the `state` field (`running|ended|error|died`), the `sessionId`, and the log path. Stop rule: on `died` or `error`, stop polling, read the tail of the log for the failure, and report to the human.
 
 ## 4. Review
 
-Judge the session's output against the goal and definition of done from step 1, not against the session's own summary. If it meets the goal, report to the human and stop.
+Judge the session's output against the goal and definition of done from step 1, not against the session's own summary: open the real files, diff, tickets, or PR yourself. For code work, verify it landed: `git ls-remote origin <branch>` matches the session's commit. If it meets the goal, report to the human and stop.
 
 ## 5. Resume with feedback
 
