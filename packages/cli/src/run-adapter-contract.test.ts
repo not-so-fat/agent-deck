@@ -288,8 +288,11 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
     } else {
       expect(record.argv[0]).toBe('exec');
       expect(record.argv[1]).toBe('resume');
-      expect(record.argv[2]).toBe('resume_contract_1');
-      expect(record.argv.at(-1)).toBe('brief');
+      // The thread id and prompt are positionals after the `--` terminator,
+      // so neither can be parsed as a resume option.
+      const sep = record.argv.indexOf('--');
+      expect(sep).toBeGreaterThan(0);
+      expect(record.argv.slice(sep + 1)).toEqual(['resume_contract_1', 'brief']);
     }
   });
 

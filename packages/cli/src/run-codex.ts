@@ -1,10 +1,10 @@
 /**
  * Codex adapter for `agent-deck run` (NOT-404).
  *
- * Drives `codex exec --json` (start) and `codex exec resume <thread> --json`
- * (resume) as a child process and maps the JSONL stream onto normalized
- * events. Verified against codex-cli 0.157.1 (`codex exec --help`,
- * `codex exec resume --help`, `codex login status`):
+ * Drives `codex exec --json` (start) and `codex exec resume` (resume) as a
+ * child process and maps the JSONL stream onto normalized events. Verified
+ * against codex-cli 0.157.1 (`codex exec --help`, `codex exec resume --help`,
+ * `codex login status`):
  *
  * - Start accepts `-s read-only|workspace-write`; resume accepts NO `-s`
  *   flag (neither does `fork`), so a resumed `edit` run fails closed in
@@ -49,9 +49,28 @@ export type CodexArgvArgs = {
 };
 
 /**
+ * Resume ids are codex thread ids (UUIDs); a leading `-` is never legitimate
+ * and would be parsed as a resume option (resume accepts
+ * `--dangerously-bypass-approvals-and-sandbox`, `-c`, ...), so it fails
+ * closed in planStart and throws here. Belt and suspenders with the `--`
+ * placement below: this builder never emits a dash-leading id at all.
+ */
+export function assertSafeResumeId(resumeId: string): void {
+  if (resumeId.startsWith('-')) {
+    throw new Error(
+      `Invalid --resume id ${JSON.stringify(resumeId)}: session ids never start with '-'. ` +
+        'Pass the thread id printed as sessionId in a previous run log.',
+    );
+  }
+}
+
+/**
  * Pure argv builder (everything after the `codex` binary). Start:
  * `exec --json [--skip-git-repo-check] -s <mode> -- <prompt>`; resume:
- * `exec resume <thread> --json [--skip-git-repo-check] -- <prompt>`.
+ * `exec resume --json [--skip-git-repo-check] -- <thread> <prompt>`
+ * (`codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]` takes both positionals
+ * after `--`; verified `--help` after `--` is treated as a positional, not
+ * the help flag, on codex-cli 0.157.1).
  * Resume takes no `-s`: the thread keeps its original sandbox.
  * The `--` terminator keeps dash-leading prompts (markdown bullets, YAML
  * frontmatter, or a literal `--dangerously-...` string) from being parsed
@@ -61,7 +80,8 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
   const argv = ['exec'];
   const resuming = args.resumeId !== undefined;
   if (resuming) {
-    argv.push('resume', args.resumeId as string);
+    assertSafeResumeId(args.resumeId as string);
+    argv.push('resume');
   }
   argv.push('--json');
   if (!args.insideGitRepo) {
@@ -70,7 +90,11 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
   if (!resuming) {
     argv.push('-s', CODEX_SANDBOX_FOR_PROFILE[args.tools]);
   }
-  argv.push('--', args.prompt);
+  argv.push('--');
+  if (resuming) {
+    argv.push(args.resumeId as string);
+  }
+  argv.push(args.prompt);
   return argv;
 }
 
@@ -289,6 +313,14 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
     },
 
     planStart(args: AdapterStartArgs) {
+      if (args.resumeId !== undefined && args.resumeId.startsWith('-')) {
+        return {
+          ok: false,
+          remedy:
+            `Invalid --resume id ${JSON.stringify(args.resumeId)}: session ids never start with '-'. ` +
+            'Pass the thread id printed as sessionId in a previous run log.',
+        };
+      }
       if (args.resumeId !== undefined && args.tools === 'edit') {
         return {
           ok: false,

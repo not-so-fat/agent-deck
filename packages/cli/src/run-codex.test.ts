@@ -323,6 +323,46 @@ describe('codex argv and tool profiles (NOT-404)', () => {
   });
 
   it.each([
+    '--dangerously-bypass-approvals-and-sandbox',
+    '--dangerously-bypass-hook-trust',
+    '-csandbox_mode=danger-full-access',
+    '--last',
+    '--skip-git-repo-check',
+  ])('a dash-leading resume id %j is rejected before any argv is generated', (resumeId) => {
+    // The builder throws, so no argv carrying the id-as-option can exist ...
+    expect(() =>
+      buildCodexArgv({ prompt: 'p', tools: 'readonly', insideGitRepo: true, resumeId }),
+    ).toThrow(/never start with '-'/);
+    // ... and planStart fails closed with the same remedy.
+    const adapter = createCodexAdapter({
+      probe: okCodexProbe(),
+      spawn: fakeCodexSpawn().spawn,
+      isGitRepo: () => true,
+    });
+    const plan = adapter.planStart({ cwd: '/tmp/x', prompt: 'p', tools: 'readonly', resumeId });
+    expect(plan.ok).toBe(false);
+    if (!plan.ok) {
+      expect(plan.remedy).toMatch(/never start with '-'/);
+    }
+  });
+
+  it('a --resume spelling a codex flag fails closed before spawning', async () => {
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const homeDir = makeDir('agent-deck-codex-home-');
+    const deps = makeDeps(cwd, homeDir);
+
+    const code = await runRunCommand(
+      codexArgs(cwd, ['--resume', '--dangerously-bypass-approvals-and-sandbox']),
+      deps,
+    );
+
+    expect(code).not.toBe(0);
+    expect(deps.calls).toHaveLength(0);
+    expect(errors.join('\n')).toMatch(/never start with '-'/);
+    expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+  });
+
+  it.each([
     '- bullet brief',
     '---\nfrontmatter brief',
     '--dangerously-bypass-approvals-and-sandbox',
@@ -335,15 +375,17 @@ describe('codex argv and tool profiles (NOT-404)', () => {
         insideGitRepo: true,
         ...(resumeId ? { resumeId } : {}),
       });
-      // The prompt is the last argv element and is preceded by `--`, so clap
-      // parses it as a positional even when it starts with `-`.
+      // The prompt is the last argv element and every user-controlled token
+      // (resume id, prompt) sits after `--`, so clap parses them as
+      // positionals even when they start with `-`.
       expect(argv.at(-1)).toBe(prompt);
-      expect(argv.at(-2)).toBe('--');
+      const sep = argv.indexOf('--');
+      expect(sep).toBeGreaterThan(0);
       expect(argv.filter((arg) => arg === '--')).toHaveLength(1);
+      expect(argv.slice(sep + 1)).toEqual(resumeId ? [resumeId, prompt] : [prompt]);
       // A prompt that spells a codex flag must never become a parsed option:
-      // everything before `--` is a known fixed flag.
-      const beforePrompt = argv.slice(0, -1);
-      expect(beforePrompt.filter((arg) => arg.startsWith('-') && arg !== '--')).toEqual(
+      // everything before `--` that looks like a flag is a known fixed flag.
+      expect(argv.slice(0, sep).filter((arg) => arg.startsWith('-'))).toEqual(
         resumeId ? ['--json'] : ['--json', '-s'],
       );
     }
@@ -377,7 +419,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     const code = await runRunCommand(codexArgs(cwd, ['--resume', CODEX_THREAD_ID]), deps);
 
     expect(code).toBe(0);
-    expect(deps.calls[0].argv).toEqual(['exec', 'resume', CODEX_THREAD_ID, '--json', '--', 'remember kiwi']);
+    expect(deps.calls[0].argv).toEqual(['exec', 'resume', '--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
     const lines = readJsonLines(logPathFromStdout());
     expect(lines.map((line) => line.t)).toEqual(['notice', 'text', 'result', 'end']);
     expect(String(lines[0]['message'])).toContain('keeps its original sandbox');
