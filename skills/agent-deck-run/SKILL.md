@@ -20,10 +20,10 @@ Write the brief to a file. It must state the goal, the constraints, the definiti
 The user names the deck; the brief owner picks the tool profile: `readonly` for research, planning, and review, `edit` for coding work. When the brief owner has not said, the default is `readonly`.
 
 ```sh
-agent-deck run <deck> --client claude --cwd <dir> --prompt-file <brief-file> --tools readonly --detach
+agent-deck run <deck> --client <client> --cwd <dir> --prompt-file <brief-file> --tools readonly --detach
 ```
 
-Only `--client claude` is supported; `agent-deck run --help` lists the clients. Read the `runId`, pid, and log path from the `run <runId> detached: pid <pid> log <path>` line. If the launch fails closed on a deck binding mismatch, stop and report to the human instead of rebinding.
+Supported `--client` values are `claude`, `codex`, `cursor`, `muse`; `agent-deck run --help` lists the clients. The examples use `claude`; substitute your client. Read the `runId`, pid, and log path from the `run <runId> detached: pid <pid> log <path>` line. If the launch fails closed on a deck binding mismatch, stop and report to the human instead of rebinding.
 
 ## 3. Monitor
 
@@ -48,7 +48,7 @@ Judge the session's output against the goal and definition of done from step 1, 
 Resume the same session with a feedback brief that quotes the gap found in step 4. Pass `--tools` again with the same profile: the profile is not inherited on resume.
 
 ```sh
-agent-deck run <deck> --client claude --cwd <dir> --prompt-file <feedback-file> --tools readonly --resume <sessionId> --detach
+agent-deck run <deck> --client <client> --cwd <dir> --prompt-file <feedback-file> --tools readonly --resume <sessionId> --detach
 ```
 
 Repeat steps 3-5 until the goal is met or a round cap is hit (placeholder: 3 feedback rounds, unconfirmed), then report to the human.
