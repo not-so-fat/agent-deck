@@ -264,9 +264,9 @@ if grep -qE 'Muse status line installed|install the Muse plugin|Muse plugin mark
 fi
 pass "CLI help shows muse setup and denies status line/plugin"
 
-README="$ROOT_DIR/README.md"
 HARNESS_DOC="$ROOT_DIR/docs/AGENT_HARNESS.md"
-for doc in "$README" "$HARNESS_DOC"; do
+# Per-client setup detail lives in AGENT_HARNESS.md; the README shows one setup command (NOT-428).
+for doc in "$HARNESS_DOC"; do
   if ! grep -q 'agent-deck setup --client muse' "$doc"; then
     fail "$doc must show agent-deck setup --client muse"
   fi
@@ -286,10 +286,10 @@ for doc in "$README" "$HARNESS_DOC"; do
     fail "$doc must not claim a Muse status line or plugin install"
   fi
 done
-if ! grep -q -- '--scope project' "$README"; then
-  fail "README must show optional --scope project for muse"
+if ! grep -q -- '--scope project' "$HARNESS_DOC"; then
+  fail "AGENT_HARNESS must show optional --scope project for muse"
 fi
-pass "README + AGENT_HARNESS show the muse flow without status line/plugin claims"
+pass "AGENT_HARNESS shows the muse flow without status line/plugin claims"
 
 # --- 5f. Menubar plugin script contract (any OS; setup skips non-macOS) ---
 MENUBAR_DIR="$SMOKE_HOME/swiftbar-plugins"

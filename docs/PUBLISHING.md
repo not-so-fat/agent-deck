@@ -122,6 +122,19 @@ After npm publish:
 
 Users still run **`npx @agent-deck/cli start`** locally — the registry entry documents the HTTP MCP endpoint. After install, the command is still **`agent-deck`**.
 
+## Discoverability
+
+| Channel | Notes |
+|---------|-------|
+| **GitHub** | Demo GIF, README |
+| **npm** | `npm install -g @agent-deck/cli` |
+| **MCP Registry** | `server.json` — see [MCP Registry](#mcp-registry) above |
+| **Codex marketplace** | `.codex-plugin/` + HOL listing (pending awesome-codex-plugins PR after green CI) — [CODEX_PLUGIN.md](./CODEX_PLUGIN.md) |
+| **Codex AGENTS.md** | `agent-deck setup --client codex` marker-merges global guidance; `--scope project` targets the current repo |
+| **Claude Code** | `/plugin marketplace add` via `.claude-plugin/` |
+| **Cursor** | `agent-deck setup --client cursor` |
+| **Muse** | `agent-deck setup --client muse` installs native bootstrap skills; `--scope project` merges root `AGENTS.md` (workspace trust required) |
+
 ## Distribution (what users install)
 
 Agent Deck is **one engine** (`@agent-deck/cli`). Deck **display** is **terminal-only** (Claude Code / Cursor CLI prompt footer via `statusLine`; Muse has no status line).
@@ -190,6 +203,8 @@ curl -fsSL https://raw.githubusercontent.com/not-so-fat/agent_deck/main/scripts/
 # or: npx @agent-deck/cli@latest install
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+Compat: `npm install -g @agent-deck/cli` still works; `agent-deck install` switches only the CLI binary (no data migration).
 
 | Command / env | Behavior |
 |---------------|----------|

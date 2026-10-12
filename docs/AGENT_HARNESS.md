@@ -12,6 +12,35 @@ To launch a local agent session bound to a deck from the CLI, `agent-deck run` d
 
 ---
 
+## Registering Agent Deck in your agent
+
+Your host needs an Agent Deck MCP transport—not direct registrations for Linear, Notion, or other downstream services. The Codex plugin supplies `agent-deck mcp-launch`; Cursor and Claude setup write their host configuration. Without that transport, chat cannot reach your decks or collection.
+
+**Three layers** (one-time host setup, optional folder assignment, then session bootstrap):
+
+| Command | When | What it does |
+|---------|------|----------------|
+| **`setup`** | **Once** per machine | Host MCP configuration where applicable + agent harness (this doc). For Codex, marker-merges `~/.codex/AGENTS.md`; the plugin owns MCP transport. |
+| **`use <deck>`** | Once per IDE repo unless the launcher selects a deck | Folder assignment (`.agent-deck/use.json`) + thin **trigger stubs** for better implicit playbook matching — bodies still live on the deck |
+
+Use `agent-deck use <deck>` for ordinary IDE folders so `mcp-launch` can select the deck before MCP initializes. Launch-selected unattended sessions may supply the deck header directly and intentionally omit the assignment file.
+
+`setup` also installs the terminal status line by default for Cursor CLI and Claude Code (`--no-statusline` to skip). Muse has no Agent Deck status line.
+
+### Per-client registration and verification
+
+**Codex.** Install and enable the Agent Deck plugin, then install the global bootstrap guidance (`agent-deck setup --client codex` merges `~/.codex/AGENTS.md`; it does not install the plugin). Optional per repo: `agent-deck use my-deck` writes `.agent-deck/use.json`. Start a new Codex task after setup so Codex rebuilds its instruction chain and reloads the plugin connection.
+
+**Cursor.** `agent-deck setup --client cursor` once. Optional per repo: `agent-deck use my-deck` → project `.cursor/mcp.json`, stubs under `.cursor/rules/agent-deck-stubs/`. Or **Settings → Tools & MCP → Add custom MCP** (HTTP) with the MCP URL. **Restart Cursor** — `agent-deck` should show connected while `agent-deck start` is running.
+
+**Claude Code.** `agent-deck setup --client claude` once. Optional per repo: `agent-deck use my-deck` → `.mcp.json`, stubs under `.claude/skills/agent-deck-*/`. **Restart Claude Code**, then `claude mcp list` — `agent-deck` should be **Connected**.
+
+**Muse.** `agent-deck setup --client muse` once (MCP + native bootstrap skills; full flow under [What `setup` installs](#what-setup-installs)). Optional per repo: `agent-deck use my-deck --client muse` → `.mcp.json` + `.agent-deck/use.json`; `agent-deck setup --client muse --scope project` merges root `AGENTS.md` (trust the workspace so Muse loads it). **Start a new Muse process** (restart Muse) after setup, then `/mcp` should show `agent-deck`. First turn: the agent calls `get_session_context` once and shows exactly one verbatim `display_summary` line. Muse has no Agent Deck status line or plugin install — the transcript receipt is the binding record.
+
+If you use `use` and accept playbook patches that change **triggers**, run `agent-deck use --refresh` in that repo (or ask the agent to).
+
+---
+
 ## What `setup` installs
 
 | Client | Scope | File |

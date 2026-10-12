@@ -152,6 +152,8 @@ Two installs can run on the same machine without clashing:
 
 Override CLI ports: `AGENT_DECK_PORT`, `AGENT_DECK_MCP_PORT`.
 
+Port conflicts: `agent-deck status` · `agent-deck start --force`.
+
 OAuth redirect URI follows the backend you use (e.g. dev → `http://127.0.0.1:8000/api/oauth/callback`, npx → `http://127.0.0.1:1111/api/oauth/callback`).
 
 **Data directories:** production `agent-deck start` uses `~/.agent-deck/`. Monorepo dev (`npm run dev:all`) uses `~/.agent-deck/dev/` so decks and OAuth credentials do not mix with production.
@@ -274,6 +276,8 @@ Sessions that die without a clean disconnect (killed terminal, `kill -9`, crashe
 ## Dashboard
 
 Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](#quick-start-npm--end-users). Dev: `npm run dev:all` then use the Vite UI. `status` and start banners intentionally do not print the one-shot bootstrap URL. A valid dashboard session survives backend/browser restarts and renews for 24 hours after activity. If dashboard authority is missing or expired, the UI tells you to run `agent-deck open`; restarting the daemon is only for an actual API outage. Bare `http://127.0.0.1:1111` grants no authority by itself. MCP `GRANT_REQUIRED` (**No deck selected for this connection**) is separate and is fixed with `agent-deck use <deck>` in the workspace (writes the folder assignment so the launcher can send `x-agent-deck-deck-id`). Host agent sandboxes (workspace-writable only) can still repair a missing project `AGENT_DECK_WORKSPACE` pin when `.agent-deck/use.json` already assigns the deck; creating a new assignment or writing `~/.agent-deck` needs an unsandboxed terminal — `status` / `doctor` label those recoveries separately.
+
+`start` opens the dashboard with a one-shot bootstrap cookie by default (`--no-open` for CI / headless, or `AGENT_DECK_NO_OPEN=1`). Bare `http://127.0.0.1:1111` without a launch pass shows the dashboard recovery view (**Open your dashboard securely**, with an **Open dashboard** action and the `agent-deck open` fallback) — that is **not** the MCP `GRANT_REQUIRED` case (**No deck selected for this connection**; fix with `agent-deck use <deck>` in the workspace so the launcher can send the deck header). Day to day: `agent-deck start --daemon` / `agent-deck open` / `agent-deck stop` · `agent-deck status` if something fails. Use plain `agent-deck start` when you want a foreground process (logs to stdout).
 
 | Area | What it does |
 |------|----------------|
