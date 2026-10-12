@@ -46,7 +46,7 @@ For per-client flags, resume ids, tool mappings, and trust behavior, see `docs/D
 
 ## 3. Monitor
 
-Poll until the state leaves `running`. Poll about every 30 seconds; longer tasks can use a longer interval.
+Poll until the state leaves `running`. Poll every 30 seconds: read-only runs typically take about 1–3 minutes, so a 30-second cadence catches the end within one interval without busy-polling.
 
 ```sh
 agent-deck run status <runId>
@@ -70,7 +70,7 @@ Resume the same session with a feedback brief that quotes the gap found in step 
 agent-deck run <deck> --client <client> --cwd <dir> --prompt-file <feedback-file> --tools readonly --resume <sessionId> --detach
 ```
 
-Repeat steps 3-5 until the goal is met or about 3 feedback rounds have passed without progress; then bring the blocker to the human.
+Repeat steps 3-5 until the goal is met, for at most 3 feedback rounds. If the goal is still not met after round 3, stop and bring the blocker to the human instead of resuming again.
 
 ### Corrections from a delegated run
 - The party that observed and made the correction files it: the orchestrator files `propose_playbook_patch` on its own bound deck; the delegated session files only when a human corrects it directly.
