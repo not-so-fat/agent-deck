@@ -76,6 +76,7 @@ function setup(): { cwd: string; deps: RunDeps & { query: ReturnType<typeof vi.f
     query,
     resolveDeck: vi.fn(async () => ({ ...DECK })),
     resolveLaunchPlan: vi.fn(async () => plan) as unknown as RunDeps['resolveLaunchPlan'],
+    claudeProbe: vi.fn(async () => ({ ok: true as const })),
     homeDir,
   };
   return { cwd, deps };

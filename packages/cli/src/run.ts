@@ -6,6 +6,7 @@
  * records a small meta.json that later tickets (detach, status) can read.
  * Resume continues the same Claude session id under a new run log.
  */
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -202,7 +203,89 @@ export type RunDeps = {
   resolveDeck?: (ref: string) => Promise<{ id: string; name: string } | null>;
   resolveLaunchPlan?: typeof resolveMcpLaunchPlan;
   homeDir?: string;
+  /** Injected in tests; production probes the local Claude Code CLI (NOT-405). */
+  claudeProbe?: ClaudeClientProbe;
 };
+
+/** Outcome of the Claude Code client probe: installed and signed in, or why not. */
+export type ClaudeClientStatus =
+  | { ok: true }
+  | { ok: false; reason: 'not-installed' | 'not-signed-in' };
+
+export type ClaudeClientProbe = () => Promise<ClaudeClientStatus> | ClaudeClientStatus;
+
+/** The one fix command both preflight remedies name. Verified against `claude auth --help`. */
+export const CLAUDE_AUTH_LOGIN_COMMAND = 'claude auth login';
+
+export const RUN_CLAUDE_NOT_INSTALLED_ERROR =
+  `Claude Code is not installed (no \`claude\` on PATH). Install Claude Code, then run \`${CLAUDE_AUTH_LOGIN_COMMAND}\` to sign in, then retry.`;
+
+export const RUN_CLAUDE_NOT_SIGNED_IN_ERROR =
+  `Claude Code is not signed in. Run \`${CLAUDE_AUTH_LOGIN_COMMAND}\` to sign in with your own account, then retry.`;
+
+/** First executable `name` on `pathEnv`, or null. Pure apart from the fs check. */
+export function findExecutableOnPath(name: string, pathEnv = process.env.PATH ?? ''): string | null {
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir) {
+      continue;
+    }
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Not here; keep scanning.
+    }
+  }
+  return null;
+}
+
+/**
+ * True only when `claude auth status` JSON reports a login. Never throws:
+ * garbage, an empty string, or a logged-out report all read as signed out.
+ */
+export function claudeAuthStatusShowsLogin(stdout: string): boolean {
+  try {
+    return (JSON.parse(stdout) as { loggedIn?: unknown }).loggedIn === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Default Claude Code preflight: the `claude` CLI must be on PATH and
+ * `claude auth status` must report a login. Local only — no model call.
+ * An explicit ANTHROPIC_API_KEY passes without the OAuth check so the
+ * preflight never blocks a setup the SDK itself would accept (API-key
+ * onboarding stays out of scope; the friend path signs in via `claude auth
+ * login`). Any other failure — logged out, unparseable output, a hung or
+ * crashed `claude` — reads as not signed in; re-running the login is the
+ * remedy in every case.
+ */
+export async function defaultClaudeClientProbe(): Promise<ClaudeClientStatus> {
+  if (!findExecutableOnPath('claude')) {
+    return { ok: false, reason: 'not-installed' };
+  }
+  if ((process.env.ANTHROPIC_API_KEY ?? '').trim()) {
+    return { ok: true };
+  }
+  try {
+    const out = execFileSync('claude', ['auth', 'status'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return claudeAuthStatusShowsLogin(out)
+      ? { ok: true }
+      : { ok: false, reason: 'not-signed-in' };
+  } catch (error) {
+    // The binary vanished between the PATH scan and the exec.
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return { ok: false, reason: 'not-installed' };
+    }
+    return { ok: false, reason: 'not-signed-in' };
+  }
+}
 
 /**
  * Test-only fake runner for the `run --detach` integration suite. The detached
@@ -322,7 +405,7 @@ function writeMeta(metaPath: string, meta: RunMeta): void {
   fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
 }
 
-export type RunPrereqDeps = Pick<RunDeps, 'resolveDeck' | 'resolveLaunchPlan'>;
+export type RunPrereqDeps = Pick<RunDeps, 'resolveDeck' | 'resolveLaunchPlan' | 'claudeProbe'>;
 
 function selectResolveDeck(
   deps: RunPrereqDeps,
@@ -332,6 +415,18 @@ function selectResolveDeck(
   }
   const fake = loadRunFakeBehavior();
   return fake ? fakeResolveDeckFromBehavior(fake) : defaultResolveDeck;
+}
+
+function selectClaudeProbe(deps: RunPrereqDeps): ClaudeClientProbe {
+  if (deps.claudeProbe) {
+    return deps.claudeProbe;
+  }
+  // The fake runner brings its own working client, like it brings its own
+  // deck and model stream; the real probe only guards the real transport.
+  if (loadRunFakeBehavior()) {
+    return async () => ({ ok: true });
+  }
+  return defaultClaudeClientProbe;
 }
 
 function selectRunQuery(deps: RunDeps): RunQueryFn {
@@ -403,6 +498,20 @@ export async function validateRunPrereqs(
     };
   }
 
+  // Last and slowest (it shells out to `claude auth status`): the Claude Code
+  // client must be installed and signed in before any model call (NOT-405).
+  // Shared by the foreground run and the `--detach` starter, so both fail
+  // closed with the same one-line remedy instead of an SDK stack trace.
+  const client = await selectClaudeProbe(deps)();
+  if (!client.ok) {
+    return {
+      error:
+        client.reason === 'not-installed'
+          ? RUN_CLAUDE_NOT_INSTALLED_ERROR
+          : RUN_CLAUDE_NOT_SIGNED_IN_ERROR,
+    };
+  }
+
   return { promptText, deck };
 }
 
@@ -416,6 +525,8 @@ export function printRunHelp(): void {
 Starts a local Claude Code session bound to <deck> and streams a JSONL log.
 The folder's assignment must already name <deck> (agent-deck use <deck>);
 run never rewrites .agent-deck/use.json and fails closed on a mismatch.
+Requires the Claude Code CLI on this machine, signed in
+('claude auth login'); otherwise run fails before any model call.
 
   --client claude        Required. codex/cursor adapters are not available yet.
   --cwd <dir>            Required. Session working directory.

@@ -243,6 +243,7 @@ function starterDeps(
       deckName: DECK.name,
       headers: [],
     })) as unknown as RunDeps['resolveLaunchPlan'],
+    claudeProbe: vi.fn(async () => ({ ok: true as const })),
     homeDir,
     cliEntry: '/fake/bin.js',
     ...overrides,

@@ -101,6 +101,7 @@ function makeDeps(
       ref === DECK.name || ref === DECK.id ? { ...DECK } : null,
     ),
     resolveLaunchPlan: vi.fn(async () => plan) as unknown as RunDeps['resolveLaunchPlan'],
+    claudeProbe: vi.fn(async () => ({ ok: true as const })),
     homeDir,
   };
 }
@@ -296,6 +297,7 @@ describe('agent-deck run (NOT-400)', () => {
       query,
       resolveDeck: async () => ({ ...DECK }),
       resolveLaunchPlan: resolveMcpLaunchPlan,
+      claudeProbe: async () => ({ ok: true }),
       homeDir,
     };
 
