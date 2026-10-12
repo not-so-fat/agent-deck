@@ -100,8 +100,9 @@ seconds and caps feedback at 3 resume rounds before escalating to the human
 planner/Codex runs on one workstation (2026-10-12), each ending `ended`:
 `run-20261012T180930-b3e06c` in 66.787s, `run-20261012T180929-365f84` in
 70.065s, and `run-20261012T180928-aa4fe8` in 196.119s. All three still read
-`running` at ~42–44s; two had ended by ~67–71s and the long run ended at
-196.119s, so each end was seen within one 30-second poll.
+`running` at ~42–44s and the two short runs read `ended` by ~67–71s, so their
+ends were seen within one 30-second poll. For the long run only the end time
+(196.119s) was recorded, not the poll that first read `ended`.
 
 ## Fail-closed modes and remedies
 
