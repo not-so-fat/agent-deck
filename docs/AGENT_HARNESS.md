@@ -176,19 +176,25 @@ Status vocabulary: **Verified** (observed on the named host build), **Unsupporte
 | Codex | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 | Claude Code | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 | Cursor | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
-| Muse Code 1.4.6 | Unknown — not isolated: the NOT-432 run kept the global managed skills (`agent-deck-session` carries the first-turn bootstrap), and step 1 (marker visible without a tool call) was not recorded. Separately observed: with no project `AGENTS.md`, the session still bootstrapped (see below) | Verified live on Muse Code 1.4.3, PR #169 head `b3b49b12`: `/mcp` showed `agent-deck` connected, the first turn called `get_session_context` once, and the exact receipt was emitted once |
+| Muse Code 1.4.6 | Verified (bootstrap) on build `db2475a6bd`, NOT-432 isolated run: with initialize `instructions` as the only bootstrap source (no project `AGENTS.md`, rules, or skills), the first turn called `get_session_context` once and emitted the exact receipt (see below). Hot-switch steps 3–5 not run | Verified live on Muse Code 1.4.3, PR #169 head `b3b49b12`: `/mcp` showed `agent-deck` connected, the first turn called `get_session_context` once, and the exact receipt was emitted once |
 
-No claim is made here about host initialize-instruction behavior until a workstation run records it above.
+No claim is made here about initialize-instruction behavior for hosts marked Unknown until a workstation run records it above.
 
-### Muse bootstrap without project `AGENTS.md` (2026-10-12)
+### Muse initialize `instructions` without project `AGENTS.md` or skills (2026-10-12)
 
-The NOT-432 operator run used Muse Code `1.4.6` in a fresh workspace with no project `AGENTS.md`, with the global managed skills from `setup --client muse` still installed. `/mcp` reported `agent-deck` as connected; on the first turn Muse called `get_session_context` exactly once and emitted this binding receipt:
+The NOT-432 operator run used Muse Code `1.4.6` (build `db2475a6bd`) under strict isolation:
+
+- The workspace contained only `.mcp.json` and `.agent-deck/use.json` — no `AGENTS.md`, project rules, or skills.
+- An isolated `XDG_CONFIG_HOME` had no `muse/skills` directory, so no managed `agent-deck-*` skills were loaded.
+- Muse ran with `--trust-workspace --no-foreign-personal-context --disable-write --disable-shell` and exited 0.
+
+The `agent-deck` MCP server was available; on the first turn Muse called `get_session_context` exactly once and emitted this binding receipt:
 
 ```text
-◆ planner · 1 MCP · 0 keys · 13 playbooks · ⌘s54
+◆ planner · 1 MCP · 0 keys · 13 playbooks · ⌘s38
 ```
 
-This shows a Muse session bootstraps without a project `AGENTS.md`. It does not show that Muse surfaces the initialize `instructions`: the global `agent-deck-session` skill carries the same first-turn bootstrap guidance, so the two sources were not separated. Classifying initialize `instructions` needs a re-run of step 1 with the managed skills absent. The hot-switch steps 3–5 and other hosts were not run.
+With every other bootstrap source absent, the initialize `instructions` were the only guidance that could produce this call and receipt, so Muse 1.4.6 surfaces them. The hot-switch steps 3–5 and other hosts were not run.
 
 ### Muse release smoke evidence (2026-10-10)
 
