@@ -263,14 +263,15 @@ export function claudeAuthStatusShowsLogin(stdout: string): boolean {
  * remedy in every case.
  */
 export async function defaultClaudeClientProbe(): Promise<ClaudeClientStatus> {
-  if (!findExecutableOnPath('claude')) {
+  const claudePath = findExecutableOnPath('claude');
+  if (!claudePath) {
     return { ok: false, reason: 'not-installed' };
   }
   if ((process.env.ANTHROPIC_API_KEY ?? '').trim()) {
     return { ok: true };
   }
   try {
-    const out = execFileSync('claude', ['auth', 'status'], {
+    const out = execFileSync(claudePath, ['auth', 'status'], {
       encoding: 'utf8',
       timeout: 15_000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -527,6 +528,8 @@ The folder's assignment must already name <deck> (agent-deck use <deck>);
 run never rewrites .agent-deck/use.json and fails closed on a mismatch.
 Requires the Claude Code CLI on this machine, signed in
 ('claude auth login'); otherwise run fails before any model call.
+A set ANTHROPIC_API_KEY skips the sign-in check (the SDK accepts the
+key instead); API-key setup is otherwise out of scope for this path.
 
   --client claude        Required. codex/cursor adapters are not available yet.
   --cwd <dir>            Required. Session working directory.
