@@ -53,11 +53,11 @@ export function allowedToolsForProfile(profile: RunToolsProfile): readonly strin
 }
 
 /** Clients with a working adapter. */
-export const RUN_SUPPORTED_CLIENTS = ['claude', 'codex'] as const;
+export const RUN_SUPPORTED_CLIENTS = ['claude', 'codex', 'cursor'] as const;
 export type RunClient = (typeof RUN_SUPPORTED_CLIENTS)[number];
 
 /** Clients with a ticket but no adapter yet (separate tickets, blocked by NOT-404). */
-export const RUN_FUTURE_CLIENTS = ['cursor', 'muse'] as const;
+export const RUN_FUTURE_CLIENTS = ['muse'] as const;
 
 export function isSupportedRunClient(value: string): value is RunClient {
   return (RUN_SUPPORTED_CLIENTS as readonly string[]).includes(value);
@@ -68,14 +68,14 @@ export function isFutureRunClient(value: string): boolean {
 }
 
 export function missingRunClientMessage(): string {
-  return '--client is required: pass --client claude or --client codex (cursor and muse adapters are not available yet)';
+  return '--client is required: pass --client claude, --client codex, or --client cursor (muse adapter is not available yet)';
 }
 
 export function runClientMessage(client: string): string {
   if (isFutureRunClient(client)) {
-    return `Client adapter "${client}" is not available yet (supported clients: claude, codex)`;
+    return `Client adapter "${client}" is not available yet (supported clients: claude, codex, cursor)`;
   }
-  return `--client must be one of: claude, codex (got "${client}"); cursor and muse are not available yet`;
+  return `--client must be one of: claude, codex, cursor (got "${client}"); muse is not available yet`;
 }
 
 /**
