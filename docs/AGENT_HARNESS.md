@@ -176,7 +176,7 @@ Status vocabulary: **Verified** (observed on the named host build), **Unsupporte
 | Codex | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 | Claude Code | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
 | Cursor | Unknown — smoke not run in this sandbox (no host binary); re-run steps 1–5 on a workstation | Verified via backend protocol tests (`session-context`, initialize-response, switch-deck suites) |
-| Muse Code 1.4.3 | Unknown — the 2026-10-10 release smoke used project `AGENTS.md` for bootstrap and did not isolate initialize `instructions`; run steps 1–5 to classify | Verified live on PR #169 head `b3b49b12`: `/mcp` showed `agent-deck` connected, the first turn called `get_session_context` once, and the exact receipt was emitted once |
+| Muse Code 1.4.3 | Unknown — the 2026-10-10 release smoke used project `AGENTS.md` for bootstrap and did not isolate initialize `instructions`; needs a NOT-429 workstation run with no project `AGENTS.md` (steps 1–5) — not run in this sandbox (no host binary) | Verified live on PR #169 head `b3b49b12`: `/mcp` showed `agent-deck` connected, the first turn called `get_session_context` once, and the exact receipt was emitted once |
 
 No claim is made here about host initialize-instruction behavior until a workstation run records it above.
 
