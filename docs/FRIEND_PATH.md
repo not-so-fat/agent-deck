@@ -204,7 +204,7 @@ The two `session` lines are equal: the resume continued the same Claude session 
 2026-10-12T06:59:14.846Z end sessionId=ses_friendpath01
 ```
 
-This rehearsal is not the clean-machine operator check: the fake runner made no model call, so the equal session ids say nothing about real resume behavior. The real run on a clean machine with the friend's own Claude sign-in is tracked as a separate follow-up.
+This rehearsal is not the clean-machine operator check: the fake runner made no model call, so the equal session ids say nothing about real resume behavior. The real run on a clean machine with the friend's own Claude sign-in is owned by [NOT-421](https://linear.app/not-so-fat/issue/NOT-421), not by this note.
 
 ## If you get stuck (two notes, nothing more)
 
