@@ -277,6 +277,37 @@ describe('NOT-425 delegating to another session', () => {
   });
 });
 
+describe('NOT-426 corrections from a delegated run', () => {
+  const texts = (): Array<[string, string]> => [
+    ['cursor/global', buildCursorHarnessFile('global')],
+    ['cursor/project', buildCursorHarnessFile('project')],
+    ['claude/global', buildClaudeHarnessBlock('global')],
+    ['claude/project', buildClaudeHarnessBlock('project')],
+    ['codex/global', buildCodexHarnessBlock('global')],
+    ['codex/project', buildCodexHarnessBlock('project')],
+    ['muse/project', buildMuseHarnessBlock('project')],
+  ];
+
+  it('links to the skill correction block in one sentence', () => {
+    for (const [label, text] of texts()) {
+      expect(text, label).toContain('Corrections from a delegated run');
+      expect(text, label).toContain('skills/agent-deck-run/SKILL.md');
+    }
+  });
+
+  it('mentions the delegated run on exactly one line (pointer only, block not copied)', () => {
+    for (const [label, text] of texts()) {
+      const hits = text.split('\n').filter((line) => /delegated run/i.test(line));
+      expect(hits.length, label).toBe(1);
+      expect(hits[0], label).toContain('Corrections from a delegated run');
+      // Pointer only: evidence fields and ops stay in the skill file.
+      expect(hits[0], label).not.toContain('user_feedback_excerpt');
+      expect(hits[0], label).not.toContain('signal_only');
+      expect(hits[0], label).not.toContain('runId');
+    }
+  });
+});
+
 describe('mergeClaudeHarness', () => {
   it('appends harness block when missing', () => {
     const { content, changed } = mergeClaudeHarness('# My notes\n', buildClaudeHarnessBlock('global'));

@@ -55,6 +55,12 @@ agent-deck run <deck> --client <client> --cwd <dir> --prompt-file <feedback-file
 
 Repeat steps 3-5 until the goal is met or a round cap is hit (placeholder: 3 feedback rounds, unconfirmed), then report to the human.
 
+### Corrections from a delegated run
+- The party that observed and made the correction files it: the orchestrator files `propose_playbook_patch` on its own bound deck <TBD: owner confirms who files>; the delegated session files only when a human corrects it directly.
+- Evidence quotes the review gap as `user_feedback_excerpt` plus `runId`, `sessionId`, tool profile, and log path; no secrets in evidence.
+- Clearly general lesson: `update` with `add_item` (or `create` when no playbook covers it); not yet general: `signal_only`.
+- Cross-deck: `create`/`signal_only` land on the caller's bound deck and `get_playbook` reads only that deck (`packages/backend/src/mcp-tools/register.ts:758`, `packages/backend/src/routes/playbooks.ts:185`), so for a playbook on another deck file `signal_only` with the ids above.
+
 ## Hard rules
 
 - Never pick or change the deck on your own; the user names it.
