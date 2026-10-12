@@ -189,7 +189,7 @@ The two `session` lines are equal: the resume continued the same Claude session 
   Claude Code is not installed (no `claude` on PATH). Install Claude Code, then run `claude auth login` to sign in, then retry.
   ```
 
-  One exception: when `ANTHROPIC_API_KEY` is set, the preflight skips the sign-in check (so it never blocks a setup the SDK itself would accept). API-key mode is not part of this path — sign in with `claude auth login` as above — and a stale key sails through the preflight only to fail inside the run.
+  One exception: when `ANTHROPIC_API_KEY` is set, the preflight skips the sign-in check once the `claude` CLI is found (the CLI must still be on PATH; the SDK accepts the key instead of the login). API-key mode is not part of this path — sign in with `claude auth login` as above — and a stale key sails through the preflight only to fail inside the run.
 
 - **Deck not found.** `Deck not found: friend` (or the `No deck assigned` / `mis-bound` variants) means step 3–4 drift: re-check the deck name in the dashboard and run `agent-deck use friend` inside the sample folder, then retry. `run` never rebinds the folder for you.
 - **Run `died`.** `run status` shows `died` when the process is gone with no `end` line (machine slept, process killed). Read `agent-deck run log <runId>` and the `run.out` file next to the printed log path for the last words, then relaunch the same `run --detach` command for a fresh run.
@@ -204,7 +204,7 @@ The two `session` lines are equal: the resume continued the same Claude session 
 2026-10-12T06:59:14.846Z end sessionId=ses_friendpath01
 ```
 
-This rehearsal is not the clean-machine operator check: the fake runner made no model call, so the equal session ids say nothing about real resume behavior. The real run on a clean machine with the friend's own Claude sign-in is owned by [NOT-421](https://linear.app/not-so-fat/issue/NOT-421), not by this note.
+This rehearsal is not the clean-machine operator check: the fake runner made no model call, so the equal session ids say nothing about real resume behavior. After merging `main` (NOT-404 adapter refactor) the same fake-runner rehearsal was repeated on the merged tree with identical results (`ended`, matching `status`/`log`, resume session `ses_merge01` in both runs). The real run on a clean machine with the friend's own Claude sign-in is owned by [NOT-421](https://linear.app/not-so-fat/issue/NOT-421), not by this note.
 
 ## If you get stuck (two notes, nothing more)
 
