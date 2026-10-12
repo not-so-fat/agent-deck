@@ -29,7 +29,7 @@ For per-client flags, resume ids, tool mappings, and trust behavior, see [docs/D
 
 ## 3. Monitor
 
-Poll until the state leaves `running`. Suggested poll interval: 30 seconds (unconfirmed).
+Poll until the state leaves `running`. Suggested poll interval: 30 seconds (unconfirmed — no measured run durations yet; NOT-429 operator runs will justify the value against `run status --json` durations).
 
 ```sh
 agent-deck run status <runId>
@@ -53,7 +53,7 @@ Resume the same session with a feedback brief that quotes the gap found in step 
 agent-deck run <deck> --client <client> --cwd <dir> --prompt-file <feedback-file> --tools readonly --resume <sessionId> --detach
 ```
 
-Repeat steps 3-5 until the goal is met or a round cap is hit (placeholder: 3 feedback rounds, unconfirmed), then report to the human.
+Repeat steps 3-5 until the goal is met or a round cap is hit (placeholder: 3 feedback rounds, unconfirmed — awaiting owner confirmation per NOT-429), then report to the human.
 
 ### Corrections from a delegated run
 - The party that observed and made the correction files it: the orchestrator files `propose_playbook_patch` on its own bound deck <TBD: owner confirms who files>; the delegated session files only when a human corrects it directly.
