@@ -7,7 +7,6 @@ description: Use when a task matches a bound-deck playbook trigger, or when the 
 
 1. On task match: check `triggers` on `get_bound_deck`, then `get_playbook` before improvising. Playbook bodies live on the deck — do not mirror them into local skills.
 
-<!-- Self-improvement blocks below are verbatim from GLOBAL_BODY in packages/cli/src/agent-harness.ts (NOT-427); keep in sync. -->
 
 **When the user corrects your output** (the write trigger — no need to have called `get_playbook` earlier in the session):
 
