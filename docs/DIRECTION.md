@@ -109,6 +109,15 @@ Only after the loop and daily use are real for you.
 - Happy-path provider set documented honestly: "Linear/Notion work out of the box; anything else is a project."
 - Friend runs their own local copy (D2); share deck layouts via export/import.
 
+## 5. Near-term backlog
+
+Previously the README's What's next (moved here by NOT-428); sequencing still follows the Phase 0–3 roadmap above.
+
+- Open HOL [awesome-codex-plugins](https://github.com/hashgraph-online/awesome-codex-plugins) README PR once scanner CI is green on `main`
+- Optional: stdio MCP transport (`agent-deck mcp --stdio`) for on-demand plugin start
+- Passthrough for downstream MCP Apps
+- Smarter deck recommendations
+
 ## Appendix — Doc hygiene
 
 Per the docs [Maintenance rule](./README.md#maintenance) ("no new top-level file without removing one"): this file's slot is paid for by deleting root `DOCUMENTATION_PLAN.md`.
