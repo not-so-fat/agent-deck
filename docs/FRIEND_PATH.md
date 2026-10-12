@@ -194,7 +194,7 @@ The two `session` lines are equal: the resume continued the same Claude session 
 - **Deck not found.** `Deck not found: friend` (or the `No deck assigned` / `mis-bound` variants) means step 3–4 drift: re-check the deck name in the dashboard and run `agent-deck use friend` inside the sample folder, then retry. `run` never rebinds the folder for you.
 - **Run `died`.** `run status` shows `died` when the process is gone with no `end` line (machine slept, process killed). Read `agent-deck run log <runId>` and the `run.out` file next to the printed log path for the last words, then relaunch the same `run --detach` command for a fresh run.
 
-### Verification note — rehearsal only, not the operator run
+### Verification note
 
 2026-10-12 — rehearsed end to end on macOS 27.0.1 with agent-deck 2.0.0 and Claude Code 2.1.296, using the CLI's fake runner (`AGENT_DECK_RUN_FAKE`, no model call) in place of the network: the five commands above, with `--cwd` pointed at a scratch workspace (`/tmp/friend-path-rehearsal/ws`, assignment `deck-friend`/`friend`, `AGENT_DECK_HOME` under `/tmp/friend-path-rehearsal/home`), produced a detached run ending in `ended`, a matching `status`/`log` read, and a resume whose `session` equaled the first run's (`ses_friendpath01` in both; run ids `run-20261012T065914-612d58` and `run-20261012T065917-5fd347`). Log excerpt from that rehearsal:
 
@@ -204,7 +204,7 @@ The two `session` lines are equal: the resume continued the same Claude session 
 2026-10-12T06:59:14.846Z end sessionId=ses_friendpath01
 ```
 
-This rehearsal is not the clean-machine operator check: the fake runner made no model call, so the equal session ids say nothing about real resume behavior. After merging `main` (NOT-404 adapter refactor) the same fake-runner rehearsal was repeated on the merged tree with identical results (`ended`, matching `status`/`log`, resume session `ses_merge01` in both runs). The real run on a clean machine with the friend's own Claude sign-in is owned by [NOT-421](https://linear.app/not-so-fat/issue/NOT-421), not by this note.
+The fake runner made no model call, so the equal session ids say nothing about real resume behavior; the real run on a clean machine with the friend's own Claude sign-in is owned by [NOT-421](https://linear.app/not-so-fat/issue/NOT-421) as a separate follow-up. After merging `main` (NOT-404 adapter refactor) the same fake-runner rehearsal was repeated on the merged tree with identical results (`ended`, matching `status`/`log`, resume session `ses_merge01` in both runs), and once more as a final check on the shipping tree (`ended`, resume session `ses_repair02` in both runs).
 
 ## If you get stuck (two notes, nothing more)
 
