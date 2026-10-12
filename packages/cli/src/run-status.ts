@@ -308,7 +308,7 @@ pid is no longer alive is reported as died. Exit 0 for any state; non-zero
 only when the run id is unknown.`);
 }
 
-function parseRunStatusArgs(args: string[]): { runId: string; json: boolean } | { error: string } {
+export function parseRunStatusArgs(args: string[]): { runId: string; json: boolean } | { error: string } {
   let runId: string | undefined;
   let json = false;
   for (let i = 0; i < args.length; i += 1) {
@@ -368,7 +368,7 @@ an end or error line is seen, then exits 0.`);
 
 type ParsedLogArgs = { runId: string; tail: number | null; follow: boolean; json: boolean };
 
-function parseRunLogArgs(args: string[]): ParsedLogArgs | { error: string } {
+export function parseRunLogArgs(args: string[]): ParsedLogArgs | { error: string } {
   let runId: string | undefined;
   let tail: number | null = null;
   let follow = false;
@@ -520,7 +520,7 @@ export function printRunListHelp(): void {
 Lists recent runs, newest first. Default limit ${RUN_LIST_DEFAULT_LIMIT}.`);
 }
 
-function parseRunListArgs(args: string[]): { json: boolean; limit: number } | { error: string } {
+export function parseRunListArgs(args: string[]): { json: boolean; limit: number } | { error: string } {
   let json = false;
   let limit = RUN_LIST_DEFAULT_LIMIT;
   for (let i = 0; i < args.length; i += 1) {
