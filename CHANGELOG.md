@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.1 — 2026-10-12
+
+### Docs / plugin packaging (NOT-432)
+
+- Cursor Marketplace prep: `.cursor-plugin/plugin.json` and `.cursor-plugin/marketplace.json`; public skills cleaned before marketplace submission.
+- Agent plugin now uses a single `skills/` source for Claude, Cursor, Codex and Muse, with delegation and setup prerequisites documented in the `agent-deck-run` and `agent-deck-setup` skills.
+- Operator-verified delegation poll interval, round cap and Muse `initialize` instructions in `docs/DELEGATION.md`.
+- No runtime behavior change.
+
 ## 2.1.0 — 2026-10-12
 
 ### Feature: `agent-deck run` — delegate a task to another local session (NOT-400 to NOT-407, NOT-423 to NOT-426)
