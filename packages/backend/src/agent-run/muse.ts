@@ -53,6 +53,7 @@ import {
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
+  type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
 
@@ -164,10 +165,20 @@ export type MuseChild = {
   wait: () => Promise<{ code: number | null; stderrTail: string }>;
 };
 
-export type MuseSpawn = (bin: string, argv: string[], opts: { cwd: string }) => MuseChild;
+/** `control` (NOT-481): spawn as a new process-group leader and report its id. */
+export type MuseSpawnOptions = { cwd: string; control?: RunProcessControl };
 
-export function defaultMuseSpawn(bin: string, argv: string[], opts: { cwd: string }): MuseChild {
-  const child = spawn(bin, argv, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+export type MuseSpawn = (bin: string, argv: string[], opts: MuseSpawnOptions) => MuseChild;
+
+export function defaultMuseSpawn(bin: string, argv: string[], opts: MuseSpawnOptions): MuseChild {
+  const child = spawn(bin, argv, {
+    cwd: opts.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: opts.control !== undefined,
+  });
+  if (opts.control && child.pid !== undefined) {
+    opts.control.onProcessGroup(child.pid);
+  }
   let spawnError: Error | null = null;
   child.on('error', (error) => {
     spawnError = error;
@@ -541,7 +552,7 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
         );
       let child: MuseChild;
       try {
-        child = spawnFn(bin, argv, { cwd: args.cwd });
+        child = spawnFn(bin, argv, { cwd: args.cwd, ...(args.control ? { control: args.control } : {}) });
       } catch (error) {
         throw wrapSpawnError(error);
       }

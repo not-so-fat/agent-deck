@@ -141,6 +141,7 @@ describe('agent-deck run on the shared run service (NOT-479)', () => {
     expect(meta).toEqual({
       runId,
       deck: DECK.id,
+      deckName: DECK.name,
       client: 'codex',
       tools: 'readonly',
       cwd,

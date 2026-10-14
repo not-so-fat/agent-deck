@@ -57,11 +57,12 @@ export const CreateAgentRunRequestSchema = z
 
 /**
  * Lifecycle state. `starting` is the launch acknowledgement (record written,
- * no event yet); `running` has emitted events; `ended`, `error`, and `died`
- * are terminal. `running` never implies success.
+ * no event yet); `running` has emitted events; `ended`, `error`, `died`, and
+ * `canceled` (NOT-481: operator cancellation, never an execution error) are
+ * terminal. `running` never implies success.
  */
-export const AgentRunStateSchema = z.enum(['starting', 'running', 'ended', 'error', 'died']);
-export const AGENT_RUN_TERMINAL_STATES = ['ended', 'error', 'died'] as const;
+export const AgentRunStateSchema = z.enum(['starting', 'running', 'ended', 'error', 'died', 'canceled']);
+export const AGENT_RUN_TERMINAL_STATES = ['ended', 'error', 'died', 'canceled'] as const;
 
 export const CreateAgentRunResponseSchema = z
   .object({
@@ -109,6 +110,8 @@ export const AgentRunEventSchema = z.discriminatedUnion('type', [
   z
     .object({ ...eventBase, type: z.literal('error'), message: z.string(), sessionId: z.string().nullable() })
     .strict(),
+  /** Terminal operator cancellation (NOT-481); no event follows it. */
+  z.object({ ...eventBase, type: z.literal('canceled'), sessionId: z.string().nullable() }).strict(),
 ]);
 
 export const AgentRunEventsQuerySchema = z
@@ -129,6 +132,30 @@ export const AgentRunEventsResponseSchema = z
   })
   .strict();
 
+/**
+ * `GET /api/agent-runs/capabilities` (NOT-481): only clients whose real host
+ * preflight (installed and signed in) passes are listed. `start`/`resume`
+ * name the tool profiles the client can enforce; `same_profile_provenance`
+ * means a resume continues only a session an Agent Deck run on this host
+ * started with the same deck, cwd, and tools.
+ */
+export const AgentRunClientCapabilitySchema = z
+  .object({
+    client: AgentRunClientSchema,
+    start: z.array(AgentRunToolsSchema),
+    resume: z.array(AgentRunToolsSchema),
+    resumeRequires: z.enum(['none', 'same_profile_provenance']),
+  })
+  .strict();
+
+export const AgentRunCapabilitiesResponseSchema = z
+  .object({
+    /** Runs execute on the Agent Deck host; `cwd` is a path on that host. */
+    host: z.literal('same-host'),
+    clients: z.array(AgentRunClientCapabilitySchema),
+  })
+  .strict();
+
 /** Run-specific error codes (auth failures use the trusted-session codes). */
 export const AgentRunErrorCodeSchema = z.enum([
   'INVALID_REQUEST',
@@ -142,6 +169,7 @@ export const AgentRunErrorCodeSchema = z.enum([
   'PROFILE_UNSUPPORTED',
   'RESUME_UNVERIFIED',
   'RUN_NOT_FOUND',
+  'RUN_NOT_CANCELABLE',
 ]);
 
 export type AgentRunClient = z.infer<typeof AgentRunClientSchema>;
@@ -154,6 +182,8 @@ export type AgentRunEvent = z.infer<typeof AgentRunEventSchema>;
 export type AgentRunEventsQuery = z.infer<typeof AgentRunEventsQuerySchema>;
 export type AgentRunEventsResponse = z.infer<typeof AgentRunEventsResponseSchema>;
 export type AgentRunErrorCode = z.infer<typeof AgentRunErrorCodeSchema>;
+export type AgentRunClientCapability = z.infer<typeof AgentRunClientCapabilitySchema>;
+export type AgentRunCapabilitiesResponse = z.infer<typeof AgentRunCapabilitiesResponseSchema>;
 
 export type AgentRunErrorBody = {
   success: false;

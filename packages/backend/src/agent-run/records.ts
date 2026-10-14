@@ -31,7 +31,9 @@ export type RunLogLine =
     }
   | { t: 'end'; ts: string; sessionId: string | null }
   | { t: 'notice'; ts: string; message: string; sessionId: string | null }
-  | { t: 'error'; ts: string; message: string; sessionId: string | null };
+  | { t: 'error'; ts: string; message: string; sessionId: string | null }
+  /** Operator cancellation (NOT-481): terminal, and nothing after it counts. */
+  | { t: 'canceled'; ts: string; sessionId: string | null };
 
 /**
  * The trusted Agent Deck run that started a resumed session (NOT-484): its
@@ -44,9 +46,14 @@ export type RunResumeOrigin = {
   tools: RunToolsProfile;
 };
 
+/** Recorded lifecycle. `died` and evidence-derived states are written only by reconciliation (NOT-481). */
+export type RunMetaState = 'running' | 'ended' | 'error' | 'canceled' | 'died';
+
 export type RunMeta = {
   runId: string;
   deck: string;
+  /** Deck name at launch; lets reconciliation re-run the session receipt check. */
+  deckName?: string;
   client: RunClient;
   tools: RunToolsProfile;
   cwd: string;
@@ -54,15 +61,23 @@ export type RunMeta = {
   canonicalCwd?: string;
   pid: number;
   startedAt: string;
-  state: 'running' | 'ended' | 'error';
+  state: RunMetaState;
   sessionId?: string;
+  /**
+   * Process group the run owns (the client process it spawned as a group
+   * leader), with the time it was recorded for pid-reuse checks. Cancellation
+   * and orphan cleanup signal only this group (NOT-481).
+   */
+  pgid?: number;
+  pgidStartedAt?: string;
+  canceledAt?: string;
   /** Present only when the launch bypassed a client workspace-trust guard. */
   trustOverride?: true;
   /** Present only on a resume: the run that started the session. */
   resumedFrom?: RunResumeOrigin;
 };
 
-export type RunInspectState = 'running' | 'ended' | 'error' | 'died';
+export type RunInspectState = RunMetaState;
 
 export type RunStatusInfo = {
   runId: string;
@@ -119,6 +134,8 @@ export function appendRunLogLine(logPath: string, line: RunLogLine): void {
   fs.appendFileSync(logPath, `${JSON.stringify(line)}\n`, 'utf8');
 }
 
+const RUN_META_STATES: readonly RunMetaState[] = ['running', 'ended', 'error', 'canceled', 'died'];
+
 export type MetaRead =
   | { ok: true; meta: RunMeta }
   | { ok: false; reason: string; partial: Partial<RunMeta> };
@@ -145,7 +162,7 @@ export function readRunMeta(metaPath: string): MetaRead {
     typeof partial.deck !== 'string' ||
     typeof partial.client !== 'string' ||
     typeof partial.startedAt !== 'string' ||
-    (partial.state !== 'running' && partial.state !== 'ended' && partial.state !== 'error')
+    !(RUN_META_STATES as readonly unknown[]).includes(partial.state)
   ) {
     return { ok: false, reason: 'missing required fields', partial };
   }
@@ -165,6 +182,9 @@ export type LogRead = {
   lastSessionId: string | null;
   sawEnd: boolean;
   sawError: boolean;
+  sawCanceled: boolean;
+  /** Subtype of the last `result` line; null when the client never reported one. */
+  lastResultSubtype: string | null;
 };
 
 export function logEventSessionId(event: ParsedLogEvent['event']): string | null {
@@ -181,6 +201,8 @@ export function readRunLog(logPath: string): LogRead {
     lastSessionId: null,
     sawEnd: false,
     sawError: false,
+    sawCanceled: false,
+    lastResultSubtype: null,
   };
   let raw: string;
   try {
@@ -229,6 +251,10 @@ export function readRunLog(logPath: string): LogRead {
       empty.sawEnd = true;
     } else if (event.t === 'error') {
       empty.sawError = true;
+    } else if (event.t === 'canceled') {
+      empty.sawCanceled = true;
+    } else if (event.t === 'result') {
+      empty.lastResultSubtype = typeof event.subtype === 'string' ? event.subtype : '';
     }
   }
   return empty;
@@ -282,11 +308,75 @@ export function isRunPidAlive(pid: number, startedAt: string): boolean {
   return procStart.getTime() <= runStart.getTime() + 2000;
 }
 
-function effectiveState(meta: RunMeta): RunInspectState {
-  if (meta.state === 'ended' || meta.state === 'error') {
+/**
+ * Session receipt check: the agent harness prints the bound deck as one
+ * `get_session_context` receipt line rendering `display_summary`
+ * (e.g. `◆ dev · 2 MCP · 0 keys · 1 playbooks`). Returns the mismatching deck
+ * token when the log positively shows a deck other than the requested one;
+ * a missing receipt is not a mismatch (the pre-start assignment gate is the
+ * fail-closed check; this is a second net for a mis-bound session).
+ * The fragments are joined before scanning: real clients stream token-level
+ * deltas, so one receipt line can arrive split across many text events and a
+ * per-fragment scan would miss the mismatch.
+ */
+export function findReceiptDeckMismatch(
+  texts: readonly string[],
+  deck: { id: string; name: string },
+): string | null {
+  const joined = texts.join('');
+  const pattern = /◆\s*([^·\r\n]+?)\s*·/g;
+  for (const match of joined.matchAll(pattern)) {
+    const token = match[1].trim();
+    if (token && token !== deck.name && token !== deck.id) {
+      return token;
+    }
+  }
+  return null;
+}
+
+/**
+ * Terminal state the canonical log proves for a run whose recorded owner is
+ * gone, or null when the log holds no terminal line. `ended` needs the same
+ * evidence the live run uses — an `end` after a `success` result and a
+ * receipt that names the run's deck — so a crash between the last log line
+ * and the meta write never reads as more successful than the run was.
+ */
+function terminalFromLog(meta: RunMeta, log: LogRead): 'ended' | 'error' | null {
+  if (log.sawError) {
+    return 'error';
+  }
+  if (!log.sawEnd) {
+    return null;
+  }
+  if (log.lastResultSubtype !== 'success' || !meta.deckName) {
+    return 'error';
+  }
+  const texts = log.events.flatMap(({ event }) => (event.t === 'text' ? [event.text] : []));
+  return findReceiptDeckMismatch(texts, { id: meta.deck, name: meta.deckName }) ? 'error' : 'ended';
+}
+
+/**
+ * Truthful state from the run record, the canonical log, and the recorded
+ * owner process (NOT-481). A `canceled` line is final whatever follows it; a
+ * recorded terminal state stands; a `running` record is `running` only while
+ * its owner lives, then whatever terminal state the log proves, else `died`.
+ * Launch acknowledgement and a missing process never read as success.
+ */
+export function reconcileRunState(
+  meta: RunMeta,
+  log: LogRead,
+  isAlive: (pid: number, startedAt: string) => boolean = isRunPidAlive,
+): RunInspectState {
+  if (log.sawCanceled || meta.state === 'canceled') {
+    return 'canceled';
+  }
+  if (meta.state !== 'running') {
     return meta.state;
   }
-  return isRunPidAlive(meta.pid, meta.startedAt) ? 'running' : 'died';
+  if (isAlive(meta.pid, meta.startedAt)) {
+    return 'running';
+  }
+  return terminalFromLog(meta, log) ?? 'died';
 }
 
 export type CollectedStatus =
@@ -316,7 +406,7 @@ export function collectRunStatus(runId: string, homeDir: string): CollectedStatu
         runId: meta.runId,
         deck: meta.deck,
         client: meta.client,
-        state: effectiveState(meta),
+        state: reconcileRunState(meta, log),
         sessionId,
         startedAt: meta.startedAt,
         lastLogTs: log.lastTs,

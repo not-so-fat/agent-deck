@@ -159,7 +159,7 @@ describe('agent run service through injected adapters (NOT-479)', () => {
 
     const meta = JSON.parse(fs.readFileSync(outcome.metaPath, 'utf8')) as RunMeta;
     expect(Object.keys(meta)).toEqual([
-      'runId', 'deck', 'client', 'tools', 'cwd', 'canonicalCwd', 'pid', 'startedAt', 'state', 'sessionId',
+      'runId', 'deck', 'deckName', 'client', 'tools', 'cwd', 'canonicalCwd', 'pid', 'startedAt', 'state', 'sessionId',
     ]);
     expect(meta).toMatchObject({
       runId: outcome.runId,

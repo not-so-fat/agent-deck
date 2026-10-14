@@ -4,6 +4,7 @@ import { authenticateRunGrant } from '../agent-run-api/auth';
 import {
   enforcePolicy,
   requireTrustedWriterBearer,
+  resolveDashboardPrincipal,
   resolveRequestPrincipal,
   sendTrustedAuthError,
   TrustedAuthError,
@@ -74,7 +75,15 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
       return;
     }
 
-    if (policy === 'requireRunGrant') {
+    if (policy === 'requireRunGrantOrDashboard') {
+      const owner = await resolveDashboardPrincipal(request, fastify.trustedSessionStore);
+      if (owner) {
+        request.requestPrincipal = owner;
+        return;
+      }
+    }
+
+    if (policy === 'requireRunGrant' || policy === 'requireRunGrantOrDashboard') {
       const grant = authenticateRunGrant(request, fastify);
       if (grant instanceof TrustedAuthError) {
         return sendTrustedAuthError(reply, grant);

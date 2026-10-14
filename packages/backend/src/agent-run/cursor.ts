@@ -47,6 +47,7 @@ import {
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
+  type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
 
@@ -118,10 +119,20 @@ export type CursorChild = {
   wait: () => Promise<{ code: number | null; stderrTail: string }>;
 };
 
-export type CursorSpawn = (bin: string, argv: string[], opts: { cwd: string }) => CursorChild;
+/** `control` (NOT-481): spawn as a new process-group leader and report its id. */
+export type CursorSpawnOptions = { cwd: string; control?: RunProcessControl };
 
-export function defaultCursorSpawn(bin: string, argv: string[], opts: { cwd: string }): CursorChild {
-  const child = spawn(bin, argv, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+export type CursorSpawn = (bin: string, argv: string[], opts: CursorSpawnOptions) => CursorChild;
+
+export function defaultCursorSpawn(bin: string, argv: string[], opts: CursorSpawnOptions): CursorChild {
+  const child = spawn(bin, argv, {
+    cwd: opts.cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: opts.control !== undefined,
+  });
+  if (opts.control && child.pid !== undefined) {
+    opts.control.onProcessGroup(child.pid);
+  }
   let spawnError: Error | null = null;
   child.on('error', (error) => {
     spawnError = error;
@@ -488,7 +499,7 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
         );
       let child: CursorChild;
       try {
-        child = spawnFn(bin, argv, { cwd: args.cwd });
+        child = spawnFn(bin, argv, { cwd: args.cwd, ...(args.control ? { control: args.control } : {}) });
       } catch (error) {
         throw wrapSpawnError(error);
       }

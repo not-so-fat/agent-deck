@@ -16,7 +16,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { ClientAdapter, RunClient, RunToolsProfile } from './adapter';
+import {
+  RUN_CLIENT_PROFILES,
+  RUN_SUPPORTED_CLIENTS,
+  type ClientAdapter,
+  type RunClient,
+  type RunClientProfiles,
+  type RunProcessControl,
+  type RunToolsProfile,
+} from './adapter';
 import { createClaudeAdapter, type ClaudeAdapterDeps } from './claude';
 import {
   defaultClaudeClientProbe,
@@ -31,19 +39,51 @@ import { canonicalCwd, resolveResumeProvenance, resumeNeedsProvenance } from './
 import {
   appendRunLogLine,
   collectRunStatus,
+  findReceiptDeckMismatch,
+  isRunPidAlive,
   listRunInfos,
   metaPathForLog,
   newRunId,
   readRunLog,
+  readRunMeta,
+  reconcileRunState,
   runPaths,
+  runsRoot,
   writeRunMeta,
   type CollectedStatus,
   type LogRead,
   type RunLogLine,
+  type RunInspectState,
   type RunMeta,
   type RunResumeOrigin,
   type RunStatusInfo,
 } from './records';
+
+/** Grace between SIGTERM and SIGKILL for a canceled run's process group. */
+export const RUN_CANCEL_KILL_GRACE_MS = 5000;
+
+/**
+ * Stop one run-owned process group: SIGTERM, then SIGKILL after a grace
+ * period. Never signals this process's own pid or a non-group id.
+ */
+export function defaultKillProcessGroup(pgid: number): void {
+  if (!Number.isInteger(pgid) || pgid <= 1 || pgid === process.pid) {
+    return;
+  }
+  try {
+    process.kill(-pgid, 'SIGTERM');
+  } catch {
+    return;
+  }
+  const timer = setTimeout(() => {
+    try {
+      process.kill(-pgid, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }, RUN_CANCEL_KILL_GRACE_MS);
+  timer.unref();
+}
 
 export type RunDeck = { id: string; name: string };
 
@@ -69,6 +109,8 @@ export type AgentRunServiceDeps = {
   adapters?: RunAdapterDeps;
   /** Replaces adapter construction entirely (fixture adapters in tests). */
   createAdapter?: (client: RunClient) => ClientAdapter;
+  /** Signals one run-owned process group (NOT-481); defaults to {@link defaultKillProcessGroup}. */
+  killProcessGroup?: (pgid: number) => void;
 };
 
 export type AgentRunRequest = {
@@ -116,6 +158,12 @@ export type RunLaunchOptions = {
   logPath?: string;
   /** Pid recorded in meta.json for liveness checks. Defaults to this process. */
   pid?: number;
+  /**
+   * Spawn the client as its own process group so {@link AgentRunService.cancel}
+   * can stop it (NOT-481). The backend sets this; CLI runs leave it off so a
+   * foreground client still receives the terminal's ^C.
+   */
+  ownProcessGroup?: boolean;
 };
 
 export type FinishedRun = {
@@ -123,7 +171,8 @@ export type FinishedRun = {
   runId: string;
   logPath: string;
   metaPath: string;
-  state: 'ended' | 'error';
+  /** `canceled` when the run was canceled; `died` when abandoned at {@link AgentRunService.shutdown}. */
+  state: 'ended' | 'error' | 'canceled' | 'died';
   sessionId: string | null;
   /** Deck token a session receipt named instead of the requested deck. */
   receiptMismatch: string | null;
@@ -149,6 +198,28 @@ export type LaunchedRun = {
 
 export type AgentRunOutcome = RejectedRun | FinishedRun;
 
+export type RunTerminalState = Exclude<RunInspectState, 'running'>;
+
+export type RunCancelOutcome =
+  | { kind: 'not_found' }
+  /** This call canceled the run: `canceled` is recorded and the owned group signaled. */
+  | { kind: 'canceled' }
+  /** Already terminal: history is unchanged. */
+  | { kind: 'already_terminal'; state: RunTerminalState }
+  /** Running under another process that recorded no owned process group. */
+  | { kind: 'not_cancelable' };
+
+/** A `running` record that reconciliation moved to a terminal state. */
+export type RunReconciliation = {
+  runId: string;
+  state: RunTerminalState;
+  /** The run's orphaned process group was still alive and was signaled. */
+  orphanSignaled: boolean;
+};
+
+/** A client whose real host preflight passed, with the profiles it can enforce. */
+export type RunClientCapability = { client: RunClient } & RunClientProfiles;
+
 export type AgentRunService = {
   /** Everything a run must prove before it may start (shared with detached starters). */
   validate(request: AgentRunRequest): Promise<AgentRunValidation>;
@@ -168,32 +239,40 @@ export type AgentRunService = {
   list(limit: number): RunStatusInfo[];
   /** Ordered normalized events from the canonical JSONL log; null for an unknown run. */
   events(runId: string): LogRead | null;
+  /**
+   * Idempotent cancel (NOT-481): records a terminal `canceled` line and state,
+   * suppresses anything the stream would write afterwards, and signals only
+   * the run-owned process group.
+   */
+  cancel(runId: string): RunCancelOutcome;
+  /**
+   * Restart recovery: every `running` record not owned by this service is
+   * re-derived from its owner process and canonical log; terminal results are
+   * persisted and orphaned process groups signaled. Still-live runs stay.
+   */
+  reconcile(): RunReconciliation[];
+  /** Clients whose real preflight passes on this host (no model call). */
+  capabilities(): Promise<RunClientCapability[]>;
+  /** Stop owned process groups without recording an outcome; they reconcile as `died`. */
+  shutdown(): void;
 };
 
-/**
- * Session receipt check: the agent harness prints the bound deck as one
- * `get_session_context` receipt line rendering `display_summary`
- * (e.g. `◆ dev · 2 MCP · 0 keys · 1 playbooks`). Returns the mismatching deck
- * token when the log positively shows a deck other than the requested one;
- * a missing receipt is not a mismatch (the pre-start assignment gate is the
- * fail-closed check; this is a second net for a mis-bound session).
- * The fragments are joined before scanning: real clients stream token-level
- * deltas, so one receipt line can arrive split across many text events and a
- * per-fragment scan would miss the mismatch.
- */
-export function findReceiptDeckMismatch(
-  texts: readonly string[],
-  deck: { id: string; name: string },
-): string | null {
-  const joined = texts.join('');
-  const pattern = /◆\s*([^·\r\n]+?)\s*·/g;
-  for (const match of joined.matchAll(pattern)) {
-    const token = match[1].trim();
-    if (token && token !== deck.name && token !== deck.id) {
-      return token;
-    }
-  }
-  return null;
+/** An in-process run this service is streaming. */
+type LiveRun = {
+  meta: RunMeta;
+  metaPath: string;
+  logPath: string;
+  controller: AbortController;
+  sessionId: string | null;
+  stopped: 'canceled' | 'abandoned' | null;
+};
+
+function recordCanceled(meta: RunMeta, metaPath: string, logPath: string, sessionId: string | null): void {
+  const ts = new Date().toISOString();
+  appendRunLogLine(logPath, { t: 'canceled', ts, sessionId });
+  meta.state = 'canceled';
+  meta.canceledAt = ts;
+  writeRunMeta(metaPath, meta);
 }
 
 export function createRunAdapter(client: RunClient, deps: RunAdapterDeps = {}): ClientAdapter {
@@ -213,6 +292,8 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
   const claudeProbe = deps.claudeProbe ?? defaultClaudeClientProbe;
   const createAdapter =
     deps.createAdapter ?? ((client: RunClient) => createRunAdapter(client, deps.adapters));
+  const killGroup = deps.killProcessGroup ?? defaultKillProcessGroup;
+  const liveRuns = new Map<string, LiveRun>();
 
   const allocate = (logPath?: string): { runId: string; logPath: string; metaPath: string } => {
     const runId = newRunId();
@@ -337,6 +418,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     const meta: RunMeta = {
       runId,
       deck: deck.id,
+      deckName: deck.name,
       client: request.client,
       tools: request.tools,
       cwd: request.cwd,
@@ -349,14 +431,53 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     };
     writeRunMeta(metaPath, meta);
 
+    const live: LiveRun = {
+      meta,
+      metaPath,
+      logPath,
+      controller: new AbortController(),
+      sessionId: request.resumeId ?? null,
+      stopped: null,
+    };
+    liveRuns.set(runId, live);
+    const control: RunProcessControl = {
+      signal: live.controller.signal,
+      onProcessGroup(pgid) {
+        if (live.stopped) {
+          // Canceled before the client spawned: stop it at once.
+          killGroup(pgid);
+          return;
+        }
+        meta.pgid = pgid;
+        meta.pgidStartedAt = new Date().toISOString();
+        writeRunMeta(metaPath, meta);
+      },
+    };
+
     const stream = async (): Promise<FinishedRun> => {
-      const appendLine = (line: RunLogLine): void => appendRunLogLine(logPath, line);
+      // Nothing the client still emits after a cancel or shutdown is recorded.
+      const appendLine = (line: RunLogLine): void => {
+        if (!live.stopped) {
+          appendRunLogLine(logPath, line);
+        }
+      };
+      const stoppedResult = (): FinishedRun => ({
+        kind: 'finished',
+        runId,
+        logPath,
+        metaPath,
+        state: live.stopped === 'canceled' ? 'canceled' : 'died',
+        sessionId,
+        receiptMismatch: null,
+        failure: null,
+      });
 
       let sessionId: string | null = request.resumeId ?? null;
       let metaSessionWritten = false;
       const captureSessionId = (value: unknown): void => {
         if (typeof value === 'string' && value) {
           sessionId = value;
+          live.sessionId = value;
           if (!metaSessionWritten) {
             metaSessionWritten = true;
             meta.sessionId = value;
@@ -370,7 +491,11 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       let lastResultSubtype: string | undefined;
       const seenTexts: string[] = [];
       try {
-        for await (const event of adapter.start(startArgs)) {
+        const adapterArgs = launch.ownProcessGroup ? { ...startArgs, control } : startArgs;
+        for await (const event of adapter.start(adapterArgs)) {
+          if (live.stopped) {
+            break;
+          }
           if (event.sessionId !== undefined) {
             captureSessionId(event.sessionId);
           }
@@ -398,8 +523,14 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
             });
           }
         }
+        if (live.stopped) {
+          return stoppedResult();
+        }
         appendLine({ t: 'end', ts: new Date().toISOString(), sessionId });
       } catch (error) {
+        if (live.stopped) {
+          return stoppedResult();
+        }
         const failure = String(error instanceof Error ? error.message : error).slice(0, 500);
         appendLine({ t: 'error', ts: new Date().toISOString(), message: failure, sessionId });
         meta.state = 'error';
@@ -444,7 +575,11 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       };
     };
 
-    const completion = stream().catch((error: unknown): FinishedRun => {
+    const completion = stream()
+      .finally(() => {
+        liveRuns.delete(runId);
+      })
+      .catch((error: unknown): FinishedRun => {
       // Record bookkeeping itself failed (disk full, removed run dir). Keep
       // the completion promise non-rejecting; status falls back to the pid.
       const failure = String(error instanceof Error ? error.message : error).slice(0, 500);
@@ -496,6 +631,102 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     events(runId) {
       const { metaPath, logPath } = runPaths(deps.homeDir, runId);
       return fs.existsSync(metaPath) ? readRunLog(logPath) : null;
+    },
+    cancel(runId) {
+      const live = liveRuns.get(runId);
+      if (live?.stopped === 'canceled') {
+        return { kind: 'already_terminal', state: 'canceled' };
+      }
+      if (live && !live.stopped) {
+        live.stopped = 'canceled';
+        recordCanceled(live.meta, live.metaPath, live.logPath, live.sessionId);
+        live.controller.abort();
+        if (live.meta.pgid !== undefined) {
+          killGroup(live.meta.pgid);
+        }
+        return { kind: 'canceled' };
+      }
+
+      const { metaPath, logPath } = runPaths(deps.homeDir, runId);
+      if (!fs.existsSync(metaPath)) {
+        return { kind: 'not_found' };
+      }
+      const read = readRunMeta(metaPath);
+      if (!read.ok) {
+        return { kind: 'already_terminal', state: 'error' };
+      }
+      const meta = read.meta;
+      const log = readRunLog(logPath);
+      const state = reconcileRunState(meta, log);
+      if (state !== 'running') {
+        return { kind: 'already_terminal', state };
+      }
+      // Live under another process: cancel only through the group it recorded.
+      if (meta.pgid !== undefined && isRunPidAlive(meta.pgid, meta.pgidStartedAt ?? meta.startedAt)) {
+        recordCanceled(meta, metaPath, logPath, meta.sessionId ?? log.lastSessionId);
+        killGroup(meta.pgid);
+        return { kind: 'canceled' };
+      }
+      return { kind: 'not_cancelable' };
+    },
+    reconcile() {
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(runsRoot(deps.homeDir));
+      } catch {
+        return [];
+      }
+      const reconciled: RunReconciliation[] = [];
+      for (const runId of entries.sort()) {
+        if (liveRuns.has(runId)) {
+          continue;
+        }
+        const { metaPath, logPath } = runPaths(deps.homeDir, runId);
+        const read = readRunMeta(metaPath);
+        if (!read.ok || read.meta.state !== 'running') {
+          continue;
+        }
+        const meta = read.meta;
+        const state = reconcileRunState(meta, readRunLog(logPath));
+        if (state === 'running') {
+          continue;
+        }
+        // The owner is gone, so nothing records this group's output any more.
+        let orphanSignaled = false;
+        if (meta.pgid !== undefined && isRunPidAlive(meta.pgid, meta.pgidStartedAt ?? meta.startedAt)) {
+          killGroup(meta.pgid);
+          orphanSignaled = true;
+        }
+        writeRunMeta(metaPath, { ...meta, state });
+        reconciled.push({ runId, state, orphanSignaled });
+      }
+      return reconciled;
+    },
+    async capabilities() {
+      const available: RunClientCapability[] = [];
+      for (const client of RUN_SUPPORTED_CLIENTS) {
+        // Same gates a launch runs: the Claude sign-in probe, then the adapter preflight.
+        if (client === 'claude' && !(await claudeProbe()).ok) {
+          continue;
+        }
+        const preflight = await createAdapter(client).preflight();
+        if (preflight.ok) {
+          available.push({ client, ...RUN_CLIENT_PROFILES[client] });
+        }
+      }
+      return available;
+    },
+    shutdown() {
+      for (const live of liveRuns.values()) {
+        if (live.stopped) {
+          continue;
+        }
+        live.stopped = 'abandoned';
+        live.controller.abort();
+        if (live.meta.pgid !== undefined) {
+          killGroup(live.meta.pgid);
+        }
+      }
     },
   };
 }

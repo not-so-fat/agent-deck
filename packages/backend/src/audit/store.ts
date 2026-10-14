@@ -22,6 +22,9 @@ export const AUDIT_EVENTS = [
   'agent_run.created',
   'agent_run.denied',
   'agent_run.finished',
+  // NOT-481: cancellation and restart reconciliation (identifiers only).
+  'agent_run.canceled',
+  'agent_run.reconciled',
 ] as const;
 
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
@@ -46,7 +49,12 @@ export type AuditReasonCode =
   | 'client_unavailable'
   | 'profile_unsupported'
   | 'resume_unverified'
-  | 'run_error';
+  | 'run_error'
+  // NOT-481: cancellation and reconciliation reasons.
+  | 'already_terminal'
+  | 'run_not_cancelable'
+  | 'run_canceled'
+  | 'run_died';
 
 export type AuditEntry = {
   id: string;
