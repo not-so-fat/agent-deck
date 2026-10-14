@@ -85,8 +85,19 @@ the process exits and status polling shows no intermediate lines
 
 The JSONL log (`agent-run/records.ts` `RunLogLine`) has one line per event: `text`
 (`ts`, `text`), `tool` (`ts`, `name`), `result` (`ts`, `sessionId`, `subtype`,
-`result`), `end` (`ts`, `sessionId`), `notice` (`ts`, `message`, `sessionId`),
-`error` (`ts`, `message`, `sessionId`). `meta.json` (`agent-run/records.ts` `RunMeta`) holds
+`result`, optional `usage`), `end` (`ts`, `sessionId`), `notice` (`ts`, `message`, `sessionId`),
+`error` (`ts`, `message`, `sessionId`). A run writes at most one `result`
+line per turn, just before `end`. For `claude`, `codex`, and `muse` a
+`success` result's `result` is the final assistant answer as a string, so
+callers read the answer from that line instead of picking among `text`
+lines; `cursor` keeps its raw result object (`agent-run/cursor.ts`). Codex
+token usage travels in `usage` and never replaces `result`; the answer is the
+last `agent_message` of the turn, and every `agent_message`, commentary
+included, still streams as a `text` line (`agent-run/codex.ts`
+`codexEventsFromLine`). A codex turn that completes with no assistant message
+is never an empty success: it writes a `failed` result whose `result` is
+``codex turn completed without a final assistant message: re-run the prompt, or read the text and tool lines above for what the session did.``
+and the run ends `error` (`CODEX_NO_FINAL_MESSAGE`). `meta.json` (`agent-run/records.ts` `RunMeta`) holds
 `runId`, `deck`, `client`, `tools`, `cwd`, `canonicalCwd` (realpath of `cwd`
 at launch), `pid`, `startedAt`, `state` (`running`|`ended`|`error`), plus
 `sessionId` once known, `trustOverride` only when the launch bypassed a client

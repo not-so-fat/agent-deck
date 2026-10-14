@@ -180,7 +180,18 @@ export function defaultCodexSpawn(bin: string, argv: string[], opts: { cwd: stri
   return { stdout: lines(), wait };
 }
 
-export type CodexLineContext = { threadId: string | null };
+export type CodexLineContext = {
+  threadId: string | null;
+  /**
+   * Text of the latest `agent_message` in the current turn. Codex emits
+   * commentary and the final answer as the same item type, so the last one
+   * before `turn.completed` is the final answer.
+   */
+  lastAgentMessage?: string | null;
+};
+
+export const CODEX_NO_FINAL_MESSAGE =
+  'codex turn completed without a final assistant message: re-run the prompt, or read the text and tool lines above for what the session did.';
 
 function withSession<T extends object>(event: T, ctx: CodexLineContext): T & { sessionId?: string } {
   return ctx.threadId ? { ...event, sessionId: ctx.threadId } : event;
@@ -198,7 +209,10 @@ function nonEmptyString(value: unknown): string | null {
  * Map one `codex exec --json` stdout line onto normalized events:
  * `thread.started.thread_id` becomes the session id (no log line);
  * `agent_message` items become `text`; command/tool items become `tool`;
- * `turn.completed` becomes `result` (subtype `success`); provider `error`
+ * `turn.completed` becomes `result` (subtype `success`) whose `result` is the
+ * last `agent_message` text of the turn and whose `usage` is the codex usage
+ * object. A turn that completes with no agent message becomes a `failed`
+ * result, never an empty success. Provider `error`
  * events become `notice` (non-fatal). Unknown kinds are ignored so a newer
  * CLI cannot break the log. Never throws: unparseable lines become `notice`.
  */
@@ -238,7 +252,11 @@ export function codexEventsFromLine(line: string, ctx: CodexLineContext): Normal
       }
       if (item.type === 'agent_message') {
         const text = nonEmptyString(item.text) ?? nonEmptyString(item.content);
-        return text ? [withSession({ kind: 'text', text }, ctx)] : [];
+        if (!text) {
+          return [];
+        }
+        ctx.lastAgentMessage = text;
+        return [withSession({ kind: 'text', text }, ctx)];
       }
       if (item.type === 'reasoning') {
         return [];
@@ -250,9 +268,20 @@ export function codexEventsFromLine(line: string, ctx: CodexLineContext): Normal
         'item';
       return [withSession({ kind: 'tool', name }, ctx)];
     }
+    case 'turn.started': {
+      ctx.lastAgentMessage = null;
+      return [];
+    }
     case 'turn.completed': {
-      const usage = record.usage === undefined ? null : { usage: record.usage };
-      return [withSession({ kind: 'result', subtype: 'success', result: usage }, ctx)];
+      const finalText = ctx.lastAgentMessage ?? null;
+      ctx.lastAgentMessage = null;
+      const usage = record.usage === undefined ? {} : { usage: record.usage };
+      if (!finalText) {
+        return [
+          withSession({ kind: 'result', subtype: 'failed', result: CODEX_NO_FINAL_MESSAGE, ...usage }, ctx),
+        ];
+      }
+      return [withSession({ kind: 'result', subtype: 'success', result: finalText, ...usage }, ctx)];
     }
     case 'turn.failed': {
       const detail = record.error ?? record.usage ?? null;
@@ -264,7 +293,7 @@ export function codexEventsFromLine(line: string, ctx: CodexLineContext): Normal
       return [withSession({ kind: 'notice', message: message.slice(0, 500) }, ctx)];
     }
     default:
-      // turn.started and any future kinds carry nothing the log needs.
+      // Future kinds carry nothing the log needs.
       return [];
   }
 }
