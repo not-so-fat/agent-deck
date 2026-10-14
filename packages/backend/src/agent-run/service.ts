@@ -140,20 +140,7 @@ export type LaunchedRun = {
   completion: Promise<FinishedRun>;
 };
 
-export type AgentRunOutcome =
-  | RejectedRun
-  | {
-      kind: 'finished';
-      runId: string;
-      logPath: string;
-      metaPath: string;
-      state: 'ended' | 'error';
-      sessionId: string | null;
-      /** Deck token a session receipt named instead of the requested deck. */
-      receiptMismatch: string | null;
-      /** Adapter/stream failure message recorded as the `error` log line. */
-      failure: string | null;
-    };
+export type AgentRunOutcome = RejectedRun | FinishedRun;
 
 export type AgentRunService = {
   /** Everything a run must prove before it may start (shared with detached starters). */
@@ -336,58 +323,83 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     writeRunMeta(metaPath, meta);
 
     const stream = async (): Promise<FinishedRun> => {
-    const appendLine = (line: RunLogLine): void => appendRunLogLine(logPath, line);
+      const appendLine = (line: RunLogLine): void => appendRunLogLine(logPath, line);
 
-    let sessionId: string | null = request.resumeId ?? null;
-    let metaSessionWritten = false;
-    const captureSessionId = (value: unknown): void => {
-      if (typeof value === 'string' && value) {
-        sessionId = value;
-        if (!metaSessionWritten) {
-          metaSessionWritten = true;
-          meta.sessionId = value;
-          writeRunMeta(metaPath, meta);
-        } else {
-          meta.sessionId = value;
+      let sessionId: string | null = request.resumeId ?? null;
+      let metaSessionWritten = false;
+      const captureSessionId = (value: unknown): void => {
+        if (typeof value === 'string' && value) {
+          sessionId = value;
+          if (!metaSessionWritten) {
+            metaSessionWritten = true;
+            meta.sessionId = value;
+            writeRunMeta(metaPath, meta);
+          } else {
+            meta.sessionId = value;
+          }
+        }
+      };
+
+      let lastResultSubtype: string | undefined;
+      const seenTexts: string[] = [];
+      try {
+        for await (const event of adapter.start(startArgs)) {
+          if (event.sessionId !== undefined) {
+            captureSessionId(event.sessionId);
+          }
+          if (event.kind === 'text') {
+            seenTexts.push(event.text);
+            appendLine({ t: 'text', ts: new Date().toISOString(), text: event.text });
+          } else if (event.kind === 'tool') {
+            appendLine({ t: 'tool', ts: new Date().toISOString(), name: event.name });
+          } else if (event.kind === 'result') {
+            lastResultSubtype = event.subtype;
+            appendLine({
+              t: 'result',
+              ts: new Date().toISOString(),
+              sessionId,
+              subtype: event.subtype,
+              result: event.result,
+            });
+          } else {
+            appendLine({
+              t: 'notice',
+              ts: new Date().toISOString(),
+              message: event.message,
+              sessionId,
+            });
+          }
+        }
+        appendLine({ t: 'end', ts: new Date().toISOString(), sessionId });
+      } catch (error) {
+        const failure = String(error instanceof Error ? error.message : error).slice(0, 500);
+        appendLine({ t: 'error', ts: new Date().toISOString(), message: failure, sessionId });
+        meta.state = 'error';
+        if (sessionId) {
+          meta.sessionId = sessionId;
+        }
+        writeRunMeta(metaPath, meta);
+        return {
+          kind: 'finished',
+          runId,
+          logPath,
+          metaPath,
+          state: 'error',
+          sessionId,
+          receiptMismatch: null,
+          failure,
+        };
+      }
+
+      let success = lastResultSubtype === 'success';
+      let receiptMismatch: string | null = null;
+      if (success) {
+        receiptMismatch = findReceiptDeckMismatch(seenTexts, deck);
+        if (receiptMismatch) {
+          success = false;
         }
       }
-    };
-
-    let lastResultSubtype: string | undefined;
-    const seenTexts: string[] = [];
-    try {
-      for await (const event of adapter.start(startArgs)) {
-        if (event.sessionId !== undefined) {
-          captureSessionId(event.sessionId);
-        }
-        if (event.kind === 'text') {
-          seenTexts.push(event.text);
-          appendLine({ t: 'text', ts: new Date().toISOString(), text: event.text });
-        } else if (event.kind === 'tool') {
-          appendLine({ t: 'tool', ts: new Date().toISOString(), name: event.name });
-        } else if (event.kind === 'result') {
-          lastResultSubtype = event.subtype;
-          appendLine({
-            t: 'result',
-            ts: new Date().toISOString(),
-            sessionId,
-            subtype: event.subtype,
-            result: event.result,
-          });
-        } else {
-          appendLine({
-            t: 'notice',
-            ts: new Date().toISOString(),
-            message: event.message,
-            sessionId,
-          });
-        }
-      }
-      appendLine({ t: 'end', ts: new Date().toISOString(), sessionId });
-    } catch (error) {
-      const failure = String(error instanceof Error ? error.message : error).slice(0, 500);
-      appendLine({ t: 'error', ts: new Date().toISOString(), message: failure, sessionId });
-      meta.state = 'error';
+      meta.state = success ? 'ended' : 'error';
       if (sessionId) {
         meta.sessionId = sessionId;
       }
@@ -397,36 +409,11 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
         runId,
         logPath,
         metaPath,
-        state: 'error',
+        state: meta.state,
         sessionId,
-        receiptMismatch: null,
-        failure,
+        receiptMismatch,
+        failure: null,
       };
-    }
-
-    let success = lastResultSubtype === 'success';
-    let receiptMismatch: string | null = null;
-    if (success) {
-      receiptMismatch = findReceiptDeckMismatch(seenTexts, deck);
-      if (receiptMismatch) {
-        success = false;
-      }
-    }
-    meta.state = success ? 'ended' : 'error';
-    if (sessionId) {
-      meta.sessionId = sessionId;
-    }
-    writeRunMeta(metaPath, meta);
-    return {
-      kind: 'finished',
-      runId,
-      logPath,
-      metaPath,
-      state: meta.state,
-      sessionId,
-      receiptMismatch,
-      failure: null,
-    };
     };
 
     const completion = stream().catch((error: unknown): FinishedRun => {

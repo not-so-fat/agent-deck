@@ -309,6 +309,7 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
     const unbound = makeService(home, adapter, { resolveDeckBinding: async () => ({}) });
     expect(await unbound.service.start(request(cwd))).toEqual({
       kind: 'rejected',
+      code: 'deck_unassigned',
       message: `No deck assigned in ${cwd}: run \`agent-deck use api\` there first, then retry. Refusing to start an unbound session.`,
     });
 
@@ -316,6 +317,7 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
       resolveDeckBinding: async () => ({ deckId: 'deck-other', deckName: 'other' }),
     });
     const outcome = await misbound.service.start(request(cwd));
+    expect(outcome.kind === 'rejected' && outcome.code).toBe('deck_mismatch');
     expect(outcome.kind === 'rejected' && outcome.message).toContain(
       `Folder ${cwd} is bound to "other" (deck-other), not "api".`,
     );
@@ -336,12 +338,20 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
 
     expect(await service.validate(request(cwd, { deckRef: 'nope' }))).toEqual({
       ok: false,
+      code: 'deck_not_found',
       error: 'Deck not found: nope',
     });
-    expect(await service.validate(request(cwd, { prompt: '  ' }))).toMatchObject({ ok: false });
-    expect(await service.validate(request(path.join(cwd, 'missing')))).toMatchObject({ ok: false });
+    expect(await service.validate(request(cwd, { prompt: '  ' }))).toMatchObject({
+      ok: false,
+      code: 'prompt_empty',
+    });
+    expect(await service.validate(request(path.join(cwd, 'missing')))).toMatchObject({
+      ok: false,
+      code: 'cwd_not_found',
+    });
     expect(await service.validate(request(cwd, { client: 'claude' }))).toEqual({
       ok: false,
+      code: 'client_unavailable',
       error:
         'Claude Code is not signed in. Run `claude auth login` to sign in with your own account, then retry.',
     });
@@ -360,6 +370,7 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
     );
     expect(await preflight.service.start(request(cwd, { client: 'cursor' }))).toEqual({
       kind: 'rejected',
+      code: 'client_unavailable',
       message: 'cursor-agent is not signed in',
     });
 
@@ -373,12 +384,36 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
     });
     const { service } = makeService(home, Object.assign(codex, { starts: [] }));
     const outcome = await service.start(request(cwd, { tools: 'edit', resumeId: 'thread-1' }));
-    expect(outcome.kind).toBe('rejected');
+    expect(outcome.kind === 'rejected' && outcome.code).toBe('profile_unsupported');
     expect(outcome.kind === 'rejected' && outcome.message).toContain(
       'Cannot resume codex thread thread-1 with --tools edit',
     );
     expect(spawn).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(home, 'runs'))).toBe(false);
+  });
+
+  it('launch returns once the record is written and settles completion at the terminal state', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const adapter = fixtureAdapter('codex', { events: successEvents(), hold });
+    const { service } = makeService(home, adapter);
+
+    const launched = await service.launch(request(cwd));
+    if (launched.kind !== 'launched') throw new Error(launched.message);
+    const running = service.status(launched.runId);
+    expect(running.found && running.info.state).toBe('running');
+
+    release();
+    const finished = await launched.completion;
+    expect(finished).toMatchObject({ kind: 'finished', runId: launched.runId, state: 'ended' });
+
+    const rejected = await service.launch(request(cwd, { deckRef: 'nope' }));
+    expect(rejected).toMatchObject({ kind: 'rejected', code: 'deck_not_found' });
+    expect(adapter.starts).toHaveLength(1);
   });
 
   it('builds the shipped adapter for every supported client by default', () => {
