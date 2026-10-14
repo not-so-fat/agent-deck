@@ -394,7 +394,7 @@ describe('POST /api/agent-runs validation (NOT-480)', () => {
     expect(fs.existsSync(path.join(app.home, 'runs'))).toBe(false);
   });
 
-  it('fails closed for an unavailable client and a profile the client cannot enforce on resume', async () => {
+  it('fails closed for an unavailable client and a resume the client cannot verify', async () => {
     const spawn = vi.fn();
     const codex = createCodexAdapter({
       probe: () => ({ code: 0, stdout: 'Logged in using ChatGPT', stderr: '' }),
@@ -407,14 +407,17 @@ describe('POST /api/agent-runs validation (NOT-480)', () => {
     expect(claude.statusCode).toBe(503);
     expect(claude.json()).toMatchObject({ error_code: 'CLIENT_UNAVAILABLE' });
 
+    // Codex resume keeps the thread's original sandbox, so a session no
+    // Agent Deck run on this host started fails closed (NOT-484 provenance).
     const resumedEdit = await post(
       app,
       app.runGrant.token,
       startBody(app, { tools: 'edit', resumeSessionId: 'thread-opaque-1' }),
     );
     expect(resumedEdit.statusCode).toBe(422);
-    expect(resumedEdit.json()).toMatchObject({ error_code: 'PROFILE_UNSUPPORTED' });
+    expect(resumedEdit.json()).toMatchObject({ error_code: 'RESUME_UNVERIFIED' });
     expect(resumedEdit.body).not.toContain('--tools');
+    expect(resumedEdit.body).not.toContain('agent-deck run');
 
     expect(spawn).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(app.home, 'runs'))).toBe(false);
@@ -440,6 +443,7 @@ describe('POST /api/agent-runs validation (NOT-480)', () => {
       prompt: PROMPT_SENTINEL,
       tools: 'readonly',
       resumeId: 'ses_1',
+      resumedFrom: { runId: created.runId, sessionId: 'ses_1', tools: 'readonly' },
     });
   });
 });

@@ -9,5 +9,6 @@ export * from './claude-probe';
 export * from './codex';
 export * from './cursor';
 export * from './muse';
+export * from './provenance';
 export * from './records';
 export * from './service';

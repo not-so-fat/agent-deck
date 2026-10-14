@@ -33,18 +33,33 @@ export type RunLogLine =
   | { t: 'notice'; ts: string; message: string; sessionId: string | null }
   | { t: 'error'; ts: string; message: string; sessionId: string | null };
 
+/**
+ * The trusted Agent Deck run that started a resumed session (NOT-484): its
+ * run id, the session id, and the tool profile that run launched with. Only
+ * Agent Deck's own identifiers; no provider state.
+ */
+export type RunResumeOrigin = {
+  runId: string;
+  sessionId: string;
+  tools: RunToolsProfile;
+};
+
 export type RunMeta = {
   runId: string;
   deck: string;
   client: RunClient;
   tools: RunToolsProfile;
   cwd: string;
+  /** Realpath of `cwd` at launch; resume provenance compares against it. */
+  canonicalCwd?: string;
   pid: number;
   startedAt: string;
   state: 'running' | 'ended' | 'error';
   sessionId?: string;
   /** Present only when the launch bypassed a client workspace-trust guard. */
   trustOverride?: true;
+  /** Present only on a resume: the run that started the session. */
+  resumedFrom?: RunResumeOrigin;
 };
 
 export type RunInspectState = 'running' | 'ended' | 'error' | 'died';
@@ -58,6 +73,8 @@ export type RunStatusInfo = {
   startedAt: string;
   lastLogTs: string | null;
   logPath: string;
+  /** Present only when this run resumed a session another run started. */
+  resumedFrom?: RunResumeOrigin;
 };
 
 export function newRunId(): string {
@@ -304,6 +321,7 @@ export function collectRunStatus(runId: string, homeDir: string): CollectedStatu
         startedAt: meta.startedAt,
         lastLogTs: log.lastTs,
         logPath,
+        ...(meta.resumedFrom ? { resumedFrom: meta.resumedFrom } : {}),
       },
     };
   }

@@ -3,7 +3,7 @@
  *
  * One execution attempt for a coding-agent client, shared by the
  * `agent-deck run` CLI and the backend: run prerequisites (brief, cwd, deck,
- * folder deck binding, Claude sign-in), client preflight, start/resume
+ * folder deck binding, Claude sign-in, codex resume provenance), client preflight, start/resume
  * planning, normalized event streaming into the canonical JSONL log, the
  * meta.json run record, and status/event reads. Callers own argument
  * parsing, presentation, and process placement (the CLI's `--detach`).
@@ -27,6 +27,7 @@ import {
 import { createCodexAdapter, type CodexAdapterDeps } from './codex';
 import { createCursorAdapter, type CursorAdapterDeps } from './cursor';
 import { createMuseAdapter, type MuseAdapterDeps } from './muse';
+import { canonicalCwd, resolveResumeProvenance, resumeNeedsProvenance } from './provenance';
 import {
   appendRunLogLine,
   collectRunStatus,
@@ -40,6 +41,7 @@ import {
   type LogRead,
   type RunLogLine,
   type RunMeta,
+  type RunResumeOrigin,
   type RunStatusInfo,
 } from './records';
 
@@ -82,7 +84,12 @@ export type AgentRunRequest = {
   resumeId?: string;
 };
 
-export type PreparedRun = { request: AgentRunRequest; deck: RunDeck };
+export type PreparedRun = {
+  request: AgentRunRequest;
+  deck: RunDeck;
+  /** Trusted origin of `request.resumeId`, when the client requires one. */
+  resumedFrom?: RunResumeOrigin;
+};
 
 /**
  * Why a run failed closed before any model call. Stable for API mapping;
@@ -96,12 +103,12 @@ export type AgentRunRejectionCode =
   | 'deck_unassigned'
   | 'deck_mismatch'
   | 'client_unavailable'
-  | 'profile_unsupported';
+  | 'profile_unsupported'
+  | 'resume_unverified';
 
 export type AgentRunValidation =
-  | { ok: true; deck: RunDeck }
+  | { ok: true; deck: RunDeck; resumedFrom?: RunResumeOrigin }
   | { ok: false; code: AgentRunRejectionCode; error: string };
-
 export type RunLaunchOptions = {
   /** Reuse an allocated run id (the CLI's detached child). */
   runId?: string;
@@ -258,6 +265,22 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       };
     }
 
+    // Codex resume cannot re-apply a sandbox, so it continues only a session
+    // an Agent Deck run started with the same client, deck, canonical cwd,
+    // and tool profile (NOT-484).
+    let resumedFrom: RunResumeOrigin | undefined;
+    if (request.resumeId !== undefined && resumeNeedsProvenance(request.client)) {
+      const provenance = resolveResumeProvenance(
+        deps.homeDir,
+        { client: request.client, cwd: request.cwd, tools: request.tools, resumeId: request.resumeId },
+        deck,
+      );
+      if (!provenance.ok) {
+        return { ok: false, code: 'resume_unverified', error: provenance.error };
+      }
+      resumedFrom = provenance.origin;
+    }
+
     // Last and slowest (it shells out to `claude auth status`): for claude runs,
     // the Claude Code client must be installed and signed in before any model
     // call (NOT-405). Other clients skip this probe; their adapters own their
@@ -277,7 +300,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       }
     }
 
-    return { ok: true, deck };
+    return { ok: true, deck, ...(resumedFrom ? { resumedFrom } : {}) };
   };
 
   /**
@@ -285,7 +308,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
    * completion streams the run to its terminal state.
    */
   const begin = async (
-    { request, deck }: PreparedRun,
+    { request, deck, resumedFrom }: PreparedRun,
     launch: RunLaunchOptions = {},
   ): Promise<RejectedRun | LaunchedRun> => {
     const adapter = createAdapter(request.client);
@@ -298,6 +321,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       prompt: request.prompt,
       tools: request.tools,
       ...(request.resumeId ? { resumeId: request.resumeId } : {}),
+      ...(resumedFrom ? { resumedFrom } : {}),
     };
     const startPlan = adapter.planStart(startArgs);
     if (!startPlan.ok) {
@@ -309,16 +333,19 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     const metaPath = metaPathForLog(logPath);
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
 
+    const canonical = canonicalCwd(request.cwd);
     const meta: RunMeta = {
       runId,
       deck: deck.id,
       client: request.client,
       tools: request.tools,
       cwd: request.cwd,
+      ...(canonical ? { canonicalCwd: canonical } : {}),
       pid: launch.pid ?? process.pid,
       startedAt: new Date().toISOString(),
       state: 'running',
       ...(startPlan.trustOverride ? { trustOverride: true as const } : {}),
+      ...(resumedFrom ? { resumedFrom } : {}),
     };
     writeRunMeta(metaPath, meta);
 
@@ -440,22 +467,28 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     return begun.kind === 'rejected' ? begun : begun.completion;
   };
 
+  const prepare = async (request: AgentRunRequest): Promise<PreparedRun | RejectedRun> => {
+    const validation = await validate(request);
+    if (!validation.ok) {
+      return { kind: 'rejected', code: validation.code, message: validation.error };
+    }
+    return {
+      request,
+      deck: validation.deck,
+      ...(validation.resumedFrom ? { resumedFrom: validation.resumedFrom } : {}),
+    };
+  };
+
   return {
     validate,
     execute,
     async start(request, launch) {
-      const prepared = await validate(request);
-      if (!prepared.ok) {
-        return { kind: 'rejected', code: prepared.code, message: prepared.error };
-      }
-      return execute({ request, deck: prepared.deck }, launch);
+      const prepared = await prepare(request);
+      return 'kind' in prepared ? prepared : execute(prepared, launch);
     },
     async launch(request, launch) {
-      const prepared = await validate(request);
-      if (!prepared.ok) {
-        return { kind: 'rejected', code: prepared.code, message: prepared.error };
-      }
-      return begin({ request, deck: prepared.deck }, launch);
+      const prepared = await prepare(request);
+      return 'kind' in prepared ? prepared : begin(prepared, launch);
     },
     allocate,
     status: (runId) => collectRunStatus(runId, deps.homeDir),

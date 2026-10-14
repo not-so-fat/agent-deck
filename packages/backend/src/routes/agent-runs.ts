@@ -88,6 +88,13 @@ function rejectionReply(code: AgentRunRejectionCode, request: CreateAgentRunRequ
         message: `${request.client} cannot enforce tools "${request.tools}"${request.resumeSessionId ? ' on a resumed session' : ''}`,
         reason: 'profile_unsupported',
       };
+    case 'resume_unverified':
+      return {
+        status: 422,
+        code: 'RESUME_UNVERIFIED',
+        message: `resumeSessionId was not started by a matching ${request.client} run on this deck, cwd, and tools profile`,
+        reason: 'resume_unverified',
+      };
   }
 }
 

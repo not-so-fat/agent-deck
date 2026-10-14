@@ -143,7 +143,7 @@ export async function startDetachedRun(
     console.error(prereq.error);
     return 1;
   }
-  const { deck } = prereq;
+  const { deck, resumedFrom } = prereq;
 
   const { runId, logPath, metaPath } = createCliRunService(deps).allocate(options.log);
   const outPath = resolveRunOutPath(logPath);
@@ -199,6 +199,7 @@ export async function startDetachedRun(
     pid,
     startedAt: new Date().toISOString(),
     state: 'running',
+    ...(resumedFrom ? { resumedFrom } : {}),
   };
   writeRunMeta(metaPath, meta);
 

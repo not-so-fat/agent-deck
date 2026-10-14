@@ -140,6 +140,7 @@ export const AgentRunErrorCodeSchema = z.enum([
   'WORKSPACE_MISMATCH',
   'CLIENT_UNAVAILABLE',
   'PROFILE_UNSUPPORTED',
+  'RESUME_UNVERIFIED',
   'RUN_NOT_FOUND',
 ]);
 

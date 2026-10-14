@@ -66,6 +66,9 @@ function printStatusHuman(info: RunStatusInfo): void {
   if (info.sessionId) {
     console.log(`  session ${info.sessionId}`);
   }
+  if (info.resumedFrom) {
+    console.log(`  resumed from ${info.resumedFrom.runId} (--tools ${info.resumedFrom.tools})`);
+  }
   console.log(`  last log ${info.lastLogTs ?? 'never'}`);
   console.log(`  log ${info.logPath}`);
 }
@@ -83,7 +86,8 @@ export function printRunStatusHelp(): void {
   agent-deck run status <runId> [--json]
 
 Prints runId, deck, client, state (running|ended|error|died), sessionId when
-known, startedAt, last log line time, and the log path. A running meta whose
+known, the origin run a resume continued (resumedFrom), startedAt, last log
+line time, and the log path. A running meta whose
 pid is no longer alive is reported as died. Exit 0 for any state; non-zero
 only when the run id is unknown.`);
 }

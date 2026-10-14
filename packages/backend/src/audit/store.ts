@@ -45,6 +45,7 @@ export type AuditReasonCode =
   | 'workspace_mismatch'
   | 'client_unavailable'
   | 'profile_unsupported'
+  | 'resume_unverified'
   | 'run_error';
 
 export type AuditEntry = {
