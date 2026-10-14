@@ -487,7 +487,10 @@ describe('codex argv and tool profiles (NOT-404)', () => {
 
     expect(code).not.toBe(0);
     expect(deps.calls).toHaveLength(0);
-    expect(errors.join('\n')).toMatch(/never start with '-'/);
+    // No Agent Deck run ever captured a dash-leading id, so provenance rejects it first.
+    expect(errors.join('\n')).toMatch(
+      /Cannot resume codex session --dangerously-bypass-approvals-and-sandbox: no Agent Deck run on this host started it/,
+    );
     expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
   });
 
@@ -539,6 +542,8 @@ describe('codex argv and tool profiles (NOT-404)', () => {
   it('resume passes the thread id to codex exec resume and keeps the session id', async () => {
     const cwd = makeDir('agent-deck-codex-cwd-');
     const homeDir = makeDir('agent-deck-codex-home-');
+    expect(await runRunCommand(codexArgs(cwd), makeDeps(cwd, homeDir))).toBe(0);
+    const originLog = logPathFromStdout();
     const deps = makeDeps(cwd, homeDir, {
       lines: successStream(CODEX_THREAD_ID, [
         { id: 'item_9', type: 'agent_message', text: 'kiwi' },
@@ -553,9 +558,63 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     expect(lines.map((line) => line.t)).toEqual(['notice', 'text', 'result', 'end']);
     expect(String(lines[0]['message'])).toContain('keeps its original sandbox');
     expect(lines.at(-1)).toMatchObject({ t: 'end', sessionId: CODEX_THREAD_ID });
+    expect(readMeta(logPathFromStdout()).resumedFrom).toEqual({
+      runId: readMeta(originLog).runId,
+      sessionId: CODEX_THREAD_ID,
+      tools: 'readonly',
+    });
   });
 
-  it('a resumed edit run fails closed before spawning', async () => {
+  it('an edit run resumes with --tools edit and status shows both runs on one session (NOT-484)', async () => {
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const homeDir = makeDir('agent-deck-codex-home-');
+    const first = makeDeps(cwd, homeDir);
+    expect(await runRunCommand(codexArgs(cwd, ['--tools', 'edit']), first)).toBe(0);
+    const originRunId = readMeta(logPathFromStdout()).runId;
+    expect(first.calls[0].argv).toContain('workspace-write');
+
+    const deps = makeDeps(cwd, homeDir);
+    expect(await runRunCommand(codexArgs(cwd, ['--resume', CODEX_THREAD_ID, '--tools', 'edit']), deps)).toBe(0);
+
+    expect(deps.calls[0].argv).toEqual(['exec', 'resume', '--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
+    for (const call of [...first.calls, ...deps.calls]) {
+      expect(call.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+    }
+    const resumedMeta = readMeta(logPathFromStdout());
+    expect(resumedMeta).toMatchObject({
+      tools: 'edit',
+      sessionId: CODEX_THREAD_ID,
+      resumedFrom: { runId: originRunId, sessionId: CODEX_THREAD_ID, tools: 'edit' },
+    });
+
+    logs = [];
+    expect(await runRunCommand(['status', resumedMeta.runId], { homeDir })).toBe(0);
+    expect(logs).toContain(`  session ${CODEX_THREAD_ID}`);
+    expect(logs).toContain(`  resumed from ${originRunId} (--tools edit)`);
+    logs = [];
+    expect(await runRunCommand(['status', originRunId, '--json'], { homeDir })).toBe(0);
+    expect(JSON.parse(logs[0])).toMatchObject({ runId: originRunId, sessionId: CODEX_THREAD_ID });
+  });
+
+  it('a readonly run resumed with --tools edit fails closed before spawning', async () => {
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const homeDir = makeDir('agent-deck-codex-home-');
+    expect(await runRunCommand(codexArgs(cwd), makeDeps(cwd, homeDir))).toBe(0);
+    const runsBefore = fs.readdirSync(path.join(homeDir, 'runs'));
+    const deps = makeDeps(cwd, homeDir);
+
+    const code = await runRunCommand(
+      codexArgs(cwd, ['--resume', CODEX_THREAD_ID, '--tools', 'edit']),
+      deps,
+    );
+
+    expect(code).not.toBe(0);
+    expect(deps.calls).toHaveLength(0);
+    expect(errors.join('\n')).toMatch(/started it with --tools readonly, and a resumed codex thread keeps its original sandbox/);
+    expect(fs.readdirSync(path.join(homeDir, 'runs'))).toEqual(runsBefore);
+  });
+
+  it('an unknown session resumed with --tools edit fails closed before spawning', async () => {
     const cwd = makeDir('agent-deck-codex-cwd-');
     const homeDir = makeDir('agent-deck-codex-home-');
     const deps = makeDeps(cwd, homeDir);
@@ -567,7 +626,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
 
     expect(code).not.toBe(0);
     expect(deps.calls).toHaveLength(0);
-    expect(errors.join('\n')).toMatch(/no sandbox flag/);
+    expect(errors.join('\n')).toMatch(/no Agent Deck run on this host started it/);
     expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
   });
 });

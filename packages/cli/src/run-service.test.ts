@@ -144,6 +144,7 @@ describe('agent-deck run on the shared run service (NOT-479)', () => {
       client: 'codex',
       tools: 'readonly',
       cwd,
+      canonicalCwd: fs.realpathSync(cwd),
       pid: process.pid,
       startedAt: expect.stringMatching(ISO_TS),
       state: 'ended',
@@ -181,8 +182,15 @@ describe('agent-deck run on the shared run service (NOT-479)', () => {
         makeDeps(home, cwd, second),
       ),
     ).toBe(0);
+    // Codex resume carries the trusted origin run (NOT-484).
     expect(second.starts).toEqual([
-      { cwd, prompt: 'more', tools: 'readonly', resumeId: 'thread-1' },
+      {
+        cwd,
+        prompt: 'more',
+        tools: 'readonly',
+        resumeId: 'thread-1',
+        resumedFrom: { runId, sessionId: 'thread-1', tools: 'readonly' },
+      },
     ]);
     const resumedId = runIdFromLog(logs[0]);
     expect(resumedId).not.toBe(runId);

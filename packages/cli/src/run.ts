@@ -33,6 +33,7 @@ import {
   type MuseAdapterDeps,
   type RunClient,
   type RunDeck,
+  type RunResumeOrigin,
   type RunQueryFn,
   type RunQueryMessage,
   type RunQueryOptions,
@@ -377,7 +378,7 @@ function runRequest(options: RunOptions, prompt: string): AgentRunRequest {
 export async function validateRunPrereqs(
   options: RunOptions,
   deps: RunPrereqDeps = {},
-): Promise<{ promptText: string; deck: RunDeck } | { error: string }> {
+): Promise<{ promptText: string; deck: RunDeck; resumedFrom?: RunResumeOrigin } | { error: string }> {
   let promptText: string;
   if (options.promptFile !== undefined) {
     try {
@@ -389,7 +390,14 @@ export async function validateRunPrereqs(
     promptText = options.prompt ?? '';
   }
   const validated = await createCliRunService(deps).validate(runRequest(options, promptText));
-  return validated.ok ? { promptText, deck: validated.deck } : { error: validated.error };
+  if (!validated.ok) {
+    return { error: validated.error };
+  }
+  return {
+    promptText,
+    deck: validated.deck,
+    ...(validated.resumedFrom ? { resumedFrom: validated.resumedFrom } : {}),
+  };
 }
 
 export function printRunHelp(): void {
@@ -424,7 +432,9 @@ key instead); API-key setup is otherwise out of scope for this path.
   --resume <sessionId>   Continue a previous session id. The profile
                          passed on this invocation applies; nothing is inherited.
                          codex resume keeps the thread's original sandbox, so
-                         --tools edit cannot be resumed and fails closed.
+                         it continues only a session an agent-deck run started
+                         on this deck, client, and canonical cwd with the same
+                         --tools; anything else fails closed before launch.
   --detach             Start in the background in a new session, so the run
                          survives this shell disconnecting. Prints runId, pid,
                          and the log path, then exits. Every other flag is
@@ -443,10 +453,10 @@ export async function runRun(options: RunOptions, deps: RunDeps = {}): Promise<n
     console.error(prereq.error);
     return 1;
   }
-  const { promptText, deck } = prereq;
+  const { promptText, deck, resumedFrom } = prereq;
 
   const outcome = await createCliRunService(deps).execute(
-    { request: runRequest(options, promptText), deck },
+    { request: runRequest(options, promptText), deck, ...(resumedFrom ? { resumedFrom } : {}) },
     {
       ...(options.runIdOverride ? { runId: options.runIdOverride } : {}),
       ...(options.log ? { logPath: options.log } : {}),
