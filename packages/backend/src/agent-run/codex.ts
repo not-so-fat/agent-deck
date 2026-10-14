@@ -383,14 +383,13 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
         ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
         insideGitRepo,
       });
-      if (args.resumeId !== undefined) {
+      // planStart rejects a resume without a matching resumedFrom.
+      if (args.resumeId !== undefined && args.resumedFrom) {
         yield {
           kind: 'notice',
-          message: args.resumedFrom
-            ? `Resuming codex thread ${args.resumeId} started by run ${args.resumedFrom.runId}: the thread keeps its original sandbox ` +
-              `(--tools ${args.resumedFrom.tools}, ${CODEX_SANDBOX_FOR_PROFILE[args.resumedFrom.tools]}).`
-            : `Resuming codex thread ${args.resumeId}: the thread keeps its original sandbox; ` +
-              `--tools ${args.tools} is recorded but cannot be re-applied on resume.`,
+          message:
+            `Resuming codex thread ${args.resumeId} started by run ${args.resumedFrom.runId}: the thread keeps its original sandbox ` +
+            `(--tools ${args.resumedFrom.tools}, ${CODEX_SANDBOX_FOR_PROFILE[args.resumedFrom.tools]}).`,
           sessionId: args.resumeId,
         };
       }

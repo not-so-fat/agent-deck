@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  appendRunLogLine,
   createAgentRunService,
   createCodexAdapter,
   createRunAdapter,
@@ -572,6 +573,38 @@ describe('codex resume provenance (NOT-484)', () => {
 
     expect(calls).toEqual([]);
     expect(runDirs(home)).toEqual([runId]);
+  });
+
+  it('does not treat a pre-NOT-484 resume record as the starting run', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const { service, calls } = codexService(home);
+    const { runId, metaPath, logPath } = service.allocate();
+    fs.mkdirSync(path.dirname(metaPath), { recursive: true });
+    writeRunMeta(metaPath, {
+      runId,
+      deck: DECK.id,
+      client: 'codex',
+      tools: 'readonly',
+      cwd,
+      pid: DEAD_PID,
+      startedAt: new Date().toISOString(),
+      state: 'ended',
+      sessionId: THREAD,
+    });
+    appendRunLogLine(logPath, {
+      t: 'notice',
+      ts: new Date().toISOString(),
+      message:
+        `Resuming codex thread ${THREAD}: the thread keeps its original sandbox; ` +
+        '--tools readonly is recorded but cannot be re-applied on resume.',
+      sessionId: THREAD,
+    });
+
+    const outcome = await service.start(request(cwd, { tools: 'readonly', resumeId: THREAD }));
+
+    expect(outcome.kind === 'rejected' && outcome.message).toContain('no Agent Deck run on this host started it');
+    expect(calls).toEqual([]);
   });
 
   it('rejects a cwd mismatch before spawning codex', async () => {

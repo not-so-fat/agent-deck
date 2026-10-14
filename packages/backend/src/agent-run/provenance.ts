@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 
 import type { RunClient, RunToolsProfile } from './adapter';
-import { readRunMeta, runPaths, runsRoot, type RunMeta, type RunResumeOrigin } from './records';
+import { readRunLog, readRunMeta, runPaths, runsRoot, type RunMeta, type RunResumeOrigin } from './records';
 
 export type ResumeProvenanceRequest = {
   client: RunClient;
@@ -58,6 +58,18 @@ function recordsForSession(homeDir: string, sessionId: string): RunMeta[] {
 }
 
 /**
+ * Pre-NOT-484 versions resumed codex threads without recording resumedFrom;
+ * such a run's log opens with the adapter's resume notice. It is not a start,
+ * so it cannot vouch for the thread's sandbox.
+ */
+function isUnmarkedResume(homeDir: string, meta: RunMeta): boolean {
+  const first = readRunLog(runPaths(homeDir, meta.runId).logPath).events[0]?.event;
+  return (
+    first?.t === 'notice' && typeof first.message === 'string' && first.message.startsWith('Resuming codex thread ')
+  );
+}
+
+/**
  * Resolve and check the origin of a codex resume. A detached starter's
  * pre-written record carries no session id, so it never matches.
  */
@@ -68,7 +80,7 @@ export function resolveResumeProvenance(
 ): ResumeProvenance {
   const { resumeId } = request;
   const records = recordsForSession(homeDir, resumeId);
-  const origin = records.find((meta) => !meta.resumedFrom);
+  const origin = records.find((meta) => !meta.resumedFrom && !isUnmarkedResume(homeDir, meta));
   if (!origin) {
     return {
       ok: false,
