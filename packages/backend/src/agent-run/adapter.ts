@@ -82,12 +82,14 @@ export function runClientMessage(client: string): string {
  * Normalized session event. Adapters map client-specific streams onto this
  * envelope; only the envelope is shared (text/tool names stay client-native).
  * `sessionId` carries the client session id (Claude session id, Codex
- * thread id) whenever the adapter learns it.
+ * thread id) whenever the adapter learns it. A `success` result carries the
+ * final assistant answer as a string for claude, codex, and muse; token
+ * usage, when the client reports it, travels in `usage`, never in `result`.
  */
 export type NormalizedEvent =
   | { kind: 'text'; text: string; sessionId?: string }
   | { kind: 'tool'; name: string; sessionId?: string }
-  | { kind: 'result'; subtype: string; result: unknown; sessionId?: string }
+  | { kind: 'result'; subtype: string; result: unknown; usage?: unknown; sessionId?: string }
   | { kind: 'notice'; message: string; sessionId?: string };
 
 export type AdapterStartArgs = {

@@ -20,7 +20,15 @@ import type { RunClient, RunToolsProfile } from './adapter';
 export type RunLogLine =
   | { t: 'text'; ts: string; text: string }
   | { t: 'tool'; ts: string; name: string }
-  | { t: 'result'; ts: string; sessionId: string | null; subtype: string; result: unknown }
+  | {
+      t: 'result';
+      ts: string;
+      sessionId: string | null;
+      subtype: string;
+      result: unknown;
+      /** Client-reported token usage; present only when the adapter reports it. */
+      usage?: unknown;
+    }
   | { t: 'end'; ts: string; sessionId: string | null }
   | { t: 'notice'; ts: string; message: string; sessionId: string | null }
   | { t: 'error'; ts: string; message: string; sessionId: string | null };
