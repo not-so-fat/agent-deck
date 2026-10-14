@@ -107,6 +107,7 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/audit$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/agent-grants$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/agent-grants\/[^/]+\/revoke$/, policy: 'requireDashboard' },
+  { methods: ['PUT'], pattern: /^\/api\/agent-grants\/[^/]+\/capabilities$/, policy: 'requireDashboard' },
   { methods: ['GET'], pattern: /^\/api\/feedback-signals$/, policy: 'requireDashboard' },
   { methods: ['GET'], pattern: /^\/api\/feedback-signals\/count$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/feedback-signals\/discard$/, policy: 'requireDashboard' },

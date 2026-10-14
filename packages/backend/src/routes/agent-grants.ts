@@ -19,6 +19,8 @@ type CreateGrantBody = {
   label?: string;
   defaultDeck?: string;
   allowedDecks?: string[];
+  /** Explicit agent-run capability (NOT-480); omitted = MCP-only. */
+  runsEnabled?: boolean;
   expiresAt?: string | null;
 };
 
@@ -30,7 +32,7 @@ export async function registerAgentGrantRoutes(fastify: FastifyInstance) {
   });
 
   fastify.post<{ Body: CreateGrantBody }>('/agent-grants', async (request, reply) => {
-    const { label, defaultDeck, allowedDecks, expiresAt } = request.body ?? {};
+    const { label, defaultDeck, allowedDecks, runsEnabled, expiresAt } = request.body ?? {};
 
     if (!label?.trim()) {
       return reply.status(400).send({ success: false, error: 'label required' });
@@ -56,6 +58,10 @@ export async function registerAgentGrantRoutes(fastify: FastifyInstance) {
       resolvedAllowed.push(deck.id);
     }
 
+    if (runsEnabled !== undefined && typeof runsEnabled !== 'boolean') {
+      return reply.status(400).send({ success: false, error: 'runsEnabled must be a boolean' });
+    }
+
     if (expiresAt !== undefined && expiresAt !== null) {
       if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) {
         return reply.status(400).send({ success: false, error: 'expiresAt must be an ISO timestamp' });
@@ -69,6 +75,7 @@ export async function registerAgentGrantRoutes(fastify: FastifyInstance) {
       label: label.trim(),
       defaultDeck: resolvedDefault.id,
       allowedDecks: resolvedAllowed.length > 0 ? resolvedAllowed : [resolvedDefault.id],
+      runsEnabled: runsEnabled === true,
       ...(expiresAt ? { expiresAt } : {}),
     });
 
@@ -94,6 +101,36 @@ export async function registerAgentGrantRoutes(fastify: FastifyInstance) {
       },
     });
   });
+
+  // NOT-480: the owner opts one grant into (or out of) agent runs. Deck
+  // allowlists are unchanged and still constrain every run.
+  fastify.put<{ Params: { id: string }; Body: { runsEnabled?: unknown } }>(
+    '/agent-grants/:id/capabilities',
+    async (request, reply) => {
+      const id = request.params.id?.trim();
+      const runsEnabled = request.body?.runsEnabled;
+      if (typeof runsEnabled !== 'boolean') {
+        return reply.status(400).send({ success: false, error: 'runsEnabled must be a boolean' });
+      }
+      const existing = grants.getGrant(id);
+      if (!existing) {
+        return reply.status(404).send({ success: false, error: 'Grant not found' });
+      }
+      if (!grants.setRunsEnabled(id, runsEnabled)) {
+        return reply.status(409).send({ success: false, error: 'Grant is revoked' });
+      }
+      if (existing.runsEnabled !== runsEnabled) {
+        fastify.auditStore?.append({
+          actor: 'owner',
+          event: runsEnabled ? 'grant.runs_enabled' : 'grant.runs_disabled',
+          targetId: id,
+          outcome: 'succeeded',
+          reasonCode: null,
+        });
+      }
+      return reply.send({ success: true, data: grants.getGrant(id) });
+    },
+  );
 
   fastify.post<{ Params: { id: string } }>('/agent-grants/:id/revoke', async (request, reply) => {
     const id = request.params.id?.trim();

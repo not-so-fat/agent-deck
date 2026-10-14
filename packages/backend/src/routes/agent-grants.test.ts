@@ -204,6 +204,76 @@ describe('owner-only agent grants (NOT-318)', () => {
     expect(response.json().data.grant.defaultDeck).toBeTruthy();
   });
 
+  it('grants are MCP-only by default; only the owner enables runs (NOT-480)', async () => {
+    const { fastify, store, grants, audit, deckA } = await buildApp();
+    const auth = dashboardAuthHeaders(store);
+
+    const created = await fastify.inject({
+      method: 'POST',
+      url: '/api/agent-grants',
+      headers: auth,
+      payload: { label: 'coordinator', defaultDeck: deckA.id },
+    });
+    expect(created.statusCode).toBe(201);
+    const { grant, token } = created.json().data;
+    expect(grant.runsEnabled).toBe(false);
+
+    const optedIn = await fastify.inject({
+      method: 'POST',
+      url: '/api/agent-grants',
+      headers: auth,
+      payload: { label: 'runner', defaultDeck: deckA.id, runsEnabled: true },
+    });
+    expect(optedIn.json().data.grant.runsEnabled).toBe(true);
+
+    // A remote grant cannot raise its own capability.
+    const selfServe = await fastify.inject({
+      method: 'PUT',
+      url: `/api/agent-grants/${grant.id}/capabilities`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { runsEnabled: true },
+    });
+    expect(selfServe.statusCode).toBe(401);
+    expect(grants.getGrant(grant.id)?.runsEnabled).toBe(false);
+
+    const invalid = await fastify.inject({
+      method: 'PUT',
+      url: `/api/agent-grants/${grant.id}/capabilities`,
+      headers: auth,
+      payload: { runsEnabled: 'yes' },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    const enabled = await fastify.inject({
+      method: 'PUT',
+      url: `/api/agent-grants/${grant.id}/capabilities`,
+      headers: auth,
+      payload: { runsEnabled: true },
+    });
+    expect(enabled.statusCode).toBe(200);
+    expect(enabled.json().data).toMatchObject({ id: grant.id, runsEnabled: true, allowedDecks: [deckA.id] });
+    expect(enabled.body).not.toContain(token);
+    expect(audit.list({ limit: 10 }).filter((row) => row.event === 'grant.runs_enabled')).toMatchObject([
+      { actor: 'owner', targetId: grant.id, outcome: 'succeeded', reasonCode: null },
+    ]);
+
+    grants.revokeGrant(grant.id);
+    const revoked = await fastify.inject({
+      method: 'PUT',
+      url: `/api/agent-grants/${grant.id}/capabilities`,
+      headers: auth,
+      payload: { runsEnabled: false },
+    });
+    expect(revoked.statusCode).toBe(409);
+    const unknown = await fastify.inject({
+      method: 'PUT',
+      url: '/api/agent-grants/ag_nope/capabilities',
+      headers: auth,
+      payload: { runsEnabled: true },
+    });
+    expect(unknown.statusCode).toBe(404);
+  });
+
   it('agent session headers do not satisfy the dashboard policy', async () => {
     const { fastify, store, deckA } = await buildApp();
     const session = store.createRuntimeSession({ deckId: deckA.id });

@@ -16,17 +16,36 @@ export const AUDIT_EVENTS = [
   'elevation.requested',
   'elevation.approved',
   'elevation.denied',
+  // NOT-480: agent-run capability and run lifecycle (identifiers only).
+  'grant.runs_enabled',
+  'grant.runs_disabled',
+  'agent_run.created',
+  'agent_run.denied',
+  'agent_run.finished',
 ] as const;
 
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
-export type AuditOutcome = 'succeeded' | 'denied';
+/** `failed` = an allowed action reached a non-success terminal state (NOT-480). */
+export type AuditOutcome = 'succeeded' | 'denied' | 'failed';
 export type AuditActor = 'owner' | 'local-launch' | `ag_${string}`;
 export type AuditReasonCode =
   | 'invalid_credentials'
   | 'resource_out_of_scope'
   | 'deck_fixed'
   | 'admin_required'
-  | 'owner_denied';
+  | 'owner_denied'
+  // NOT-480: agent-run denial and terminal reasons.
+  | 'run_capability_required'
+  | 'invalid_request'
+  | 'request_too_large'
+  | 'idempotency_key_required'
+  | 'idempotency_conflict'
+  | 'deck_not_found'
+  | 'workspace_invalid'
+  | 'workspace_mismatch'
+  | 'client_unavailable'
+  | 'profile_unsupported'
+  | 'run_error';
 
 export type AuditEntry = {
   id: string;

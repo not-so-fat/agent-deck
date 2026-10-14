@@ -154,6 +154,60 @@ describe('ClientGrantStore issuance (NOT-318)', () => {
   });
 });
 
+describe('ClientGrantStore run capability (NOT-480)', () => {
+  const dbs: Database.Database[] = [];
+  afterEach(() => {
+    while (dbs.length) {
+      dbs.pop()?.close();
+    }
+  });
+
+  it('issues MCP-only grants unless runs are explicitly enabled', () => {
+    const { db, store } = openStore();
+    dbs.push(db);
+    const mcpOnly = store.issueGrant({ label: 'mcp', defaultDeck: 'deck-a' });
+    const runs = store.issueGrant({ label: 'runs', defaultDeck: 'deck-a', runsEnabled: true });
+
+    expect(mcpOnly.grant.runsEnabled).toBe(false);
+    expect(store.authenticateToken(mcpOnly.token)?.runsEnabled).toBe(false);
+    expect(runs.grant.runsEnabled).toBe(true);
+    expect(store.authenticateToken(runs.token)?.runsEnabled).toBe(true);
+  });
+
+  it('migrates a pre-capability table with existing grants left MCP-only', () => {
+    const db = new Database(':memory:');
+    dbs.push(db);
+    db.exec(`
+      CREATE TABLE agent_grants (
+        id TEXT PRIMARY KEY, label TEXT NOT NULL, verifier_version TEXT NOT NULL,
+        secret_hash TEXT NOT NULL, default_deck TEXT NOT NULL, allowed_decks TEXT NOT NULL,
+        installation_id TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT,
+        revoked_at TEXT, last_used_at TEXT
+      );
+      INSERT INTO agent_grants VALUES
+        ('ag_legacy', 'legacy', 'v1', 'x', 'deck-a', '["deck-a"]', 'owner', '2026-01-01T00:00:00.000Z', NULL, NULL, NULL);
+    `);
+    const store = new ClientGrantStore(db);
+    expect(store.getGrant('ag_legacy')?.runsEnabled).toBe(false);
+    // Reopening over the migrated table is a no-op.
+    expect(new ClientGrantStore(db).getGrant('ag_legacy')?.runsEnabled).toBe(false);
+  });
+
+  it('lets the owner toggle runs on a live grant but never on a revoked one', () => {
+    const { db, store } = openStore();
+    dbs.push(db);
+    const issued = store.issueGrant({ label: 'toggle', defaultDeck: 'deck-a' });
+    expect(store.setRunsEnabled(issued.grant.id, true)).toBe(true);
+    expect(store.authenticateToken(issued.token)?.runsEnabled).toBe(true);
+    expect(store.setRunsEnabled(issued.grant.id, false)).toBe(true);
+    expect(store.authenticateToken(issued.token)?.runsEnabled).toBe(false);
+
+    store.revokeGrant(issued.grant.id);
+    expect(store.setRunsEnabled(issued.grant.id, true)).toBe(false);
+    expect(store.setRunsEnabled('ag_unknown', true)).toBe(false);
+  });
+});
+
 describe('grant principal deck resolution (NOT-318)', () => {
   const grant = (allowedDecks: string[], defaultDeck = 'deck-a'): Extract<ClientPrincipal, { kind: 'grant' }> => ({
     kind: 'grant',
