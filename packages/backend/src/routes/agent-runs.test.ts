@@ -35,7 +35,7 @@ import {
 import { createBackendAgentRunService } from '../agent-run-api/host';
 import { AuditStore } from '../audit/store';
 import { ClientGrantStore, parseGrantToken } from '../auth/client-grants';
-import { registerHostedModeGuard } from '../auth/hosted-mode';
+import { HOSTED_RUN_AUTH_FAILURE_LIMIT, registerHostedModeGuard } from '../auth/hosted-mode';
 import { DatabaseManager } from '../models/database';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
@@ -321,6 +321,23 @@ describe('agent runs in hosted mode (NOT-480)', () => {
     const head = await app.fastify.inject({ method: 'HEAD', url: `/api/agent-runs/${runId}` });
     expect(head.statusCode).toBe(404);
     expect(app.adapter.starts).toHaveLength(1);
+  });
+
+  it('rate-limits failed bearers on reads before they append more audit rows', async () => {
+    const app = await buildApp({ hosted: true });
+    const runId = await startRun(app);
+    const deniedRows = () => app.audit.list({ limit: 200 }).filter((row) => row.event === 'agent_run.denied');
+
+    for (let attempt = 0; attempt < HOSTED_RUN_AUTH_FAILURE_LIMIT; attempt += 1) {
+      const response = await getStatus(app, 'adg_not-a-real-grant', runId);
+      expect(response.statusCode).toBe(401);
+    }
+    expect(deniedRows()).toHaveLength(HOSTED_RUN_AUTH_FAILURE_LIMIT);
+
+    const limited = await getEvents(app, 'adg_not-a-real-grant', runId);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers['retry-after']).toBeDefined();
+    expect(deniedRows()).toHaveLength(HOSTED_RUN_AUTH_FAILURE_LIMIT);
   });
 });
 
