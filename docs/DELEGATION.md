@@ -62,7 +62,7 @@ which native id that is and how resume is invoked:
 | `--client` | `sessionId` is... (`agent-run/<client>.ts`) | Resume invokes... |
 |------------|----------------------------------------|-------------------|
 | `claude` | The SDK message `session_id` (`agent-run/claude.ts` maps it onto every event) | SDK `query()` with the `resume` option set to the id |
-| `codex` | The codex thread id (UUID) from the `thread.started` event's `thread_id` (`agent-run/codex.ts` `codexEventsFromLine`) | `exec resume --json [--skip-git-repo-check] -- <thread> <prompt>`; resume takes no `-s`, so the thread keeps its original sandbox and resume with `--tools edit` fails closed |
+| `codex` | The codex thread id (UUID) from the `thread.started` event's `thread_id` (`agent-run/codex.ts` `codexEventsFromLine`) | `exec resume --json [--skip-git-repo-check] -- <thread> <prompt>`; resume takes no `-s`, so the thread keeps its original sandbox; resume is allowed only for a thread an Agent Deck run started with the same deck, canonical cwd, and `--tools` (see **Resume gates**) |
 | `cursor` | The chat id (32-hex) from the result object's `session_id` (aliases `sessionId`, `chat_id`, `chatId`; `agent-run/cursor.ts` `cursorEventsFromOutput`) | `--resume <id>` added to the same `-p --trust --output-format json` launch |
 | `muse` | The muse session id (UUID) from every record's `stream: {kind: "session", id}` (`agent-run/muse.ts` `museEventsFromLine`) | `--session-id <id>` added to the `exec --json` launch; the `--tools` flags are still passed to the resumed process |
 
@@ -87,13 +87,16 @@ The JSONL log (`agent-run/records.ts` `RunLogLine`) has one line per event: `tex
 (`ts`, `text`), `tool` (`ts`, `name`), `result` (`ts`, `sessionId`, `subtype`,
 `result`), `end` (`ts`, `sessionId`), `notice` (`ts`, `message`, `sessionId`),
 `error` (`ts`, `message`, `sessionId`). `meta.json` (`agent-run/records.ts` `RunMeta`) holds
-`runId`, `deck`, `client`, `tools`, `cwd`, `pid`, `startedAt`, `state`
-(`running`|`ended`|`error`), plus `sessionId` once known and `trustOverride`
-only when the launch bypassed a client workspace-trust guard.
+`runId`, `deck`, `client`, `tools`, `cwd`, `canonicalCwd` (realpath of `cwd`
+at launch), `pid`, `startedAt`, `state` (`running`|`ended`|`error`), plus
+`sessionId` once known, `trustOverride` only when the launch bypassed a client
+workspace-trust guard, and `resumedFrom` (`runId`, `sessionId`, `tools` of the
+run that started the session) only on a codex resume.
 `agent-deck run status` (`agent-run/records.ts` `RunStatusInfo`) reports `runId`,
 `deck`, `client`, `state` (`running`|`ended`|`error`|`died` — a `running` meta
-whose pid is gone reads as `died`), `sessionId`, `startedAt`, `lastLogTs`, and
-`logPath`; `run log` prints one readable line per event (`--json` prints raw
+whose pid is gone reads as `died`), `sessionId`, `startedAt`, `lastLogTs`,
+`logPath`, and `resumedFrom` when the run resumed another run's session (human
+output: `resumed from <runId> (--tools <profile>)`); `run log` prints one readable line per event (`--json` prints raw
 JSONL, `--tail` limits, `--follow` streams until `end`/`error`); `run list`
 shows recent runs newest first (default limit 20).
 
@@ -143,8 +146,27 @@ folder's assignment must already name the deck; `run` never rewrites it:
 - claude: no workspace-trust gate in the adapter (`trustOverride` always
   false; `agent-run/claude.ts`).
 
-**Resume gates** (per client): codex resume with `--tools edit` fails closed
-(`agent-run/codex.ts` `planStart`): `Cannot resume codex thread <id> with --tools edit: 'codex exec resume' accepts no sandbox flag, so the edit sandbox cannot be enforced on resume. Start a new run without --resume, or resume with --tools readonly.` Cursor start with no deck receipt fails closed
+**Resume gates** (per client): `codex exec resume` accepts no sandbox flag, so a
+codex thread keeps the sandbox it started with. `validate`
+(`agent-run/service.ts`, via `agent-run/provenance.ts`
+`resolveResumeProvenance`) therefore resumes a codex session only when the
+earliest non-resume run record under `~/.agent-deck/runs/` that captured that
+`sessionId` (runs written to a custom `--log` path are not discoverable) matches
+the request on client, deck, canonical cwd (realpath, so a symlinked path to the
+same folder matches), and `--tools`. Edit→edit and readonly→readonly continue
+under the unchanged session id and record `resumedFrom`; everything else fails
+before codex is launched:
+
+- unknown or external session: ``Cannot resume codex session <id>: no Agent Deck run on this host started it, so its sandbox is unknown. Resume only a sessionId printed by `agent-deck run` (see `agent-deck run list`), or start a new run without --resume.``
+- client mismatch: `Cannot resume session <id> with --client codex: it was started by --client <client> in run <runId>. Resume it with --client <client>, or start a new run.`
+- deck mismatch: `Cannot resume session <id> on deck "<deck>" (<deckId>): run <runId> started it on deck <originDeckId>. Resume it on that deck, or start a new run on "<deck>".`
+- cwd mismatch: `Cannot resume session <id> in <cwd>: run <runId> started it in <canonicalCwd>. Resume it with --cwd <canonicalCwd>, or start a new run here.`
+- profile mismatch (readonly→edit escalation, or edit→readonly, which would still write): `Cannot resume session <id> with --tools <requested>: run <runId> started it with --tools <origin>, and a resumed codex thread keeps its original sandbox. Resume with --tools <origin>, or start a new run with --tools <requested>.`
+
+The codex adapter re-checks the profile against the resolved origin in
+`planStart`, so a caller that skips `validate` still fails closed.
+`--dangerously-bypass-approvals-and-sandbox` is never passed on start or resume.
+Cursor start with no deck receipt fails closed
 (`agent-run/cursor.ts`): `cursor-agent run produced no deck receipt (missing ◆ display_summary line): the session may be bound to another folder's deck. Ask the agent to call get_session_context and print display_summary verbatim, then retry.` (Resume is exempt: the harness prints the receipt on the first turn only.)
 
 ## Links
