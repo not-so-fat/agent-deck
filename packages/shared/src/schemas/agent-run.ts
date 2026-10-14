@@ -86,7 +86,10 @@ export const AgentRunStatusSchema = z
 
 const eventBase = { seq: z.number().int().positive(), ts: z.string() };
 
-/** Normalized run events, in log order (`seq` is 1-based and gapless per read). */
+/**
+ * Normalized run events, in log order. `seq` is the event's 1-based position
+ * in the canonical log: stable across reads and strictly increasing.
+ */
 export const AgentRunEventSchema = z.discriminatedUnion('type', [
   z.object({ ...eventBase, type: z.literal('text'), text: z.string() }).strict(),
   z.object({ ...eventBase, type: z.literal('tool'), name: z.string() }).strict(),
@@ -129,6 +132,7 @@ export const AgentRunEventsResponseSchema = z
 /** Run-specific error codes (auth failures use the trusted-session codes). */
 export const AgentRunErrorCodeSchema = z.enum([
   'INVALID_REQUEST',
+  'REQUEST_TOO_LARGE',
   'IDEMPOTENCY_KEY_REQUIRED',
   'IDEMPOTENCY_CONFLICT',
   'DECK_NOT_FOUND',

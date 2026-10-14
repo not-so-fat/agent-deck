@@ -140,6 +140,11 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
     policy: 'requireDashboard',
   },
 
+  // NOT-480: agent runs — bearer grant with the explicit run capability only.
+  { methods: ['POST'], pattern: /^\/api\/agent-runs$/, policy: 'requireRunGrant' },
+  { methods: ['GET'], pattern: /^\/api\/agent-runs\/[^/]+$/, policy: 'requireRunGrant' },
+  { methods: ['GET'], pattern: /^\/api\/agent-runs\/[^/]+\/events$/, policy: 'requireRunGrant' },
+
   // Agent or dashboard (dual-auth routes — handler branches on principal kind)
   { methods: ['GET'], pattern: /^\/api\/decks$/, policy: 'requireAgentOrDashboard' },
   { methods: ['GET'], pattern: /^\/api\/decks\/[^/]+$/, policy: 'requireAgentOrDashboard' },

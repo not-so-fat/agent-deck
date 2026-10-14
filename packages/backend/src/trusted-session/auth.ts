@@ -9,6 +9,7 @@ import {
   trustedSessionError,
 } from '@agent-deck/shared';
 
+import type { GrantPrincipal } from '../auth/client-grants';
 import { parseBearerToken } from '../lib/http-auth';
 import { parseDashboardCookie } from '../lib/dashboard-auth';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from './admin-secret';
@@ -20,7 +21,9 @@ export type AuthPolicy =
   | 'requireAgentResource'
   | 'requireAgentOrDashboard'
   | 'requireDeckAdmin'
-  | 'requireDashboard';
+  | 'requireDashboard'
+  /** Remote bearer grant with the explicit agent-run capability (NOT-480). */
+  | 'requireRunGrant';
 
 export type RequestPrincipal =
   | { kind: 'public' }
@@ -30,7 +33,9 @@ export type RequestPrincipal =
       session: RuntimeSession;
       mode: AgentSessionMode;
       deckId: string;
-    };
+    }
+  /** Bearer grant on an agent-run route; deck scope is checked per run. */
+  | { kind: 'grant'; grant: GrantPrincipal };
 
 export class TrustedAuthError extends Error {
   constructor(

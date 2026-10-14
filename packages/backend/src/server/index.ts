@@ -26,6 +26,8 @@ import { registerCollectionRoutes } from '../routes/collection';
 import { registerExportImportRoutes } from '../routes/export-import';
 import { registerTrustedSessionRoutes, registerDashboardAuthRoutes } from '../routes/trusted-session';
 import { registerAgentGrantRoutes } from '../routes/agent-grants';
+import { registerAgentRunRoutes } from '../routes/agent-runs';
+import { createBackendAgentRunService } from '../agent-run-api/host';
 import { ClientGrantStore } from '../auth/client-grants';
 import { registerLaunchRoutes } from '../routes/launch';
 import { registerUsageRoutes } from '../routes/usage';
@@ -168,6 +170,10 @@ export async function createServer() {
   await fastify.register(registerLocalMCPRoutes, { prefix: '/api/local-mcp' });
   await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
   await fastify.register(registerAgentGrantRoutes, { prefix: '/api' });
+  await fastify.register(registerAgentRunRoutes, {
+    prefix: '/api',
+    service: createBackendAgentRunService(db, resolveAgentDeckHome()),
+  });
   await fastify.register(registerDashboardAuthRoutes, { prefix: '/api/dashboard-auth' });
   await fastify.register(registerLaunchRoutes, { prefix: '/api/launch' });
   await fastify.register(registerUsageRoutes, { prefix: '/api/usage' });

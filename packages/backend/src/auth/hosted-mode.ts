@@ -136,6 +136,20 @@ export function registerHostedModeGuard(
       return;
     }
 
+    // NOT-480: agent-run routes authenticate a remote bearer grant in the
+    // route-policy hook. A bearer is not an ambient browser credential, so
+    // the dashboard cookie and same-origin gates do not apply; mutations stay
+    // rate-limited per client.
+    if (pathname === '/api/agent-runs' || pathname.startsWith('/api/agent-runs/')) {
+      if (isStateChanging(request.method)) {
+        const result = limiter.consume(`mutation:${socketClientKey(request)}`, HOSTED_PUBLIC_MUTATION_LIMIT);
+        if (!result.allowed) {
+          return sendRateLimited(reply, result.retryAfterSeconds);
+        }
+      }
+      return;
+    }
+
     const token = parseDashboardCookie(request);
     if (
       !token ||
