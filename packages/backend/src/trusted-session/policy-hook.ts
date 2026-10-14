@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
+import { authenticateRunGrant } from '../agent-run-api/auth';
 import {
   enforcePolicy,
   requireTrustedWriterBearer,
@@ -70,6 +71,15 @@ export function registerHttpPolicyHook(fastify: FastifyInstance): void {
         }
         throw error;
       }
+      return;
+    }
+
+    if (policy === 'requireRunGrant') {
+      const grant = authenticateRunGrant(request, fastify);
+      if (grant instanceof TrustedAuthError) {
+        return sendTrustedAuthError(reply, grant);
+      }
+      request.requestPrincipal = { kind: 'grant', grant };
       return;
     }
 

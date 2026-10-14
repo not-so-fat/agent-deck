@@ -42,6 +42,13 @@ export type ClientPrincipal =
       allowedDecks: string[];
     };
 
+/**
+ * An authenticated bearer grant. `runsEnabled` is the explicit agent-run
+ * capability (NOT-480): model spend and host filesystem authority are never
+ * implied by MCP access, so it defaults off and only the owner turns it on.
+ */
+export type GrantPrincipal = Extract<ClientPrincipal, { kind: 'grant' }> & { runsEnabled: boolean };
+
 /** Persisted grant row (never carries the bearer secret). */
 export type ClientGrant = {
   id: string;
@@ -49,6 +56,8 @@ export type ClientGrant = {
   verifierVersion: string;
   defaultDeck: string;
   allowedDecks: string[];
+  /** Agent-run capability (NOT-480); false = MCP-only. */
+  runsEnabled: boolean;
   installationId: string;
   createdAt: string;
   expiresAt: string | null;
@@ -73,6 +82,7 @@ type GrantRow = {
   secret_hash: string;
   default_deck: string;
   allowed_decks: string;
+  runs_enabled: number;
   installation_id: string;
   created_at: string;
   expires_at: string | null;
@@ -139,6 +149,8 @@ export type IssueGrantInput = {
   label: string;
   defaultDeck: string;
   allowedDecks?: string[];
+  /** Explicit agent-run capability (NOT-480). Omitted = MCP-only. */
+  runsEnabled?: boolean;
   expiresAt?: string | null;
   installationId?: string;
 };
@@ -169,6 +181,11 @@ export class ClientGrantStore {
       CREATE INDEX IF NOT EXISTS agent_grants_installation_idx
         ON agent_grants (installation_id);
     `);
+    // NOT-480: grants issued before the run capability existed stay MCP-only.
+    const columns = this.db.prepare(`PRAGMA table_info(agent_grants)`).all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'runs_enabled')) {
+      this.db.exec(`ALTER TABLE agent_grants ADD COLUMN runs_enabled INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   /**
@@ -201,9 +218,9 @@ export class ClientGrantStore {
     this.db
       .prepare(
         `INSERT INTO agent_grants
-         (id, label, verifier_version, secret_hash, default_deck, allowed_decks,
+         (id, label, verifier_version, secret_hash, default_deck, allowed_decks, runs_enabled,
           installation_id, created_at, expires_at, revoked_at, last_used_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
       )
       .run(
         id,
@@ -212,6 +229,7 @@ export class ClientGrantStore {
         hashSecret(secret),
         defaultDeck,
         JSON.stringify(allowed),
+        input.runsEnabled ? 1 : 0,
         input.installationId ?? this.installationId,
         createdAt,
         input.expiresAt ?? null,
@@ -225,7 +243,7 @@ export class ClientGrantStore {
   getGrant(id: string): ClientGrantPublic | null {
     const row = this.db
       .prepare(
-        `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks,
+        `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks, runs_enabled,
                 installation_id, created_at, expires_at, revoked_at, last_used_at
          FROM agent_grants WHERE id = ?`,
       )
@@ -236,7 +254,7 @@ export class ClientGrantStore {
   listGrants(): ClientGrantPublic[] {
     const rows = this.db
       .prepare(
-        `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks,
+        `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks, runs_enabled,
                 installation_id, created_at, expires_at, revoked_at, last_used_at
          FROM agent_grants ORDER BY created_at ASC`,
       )
@@ -250,7 +268,7 @@ export class ClientGrantStore {
    * revoked) — callers map all of them to one uniform 401 with no oracle.
    * Touches `last_used_at` on success only.
    */
-  authenticateToken(token: string): Extract<ClientPrincipal, { kind: 'grant' }> | null {
+  authenticateToken(token: string): GrantPrincipal | null {
     const parsed = parseGrantToken(token);
     if (!parsed) {
       // Same-cost dummy comparison so malformed input is not measurably
@@ -260,7 +278,7 @@ export class ClientGrantStore {
     }
     const row = this.db
       .prepare(
-        `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks,
+        `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks, runs_enabled,
                 installation_id, created_at, expires_at, revoked_at, last_used_at
          FROM agent_grants WHERE id = ?`,
       )
@@ -287,7 +305,19 @@ export class ClientGrantStore {
       label: row.label,
       defaultDeck: row.default_deck,
       allowedDecks: parseAllowedDecks(row.allowed_decks),
+      runsEnabled: row.runs_enabled === 1,
     };
+  }
+
+  /**
+   * Owner toggle for the agent-run capability (NOT-480). Revoked grants stay
+   * revoked; returns false when the grant is unknown or revoked.
+   */
+  setRunsEnabled(id: string, enabled: boolean): boolean {
+    const result = this.db
+      .prepare(`UPDATE agent_grants SET runs_enabled = ? WHERE id = ? AND revoked_at IS NULL`)
+      .run(enabled ? 1 : 0, id);
+    return result.changes > 0;
   }
 
   /**
@@ -308,6 +338,7 @@ function toPublicGrant(row: GrantRow): ClientGrantPublic {
     label: row.label,
     defaultDeck: row.default_deck,
     allowedDecks: parseAllowedDecks(row.allowed_decks),
+    runsEnabled: row.runs_enabled === 1,
     installationId: row.installation_id,
     createdAt: row.created_at,
     expiresAt: row.expires_at,

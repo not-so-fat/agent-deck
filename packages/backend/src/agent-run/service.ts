@@ -91,10 +91,24 @@ export type PreparedRun = {
   resumedFrom?: RunResumeOrigin;
 };
 
-export type RunValidation =
-  | { ok: true; deck: RunDeck; resumedFrom?: RunResumeOrigin }
-  | { ok: false; error: string };
+/**
+ * Why a run failed closed before any model call. Stable for API mapping;
+ * the accompanying message stays CLI-worded for the terminal.
+ */
+export type AgentRunRejectionCode =
+  | 'prompt_empty'
+  | 'cwd_not_found'
+  | 'cwd_not_directory'
+  | 'deck_not_found'
+  | 'deck_unassigned'
+  | 'deck_mismatch'
+  | 'client_unavailable'
+  | 'profile_unsupported'
+  | 'resume_unverified';
 
+export type AgentRunValidation =
+  | { ok: true; deck: RunDeck; resumedFrom?: RunResumeOrigin }
+  | { ok: false; code: AgentRunRejectionCode; error: string };
 export type RunLaunchOptions = {
   /** Reuse an allocated run id (the CLI's detached child). */
   runId?: string;
@@ -104,29 +118,50 @@ export type RunLaunchOptions = {
   pid?: number;
 };
 
-export type AgentRunOutcome =
-  /** Failed closed before any run record was written. */
-  | { kind: 'rejected'; message: string }
-  | {
-      kind: 'finished';
-      runId: string;
-      logPath: string;
-      metaPath: string;
-      state: 'ended' | 'error';
-      sessionId: string | null;
-      /** Deck token a session receipt named instead of the requested deck. */
-      receiptMismatch: string | null;
-      /** Adapter/stream failure message recorded as the `error` log line. */
-      failure: string | null;
-    };
+export type FinishedRun = {
+  kind: 'finished';
+  runId: string;
+  logPath: string;
+  metaPath: string;
+  state: 'ended' | 'error';
+  sessionId: string | null;
+  /** Deck token a session receipt named instead of the requested deck. */
+  receiptMismatch: string | null;
+  /** Adapter/stream failure message recorded as the `error` log line. */
+  failure: string | null;
+};
+
+/** Failed closed before any run record was written. */
+export type RejectedRun = { kind: 'rejected'; code: AgentRunRejectionCode; message: string };
+
+/**
+ * A run whose record is written (state `running`) and whose stream continues
+ * in the background; `completion` settles at the terminal state and never
+ * rejects.
+ */
+export type LaunchedRun = {
+  kind: 'launched';
+  runId: string;
+  logPath: string;
+  metaPath: string;
+  completion: Promise<FinishedRun>;
+};
+
+export type AgentRunOutcome = RejectedRun | FinishedRun;
 
 export type AgentRunService = {
   /** Everything a run must prove before it may start (shared with detached starters). */
-  validate(request: AgentRunRequest): Promise<RunValidation>;
+  validate(request: AgentRunRequest): Promise<AgentRunValidation>;
   /** Client preflight, start plan, record, and stream one validated run to a terminal state. */
   execute(prepared: PreparedRun, launch?: RunLaunchOptions): Promise<AgentRunOutcome>;
   /** validate + execute. */
   start(request: AgentRunRequest, launch?: RunLaunchOptions): Promise<AgentRunOutcome>;
+  /**
+   * validate + client preflight + start plan + run record, then return
+   * without waiting for the stream. Every fail-closed gate runs before this
+   * resolves, so a `rejected` result means no model work was started.
+   */
+  launch(request: AgentRunRequest, launch?: RunLaunchOptions): Promise<RejectedRun | LaunchedRun>;
   /** Allocate a run id and record paths without starting anything. */
   allocate(logPath?: string): { runId: string; logPath: string; metaPath: string };
   status(runId: string): CollectedStatus;
@@ -187,22 +222,26 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
 
   const validate: AgentRunService['validate'] = async (request) => {
     if (!request.prompt.trim()) {
-      return { ok: false, error: 'Prompt is empty: pass a non-empty --prompt or --prompt-file' };
+      return {
+        ok: false,
+        code: 'prompt_empty',
+        error: 'Prompt is empty: pass a non-empty --prompt or --prompt-file',
+      };
     }
 
     let cwdStat: fs.Stats;
     try {
       cwdStat = fs.statSync(request.cwd);
     } catch {
-      return { ok: false, error: `--cwd does not exist: ${request.cwd}` };
+      return { ok: false, code: 'cwd_not_found', error: `--cwd does not exist: ${request.cwd}` };
     }
     if (!cwdStat.isDirectory()) {
-      return { ok: false, error: `--cwd is not a directory: ${request.cwd}` };
+      return { ok: false, code: 'cwd_not_directory', error: `--cwd is not a directory: ${request.cwd}` };
     }
 
     const deck = await deps.resolveDeck(request.deckRef);
     if (!deck) {
-      return { ok: false, error: `Deck not found: ${request.deckRef}` };
+      return { ok: false, code: 'deck_not_found', error: `Deck not found: ${request.deckRef}` };
     }
 
     // Fail closed before any model call: the session's MCP launch must already
@@ -212,12 +251,14 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       if (!binding.deckId) {
         return {
           ok: false,
+          code: 'deck_unassigned',
           error:
             `No deck assigned in ${request.cwd}: run \`agent-deck use ${request.deckRef}\` there first, then retry. Refusing to start an unbound session.`,
         };
       }
       return {
         ok: false,
+        code: 'deck_mismatch',
         error:
           `Folder ${request.cwd} is bound to "${binding.deckName ?? binding.deckId}" (${binding.deckId}), not "${request.deckRef}". ` +
           `Run \`agent-deck use ${request.deckRef}\` in that folder to rebind it, then retry. Refusing to start a mis-bound session.`,
@@ -235,7 +276,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
         deck,
       );
       if (!provenance.ok) {
-        return { ok: false, error: provenance.error };
+        return { ok: false, code: 'resume_unverified', error: provenance.error };
       }
       resumedFrom = provenance.origin;
     }
@@ -250,6 +291,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       if (!client.ok) {
         return {
           ok: false,
+          code: 'client_unavailable',
           error:
             client.reason === 'not-installed'
               ? RUN_CLAUDE_NOT_INSTALLED_ERROR
@@ -261,11 +303,18 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     return { ok: true, deck, ...(resumedFrom ? { resumedFrom } : {}) };
   };
 
-  const execute: AgentRunService['execute'] = async ({ request, deck, resumedFrom }, launch = {}) => {
+  /**
+   * Client preflight, start plan, and the `running` record; the returned
+   * completion streams the run to its terminal state.
+   */
+  const begin = async (
+    { request, deck, resumedFrom }: PreparedRun,
+    launch: RunLaunchOptions = {},
+  ): Promise<RejectedRun | LaunchedRun> => {
     const adapter = createAdapter(request.client);
     const preflight = await adapter.preflight();
     if (!preflight.ok) {
-      return { kind: 'rejected', message: preflight.remedy };
+      return { kind: 'rejected', code: 'client_unavailable', message: preflight.remedy };
     }
     const startArgs = {
       cwd: request.cwd,
@@ -276,7 +325,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     };
     const startPlan = adapter.planStart(startArgs);
     if (!startPlan.ok) {
-      return { kind: 'rejected', message: startPlan.remedy };
+      return { kind: 'rejected', code: 'profile_unsupported', message: startPlan.remedy };
     }
 
     const runId = launch.runId ?? newRunId();
@@ -300,59 +349,85 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     };
     writeRunMeta(metaPath, meta);
 
-    const appendLine = (line: RunLogLine): void => appendRunLogLine(logPath, line);
+    const stream = async (): Promise<FinishedRun> => {
+      const appendLine = (line: RunLogLine): void => appendRunLogLine(logPath, line);
 
-    let sessionId: string | null = request.resumeId ?? null;
-    let metaSessionWritten = false;
-    const captureSessionId = (value: unknown): void => {
-      if (typeof value === 'string' && value) {
-        sessionId = value;
-        if (!metaSessionWritten) {
-          metaSessionWritten = true;
-          meta.sessionId = value;
-          writeRunMeta(metaPath, meta);
-        } else {
-          meta.sessionId = value;
+      let sessionId: string | null = request.resumeId ?? null;
+      let metaSessionWritten = false;
+      const captureSessionId = (value: unknown): void => {
+        if (typeof value === 'string' && value) {
+          sessionId = value;
+          if (!metaSessionWritten) {
+            metaSessionWritten = true;
+            meta.sessionId = value;
+            writeRunMeta(metaPath, meta);
+          } else {
+            meta.sessionId = value;
+          }
+        }
+      };
+
+      let lastResultSubtype: string | undefined;
+      const seenTexts: string[] = [];
+      try {
+        for await (const event of adapter.start(startArgs)) {
+          if (event.sessionId !== undefined) {
+            captureSessionId(event.sessionId);
+          }
+          if (event.kind === 'text') {
+            seenTexts.push(event.text);
+            appendLine({ t: 'text', ts: new Date().toISOString(), text: event.text });
+          } else if (event.kind === 'tool') {
+            appendLine({ t: 'tool', ts: new Date().toISOString(), name: event.name });
+          } else if (event.kind === 'result') {
+            lastResultSubtype = event.subtype;
+            appendLine({
+              t: 'result',
+              ts: new Date().toISOString(),
+              sessionId,
+              subtype: event.subtype,
+              result: event.result,
+              ...(event.usage !== undefined ? { usage: event.usage } : {}),
+            });
+          } else {
+            appendLine({
+              t: 'notice',
+              ts: new Date().toISOString(),
+              message: event.message,
+              sessionId,
+            });
+          }
+        }
+        appendLine({ t: 'end', ts: new Date().toISOString(), sessionId });
+      } catch (error) {
+        const failure = String(error instanceof Error ? error.message : error).slice(0, 500);
+        appendLine({ t: 'error', ts: new Date().toISOString(), message: failure, sessionId });
+        meta.state = 'error';
+        if (sessionId) {
+          meta.sessionId = sessionId;
+        }
+        writeRunMeta(metaPath, meta);
+        return {
+          kind: 'finished',
+          runId,
+          logPath,
+          metaPath,
+          state: 'error',
+          sessionId,
+          receiptMismatch: null,
+          failure,
+        };
+      }
+
+      let success = lastResultSubtype === 'success';
+      let receiptMismatch: string | null = null;
+      if (success) {
+        receiptMismatch = findReceiptDeckMismatch(seenTexts, deck);
+        if (receiptMismatch) {
+          success = false;
         }
       }
-    };
-
-    let lastResultSubtype: string | undefined;
-    const seenTexts: string[] = [];
-    try {
-      for await (const event of adapter.start(startArgs)) {
-        if (event.sessionId !== undefined) {
-          captureSessionId(event.sessionId);
-        }
-        if (event.kind === 'text') {
-          seenTexts.push(event.text);
-          appendLine({ t: 'text', ts: new Date().toISOString(), text: event.text });
-        } else if (event.kind === 'tool') {
-          appendLine({ t: 'tool', ts: new Date().toISOString(), name: event.name });
-        } else if (event.kind === 'result') {
-          lastResultSubtype = event.subtype;
-          appendLine({
-            t: 'result',
-            ts: new Date().toISOString(),
-            sessionId,
-            subtype: event.subtype,
-            result: event.result,
-            ...(event.usage !== undefined ? { usage: event.usage } : {}),
-          });
-        } else {
-          appendLine({
-            t: 'notice',
-            ts: new Date().toISOString(),
-            message: event.message,
-            sessionId,
-          });
-        }
-      }
-      appendLine({ t: 'end', ts: new Date().toISOString(), sessionId });
-    } catch (error) {
-      const failure = String(error instanceof Error ? error.message : error).slice(0, 500);
-      appendLine({ t: 'error', ts: new Date().toISOString(), message: failure, sessionId });
-      meta.state = 'error';
+      meta.state = success ? 'ended' : 'error';
       if (sessionId) {
         meta.sessionId = sessionId;
       }
@@ -362,35 +437,45 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
         runId,
         logPath,
         metaPath,
-        state: 'error',
+        state: meta.state,
         sessionId,
+        receiptMismatch,
+        failure: null,
+      };
+    };
+
+    const completion = stream().catch((error: unknown): FinishedRun => {
+      // Record bookkeeping itself failed (disk full, removed run dir). Keep
+      // the completion promise non-rejecting; status falls back to the pid.
+      const failure = String(error instanceof Error ? error.message : error).slice(0, 500);
+      return {
+        kind: 'finished',
+        runId,
+        logPath,
+        metaPath,
+        state: 'error',
+        sessionId: request.resumeId ?? null,
         receiptMismatch: null,
         failure,
       };
-    }
+    });
+    return { kind: 'launched', runId, logPath, metaPath, completion };
+  };
 
-    let success = lastResultSubtype === 'success';
-    let receiptMismatch: string | null = null;
-    if (success) {
-      receiptMismatch = findReceiptDeckMismatch(seenTexts, deck);
-      if (receiptMismatch) {
-        success = false;
-      }
+  const execute: AgentRunService['execute'] = async (prepared, launch) => {
+    const begun = await begin(prepared, launch);
+    return begun.kind === 'rejected' ? begun : begun.completion;
+  };
+
+  const prepare = async (request: AgentRunRequest): Promise<PreparedRun | RejectedRun> => {
+    const validation = await validate(request);
+    if (!validation.ok) {
+      return { kind: 'rejected', code: validation.code, message: validation.error };
     }
-    meta.state = success ? 'ended' : 'error';
-    if (sessionId) {
-      meta.sessionId = sessionId;
-    }
-    writeRunMeta(metaPath, meta);
     return {
-      kind: 'finished',
-      runId,
-      logPath,
-      metaPath,
-      state: meta.state,
-      sessionId,
-      receiptMismatch,
-      failure: null,
+      request,
+      deck: validation.deck,
+      ...(validation.resumedFrom ? { resumedFrom: validation.resumedFrom } : {}),
     };
   };
 
@@ -398,14 +483,12 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     validate,
     execute,
     async start(request, launch) {
-      const prepared = await validate(request);
-      if (!prepared.ok) {
-        return { kind: 'rejected', message: prepared.error };
-      }
-      return execute(
-        { request, deck: prepared.deck, ...(prepared.resumedFrom ? { resumedFrom: prepared.resumedFrom } : {}) },
-        launch,
-      );
+      const prepared = await prepare(request);
+      return 'kind' in prepared ? prepared : execute(prepared, launch);
+    },
+    async launch(request, launch) {
+      const prepared = await prepare(request);
+      return 'kind' in prepared ? prepared : begin(prepared, launch);
     },
     allocate,
     status: (runId) => collectRunStatus(runId, deps.homeDir),

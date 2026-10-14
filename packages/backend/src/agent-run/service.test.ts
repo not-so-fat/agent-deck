@@ -311,6 +311,7 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
     const unbound = makeService(home, adapter, { resolveDeckBinding: async () => ({}) });
     expect(await unbound.service.start(request(cwd))).toEqual({
       kind: 'rejected',
+      code: 'deck_unassigned',
       message: `No deck assigned in ${cwd}: run \`agent-deck use api\` there first, then retry. Refusing to start an unbound session.`,
     });
 
@@ -318,6 +319,7 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
       resolveDeckBinding: async () => ({ deckId: 'deck-other', deckName: 'other' }),
     });
     const outcome = await misbound.service.start(request(cwd));
+    expect(outcome.kind === 'rejected' && outcome.code).toBe('deck_mismatch');
     expect(outcome.kind === 'rejected' && outcome.message).toContain(
       `Folder ${cwd} is bound to "other" (deck-other), not "api".`,
     );
@@ -338,12 +340,20 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
 
     expect(await service.validate(request(cwd, { deckRef: 'nope' }))).toEqual({
       ok: false,
+      code: 'deck_not_found',
       error: 'Deck not found: nope',
     });
-    expect(await service.validate(request(cwd, { prompt: '  ' }))).toMatchObject({ ok: false });
-    expect(await service.validate(request(path.join(cwd, 'missing')))).toMatchObject({ ok: false });
+    expect(await service.validate(request(cwd, { prompt: '  ' }))).toMatchObject({
+      ok: false,
+      code: 'prompt_empty',
+    });
+    expect(await service.validate(request(path.join(cwd, 'missing')))).toMatchObject({
+      ok: false,
+      code: 'cwd_not_found',
+    });
     expect(await service.validate(request(cwd, { client: 'claude' }))).toEqual({
       ok: false,
+      code: 'client_unavailable',
       error:
         'Claude Code is not signed in. Run `claude auth login` to sign in with your own account, then retry.',
     });
@@ -362,6 +372,7 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
     );
     expect(await preflight.service.start(request(cwd, { client: 'cursor' }))).toEqual({
       kind: 'rejected',
+      code: 'client_unavailable',
       message: 'cursor-agent is not signed in',
     });
 
@@ -375,12 +386,36 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
     });
     const { service } = makeService(home, Object.assign(codex, { starts: [] }));
     const outcome = await service.start(request(cwd, { tools: 'edit', resumeId: 'thread-1' }));
-    expect(outcome.kind).toBe('rejected');
+    expect(outcome.kind === 'rejected' && outcome.code).toBe('resume_unverified');
     expect(outcome.kind === 'rejected' && outcome.message).toContain(
       'Cannot resume codex session thread-1: no Agent Deck run on this host started it',
     );
     expect(spawn).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(home, 'runs'))).toBe(false);
+  });
+
+  it('launch returns once the record is written and settles completion at the terminal state', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const adapter = fixtureAdapter('codex', { events: successEvents(), hold });
+    const { service } = makeService(home, adapter);
+
+    const launched = await service.launch(request(cwd));
+    if (launched.kind !== 'launched') throw new Error(launched.message);
+    const running = service.status(launched.runId);
+    expect(running.found && running.info.state).toBe('running');
+
+    release();
+    const finished = await launched.completion;
+    expect(finished).toMatchObject({ kind: 'finished', runId: launched.runId, state: 'ended' });
+
+    const rejected = await service.launch(request(cwd, { deckRef: 'nope' }));
+    expect(rejected).toMatchObject({ kind: 'rejected', code: 'deck_not_found' });
+    expect(adapter.starts).toHaveLength(1);
   });
 
   it('builds the shipped adapter for every supported client by default', () => {
@@ -522,6 +557,7 @@ describe('codex resume provenance (NOT-484)', () => {
     const escalate = await service.start(request(cwd, { tools: 'edit', resumeId: THREAD }));
     expect(escalate).toEqual({
       kind: 'rejected',
+      code: 'resume_unverified',
       message:
         `Cannot resume session ${THREAD} with --tools edit: run ${readonlyOrigin.runId} started it with --tools readonly, ` +
         'and a resumed codex thread keeps its original sandbox. Resume with --tools readonly, or start a new run with --tools edit.',
@@ -547,6 +583,7 @@ describe('codex resume provenance (NOT-484)', () => {
       const unknown = await service.start(request(cwd, { tools, resumeId: THREAD }));
       expect(unknown).toEqual({
         kind: 'rejected',
+        code: 'resume_unverified',
         message:
           `Cannot resume codex session ${THREAD}: no Agent Deck run on this host started it, so its sandbox is unknown. ` +
           'Resume only a sessionId printed by `agent-deck run` (see `agent-deck run list`), or start a new run without --resume.',
@@ -619,6 +656,7 @@ describe('codex resume provenance (NOT-484)', () => {
 
     expect(outcome).toEqual({
       kind: 'rejected',
+      code: 'resume_unverified',
       message:
         `Cannot resume session ${THREAD} in ${elsewhere}: run ${origin.runId} started it in ${fs.realpathSync(cwd)}. ` +
         `Resume it with --cwd ${fs.realpathSync(cwd)}, or start a new run here.`,
@@ -645,6 +683,7 @@ describe('codex resume provenance (NOT-484)', () => {
 
     expect(outcome).toEqual({
       kind: 'rejected',
+      code: 'resume_unverified',
       message:
         `Cannot resume session ${THREAD} on deck "other" (deck-other): run ${origin.runId} started it on deck ${DECK.id}. ` +
         'Resume it on that deck, or start a new run on "other".',
@@ -669,6 +708,7 @@ describe('codex resume provenance (NOT-484)', () => {
 
     expect(outcome).toEqual({
       kind: 'rejected',
+      code: 'resume_unverified',
       message:
         `Cannot resume session ${THREAD} with --client codex: it was started by --client claude in run ${claude.runId}. ` +
         'Resume it with --client claude, or start a new run.',

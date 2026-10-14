@@ -107,6 +107,7 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/audit$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/agent-grants$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/agent-grants\/[^/]+\/revoke$/, policy: 'requireDashboard' },
+  { methods: ['PUT'], pattern: /^\/api\/agent-grants\/[^/]+\/capabilities$/, policy: 'requireDashboard' },
   { methods: ['GET'], pattern: /^\/api\/feedback-signals$/, policy: 'requireDashboard' },
   { methods: ['GET'], pattern: /^\/api\/feedback-signals\/count$/, policy: 'requireDashboard' },
   { methods: ['POST'], pattern: /^\/api\/feedback-signals\/discard$/, policy: 'requireDashboard' },
@@ -138,6 +139,11 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+\/resolve$/,
     policy: 'requireDashboard',
   },
+
+  // NOT-480: agent runs — bearer grant with the explicit run capability only.
+  { methods: ['POST'], pattern: /^\/api\/agent-runs$/, policy: 'requireRunGrant' },
+  { methods: ['GET'], pattern: /^\/api\/agent-runs\/[^/]+$/, policy: 'requireRunGrant' },
+  { methods: ['GET'], pattern: /^\/api\/agent-runs\/[^/]+\/events$/, policy: 'requireRunGrant' },
 
   // Agent or dashboard (dual-auth routes — handler branches on principal kind)
   { methods: ['GET'], pattern: /^\/api\/decks$/, policy: 'requireAgentOrDashboard' },

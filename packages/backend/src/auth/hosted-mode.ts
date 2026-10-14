@@ -9,6 +9,8 @@ export const HOSTED_DASHBOARD_ABSOLUTE_MS = 7 * 24 * 60 * 60 * 1000;
 export const HOSTED_RATE_LIMIT_WINDOW_MS = 60_000;
 export const HOSTED_SIGN_IN_FAILURE_LIMIT = 5;
 export const HOSTED_PUBLIC_MUTATION_LIMIT = 60;
+/** Failed run-route bearers per socket client per window (each one is audited). */
+export const HOSTED_RUN_AUTH_FAILURE_LIMIT = 20;
 export const HOSTED_PUBLIC_BODY_LIMIT_BYTES = 1024 * 1024;
 
 export type HostedModeConfig = {
@@ -68,6 +70,10 @@ function hasSameOrigin(request: FastifyRequest, publicOrigin: string): boolean {
 
 function isStateChanging(method: string): boolean {
   return !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase());
+}
+
+function isAgentRunPath(pathname: string): boolean {
+  return pathname === '/api/agent-runs' || pathname.startsWith('/api/agent-runs/');
 }
 
 function socketClientKey(request: FastifyRequest): string {
@@ -136,6 +142,25 @@ export function registerHostedModeGuard(
       return;
     }
 
+    // NOT-480: agent-run routes authenticate a remote bearer grant in the
+    // route-policy hook. A bearer is not an ambient browser credential, so
+    // the dashboard cookie and same-origin gates do not apply; mutations stay
+    // rate-limited per client. Failed bearers on any method are limited too,
+    // so anonymous reads cannot grow the audit table without bound.
+    if (isAgentRunPath(pathname)) {
+      const failures = limiter.check(`run-auth:${socketClientKey(request)}`, HOSTED_RUN_AUTH_FAILURE_LIMIT);
+      if (!failures.allowed) {
+        return sendRateLimited(reply, failures.retryAfterSeconds);
+      }
+      if (isStateChanging(request.method)) {
+        const result = limiter.consume(`mutation:${socketClientKey(request)}`, HOSTED_PUBLIC_MUTATION_LIMIT);
+        if (!result.allowed) {
+          return sendRateLimited(reply, result.retryAfterSeconds);
+        }
+      }
+      return;
+    }
+
     const token = parseDashboardCookie(request);
     if (
       !token ||
@@ -170,6 +195,9 @@ export function registerHostedModeGuard(
       reply.statusCode === 401
     ) {
       limiter.consume(`sign-in:${socketClientKey(request)}`, HOSTED_SIGN_IN_FAILURE_LIMIT);
+    }
+    if (isAgentRunPath(pathname) && reply.statusCode === 401) {
+      limiter.consume(`run-auth:${socketClientKey(request)}`, HOSTED_RUN_AUTH_FAILURE_LIMIT);
     }
   });
 }
