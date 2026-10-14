@@ -12,6 +12,7 @@ export * from './schemas/store';
 export * from './schemas/session-bootstrap';
 export * from './schemas/trusted-session';
 export * from './schemas/card-usage';
+export * from './schemas/agent-run';
 
 // Additional types not covered by schemas
 export * from './types/api';

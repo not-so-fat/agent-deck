@@ -18,6 +18,8 @@ export const TrustedSessionErrorCodeSchema = z.enum([
   'DECK_SWITCH_EXPIRED',
   /** Deck-switch request already resolved; repeat resolution is a no-op (NOT-207). */
   'DECK_SWITCH_CONSUMED',
+  /** Grant lacks the explicit agent-run capability (NOT-480). */
+  'RUN_CAPABILITY_REQUIRED',
 ]);
 
 /** @deprecated Legacy v2 grant file shape — CLI reads for migration only (NOT-108). */
@@ -107,6 +109,7 @@ export function httpStatusForTrustedError(code: TrustedSessionErrorCode): number
     case 'DASHBOARD_REQUIRED':
     case 'DECK_FIXED':
     case 'SWITCH_APPROVAL_REQUIRED':
+    case 'RUN_CAPABILITY_REQUIRED':
       return 403;
     case 'DECK_SWITCH_CONSUMED':
       return 409;
