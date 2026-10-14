@@ -15,6 +15,10 @@ gate, run lifecycle), `records.ts` (log, meta.json, status reads),
 Every mapping below names its file; anything no adapter code or fixture shows
 is marked `<TBD: confirm>`.
 
+Remote coordinators use the same service over HTTP instead of the CLI: see
+[AGENT_RUN_API.md](./AGENT_RUN_API.md) (same-host execution, run grants,
+capabilities, cancel, restart recovery).
+
 ## Launch
 
 Launch form (`run.ts` `printRunHelp`): `agent-deck run <deck> --client claude|codex|cursor|muse --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]`, plus the poll subcommands `agent-deck run status <runId> [--json]`, `agent-deck run log <runId> [--tail <n>] [--follow] [--json]`, and `agent-deck run list [--json] [--limit <n>]`. The full text is `agent-deck run --help`.
