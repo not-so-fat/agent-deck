@@ -93,6 +93,38 @@ export type NormalizedEvent =
   | { kind: 'result'; subtype: string; result: unknown; usage?: unknown; sessionId?: string }
   | { kind: 'notice'; message: string; sessionId?: string };
 
+/**
+ * Which tool profiles a client can enforce on a fresh start and on a resume
+ * (NOT-481 capability discovery). Mirrors each adapter's `planStart` gates;
+ * `same_profile_provenance` means a resume continues only a session an Agent
+ * Deck run on this host started with the same client, deck, cwd, and tools.
+ */
+export type RunClientProfiles = {
+  start: readonly RunToolsProfile[];
+  resume: readonly RunToolsProfile[];
+  resumeRequires: 'none' | 'same_profile_provenance';
+};
+
+export const RUN_CLIENT_PROFILES: Record<RunClient, RunClientProfiles> = {
+  claude: { start: RUN_TOOL_PROFILES, resume: RUN_TOOL_PROFILES, resumeRequires: 'none' },
+  // `codex exec resume` accepts no sandbox flag, so resume keeps the origin run's sandbox.
+  codex: { start: RUN_TOOL_PROFILES, resume: RUN_TOOL_PROFILES, resumeRequires: 'same_profile_provenance' },
+  cursor: { start: RUN_TOOL_PROFILES, resume: RUN_TOOL_PROFILES, resumeRequires: 'none' },
+  muse: { start: RUN_TOOL_PROFILES, resume: RUN_TOOL_PROFILES, resumeRequires: 'none' },
+};
+
+/**
+ * Process ownership for one run (NOT-481). When present, an adapter spawns
+ * its client as the leader of a new process group and reports the group id,
+ * so cancellation can stop the client and everything it started — and
+ * nothing else. In-process clients (the Claude SDK) honor `signal` instead.
+ * The CLI omits this, so foreground runs keep receiving the terminal's ^C.
+ */
+export type RunProcessControl = {
+  signal: AbortSignal;
+  onProcessGroup(pgid: number): void;
+};
+
 export type AdapterStartArgs = {
   cwd: string;
   prompt: string;
@@ -103,6 +135,7 @@ export type AdapterStartArgs = {
    * clients whose resume cannot re-apply the profile (codex; NOT-484).
    */
   resumedFrom?: RunResumeOrigin;
+  control?: RunProcessControl;
 };
 
 export type AdapterPreflight = { ok: true } | { ok: false; remedy: string };

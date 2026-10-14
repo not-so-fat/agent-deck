@@ -23,7 +23,9 @@ export type AuthPolicy =
   | 'requireDeckAdmin'
   | 'requireDashboard'
   /** Remote bearer grant with the explicit agent-run capability (NOT-480). */
-  | 'requireRunGrant';
+  | 'requireRunGrant'
+  /** Run grant, or the owner dashboard inspecting any run (NOT-481). */
+  | 'requireRunGrantOrDashboard';
 
 export type RequestPrincipal =
   | { kind: 'public' }
@@ -49,7 +51,7 @@ export class TrustedAuthError extends Error {
 
 const GRANT_REQUIRED_MESSAGE = 'No deck selected for this connection';
 
-async function resolveDashboardPrincipal(
+export async function resolveDashboardPrincipal(
   request: FastifyRequest,
   store: TrustedSessionStore,
 ): Promise<RequestPrincipal | null> {

@@ -6,6 +6,7 @@ import {
   AGENT_RUN_EVENTS_DEFAULT_LIMIT,
   AGENT_RUN_IDEMPOTENCY_HEADER,
   AGENT_RUN_REQUEST_BODY_LIMIT_BYTES,
+  AgentRunCapabilitiesResponseSchema,
   AgentRunEventsQuerySchema,
   AgentRunEventsResponseSchema,
   AgentRunIdSchema,
@@ -22,7 +23,12 @@ import {
   type CreateAgentRunRequest,
 } from '@agent-deck/shared';
 
-import type { AgentRunRejectionCode, AgentRunService, LaunchedRun } from '../agent-run';
+import type {
+  AgentRunRejectionCode,
+  AgentRunService,
+  LaunchedRun,
+  RunReconciliation,
+} from '../agent-run';
 import { auditRunTarget } from '../agent-run-api/auth';
 import { AgentRunIndex, type AgentRunIndexEntry } from '../agent-run-api/run-index';
 import { auditDeckTarget, type AuditActor, type AuditReasonCode } from '../audit/store';
@@ -30,7 +36,12 @@ import type { GrantPrincipal } from '../auth/client-grants';
 
 /**
  * NOT-480: authenticated start/resume, status, and ordered events for one
- * coding-agent attempt on this host.
+ * coding-agent attempt on this host. NOT-481: capability discovery,
+ * idempotent cancel, and restart reconciliation at registration.
+ *
+ * Read and cancel scope: a grant reaches only runs it created, on decks it
+ * is still allowed; the owner dashboard reaches every run. Only grants
+ * start runs.
  *
  * HTTP code here only validates, authorizes, dispatches to the NOT-479 run
  * service, and maps results. Client-specific launch, resume, and permission
@@ -111,6 +122,21 @@ function requestHash(request: CreateAgentRunRequest): string {
   return createHash('sha256').update(JSON.stringify(normalized), 'utf8').digest('hex');
 }
 
+/** Grant on a run route, or the owner dashboard (status, events, cancel, capabilities). */
+type RunCaller = { kind: 'grant'; grant: GrantPrincipal } | { kind: 'owner' };
+
+function callerOf(request: FastifyRequest): RunCaller {
+  const principal = request.requestPrincipal;
+  if (principal?.kind === 'dashboard') {
+    return { kind: 'owner' };
+  }
+  return { kind: 'grant', grant: grantOf(request) };
+}
+
+function actorOf(caller: RunCaller): AuditActor {
+  return caller.kind === 'owner' ? 'owner' : (caller.grant.grantId as AuditActor);
+}
+
 function grantOf(request: FastifyRequest): GrantPrincipal {
   const principal = request.requestPrincipal;
   if (principal?.kind !== 'grant') {
@@ -127,7 +153,12 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
 
   const audit = (
     actor: AuditActor,
-    event: 'agent_run.created' | 'agent_run.denied' | 'agent_run.finished',
+    event:
+      | 'agent_run.created'
+      | 'agent_run.denied'
+      | 'agent_run.finished'
+      | 'agent_run.canceled'
+      | 'agent_run.reconciled',
     targetId: string,
     outcome: 'succeeded' | 'denied' | 'failed',
     reasonCode: AuditReasonCode | null,
@@ -155,25 +186,53 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
     request: FastifyRequest<{ Params: { runId: string } }>,
     reply: FastifyReply,
   ): AgentRunIndexEntry | null => {
-    const grant = grantOf(request);
+    const caller = callerOf(request);
     const runId = request.params.runId;
     const entry = AgentRunIdSchema.safeParse(runId).success ? index.get(runId) : null;
     if (!entry) {
       void reply.status(404).send(agentRunError('RUN_NOT_FOUND', 'Run not found'));
       return null;
     }
-    if (!grant.allowedDecks.includes(entry.deckId)) {
+    if (caller.kind === 'owner') {
+      return entry;
+    }
+    const { grant } = caller;
+    const outOfScope = (message: string): null => {
       audit(grant.grantId as AuditActor, 'agent_run.denied', entry.runId, 'denied', 'resource_out_of_scope');
       void reply
         .status(httpStatusForTrustedError('RESOURCE_OUT_OF_SCOPE'))
-        .send(trustedSessionError('RESOURCE_OUT_OF_SCOPE', "Run deck is outside this grant's allowed decks"));
+        .send(trustedSessionError('RESOURCE_OUT_OF_SCOPE', message));
       return null;
+    };
+    if (!grant.allowedDecks.includes(entry.deckId)) {
+      return outOfScope("Run deck is outside this grant's allowed decks");
+    }
+    if (entry.grantId !== grant.grantId) {
+      return outOfScope('Run was started by another grant');
     }
     return entry;
   };
 
+  const statusBody = (entry: AgentRunIndexEntry) => {
+    const current = publicState(entry.runId);
+    return AgentRunStatusSchema.parse({
+      runId: entry.runId,
+      deckId: entry.deckId,
+      client: entry.client,
+      tools: entry.tools,
+      state: current.state,
+      sessionId: current.sessionId,
+      startedAt: current.startedAt ?? entry.createdAt,
+      lastEventAt: current.lastEventAt,
+    });
+  };
+
   const watchCompletion = (grantId: string, launched: LaunchedRun): void => {
     void launched.completion.then((finished) => {
+      // Cancellation audits itself; an abandoned run reconciles at the next start.
+      if (finished.state === 'canceled' || finished.state === 'died') {
+        return;
+      }
       audit(
         grantId as AuditActor,
         'agent_run.finished',
@@ -232,7 +291,7 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
           tools: body.tools,
           ...(body.resumeSessionId ? { resumeId: body.resumeSessionId } : {}),
         },
-        { runId },
+        { runId, ownProcessGroup: true },
       );
       if (outcome.kind === 'rejected') {
         // Failed closed before model work: free the key so a corrected retry may reuse it.
@@ -254,6 +313,35 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
       inflight.delete(inflightKey);
     }
   };
+
+  // Restart recovery: re-derive every `running` record this process does not
+  // own from its owner process and canonical log before serving reads.
+  const reconcileAudit = (row: RunReconciliation): void => {
+    const entry = index.get(row.runId);
+    if (!entry) {
+      return; // A CLI run: reconciled on disk, not an API audit subject.
+    }
+    const reason: Record<RunReconciliation['state'], AuditReasonCode | null> = {
+      ended: null,
+      error: 'run_error',
+      died: 'run_died',
+      canceled: 'run_canceled',
+    };
+    audit(
+      entry.grantId as AuditActor,
+      'agent_run.reconciled',
+      row.runId,
+      row.state === 'ended' ? 'succeeded' : 'failed',
+      reason[row.state],
+    );
+  };
+  for (const row of service.reconcile()) {
+    reconcileAudit(row);
+  }
+  // A run cannot outlive the process streaming it: stop owned groups on close.
+  fastify.addHook('onClose', async () => {
+    service.shutdown();
+  });
 
   await fastify.register(async (scope) => {
     // Body-limit and parse failures happen after auth (onRequest) but before
@@ -335,23 +423,44 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
 
     // No implicit HEAD routes: the policy hook skips HEAD, and run reads must
     // never be reachable without a run grant.
+    scope.get('/agent-runs/capabilities', { exposeHeadRoute: false }, async (_request, reply) => {
+      const data = AgentRunCapabilitiesResponseSchema.parse({
+        host: 'same-host',
+        clients: await service.capabilities(),
+      });
+      return reply.header('Cache-Control', 'no-store').send({ success: true, data });
+    });
+
     scope.get<{ Params: { runId: string } }>('/agent-runs/:runId', { exposeHeadRoute: false }, async (request, reply) => {
       const entry = readableRun(request, reply);
       if (!entry) {
         return reply;
       }
-      const current = publicState(entry.runId);
-      const data = AgentRunStatusSchema.parse({
-        runId: entry.runId,
-        deckId: entry.deckId,
-        client: entry.client,
-        tools: entry.tools,
-        state: current.state,
-        sessionId: current.sessionId,
-        startedAt: current.startedAt ?? entry.createdAt,
-        lastEventAt: current.lastEventAt,
-      });
-      return reply.header('Cache-Control', 'no-store').send({ success: true, data });
+      return reply.header('Cache-Control', 'no-store').send({ success: true, data: statusBody(entry) });
+    });
+
+    scope.post<{ Params: { runId: string } }>('/agent-runs/:runId/cancel', async (request, reply) => {
+      const entry = readableRun(request, reply);
+      if (!entry) {
+        return reply;
+      }
+      const actor = actorOf(callerOf(request));
+      const outcome = service.cancel(entry.runId);
+      if (outcome.kind === 'not_cancelable') {
+        audit(actor, 'agent_run.denied', entry.runId, 'denied', 'run_not_cancelable');
+        return reply
+          .status(409)
+          .send(agentRunError('RUN_NOT_CANCELABLE', 'Run is owned by another host process that cannot be signaled'));
+      }
+      // `not_found`: indexed but never recorded, which reads as `died`.
+      audit(
+        actor,
+        'agent_run.canceled',
+        entry.runId,
+        'succeeded',
+        outcome.kind === 'canceled' ? null : 'already_terminal',
+      );
+      return reply.header('Cache-Control', 'no-store').send({ success: true, data: statusBody(entry) });
     });
 
     scope.get<{ Params: { runId: string }; Querystring: Record<string, unknown> }>(
@@ -386,6 +495,9 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
           const mapped = toPublicEvent(seq, event);
           if (mapped) {
             events.push(mapped);
+            if (mapped.type === 'canceled') {
+              break; // Cancellation is final: nothing after it is delivered.
+            }
           }
         }
         const nextCursor = String(events.length > 0 ? events[events.length - 1].seq : after);
@@ -414,6 +526,8 @@ function toPublicEvent(seq: number, event: Record<string, unknown>): AgentRunEve
       return { seq, ts, type: 'end', sessionId };
     case 'error':
       return { seq, ts, type: 'error', message: str(event.message), sessionId };
+    case 'canceled':
+      return { seq, ts, type: 'canceled', sessionId };
     default:
       return null;
   }

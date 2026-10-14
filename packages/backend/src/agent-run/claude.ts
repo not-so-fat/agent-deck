@@ -30,6 +30,8 @@ export type RunQueryOptions = {
   settingSources: readonly string[];
   permissionMode: string;
   allowedTools: readonly string[];
+  /** Aborts the SDK session when the run is canceled (NOT-481). */
+  abortController?: AbortController;
 };
 
 export type RunQueryFn = (params: {
@@ -97,6 +99,16 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
 
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
       const query = getQuery();
+      let abortController: AbortController | undefined;
+      if (args.control) {
+        abortController = new AbortController();
+        const controller = abortController;
+        if (args.control.signal.aborted) {
+          controller.abort();
+        } else {
+          args.control.signal.addEventListener('abort', () => controller.abort(), { once: true });
+        }
+      }
       const stream = query({
         prompt: args.prompt,
         options: {
@@ -105,6 +117,7 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
           settingSources: [...RUN_SETTING_SOURCES],
           permissionMode: RUN_PERMISSION_MODE,
           allowedTools: [...allowedToolsForProfile(args.tools)],
+          ...(abortController ? { abortController } : {}),
         },
       });
       for await (const message of stream) {
