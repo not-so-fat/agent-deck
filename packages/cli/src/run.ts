@@ -6,56 +6,77 @@
  * records a small meta.json that later tickets (detach, status) can read.
  * Resume continues the same client session id under a new run log.
  *
- * Client-specific launching lives behind the {@link ClientAdapter} interface
- * (`run-adapter.ts`); this file owns arg parsing, the deck binding gate,
- * tool profiles, the JSONL log, and meta.json. New adapters plug in without
- * touching this file's run/log/status paths.
+ * The execution lifecycle — deck binding gate, client adapters and preflight,
+ * tool profiles, the JSONL log, and meta.json — lives in the host-local run
+ * service (`@agent-deck/backend/agent-run`, NOT-479) that the backend shares.
+ * This file owns arg parsing, the brief file, terminal output, and the CLI
+ * host seams (deck lookup, folder assignment, SDK location, test fake).
  *
  * `--detach` (NOT-401) re-executes this same command as a background child;
  * status/log/list (NOT-402) poll the run record the child writes.
  */
-import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+
+import {
+  createAgentRunService,
+  defaultClaudeClientProbe,
+  missingRunClientMessage,
+  runClientMessage,
+  type AgentRunRequest,
+  type AgentRunService,
+  type ClaudeAdapterDeps,
+  type ClaudeClientProbe,
+  type ClientAdapter,
+  type CodexAdapterDeps,
+  type CursorAdapterDeps,
+  type MuseAdapterDeps,
+  type RunClient,
+  type RunDeck,
+  type RunQueryFn,
+  type RunQueryMessage,
+  type RunQueryOptions,
+  type RunToolsProfile,
+} from '@agent-deck/backend/agent-run';
 
 import { createCollectionAdmin } from './backend-runtime';
 import { agentDeckHome } from './managed/paths';
 import { resolveMcpLaunchPlan } from './mcp-launcher';
-import {
-  missingRunClientMessage,
-  runClientMessage,
-  type ClientAdapter,
-  type RunClient,
-  type RunToolsProfile,
-} from './run-adapter';
-import {
-  createClaudeAdapter,
-  type ClaudeAdapterDeps,
-  type RunQueryFn,
-  type RunQueryMessage,
-  type RunQueryOptions,
-} from './run-claude';
-import { createCodexAdapter, type CodexAdapterDeps } from './run-codex';
-import { createCursorAdapter, type CursorAdapterDeps } from './run-cursor';
-import { createMuseAdapter, type MuseAdapterDeps } from './run-muse';
+import { getCliPackageRoot } from './paths';
 
-// Tool profiles stay owned by the shared run code (re-exported so existing
-// `from './run'` imports keep working).
+// The execution lifecycle (adapters, preflight, run records, status reads)
+// lives in the shared host-local run service; re-exported so existing
+// `from './run'` imports keep working.
 export {
   allowedToolsForProfile,
+  CLAUDE_AUTH_LOGIN_COMMAND,
+  claudeAuthStatusShowsLogin,
+  defaultClaudeClientProbe,
+  findExecutableOnPath,
+  findReceiptDeckMismatch,
+  newRunId,
+  RUN_CLAUDE_NOT_INSTALLED_ERROR,
+  RUN_CLAUDE_NOT_SIGNED_IN_ERROR,
   RUN_EDIT_TOOLS,
   RUN_PERMISSION_MODE,
   RUN_READONLY_TOOLS,
   RUN_SETTING_SOURCES,
   RUN_TOOL_PROFILES,
+  writeRunMeta,
+  type ClaudeAdapterDeps,
+  type ClaudeClientProbe,
+  type ClaudeClientStatus,
+  type CodexAdapterDeps,
+  type CursorAdapterDeps,
+  type MuseAdapterDeps,
+  type RunClient,
+  type RunLogLine,
+  type RunMeta,
+  type RunQueryFn,
+  type RunQueryMessage,
+  type RunQueryOptions,
   type RunToolsProfile,
-} from './run-adapter';
-export type { RunClient } from './run-adapter';
-export type { ClaudeAdapterDeps, RunQueryFn, RunQueryMessage, RunQueryOptions } from './run-claude';
-export type { CodexAdapterDeps } from './run-codex';
-export type { CursorAdapterDeps } from './run-cursor';
-export type { MuseAdapterDeps } from './run-muse';
+} from '@agent-deck/backend/agent-run';
 
 export type RunOptions = {
   deckRef: string;
@@ -150,28 +171,6 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
   };
 }
 
-export type RunLogLine =
-  | { t: 'text'; ts: string; text: string }
-  | { t: 'tool'; ts: string; name: string }
-  | { t: 'result'; ts: string; sessionId: string | null; subtype: string; result: unknown }
-  | { t: 'end'; ts: string; sessionId: string | null }
-  | { t: 'notice'; ts: string; message: string; sessionId: string | null }
-  | { t: 'error'; ts: string; message: string; sessionId: string | null };
-
-export type RunMeta = {
-  runId: string;
-  deck: string;
-  client: RunClient;
-  tools: RunToolsProfile;
-  cwd: string;
-  pid: number;
-  startedAt: string;
-  state: 'running' | 'ended' | 'error';
-  sessionId?: string;
-  /** Present only when the launch bypassed a client workspace-trust guard. */
-  trustOverride?: true;
-};
-
 export type RunDeps = {
   /** NOT-400 seam, kept for compatibility: injected `query()` for the Claude adapter. */
   query?: RunQueryFn;
@@ -188,87 +187,9 @@ export type RunDeps = {
   homeDir?: string;
   /** Injected in tests; production probes the local Claude Code CLI (NOT-405). */
   claudeProbe?: ClaudeClientProbe;
+  /** Injected in tests: replaces every client adapter with a fixture. */
+  createAdapter?: (client: RunClient) => ClientAdapter;
 };
-
-/** Outcome of the Claude Code client probe: installed and signed in, or why not. */
-export type ClaudeClientStatus =
-  | { ok: true }
-  | { ok: false; reason: 'not-installed' | 'not-signed-in' };
-
-export type ClaudeClientProbe = () => Promise<ClaudeClientStatus> | ClaudeClientStatus;
-
-/** The one fix command both preflight remedies name. Verified against `claude auth --help`. */
-export const CLAUDE_AUTH_LOGIN_COMMAND = 'claude auth login';
-
-export const RUN_CLAUDE_NOT_INSTALLED_ERROR =
-  `Claude Code is not installed (no \`claude\` on PATH). Install Claude Code, then run \`${CLAUDE_AUTH_LOGIN_COMMAND}\` to sign in, then retry.`;
-
-export const RUN_CLAUDE_NOT_SIGNED_IN_ERROR =
-  `Claude Code is not signed in. Run \`${CLAUDE_AUTH_LOGIN_COMMAND}\` to sign in with your own account, then retry.`;
-
-/** First executable `name` on `pathEnv`, or null. Pure apart from the fs check. */
-export function findExecutableOnPath(name: string, pathEnv = process.env.PATH ?? ''): string | null {
-  for (const dir of pathEnv.split(path.delimiter)) {
-    if (!dir) {
-      continue;
-    }
-    const candidate = path.join(dir, name);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      return candidate;
-    } catch {
-      // Not here; keep scanning.
-    }
-  }
-  return null;
-}
-
-/**
- * True only when `claude auth status` JSON reports a login. Never throws:
- * garbage, an empty string, or a logged-out report all read as signed out.
- */
-export function claudeAuthStatusShowsLogin(stdout: string): boolean {
-  try {
-    return (JSON.parse(stdout) as { loggedIn?: unknown }).loggedIn === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Default Claude Code preflight: the `claude` CLI must be on PATH and
- * `claude auth status` must report a login. Local only — no model call.
- * An explicit ANTHROPIC_API_KEY passes without the OAuth check once the
- * `claude` CLI is found on PATH (API-key onboarding stays out of scope;
- * the friend path signs in via `claude auth login`). Any other failure —
- * logged out, unparseable output, a hung or crashed `claude` — reads as
- * not signed in; re-running the login is the remedy in every case.
- */
-export async function defaultClaudeClientProbe(): Promise<ClaudeClientStatus> {
-  const claudePath = findExecutableOnPath('claude');
-  if (!claudePath) {
-    return { ok: false, reason: 'not-installed' };
-  }
-  if ((process.env.ANTHROPIC_API_KEY ?? '').trim()) {
-    return { ok: true };
-  }
-  try {
-    const out = execFileSync(claudePath, ['auth', 'status'], {
-      encoding: 'utf8',
-      timeout: 15_000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return claudeAuthStatusShowsLogin(out)
-      ? { ok: true }
-      : { ok: false, reason: 'not-signed-in' };
-  } catch (error) {
-    // The binary vanished between the PATH scan and the exec.
-    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
-      return { ok: false, reason: 'not-installed' };
-    }
-    return { ok: false, reason: 'not-signed-in' };
-  }
-}
 
 /**
  * Test-only fake runner for the `run --detach` integration suite. The detached
@@ -402,71 +323,49 @@ function selectClaudeQuery(deps: RunDeps): RunQueryFn | undefined {
   return fake ? fakeQueryFromBehavior(fake) : undefined;
 }
 
-function resolveAdapter(client: RunClient, deps: RunDeps): ClientAdapter {
-  if (client === 'codex') {
-    return createCodexAdapter(deps.codex ?? {});
-  }
-  if (client === 'cursor') {
-    return createCursorAdapter(deps.cursor ?? {});
-  }
-  if (client === 'muse') {
-    return createMuseAdapter(deps.muse ?? {});
-  }
+/**
+ * The shared run service wired to the CLI host: deck lookup through the local
+ * collection, the folder assignment as the MCP launcher reads it, the Claude
+ * SDK resolved from this package, and the detach-integration fake.
+ */
+export function createCliRunService(deps: RunDeps = {}): AgentRunService {
+  const resolveLaunchPlan = deps.resolveLaunchPlan ?? resolveMcpLaunchPlan;
   const query = selectClaudeQuery(deps);
-  return createClaudeAdapter({
-    ...deps.claude,
-    ...(query ? { query } : {}),
+  return createAgentRunService({
+    homeDir: deps.homeDir ?? agentDeckHome(),
+    resolveDeck: selectResolveDeck(deps),
+    async resolveDeckBinding(cwd) {
+      const plan = await resolveLaunchPlan(cwd);
+      return {
+        ...(plan.deckId ? { deckId: plan.deckId } : {}),
+        ...(plan.deckName ? { deckName: plan.deckName } : {}),
+      };
+    },
+    // Selected per probe so the fake is only consulted for claude runs.
+    claudeProbe: () => selectClaudeProbe(deps)(),
+    adapters: {
+      claude: {
+        sdkSearchPaths: [getCliPackageRoot()],
+        ...deps.claude,
+        ...(query ? { query } : {}),
+      },
+      codex: deps.codex,
+      cursor: deps.cursor,
+      muse: deps.muse,
+    },
+    ...(deps.createAdapter ? { createAdapter: deps.createAdapter } : {}),
   });
 }
 
-export function newRunId(): string {
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '');
-  return `run-${stamp}-${randomBytes(3).toString('hex')}`;
-}
-
-/**
- * Atomic run-record write: readers (`run status`, detach tests, orchestrators)
- * poll meta.json while the run child rewrites it, and a plain writeFileSync
- * truncates before writing — a concurrent read lands on empty/partial bytes
- * and JSON.parse throws. Writing to a sibling temp file and renaming keeps
- * every observed state a complete document (rename is atomic on POSIX and
- * Windows). The pid suffix keeps the starter's and the child's temp files
- * distinct when both target the same meta.json.
- */
-export function writeRunMeta(metaPath: string, meta: RunMeta): void {
-  const tmpPath = `${metaPath}.tmp-${process.pid}`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmpPath, metaPath);
-}
-
-function writeMeta(metaPath: string, meta: RunMeta): void {
-  writeRunMeta(metaPath, meta);
-}
-
-/**
- * Session receipt check: the agent harness prints the bound deck as one
- * `get_session_context` receipt line rendering `display_summary`
- * (e.g. `◆ dev · 2 MCP · 0 keys · 1 playbooks`). Returns the mismatching deck
- * token when the log positively shows a deck other than the requested one;
- * a missing receipt is not a mismatch (the pre-start assignment gate is the
- * fail-closed check; this is a second net for a mis-bound session).
- * The fragments are joined before scanning: real clients stream token-level
- * deltas, so one receipt line can arrive split across many text events and a
- * per-fragment scan would miss the mismatch.
- */
-export function findReceiptDeckMismatch(
-  texts: readonly string[],
-  deck: { id: string; name: string },
-): string | null {
-  const joined = texts.join('');
-  const pattern = /◆\s*([^·\r\n]+?)\s*·/g;
-  for (const match of joined.matchAll(pattern)) {
-    const token = match[1].trim();
-    if (token && token !== deck.name && token !== deck.id) {
-      return token;
-    }
-  }
-  return null;
+function runRequest(options: RunOptions, prompt: string): AgentRunRequest {
+  return {
+    deckRef: options.deckRef,
+    client: options.client,
+    cwd: options.cwd,
+    prompt,
+    tools: options.tools,
+    ...(options.resume ? { resumeId: options.resume } : {}),
+  };
 }
 
 /**
@@ -478,12 +377,7 @@ export function findReceiptDeckMismatch(
 export async function validateRunPrereqs(
   options: RunOptions,
   deps: RunPrereqDeps = {},
-): Promise<
-  { promptText: string; deck: { id: string; name: string } } | { error: string }
-> {
-  const resolveDeck = selectResolveDeck(deps);
-  const resolveLaunchPlan = deps.resolveLaunchPlan ?? resolveMcpLaunchPlan;
-
+): Promise<{ promptText: string; deck: RunDeck } | { error: string }> {
   let promptText: string;
   if (options.promptFile !== undefined) {
     try {
@@ -494,61 +388,8 @@ export async function validateRunPrereqs(
   } else {
     promptText = options.prompt ?? '';
   }
-  if (!promptText.trim()) {
-    return { error: 'Prompt is empty: pass a non-empty --prompt or --prompt-file' };
-  }
-
-  let cwdStat: fs.Stats;
-  try {
-    cwdStat = fs.statSync(options.cwd);
-  } catch {
-    return { error: `--cwd does not exist: ${options.cwd}` };
-  }
-  if (!cwdStat.isDirectory()) {
-    return { error: `--cwd is not a directory: ${options.cwd}` };
-  }
-
-  const deck = await resolveDeck(options.deckRef);
-  if (!deck) {
-    return { error: `Deck not found: ${options.deckRef}` };
-  }
-
-  // Fail closed before any model call: the session's MCP launch must already
-  // resolve to the requested deck. Never rewrite the folder assignment here.
-  const plan = await resolveLaunchPlan(options.cwd);
-  if (plan.deckId !== deck.id) {
-    if (!plan.deckId) {
-      return {
-        error:
-          `No deck assigned in ${options.cwd}: run \`agent-deck use ${options.deckRef}\` there first, then retry. Refusing to start an unbound session.`,
-      };
-    }
-    return {
-      error:
-        `Folder ${options.cwd} is bound to "${plan.deckName ?? plan.deckId}" (${plan.deckId}), not "${options.deckRef}". ` +
-        `Run \`agent-deck use ${options.deckRef}\` in that folder to rebind it, then retry. Refusing to start a mis-bound session.`,
-    };
-  }
-
-  // Last and slowest (it shells out to `claude auth status`): for claude runs,
-  // the Claude Code client must be installed and signed in before any model
-  // call (NOT-405). Other clients (codex) skip this probe; their adapters own
-  // their preflight. Shared by the foreground run and the `--detach` starter,
-  // so both fail closed with the same one-line remedy instead of an SDK
-  // stack trace.
-  if (options.client === 'claude') {
-    const client = await selectClaudeProbe(deps)();
-    if (!client.ok) {
-      return {
-        error:
-          client.reason === 'not-installed'
-            ? RUN_CLAUDE_NOT_INSTALLED_ERROR
-            : RUN_CLAUDE_NOT_SIGNED_IN_ERROR,
-      };
-    }
-  }
-
-  return { promptText, deck };
+  const validated = await createCliRunService(deps).validate(runRequest(options, promptText));
+  return validated.ok ? { promptText, deck: validated.deck } : { error: validated.error };
 }
 
 export function printRunHelp(): void {
@@ -597,8 +438,6 @@ Poll a run without parsing files by hand:
 }
 
 export async function runRun(options: RunOptions, deps: RunDeps = {}): Promise<number> {
-  const homeDir = deps.homeDir ?? agentDeckHome();
-
   const prereq = await validateRunPrereqs(options, deps);
   if ('error' in prereq) {
     console.error(prereq.error);
@@ -606,131 +445,27 @@ export async function runRun(options: RunOptions, deps: RunDeps = {}): Promise<n
   }
   const { promptText, deck } = prereq;
 
-  const adapter = resolveAdapter(options.client, deps);
-  const preflight = await adapter.preflight();
-  if (!preflight.ok) {
-    console.error(preflight.remedy);
+  const outcome = await createCliRunService(deps).execute(
+    { request: runRequest(options, promptText), deck },
+    {
+      ...(options.runIdOverride ? { runId: options.runIdOverride } : {}),
+      ...(options.log ? { logPath: options.log } : {}),
+    },
+  );
+  if (outcome.kind === 'rejected') {
+    console.error(outcome.message);
     return 1;
   }
-  const startPlan = adapter.planStart({
-    cwd: options.cwd,
-    prompt: promptText,
-    tools: options.tools,
-    ...(options.resume ? { resumeId: options.resume } : {}),
-  });
-  if (!startPlan.ok) {
-    console.error(startPlan.remedy);
-    return 1;
+  if (outcome.receiptMismatch) {
+    console.error(
+      `Session receipt names deck "${outcome.receiptMismatch}", not "${deck.name}": marking run error. ` +
+        `Rebind the folder with \`agent-deck use ${options.deckRef}\` and retry.`,
+    );
   }
-
-  const runId = options.runIdOverride ?? newRunId();
-  const logPath = options.log ?? path.join(homeDir, 'runs', runId, 'run.jsonl');
-  const metaPath = path.join(path.dirname(logPath), 'meta.json');
-  fs.mkdirSync(path.dirname(logPath), { recursive: true });
-
-  const meta: RunMeta = {
-    runId,
-    deck: deck.id,
-    client: options.client,
-    tools: options.tools,
-    cwd: options.cwd,
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    state: 'running',
-    ...(startPlan.trustOverride ? { trustOverride: true as const } : {}),
-  };
-  writeMeta(metaPath, meta);
-
-  const appendLine = (line: RunLogLine): void => {
-    fs.appendFileSync(logPath, `${JSON.stringify(line)}\n`, 'utf8');
-  };
-
-  let sessionId: string | null = options.resume ?? null;
-  let metaSessionWritten = false;
-  const captureSessionId = (value: unknown): void => {
-    if (typeof value === 'string' && value) {
-      sessionId = value;
-      if (!metaSessionWritten) {
-        metaSessionWritten = true;
-        meta.sessionId = value;
-        writeMeta(metaPath, meta);
-      } else {
-        meta.sessionId = value;
-      }
-    }
-  };
-
-  let lastResultSubtype: string | undefined;
-  const seenTexts: string[] = [];
-  try {
-    const stream = adapter.start({
-      cwd: options.cwd,
-      prompt: promptText,
-      tools: options.tools,
-      ...(options.resume ? { resumeId: options.resume } : {}),
-    });
-    for await (const event of stream) {
-      if (event.sessionId !== undefined) {
-        captureSessionId(event.sessionId);
-      }
-      if (event.kind === 'text') {
-        seenTexts.push(event.text);
-        appendLine({ t: 'text', ts: new Date().toISOString(), text: event.text });
-      } else if (event.kind === 'tool') {
-        appendLine({ t: 'tool', ts: new Date().toISOString(), name: event.name });
-      } else if (event.kind === 'result') {
-        lastResultSubtype = event.subtype;
-        appendLine({
-          t: 'result',
-          ts: new Date().toISOString(),
-          sessionId,
-          subtype: event.subtype,
-          result: event.result,
-        });
-      } else {
-        appendLine({
-          t: 'notice',
-          ts: new Date().toISOString(),
-          message: event.message,
-          sessionId,
-        });
-      }
-    }
-    appendLine({ t: 'end', ts: new Date().toISOString(), sessionId });
-  } catch (error) {
-    appendLine({
-      t: 'error',
-      ts: new Date().toISOString(),
-      message: String(error instanceof Error ? error.message : error).slice(0, 500),
-      sessionId,
-    });
-    meta.state = 'error';
-    if (sessionId) {
-      meta.sessionId = sessionId;
-    }
-    writeMeta(metaPath, meta);
-    console.log(`run ${runId} error: log ${logPath} sessionId ${sessionId ?? 'unknown'}`);
-    return 1;
-  }
-
-  let success = lastResultSubtype === 'success';
-  if (success) {
-    const mismatch = findReceiptDeckMismatch(seenTexts, deck);
-    if (mismatch) {
-      success = false;
-      console.error(
-        `Session receipt names deck "${mismatch}", not "${deck.name}": marking run error. ` +
-          `Rebind the folder with \`agent-deck use ${options.deckRef}\` and retry.`,
-      );
-    }
-  }
-  meta.state = success ? 'ended' : 'error';
-  if (sessionId) {
-    meta.sessionId = sessionId;
-  }
-  writeMeta(metaPath, meta);
-  console.log(`run ${runId} ${meta.state}: log ${logPath} sessionId ${sessionId ?? 'unknown'}`);
-  return success ? 0 : 1;
+  console.log(
+    `run ${outcome.runId} ${outcome.state}: log ${outcome.logPath} sessionId ${outcome.sessionId ?? 'unknown'}`,
+  );
+  return outcome.state === 'ended' ? 0 : 1;
 }
 
 export async function runRunCommand(

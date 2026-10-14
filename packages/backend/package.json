@@ -13,6 +13,10 @@
       "types": "./dist/cli-runtime.d.ts",
       "default": "./dist/cli-runtime.js"
     },
+    "./agent-run": {
+      "types": "./dist/agent-run/index.d.ts",
+      "default": "./dist/agent-run/index.js"
+    },
     "./mcp": {
       "types": "./dist/mcp-index.d.ts",
       "default": "./dist/mcp-index.js"
@@ -24,6 +28,13 @@
     "./playbooks/stub-sync": {
       "types": "./dist/playbooks/stub-sync.d.ts",
       "default": "./dist/playbooks/stub-sync.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "agent-run": [
+        "./dist/agent-run/index.d.ts"
+      ]
     }
   },
   "files": [

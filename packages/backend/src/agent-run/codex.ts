@@ -27,7 +27,7 @@ import {
   type ClientAdapter,
   type NormalizedEvent,
   type RunToolsProfile,
-} from './run-adapter';
+} from './adapter';
 
 /** Tool-profile mapping: readonly is `-s read-only`, edit is `-s workspace-write`. */
 export const CODEX_SANDBOX_FOR_PROFILE: Record<RunToolsProfile, 'read-only' | 'workspace-write'> = {

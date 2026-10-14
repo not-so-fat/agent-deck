@@ -13,19 +13,29 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { McpLaunchPlan } from './mcp-launcher';
 import {
   allowedToolsForProfile,
+  createClaudeAdapter,
+  createCodexAdapter,
+  createCursorAdapter,
+  createMuseAdapter,
   RUN_SUPPORTED_CLIENTS,
   type AdapterStartArgs,
   type ClientAdapter,
+  type CodexProbe,
+  type CodexSpawn,
+  type CursorProbe,
+  type CursorSpawn,
+  type MuseFileReader,
+  type MuseProbe,
+  type MuseSpawn,
   type NormalizedEvent,
   type RunClient,
-} from './run-adapter';
-import { createClaudeAdapter, type RunQueryFn, type RunQueryMessage } from './run-claude';
-import { createCodexAdapter, type CodexProbe, type CodexSpawn } from './run-codex';
-import { createCursorAdapter, type CursorProbe, type CursorSpawn } from './run-cursor';
-import { createMuseAdapter, type MuseFileReader, type MuseProbe, type MuseSpawn } from './run-muse';
+  type RunQueryFn,
+  type RunQueryMessage,
+} from '@agent-deck/backend/agent-run';
+
+import type { McpLaunchPlan } from './mcp-launcher';
 import { runRunCommand, type RunDeps } from './run';
 
 const DECK = { id: 'deck-planner', name: 'planner' };

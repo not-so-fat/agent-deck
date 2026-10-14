@@ -1,7 +1,7 @@
 /**
  * Claude adapter for `agent-deck run` (NOT-404).
  *
- * Moved verbatim out of run.ts (NOT-400): same SDK `query()` params, same
+ * Moved verbatim out of the CLI run.ts (NOT-400): same SDK `query()` params, same
  * message mapping, same missing-SDK remedy. No behavior change.
  */
 import {
@@ -11,8 +11,7 @@ import {
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
-} from './run-adapter';
-import { getCliPackageRoot } from './paths';
+} from './adapter';
 
 /** Minimal structural view of the SDK `query()` surface (the SDK loads lazily). */
 export type RunQueryMessage = {
@@ -38,11 +37,16 @@ export type RunQueryFn = (params: {
   options: RunQueryOptions;
 }) => AsyncIterable<RunQueryMessage>;
 
-export function loadClaudeSdkQuery(): RunQueryFn {
+/**
+ * Resolve the SDK from `searchPaths` (the CLI passes its own package root,
+ * which declares the SDK dependency) or, when omitted, from this module.
+ */
+export function loadClaudeSdkQuery(searchPaths?: readonly string[]): RunQueryFn {
   try {
-    const sdkPath = require.resolve('@anthropic-ai/claude-agent-sdk', {
-      paths: [getCliPackageRoot()],
-    });
+    const sdkPath = require.resolve(
+      '@anthropic-ai/claude-agent-sdk',
+      searchPaths ? { paths: [...searchPaths] } : undefined,
+    );
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sdk = require(sdkPath) as { query?: unknown };
     if (typeof sdk.query !== 'function') {
@@ -61,11 +65,13 @@ export type ClaudeAdapterDeps = {
   query?: RunQueryFn;
   /** Override the SDK loader (tests use this to fail preflight deterministically). */
   loadQuery?: () => RunQueryFn;
+  /** Where the default loader resolves the SDK from (see {@link loadClaudeSdkQuery}). */
+  sdkSearchPaths?: readonly string[];
 };
 
 export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter {
   let cachedQuery: RunQueryFn | undefined = deps.query;
-  const loadQuery = deps.loadQuery ?? loadClaudeSdkQuery;
+  const loadQuery = deps.loadQuery ?? (() => loadClaudeSdkQuery(deps.sdkSearchPaths));
   const getQuery = (): RunQueryFn => {
     if (!cachedQuery) {
       cachedQuery = loadQuery();
