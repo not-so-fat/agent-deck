@@ -9,6 +9,7 @@
  * Tool profiles (`readonly`/`edit`) and meta.json stay owned by the shared run
  * service: adapters receive the profile name and map it to client flags.
  */
+import type { RunResumeOrigin } from './records';
 
 /** Read-only profile: exactly the botmancers prototype allowlist. */
 export const RUN_READONLY_TOOLS: readonly string[] = [
@@ -95,6 +96,11 @@ export type AdapterStartArgs = {
   prompt: string;
   tools: RunToolsProfile;
   resumeId?: string;
+  /**
+   * The trusted run that started `resumeId`, resolved by the run service for
+   * clients whose resume cannot re-apply the profile (codex; NOT-484).
+   */
+  resumedFrom?: RunResumeOrigin;
 };
 
 export type AdapterPreflight = { ok: true } | { ok: false; remedy: string };

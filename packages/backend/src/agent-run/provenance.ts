@@ -18,14 +18,7 @@
 import fs from 'node:fs';
 
 import type { RunClient, RunToolsProfile } from './adapter';
-import { readRunMeta, runPaths, runsRoot, type RunMeta } from './records';
-
-/** The trusted origin run a resume continues; recorded as `resumedFrom`. */
-export type ResumeOrigin = {
-  runId: string;
-  sessionId: string;
-  tools: RunToolsProfile;
-};
+import { readRunMeta, runPaths, runsRoot, type RunMeta, type RunResumeOrigin } from './records';
 
 export type ResumeProvenanceRequest = {
   client: RunClient;
@@ -34,7 +27,7 @@ export type ResumeProvenanceRequest = {
   resumeId: string;
 };
 
-export type ResumeProvenance = { ok: true; origin: ResumeOrigin } | { ok: false; error: string };
+export type ResumeProvenance = { ok: true; origin: RunResumeOrigin } | { ok: false; error: string };
 
 /** Realpath of `dir`, or null when it no longer resolves. */
 export function canonicalCwd(dir: string): string | null {
@@ -46,7 +39,7 @@ export function canonicalCwd(dir: string): string | null {
 }
 
 /** Run records (default location only) that captured `sessionId`, oldest first. */
-function recordsForSession(homeDir: string, sessionId: string, excludeRunId?: string): RunMeta[] {
+function recordsForSession(homeDir: string, sessionId: string): RunMeta[] {
   let entries: string[];
   try {
     entries = fs.readdirSync(runsRoot(homeDir));
@@ -55,9 +48,6 @@ function recordsForSession(homeDir: string, sessionId: string, excludeRunId?: st
   }
   const metas: RunMeta[] = [];
   for (const runId of entries) {
-    if (runId === excludeRunId) {
-      continue;
-    }
     const read = readRunMeta(runPaths(homeDir, runId).metaPath);
     if (read.ok && read.meta.runId === runId && read.meta.sessionId === sessionId) {
       metas.push(read.meta);
@@ -68,17 +58,16 @@ function recordsForSession(homeDir: string, sessionId: string, excludeRunId?: st
 }
 
 /**
- * Resolve and check the origin of a codex resume. `excludeRunId` skips the
- * resuming run's own record (a detached child's starter pre-writes it).
+ * Resolve and check the origin of a codex resume. A detached starter's
+ * pre-written record carries no session id, so it never matches.
  */
 export function resolveResumeProvenance(
   homeDir: string,
   request: ResumeProvenanceRequest,
   deck: { id: string; name: string },
-  excludeRunId?: string,
 ): ResumeProvenance {
   const { resumeId } = request;
-  const records = recordsForSession(homeDir, resumeId, excludeRunId);
+  const records = recordsForSession(homeDir, resumeId);
   const origin = records.find((meta) => !meta.resumedFrom);
   if (!origin) {
     return {

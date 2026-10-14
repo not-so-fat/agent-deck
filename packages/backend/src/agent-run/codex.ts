@@ -7,8 +7,11 @@
  * `codex login status`):
  *
  * - Start accepts `-s read-only|workspace-write`; resume accepts NO `-s`
- *   flag (neither does `fork`), so a resumed `edit` run fails closed in
- *   planStart instead of running with an unenforceable sandbox.
+ *   flag (neither does `fork`): the thread keeps the sandbox it started
+ *   with. So planStart allows a resume only with trusted provenance — the
+ *   Agent Deck run that started the thread, resolved by the run service
+ *   (`provenance.ts`, NOT-484) — whose profile equals the requested one.
+ *   Edit→edit and readonly→readonly continue; anything else fails closed.
  * - Signed-in preflight is `codex login status` (exit 0 + `Logged in ...`),
  *   which makes no model call.
  * - `--skip-git-repo-check` exists on both start and resume and is passed
@@ -321,13 +324,24 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
             'Pass the thread id printed as sessionId in a previous run log.',
         };
       }
-      if (args.resumeId !== undefined && args.tools === 'edit') {
-        return {
-          ok: false,
-          remedy:
-            `Cannot resume codex thread ${args.resumeId} with --tools edit: 'codex exec resume' accepts no sandbox flag, ` +
-            'so the edit sandbox cannot be enforced on resume. Start a new run without --resume, or resume with --tools readonly.',
-        };
+      if (args.resumeId !== undefined) {
+        const origin = args.resumedFrom;
+        if (!origin || origin.sessionId !== args.resumeId) {
+          return {
+            ok: false,
+            remedy:
+              `Cannot resume codex thread ${args.resumeId}: no trusted Agent Deck run is known to have started it, ` +
+              "and 'codex exec resume' accepts no sandbox flag. Resume a sessionId printed by `agent-deck run`, or start a new run.",
+          };
+        }
+        if (origin.tools !== args.tools) {
+          return {
+            ok: false,
+            remedy:
+              `Cannot resume codex thread ${args.resumeId} with --tools ${args.tools}: run ${origin.runId} started it with ` +
+              `--tools ${origin.tools}, and 'codex exec resume' accepts no sandbox flag. Resume with --tools ${origin.tools}, or start a new run.`,
+          };
+        }
       }
       return { ok: true, trustOverride: codexTrustOverride(args.cwd, isGitRepo) };
     },
@@ -343,9 +357,11 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
       if (args.resumeId !== undefined) {
         yield {
           kind: 'notice',
-          message:
-            `Resuming codex thread ${args.resumeId}: the thread keeps its original sandbox; ` +
-            `--tools ${args.tools} is recorded but cannot be re-applied on resume.`,
+          message: args.resumedFrom
+            ? `Resuming codex thread ${args.resumeId} started by run ${args.resumedFrom.runId}: the thread keeps its original sandbox ` +
+              `(--tools ${args.resumedFrom.tools}, ${CODEX_SANDBOX_FOR_PROFILE[args.resumedFrom.tools]}).`
+            : `Resuming codex thread ${args.resumeId}: the thread keeps its original sandbox; ` +
+              `--tools ${args.tools} is recorded but cannot be re-applied on resume.`,
           sessionId: args.resumeId,
         };
       }

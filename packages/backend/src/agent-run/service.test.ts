@@ -158,7 +158,7 @@ describe('agent run service through injected adapters (NOT-479)', () => {
 
     const meta = JSON.parse(fs.readFileSync(outcome.metaPath, 'utf8')) as RunMeta;
     expect(Object.keys(meta)).toEqual([
-      'runId', 'deck', 'client', 'tools', 'cwd', 'pid', 'startedAt', 'state', 'sessionId',
+      'runId', 'deck', 'client', 'tools', 'cwd', 'canonicalCwd', 'pid', 'startedAt', 'state', 'sessionId',
     ]);
     expect(meta).toMatchObject({
       runId: outcome.runId,
@@ -166,6 +166,7 @@ describe('agent run service through injected adapters (NOT-479)', () => {
       client: 'codex',
       tools: 'readonly',
       cwd,
+      canonicalCwd: fs.realpathSync(cwd),
       pid: process.pid,
       state: 'ended',
       sessionId: 'ses_1',
@@ -363,8 +364,8 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
       message: 'cursor-agent is not signed in',
     });
 
-    // The shipped codex adapter behind injected process seams: resumed edit
-    // runs fail closed in planStart, before anything is spawned.
+    // The shipped codex adapter behind injected process seams: a codex
+    // resume no Agent Deck run started fails closed before anything spawns.
     const spawn = vi.fn();
     const codex = createCodexAdapter({
       probe: () => ({ code: 0, stdout: 'Logged in using ChatGPT', stderr: '' }),
@@ -375,7 +376,7 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
     const outcome = await service.start(request(cwd, { tools: 'edit', resumeId: 'thread-1' }));
     expect(outcome.kind).toBe('rejected');
     expect(outcome.kind === 'rejected' && outcome.message).toContain(
-      'Cannot resume codex thread thread-1 with --tools edit',
+      'Cannot resume codex session thread-1: no Agent Deck run on this host started it',
     );
     expect(spawn).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(home, 'runs'))).toBe(false);
@@ -385,6 +386,286 @@ describe('agent run service fail-closed gates (NOT-479)', () => {
     for (const client of RUN_SUPPORTED_CLIENTS) {
       expect(createRunAdapter(client).id).toBe(client);
     }
+  });
+});
+
+const THREAD = '019a0000-0000-7000-8000-00000000c0de';
+const BYPASS = '--dangerously-bypass-approvals-and-sandbox';
+
+type CodexCall = { argv: string[]; cwd: string };
+
+/** The shipped codex adapter over a fake `codex` process that reports `thread`. */
+function codexService(
+  homeDir: string,
+  overrides: Partial<AgentRunServiceDeps> = {},
+  thread = THREAD,
+): { service: ReturnType<typeof createAgentRunService>; calls: CodexCall[] } {
+  const calls: CodexCall[] = [];
+  const lines = [
+    JSON.stringify({ type: 'thread.started', thread_id: thread }),
+    JSON.stringify({
+      type: 'item.completed',
+      item: { id: 'item_0', type: 'agent_message', text: '◆ api · 1 MCP · 0 keys · 2 playbooks' },
+    }),
+    JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }),
+  ];
+  const service = createAgentRunService({
+    homeDir,
+    resolveDeck: async (ref) => (ref === DECK.name || ref === DECK.id ? { ...DECK } : null),
+    resolveDeckBinding: async () => ({ deckId: DECK.id, deckName: DECK.name }),
+    adapters: {
+      codex: {
+        probe: () => ({ code: 0, stdout: '', stderr: 'Logged in using ChatGPT' }),
+        isGitRepo: () => true,
+        spawn: (_bin, argv, opts) => {
+          calls.push({ argv, cwd: opts.cwd });
+          return {
+            stdout: (async function* (): AsyncGenerator<string> {
+              yield* lines;
+            })(),
+            wait: async () => ({ code: 0, stderrTail: '' }),
+          };
+        },
+      },
+    },
+    ...overrides,
+  });
+  return { service, calls };
+}
+
+function runDirs(home: string): string[] {
+  const root = path.join(home, 'runs');
+  return fs.existsSync(root) ? fs.readdirSync(root).sort() : [];
+}
+
+function readMeta(metaPath: string): RunMeta {
+  return JSON.parse(fs.readFileSync(metaPath, 'utf8')) as RunMeta;
+}
+
+async function startOrigin(
+  service: ReturnType<typeof createAgentRunService>,
+  cwd: string,
+  tools: 'readonly' | 'edit',
+) {
+  const origin = await service.start(request(cwd, { tools }));
+  if (origin.kind !== 'finished') throw new Error(origin.message);
+  expect(origin).toMatchObject({ state: 'ended', sessionId: THREAD });
+  return origin;
+}
+
+describe('codex resume provenance (NOT-484)', () => {
+  it.each(['edit', 'readonly'] as const)(
+    'resumes a trusted %s session with the same profile under the unchanged session id',
+    async (tools) => {
+      const home = makeDir('ad-svc-home-');
+      const cwd = makeDir('ad-svc-cwd-');
+      const { service, calls } = codexService(home);
+      const origin = await startOrigin(service, cwd, tools);
+
+      const resumed = await service.start(request(cwd, { tools, resumeId: THREAD, prompt: 'again' }));
+
+      if (resumed.kind !== 'finished') throw new Error(resumed.message);
+      expect(resumed).toMatchObject({ state: 'ended', sessionId: THREAD });
+      expect(resumed.runId).not.toBe(origin.runId);
+      expect(calls.map((call) => call.argv)).toEqual([
+        ['exec', '--json', '-s', tools === 'edit' ? 'workspace-write' : 'read-only', '--', 'brief'],
+        ['exec', 'resume', '--json', '--', THREAD, 'again'],
+      ]);
+      for (const call of calls) {
+        expect(call.argv).not.toContain(BYPASS);
+      }
+
+      const originRef = { runId: origin.runId, sessionId: THREAD, tools };
+      expect(readMeta(resumed.metaPath)).toMatchObject({
+        tools,
+        sessionId: THREAD,
+        canonicalCwd: fs.realpathSync(cwd),
+        resumedFrom: originRef,
+      });
+      expect(readMeta(origin.metaPath).resumedFrom).toBeUndefined();
+      const status = service.status(resumed.runId);
+      expect(status.found && status.info).toMatchObject({ sessionId: THREAD, resumedFrom: originRef });
+      const notice = service.events(resumed.runId)?.events[0]?.event;
+      expect(notice).toMatchObject({ t: 'notice', sessionId: THREAD });
+      expect(String((notice as { message?: string }).message)).toContain(
+        `started by run ${origin.runId}: the thread keeps its original sandbox (--tools ${tools}`,
+      );
+
+      // A second resume still traces to the starting run, not to the resume.
+      const again = await service.start(request(cwd, { tools, resumeId: THREAD }));
+      if (again.kind !== 'finished') throw new Error(again.message);
+      expect(readMeta(again.metaPath).resumedFrom).toEqual(originRef);
+    },
+  );
+
+  it('accepts the same canonical cwd reached through a symlink', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const link = path.join(makeDir('ad-svc-link-'), 'repo');
+    fs.symlinkSync(cwd, link);
+    const { service } = codexService(home);
+    await startOrigin(service, cwd, 'edit');
+
+    const resumed = await service.start(request(link, { tools: 'edit', resumeId: THREAD }));
+
+    expect(resumed).toMatchObject({ kind: 'finished', state: 'ended', sessionId: THREAD });
+  });
+
+  it('rejects readonly→edit and edit→readonly before spawning codex', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const { service, calls } = codexService(home);
+    const readonlyOrigin = await startOrigin(service, cwd, 'readonly');
+    const before = runDirs(home);
+
+    const escalate = await service.start(request(cwd, { tools: 'edit', resumeId: THREAD }));
+    expect(escalate).toEqual({
+      kind: 'rejected',
+      message:
+        `Cannot resume session ${THREAD} with --tools edit: run ${readonlyOrigin.runId} started it with --tools readonly, ` +
+        'and a resumed codex thread keeps its original sandbox. Resume with --tools readonly, or start a new run with --tools edit.',
+    });
+
+    const otherHome = makeDir('ad-svc-home-');
+    const other = codexService(otherHome);
+    await startOrigin(other.service, cwd, 'edit');
+    const mislabel = await other.service.start(request(cwd, { tools: 'readonly', resumeId: THREAD }));
+    expect(mislabel.kind === 'rejected' && mislabel.message).toContain('started it with --tools edit');
+
+    expect(calls).toHaveLength(1);
+    expect(other.calls).toHaveLength(1);
+    expect(runDirs(home)).toEqual(before);
+  });
+
+  it('rejects unknown and external sessions before spawning codex', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const { service, calls } = codexService(home);
+
+    for (const tools of ['readonly', 'edit'] as const) {
+      const unknown = await service.start(request(cwd, { tools, resumeId: THREAD }));
+      expect(unknown).toEqual({
+        kind: 'rejected',
+        message:
+          `Cannot resume codex session ${THREAD}: no Agent Deck run on this host started it, so its sandbox is unknown. ` +
+          'Resume only a sessionId printed by `agent-deck run` (see `agent-deck run list`), or start a new run without --resume.',
+      });
+    }
+
+    // A resume record alone is not provenance: the starting run is missing.
+    const { runId, metaPath } = service.allocate();
+    fs.mkdirSync(path.dirname(metaPath), { recursive: true });
+    writeRunMeta(metaPath, {
+      runId,
+      deck: DECK.id,
+      client: 'codex',
+      tools: 'edit',
+      cwd,
+      pid: DEAD_PID,
+      startedAt: new Date().toISOString(),
+      state: 'ended',
+      sessionId: THREAD,
+      resumedFrom: { runId: 'run-gone', sessionId: THREAD, tools: 'edit' },
+    });
+    const orphan = await service.start(request(cwd, { tools: 'edit', resumeId: THREAD }));
+    expect(orphan.kind === 'rejected' && orphan.message).toContain('no Agent Deck run on this host started it');
+
+    expect(calls).toEqual([]);
+    expect(runDirs(home)).toEqual([runId]);
+  });
+
+  it('rejects a cwd mismatch before spawning codex', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const elsewhere = makeDir('ad-svc-cwd-');
+    const { service, calls } = codexService(home);
+    const origin = await startOrigin(service, cwd, 'edit');
+    const before = runDirs(home);
+
+    const outcome = await service.start(request(elsewhere, { tools: 'edit', resumeId: THREAD }));
+
+    expect(outcome).toEqual({
+      kind: 'rejected',
+      message:
+        `Cannot resume session ${THREAD} in ${elsewhere}: run ${origin.runId} started it in ${fs.realpathSync(cwd)}. ` +
+        `Resume it with --cwd ${fs.realpathSync(cwd)}, or start a new run here.`,
+    });
+    expect(calls).toHaveLength(1);
+    expect(runDirs(home)).toEqual(before);
+  });
+
+  it('rejects a deck mismatch before spawning codex', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const { service, calls } = codexService(home);
+    const origin = await startOrigin(service, cwd, 'edit');
+    const before = runDirs(home);
+
+    const otherDeck = { id: 'deck-other', name: 'other' };
+    const onOther = codexService(home, {
+      resolveDeck: async () => ({ ...otherDeck }),
+      resolveDeckBinding: async () => ({ deckId: otherDeck.id, deckName: otherDeck.name }),
+    });
+    const outcome = await onOther.service.start(
+      request(cwd, { deckRef: 'other', tools: 'edit', resumeId: THREAD }),
+    );
+
+    expect(outcome).toEqual({
+      kind: 'rejected',
+      message:
+        `Cannot resume session ${THREAD} on deck "other" (deck-other): run ${origin.runId} started it on deck ${DECK.id}. ` +
+        'Resume it on that deck, or start a new run on "other".',
+    });
+    expect(calls).toHaveLength(1);
+    expect(onOther.calls).toEqual([]);
+    expect(runDirs(home)).toEqual(before);
+  });
+
+  it('rejects a client mismatch before spawning codex', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const claude = await makeService(
+      home,
+      fixtureAdapter('claude', { events: successEvents(THREAD) }),
+    ).service.start(request(cwd, { client: 'claude', tools: 'edit' }));
+    if (claude.kind !== 'finished') throw new Error(claude.message);
+    const before = runDirs(home);
+    const { service, calls } = codexService(home);
+
+    const outcome = await service.start(request(cwd, { tools: 'edit', resumeId: THREAD }));
+
+    expect(outcome).toEqual({
+      kind: 'rejected',
+      message:
+        `Cannot resume session ${THREAD} with --client codex: it was started by --client claude in run ${claude.runId}. ` +
+        'Resume it with --client claude, or start a new run.',
+    });
+    expect(calls).toEqual([]);
+    expect(runDirs(home)).toEqual(before);
+  });
+
+  it('fails closed in the codex plan when execute is handed a resume without provenance', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const { service, calls } = codexService(home);
+    await startOrigin(service, cwd, 'readonly');
+
+    const unproven = await service.execute({
+      request: request(cwd, { tools: 'edit', resumeId: THREAD }),
+      deck: DECK,
+    });
+    expect(unproven.kind === 'rejected' && unproven.message).toContain(
+      `Cannot resume codex thread ${THREAD}: no trusted Agent Deck run is known to have started it`,
+    );
+    const mismatched = await service.execute({
+      request: request(cwd, { tools: 'edit', resumeId: THREAD }),
+      deck: DECK,
+      resumedFrom: { runId: 'run-x', sessionId: THREAD, tools: 'readonly' },
+    });
+    expect(mismatched.kind === 'rejected' && mismatched.message).toContain(
+      `Cannot resume codex thread ${THREAD} with --tools edit: run run-x started it with --tools readonly`,
+    );
+    expect(calls).toHaveLength(1);
   });
 });
 
