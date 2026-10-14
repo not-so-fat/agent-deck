@@ -23,6 +23,37 @@ describe('AuditStore', () => {
     db.close();
   });
 
+  it('keeps only well-formed identifier detail on finalization events (NOT-486)', () => {
+    const db = new Database(':memory:');
+    const store = new AuditStore(db);
+    store.append({
+      actor: 'ag_one',
+      event: 'agent_run.finalized',
+      targetId: 'run-20261013T000000-abcdef',
+      outcome: 'succeeded',
+      reasonCode: null,
+      detail: {
+        repositoryId: 'repo_0123456789abcdef01234567',
+        manifestDigest: 'a'.repeat(64),
+        fileCount: 3,
+        commit: 'b'.repeat(40),
+        tree: '/Users/someone/repo',
+        baselineDigest: 'secret prompt text',
+        ...({ path: 'src/secret.txt' } as object),
+      },
+    });
+    const [row] = store.list({ limit: 1 });
+    expect(row.detail).toEqual({
+      repositoryId: 'repo_0123456789abcdef01234567',
+      manifestDigest: 'a'.repeat(64),
+      fileCount: 3,
+      commit: 'b'.repeat(40),
+    });
+    expect(JSON.stringify(row)).not.toContain('/Users/someone');
+    expect(JSON.stringify(row)).not.toContain('secret');
+    db.close();
+  });
+
   it('pages by row id without duplicates', () => {
     const db = new Database(':memory:');
     let now = Date.parse('2026-01-01T00:00:00.000Z');

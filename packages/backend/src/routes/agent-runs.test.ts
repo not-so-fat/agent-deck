@@ -7,6 +7,7 @@
  * cursor-ordered events, redaction, and payload-free audit records.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,9 +19,11 @@ import {
   AGENT_RUN_PROMPT_MAX_CHARS,
   AGENT_RUN_REQUEST_BODY_LIMIT_BYTES,
   AgentRunCapabilitiesResponseSchema,
+  AgentRunChangesResponseSchema,
   AgentRunEventsResponseSchema,
   AgentRunStatusSchema,
   CreateAgentRunResponseSchema,
+  FinalizeAgentRunResponseSchema,
 } from '@agent-deck/shared';
 
 import {
@@ -38,6 +41,8 @@ import {
   type AgentRunServiceDeps,
 } from '../agent-run';
 import { createBackendAgentRunService } from '../agent-run-api/host';
+import { FinalizationStore } from '../agent-run-api/finalization-store';
+import { createGitFinalizer, defaultGitRunner, type GitFinalizer } from '../agent-run-api/git-finalize';
 import { AuditStore } from '../audit/store';
 import { ClientGrantStore, parseGrantToken } from '../auth/client-grants';
 import { HOSTED_RUN_AUTH_FAILURE_LIMIT, registerHostedModeGuard } from '../auth/hosted-mode';
@@ -152,6 +157,8 @@ type BuildOptions = {
   service?: Partial<AgentRunServiceDeps>;
   /** Restart: reuse a previous app's home, database, decks, and grant. */
   restartOf?: App;
+  /** NOT-486: Git finalizer (counting runner, pause seams). */
+  finalizer?: GitFinalizer;
 };
 
 async function buildApp(options: BuildOptions = {}) {
@@ -180,7 +187,11 @@ async function buildApp(options: BuildOptions = {}) {
     registerHostedModeGuard(fastify, { enabled: true, publicOrigin: 'https://deck.example.test' });
   }
   registerHttpPolicyHook(fastify);
-  await fastify.register(registerAgentRunRoutes, { prefix: '/api', service });
+  await fastify.register(registerAgentRunRoutes, {
+    prefix: '/api',
+    service,
+    ...(options.finalizer ? { finalizer: options.finalizer } : {}),
+  });
   await fastify.ready();
   apps.push(fastify);
 
@@ -699,7 +710,18 @@ describe('redaction and audit (NOT-480)', () => {
     const responses = [created, status, denied].map((response) => response.body);
 
     const statusKeys = Object.keys(status.json().data).sort();
-    expect(statusKeys).toEqual(['client', 'deckId', 'lastEventAt', 'runId', 'sessionId', 'startedAt', 'state', 'tools']);
+    expect(statusKeys).toEqual([
+      'client',
+      'deckId',
+      'finalization',
+      'lastEventAt',
+      'runId',
+      'sessionId',
+      'startedAt',
+      'state',
+      'tools',
+    ]);
+    expect(status.json().data.finalization).toBeNull();
     for (const body of responses) {
       expect(body).not.toContain(PROMPT_SENTINEL);
       expect(body).not.toContain(RESULT_SENTINEL);
@@ -1192,5 +1214,784 @@ describe('restart reconciliation (NOT-481)', () => {
       live.kill();
       orphan.kill();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NOT-486: baseline capture, changes, and exact-manifest finalization.
+// ---------------------------------------------------------------------------
+
+const FILE_SENTINEL = 'FILE_CONTENT_SENTINEL_never_returned_5d1e';
+const DIRTY_SENTINEL = 'PRE_EXISTING_DIRTY_SENTINEL_never_returned_a0b9';
+const MESSAGE_SENTINEL = 'COMMIT_MESSAGE_SENTINEL_not_audited_c33f';
+
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 'Fixture',
+  GIT_AUTHOR_EMAIL: 'fixture@example.test',
+  GIT_COMMITTER_NAME: 'Fixture',
+  GIT_COMMITTER_EMAIL: 'fixture@example.test',
+  GIT_CONFIG_NOSYSTEM: '1',
+};
+
+function gitIn(dir: string, ...args: string[]): string {
+  const result = spawnSync('git', args, { cwd: dir, env: GIT_ENV, encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
+  }
+  return result.stdout.trim();
+}
+
+function sha256File(file: string): string {
+  return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function sha256Of(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+function writeFile(root: string, rel: string, content: string, mode = 0o644): void {
+  fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+  fs.writeFileSync(path.join(root, rel), content);
+  fs.chmodSync(path.join(root, rel), mode);
+}
+
+function bindFolder(dir: string, deck: { id: string; name: string }): void {
+  fs.mkdirSync(path.join(dir, '.agent-deck'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, '.agent-deck', 'use.json'),
+    JSON.stringify({ version: 3, deckId: deck.id, deckName: deck.name }),
+  );
+}
+
+/**
+ * A committed repository assigned to `deck` (the binding file stays
+ * untracked), with tracked files to modify, delete, and keep.
+ */
+function gitRepo(deck: { id: string; name: string }): string {
+  const dir = fs.realpathSync(makeDir('ad-fin-repo-'));
+  gitIn(dir, 'init', '-q', '-b', 'main');
+  gitIn(dir, 'config', 'user.name', 'Fixture');
+  gitIn(dir, 'config', 'user.email', 'fixture@example.test');
+  gitIn(dir, 'config', 'commit.gpgsign', 'false');
+  writeFile(dir, 'tracked.txt', 'tracked v1\n');
+  writeFile(dir, 'old.txt', 'to be deleted\n');
+  writeFile(dir, 'keep.txt', 'keep v1\n');
+  writeFile(dir, 'README.md', 'readme\n');
+  gitIn(dir, 'add', 'tracked.txt', 'old.txt', 'keep.txt', 'README.md');
+  gitIn(dir, 'commit', '-q', '-m', 'base');
+  bindFolder(dir, deck);
+  return dir;
+}
+
+/** Pre-existing user work the run must leave alone (and the commit must exclude). */
+function dirtyBeforeRun(dir: string): void {
+  writeFile(dir, 'keep.txt', `keep v1\n${DIRTY_SENTINEL} local edit\n`);
+  writeFile(dir, 'notes.txt', `${DIRTY_SENTINEL} untracked notes\n`);
+}
+
+/** What the fixture "agent" changes: new, modified, deleted, and executable files. */
+function agentEdits(dir: string): void {
+  writeFile(dir, 'src/new.txt', `${FILE_SENTINEL} new\n`);
+  writeFile(dir, 'tracked.txt', `tracked v2 ${FILE_SENTINEL}\n`);
+  fs.rmSync(path.join(dir, 'old.txt'));
+  writeFile(dir, 'bin/run.sh', '#!/bin/sh\necho hi\n', 0o755);
+}
+
+function editScript(apply: () => void): () => Script {
+  return () => {
+    apply();
+    return { steps: successSteps() };
+  };
+}
+
+function prepareBody(app: App, cwd: string, extra: Record<string, unknown> = {}) {
+  return startBody(app, { cwd, tools: 'edit', prepareFinalization: true, ...extra });
+}
+
+function getChanges(app: App, token: string, runId: string) {
+  return app.fastify.inject({ method: 'GET', url: `/api/agent-runs/${runId}/changes`, headers: bearer(token) });
+}
+
+function postFinalize(app: App, token: string, runId: string, payload: unknown, key: string | null = freshKey()) {
+  return app.fastify.inject({
+    method: 'POST',
+    url: `/api/agent-runs/${runId}/finalize`,
+    headers: { ...bearer(token), ...(key === null ? {} : { 'idempotency-key': key }) },
+    payload: payload as Record<string, unknown>,
+  });
+}
+
+function finalizeBody(changes: { baselineDigest: string; baseCommit: string; files: unknown[] }, extra: Record<string, unknown> = {}) {
+  return {
+    baselineDigest: changes.baselineDigest,
+    expectedBaseCommit: changes.baseCommit,
+    reviewId: 'review-1',
+    commitMessage: `agent change\n\n${MESSAGE_SENTINEL}\n`,
+    files: changes.files,
+    ...extra,
+  };
+}
+
+/** Byte-level snapshot of what a failed finalization must not change. */
+function repoSnapshot(dir: string, files: string[]) {
+  return {
+    head: gitIn(dir, 'rev-parse', 'HEAD'),
+    commits: gitIn(dir, 'rev-list', '--all', '--count'),
+    staged: gitIn(dir, 'diff', '--cached', '--name-only'),
+    status: gitIn(dir, 'status', '--porcelain=v1', '--untracked-files=all'),
+    lock: fs.existsSync(path.join(gitIn(dir, 'rev-parse', '--absolute-git-dir'), 'index.lock')),
+    files: Object.fromEntries(
+      files.map((rel) => [rel, fs.existsSync(path.join(dir, rel)) ? sha256File(path.join(dir, rel)) : null]),
+    ),
+  };
+}
+
+const WATCHED = ['keep.txt', 'notes.txt', 'tracked.txt', 'src/new.txt', 'bin/run.sh', 'old.txt', '.agent-deck/use.json'];
+
+/** One terminal prepared edit run on a dirty repository, plus a finalization-enabled creating grant. */
+async function preparedRun(options: { finalizer?: GitFinalizer; repo?: (deck: App['deckA']) => string; edits?: (dir: string) => void } = {}) {
+  let repo = '';
+  const app = await buildApp({
+    script: editScript(() => (options.edits ?? agentEdits)(repo)),
+    ...(options.finalizer ? { finalizer: options.finalizer } : {}),
+  });
+  repo = (options.repo ?? gitRepo)(app.deckA);
+  dirtyBeforeRun(repo);
+  app.grants.setFinalizationEnabled(app.runGrant.grant.id, true);
+  const runId = await startRun(app, app.runGrant.token, { cwd: repo, tools: 'edit', prepareFinalization: true });
+  await terminalStatus(app, runId);
+  return { app, repo, runId };
+}
+
+async function readChanges(app: App, runId: string) {
+  const response = await getChanges(app, app.runGrant.token, runId);
+  expect(response.statusCode, response.body).toBe(200);
+  return AgentRunChangesResponseSchema.parse(response.json().data);
+}
+
+describe('prepareFinalization baseline capture (NOT-486)', () => {
+  it('captures an opaque baseline for a dirty working tree and exposes no path or dirty content', async () => {
+    let repo = '';
+    const app = await buildApp({ script: editScript(() => agentEdits(repo)) });
+    repo = gitRepo(app.deckA);
+    dirtyBeforeRun(repo);
+    const created = await post(app, app.runGrant.token, prepareBody(app, repo));
+    expect(created.statusCode, created.body).toBe(202);
+    const runId = created.json().data.runId as string;
+    await terminalStatus(app, runId);
+
+    const status = await getStatus(app, app.runGrant.token, runId);
+    const data = AgentRunStatusSchema.parse(status.json().data);
+    expect(data.finalization).toMatchObject({ state: 'prepared', commit: null });
+    expect(data.finalization?.baselineRef).toMatch(/^bl_[0-9a-f]{24}$/);
+    expect(data.finalization?.baselineDigest).toMatch(/^[0-9a-f]{64}$/);
+    for (const body of [created.body, status.body]) {
+      expect(body).not.toContain(repo);
+      expect(body).not.toContain(DIRTY_SENTINEL);
+      expect(body).not.toContain('keep.txt');
+      expect(body).not.toContain('notes.txt');
+    }
+    expect(app.adapter.starts).toHaveLength(1);
+    // The private baseline is captured before the adapter edits anything.
+    expect(app.audit.list({ limit: 50 }).find((row) => row.event === 'agent_run.finalization_prepared')).toMatchObject({
+      targetId: runId,
+      outcome: 'succeeded',
+      detail: { baselineDigest: data.finalization?.baselineDigest },
+    });
+  });
+
+  it('rejects non-Git, readonly, and dirty-index requests before any adapter start', async () => {
+    const app = await buildApp();
+    const repo = gitRepo(app.deckA);
+    const nonGit = await post(app, app.runGrant.token, prepareBody(app, app.cwdA));
+    expect(nonGit.statusCode).toBe(422);
+    expect(nonGit.json()).toMatchObject({ error_code: 'FINALIZATION_INVALID' });
+
+    const readonly = await post(app, app.runGrant.token, prepareBody(app, repo, { tools: 'readonly' }));
+    expect(readonly.statusCode).toBe(422);
+    expect(readonly.json()).toMatchObject({ error_code: 'FINALIZATION_INVALID' });
+    const defaultTools = await post(app, app.runGrant.token, { ...prepareBody(app, repo), tools: undefined });
+    expect(defaultTools.statusCode).toBe(422);
+
+    writeFile(repo, 'staged.txt', 'staged\n');
+    gitIn(repo, 'add', 'staged.txt');
+    const key = freshKey();
+    const dirtyIndex = await post(app, app.runGrant.token, prepareBody(app, repo), key);
+    expect(dirtyIndex.statusCode).toBe(409);
+    expect(dirtyIndex.json()).toMatchObject({ error_code: 'INDEX_DIRTY' });
+    for (const response of [nonGit, readonly, dirtyIndex]) {
+      expect(response.body).not.toContain(repo);
+      expect(response.body).not.toContain(app.cwdA);
+    }
+    expect(app.adapter.starts).toHaveLength(0);
+    expect(app.createAdapter).toHaveBeenCalled();
+    // Still staged exactly as the user left it; the key is free for a corrected retry.
+    expect(gitIn(repo, 'diff', '--cached', '--name-only')).toBe('staged.txt');
+    gitIn(repo, 'rm', '-q', '--cached', 'staged.txt');
+    expect((await post(app, app.runGrant.token, prepareBody(app, repo), key)).statusCode).toBe(202);
+    expect(app.adapter.starts).toHaveLength(1);
+  });
+
+  it('a run without prepareFinalization has no baseline and cannot expose changes', async () => {
+    const app = await buildApp();
+    const repo = gitRepo(app.deckA);
+    const runId = await startRun(app, app.runGrant.token, { cwd: repo, tools: 'edit' });
+    await terminalStatus(app, runId);
+    expect((await getStatus(app, app.runGrant.token, runId)).json().data.finalization).toBeNull();
+    const changes = await getChanges(app, app.runGrant.token, runId);
+    expect(changes.statusCode).toBe(409);
+    expect(changes.json()).toMatchObject({ error_code: 'FINALIZATION_NOT_PREPARED' });
+    app.grants.setFinalizationEnabled(app.runGrant.grant.id, true);
+    const finalize = await postFinalize(app, app.runGrant.token, runId, {
+      baselineDigest: 'a'.repeat(64),
+      expectedBaseCommit: gitIn(repo, 'rev-parse', 'HEAD'),
+      reviewId: 'r',
+      commitMessage: 'm',
+      files: [{ path: 'README.md', sha256: 'b'.repeat(64), mode: '100644' }],
+    });
+    expect(finalize.statusCode).toBe(409);
+    expect(finalize.json()).toMatchObject({ error_code: 'FINALIZATION_NOT_PREPARED' });
+  });
+});
+
+describe('finalization authorization (NOT-486)', () => {
+  it('denies every principal but the creating finalization-enabled grant, with zero Git mutation', async () => {
+    const { app, repo, runId } = await preparedRun();
+    app.grants.setFinalizationEnabled(app.runGrant.grant.id, false);
+    const changes = await readChanges(app, runId);
+    const body = finalizeBody(changes);
+    const before = repoSnapshot(repo, WATCHED);
+
+    const both = { runsEnabled: true, finalizationEnabled: true };
+    const mcpOnly = app.grants.issueGrant({ label: 'mcp-only', defaultDeck: app.deckA.id });
+    const finalizeOnly = app.grants.issueGrant({ label: 'fin-only', defaultDeck: app.deckA.id, finalizationEnabled: true });
+    const revoked = app.grants.issueGrant({ label: 'revoked', defaultDeck: app.deckA.id, ...both });
+    app.grants.revokeGrant(revoked.grant.id);
+    const expired = app.grants.issueGrant({
+      label: 'expired',
+      defaultDeck: app.deckA.id,
+      ...both,
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const wrongDeck = app.grants.issueGrant({ label: 'deck-b', defaultDeck: app.deckB.id, ...both });
+    const otherGrant = app.grants.issueGrant({ label: 'other', defaultDeck: app.deckA.id, ...both });
+    const owner = dashboardAuthHeaders(app.sessions);
+
+    const cases: Array<{ name: string; headers: Record<string, string>; status: number; code: string }> = [
+      { name: 'missing', headers: {}, status: 401, code: 'GRANT_REQUIRED' },
+      { name: 'dashboard', headers: owner, status: 401, code: 'GRANT_REQUIRED' },
+      { name: 'mcp-only', headers: bearer(mcpOnly.token), status: 403, code: 'RUN_CAPABILITY_REQUIRED' },
+      { name: 'finalize-only', headers: bearer(finalizeOnly.token), status: 403, code: 'RUN_CAPABILITY_REQUIRED' },
+      { name: 'run-only creator', headers: bearer(app.runGrant.token), status: 403, code: 'FINALIZATION_CAPABILITY_REQUIRED' },
+      { name: 'revoked', headers: bearer(revoked.token), status: 401, code: 'GRANT_REQUIRED' },
+      { name: 'expired', headers: bearer(expired.token), status: 401, code: 'GRANT_REQUIRED' },
+      { name: 'wrong-deck', headers: bearer(wrongDeck.token), status: 403, code: 'RESOURCE_OUT_OF_SCOPE' },
+      { name: 'non-creating', headers: bearer(otherGrant.token), status: 403, code: 'RESOURCE_OUT_OF_SCOPE' },
+    ];
+    for (const testCase of cases) {
+      const response = await app.fastify.inject({
+        method: 'POST',
+        url: `/api/agent-runs/${runId}/finalize`,
+        headers: { ...testCase.headers, 'idempotency-key': freshKey() },
+        payload: body,
+      });
+      expect(response.statusCode, testCase.name).toBe(testCase.status);
+      expect(response.json(), testCase.name).toMatchObject({ success: false, error_code: testCase.code });
+    }
+    // Changes belong to the creating grant too.
+    for (const token of [otherGrant.token, wrongDeck.token]) {
+      const denied = await getChanges(app, token, runId);
+      expect(denied.statusCode).toBe(403);
+      expect(denied.body).not.toContain('tracked.txt');
+    }
+    expect((await app.fastify.inject({ method: 'GET', url: `/api/agent-runs/${runId}/changes`, headers: owner })).statusCode).toBe(401);
+    expect(repoSnapshot(repo, WATCHED)).toEqual(before);
+
+    // The owner enables finalization on the creating grant; run capability is unchanged.
+    app.grants.setFinalizationEnabled(app.runGrant.grant.id, true);
+    expect(app.grants.getGrant(app.runGrant.grant.id)).toMatchObject({ runsEnabled: true, finalizationEnabled: true });
+    const ok = await postFinalize(app, app.runGrant.token, runId, body);
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(gitIn(repo, 'rev-parse', 'HEAD')).toBe(ok.json().data.commit);
+  });
+});
+
+describe('GET /api/agent-runs/:runId/changes (NOT-486)', () => {
+  it('returns the ordered run-produced manifest, excluding unchanged pre-existing and binding paths', async () => {
+    const { app, repo, runId } = await preparedRun();
+    const response = await getChanges(app, app.runGrant.token, runId);
+    expect(response.statusCode).toBe(200);
+    const data = AgentRunChangesResponseSchema.parse(response.json().data);
+    expect(data.baseCommit).toBe(gitIn(repo, 'rev-parse', 'HEAD'));
+    expect(data.files).toEqual([
+      { path: 'bin/run.sh', sha256: sha256File(path.join(repo, 'bin/run.sh')), mode: '100755' },
+      { path: 'old.txt', sha256: null, mode: null },
+      { path: 'src/new.txt', sha256: sha256Of(`${FILE_SENTINEL} new\n`), mode: '100644' },
+      { path: 'tracked.txt', sha256: sha256Of(`tracked v2 ${FILE_SENTINEL}\n`), mode: '100644' },
+    ]);
+    expect(Object.keys(response.json().data).sort()).toEqual(
+      ['baseCommit', 'baselineDigest', 'baselineRef', 'files', 'manifestDigest', 'runId'].sort(),
+    );
+    expect(response.body).not.toContain(FILE_SENTINEL);
+    expect(response.body).not.toContain(DIRTY_SENTINEL);
+    expect(response.body).not.toContain(repo);
+    expect(response.body).not.toContain('.agent-deck');
+    expect(response.body).not.toContain('keep.txt');
+  });
+
+  it('denies a running run and a run whose pre-existing dirty path changed', async () => {
+    const hold = deferred();
+    let repo = '';
+    const app = await buildApp({
+      script: () => {
+        agentEdits(repo);
+        writeFile(repo, 'keep.txt', 'the agent overwrote user work\n');
+        return { steps: successSteps(), finishGate: hold.promise };
+      },
+    });
+    repo = gitRepo(app.deckA);
+    dirtyBeforeRun(repo);
+    const runId = await startRun(app, app.runGrant.token, { cwd: repo, tools: 'edit', prepareFinalization: true });
+    await waitFor(() => app.adapter.starts.length, (count) => count === 1);
+    const running = await getChanges(app, app.runGrant.token, runId);
+    expect(running.statusCode).toBe(409);
+    expect(running.json()).toMatchObject({ error_code: 'RUN_NOT_TERMINAL' });
+    hold.release();
+    await terminalStatus(app, runId);
+
+    const changed = await getChanges(app, app.runGrant.token, runId);
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json()).toMatchObject({ error_code: 'BASELINE_MISMATCH' });
+    expect(changed.body).not.toContain('keep.txt');
+    expect(changed.body).not.toContain(repo);
+  });
+});
+
+describe('finalize manifest rejection before staging (NOT-486)', () => {
+  it('fails closed for invalid, unexpected, stale, and mismatched manifests with an empty index', async () => {
+    const { app, repo, runId } = await preparedRun({
+      repo: (deck) => {
+        const dir = gitRepo(deck);
+        // A committed submodule gitlink and a committed symlink that escapes the worktree.
+        const outside = fs.realpathSync(makeDir('ad-fin-outside-'));
+        writeFile(outside, 'secret', 'outside\n');
+        fs.symlinkSync(outside, path.join(dir, 'link'));
+        gitIn(dir, 'update-index', '--add', '--cacheinfo', `160000,${gitIn(dir, 'rev-parse', 'HEAD')},sub`);
+        gitIn(dir, 'add', 'link');
+        gitIn(dir, 'commit', '-q', '-m', 'links');
+        fs.mkdirSync(path.join(dir, 'sub'));
+        return dir;
+      },
+    });
+    const changes = await readChanges(app, runId);
+    const files = changes.files;
+    const before = repoSnapshot(repo, WATCHED);
+    const outsideBefore = fs.readFileSync(path.join(repo, 'link', 'secret'), 'utf8');
+    const entry = (rel: string) => ({ path: rel, sha256: 'c'.repeat(64), mode: '100644' });
+
+    const fixtures: Array<{ name: string; body: Record<string, unknown>; status: number; code: string }> = [
+      { name: 'absolute', body: finalizeBody(changes, { files: [...files, entry('/etc/passwd')] }), status: 422, code: 'PATH_INVALID' },
+      { name: 'traversal', body: finalizeBody(changes, { files: [...files, entry('src/../../x')] }), status: 422, code: 'PATH_INVALID' },
+      { name: '.git', body: finalizeBody(changes, { files: [...files, entry('.git/config')] }), status: 422, code: 'PATH_INVALID' },
+      { name: '.GIT nested', body: finalizeBody(changes, { files: [...files, entry('src/.GIT/hooks')] }), status: 422, code: 'PATH_INVALID' },
+      { name: 'binding', body: finalizeBody(changes, { files: [...files, entry('.agent-deck/use.json')] }), status: 422, code: 'PATH_INVALID' },
+      { name: 'submodule', body: finalizeBody(changes, { files: [...files, entry('sub')] }), status: 422, code: 'PATH_INVALID' },
+      { name: 'inside submodule', body: finalizeBody(changes, { files: [...files, entry('sub/file')] }), status: 422, code: 'PATH_INVALID' },
+      { name: 'symlink escape', body: finalizeBody(changes, { files: [...files, entry('link/secret')] }), status: 422, code: 'PATH_INVALID' },
+      { name: 'symlink itself', body: finalizeBody(changes, { files: [...files, entry('link')] }), status: 422, code: 'PATH_INVALID' },
+      { name: 'duplicate', body: finalizeBody(changes, { files: [...files, files[0]] }), status: 422, code: 'PATH_INVALID' },
+      { name: 'extra unchanged path', body: finalizeBody(changes, { files: [...files, entry('README.md')] }), status: 409, code: 'PATH_UNEXPECTED' },
+      { name: 'pre-existing dirty path', body: finalizeBody(changes, { files: [...files, entry('keep.txt')] }), status: 409, code: 'PATH_UNEXPECTED' },
+      { name: 'missing run path', body: finalizeBody(changes, { files: files.slice(1) }), status: 409, code: 'PATH_UNEXPECTED' },
+      {
+        name: 'digest mismatch',
+        body: finalizeBody(changes, { files: files.map((f, i) => (i === 2 ? { ...f, sha256: 'd'.repeat(64) } : f)) }),
+        status: 409,
+        code: 'DIGEST_MISMATCH',
+      },
+      {
+        name: 'mode mismatch',
+        body: finalizeBody(changes, { files: files.map((f, i) => (i === 0 ? { ...f, mode: '100644' } : f)) }),
+        status: 409,
+        code: 'DIGEST_MISMATCH',
+      },
+      { name: 'stale baseline', body: finalizeBody(changes, { baselineDigest: 'e'.repeat(64) }), status: 409, code: 'BASELINE_MISMATCH' },
+      { name: 'wrong base', body: finalizeBody(changes, { expectedBaseCommit: 'f'.repeat(40) }), status: 409, code: 'BASE_MISMATCH' },
+      { name: 'empty manifest', body: finalizeBody(changes, { files: [] }), status: 400, code: 'INVALID_REQUEST' },
+      { name: 'cwd override', body: finalizeBody(changes, { cwd: '/tmp' }), status: 400, code: 'INVALID_REQUEST' },
+      { name: 'half-deleted entry', body: finalizeBody(changes, { files: [{ path: 'x', sha256: null, mode: '100644' }] }), status: 400, code: 'INVALID_REQUEST' },
+    ];
+    for (const fixture of fixtures) {
+      const response = await postFinalize(app, app.runGrant.token, runId, fixture.body);
+      expect(response.statusCode, `${fixture.name}: ${response.body}`).toBe(fixture.status);
+      expect(response.json(), fixture.name).toMatchObject({ success: false, error_code: fixture.code });
+      expect(response.body).not.toContain(repo);
+      expect(response.body).not.toContain(MESSAGE_SENTINEL);
+      expect(repoSnapshot(repo, WATCHED), fixture.name).toEqual(before);
+    }
+    expect(fs.readFileSync(path.join(repo, 'link', 'secret'), 'utf8')).toBe(outsideBefore);
+
+    // A pre-existing dirty path that changes after the review fails the next attempt.
+    writeFile(repo, 'notes.txt', 'changed after review\n');
+    const changedBaseline = await postFinalize(app, app.runGrant.token, runId, finalizeBody(changes));
+    expect(changedBaseline.statusCode).toBe(409);
+    expect(changedBaseline.json()).toMatchObject({ error_code: 'BASELINE_MISMATCH' });
+    expect(gitIn(repo, 'diff', '--cached', '--name-only')).toBe('');
+    expect(gitIn(repo, 'rev-parse', 'HEAD')).toBe(before.head);
+
+    // A dirty index at finalize time fails closed too, leaving the user's staging as it was.
+    writeFile(repo, 'notes.txt', `${DIRTY_SENTINEL} untracked notes\n`);
+    gitIn(repo, 'add', 'README.md', 'notes.txt');
+    const dirtyIndex = await postFinalize(app, app.runGrant.token, runId, finalizeBody(changes));
+    expect(dirtyIndex.statusCode).toBe(409);
+    expect(dirtyIndex.json()).toMatchObject({ error_code: 'INDEX_DIRTY' });
+    expect(gitIn(repo, 'diff', '--cached', '--name-only')).toBe('notes.txt');
+  });
+});
+
+function counting(deps: Parameters<typeof createGitFinalizer>[0] = {}) {
+  const calls: string[][] = [];
+  const finalizer = createGitFinalizer({
+    ...deps,
+    runGit: (args, options) => {
+      calls.push(args);
+      return defaultGitRunner(args, options);
+    },
+  });
+  return { finalizer, calls };
+}
+
+function expectExactCommit(repo: string, data: Record<string, unknown>, base: string, files: Array<{ path: string; sha256: string | null; mode: string | null }>) {
+  expect(gitIn(repo, 'rev-parse', 'HEAD')).toBe(data.commit);
+  expect(gitIn(repo, 'rev-parse', 'HEAD^')).toBe(base);
+  expect(gitIn(repo, 'rev-parse', 'HEAD^{tree}')).toBe(data.tree);
+  expect(gitIn(repo, 'rev-list', '--count', `${base}..HEAD`)).toBe('1');
+  expect(gitIn(repo, 'log', '-1', '--format=%B')).toBe(`agent change\n\n${MESSAGE_SENTINEL}`);
+  const changed = gitIn(repo, 'diff-tree', '--no-commit-id', '-r', '--no-renames', '--name-status', 'HEAD')
+    .split('\n')
+    .map((line) => line.split('\t'));
+  const inBase = (rel: string) => gitIn(repo, 'ls-tree', base, '--', rel) !== '';
+  expect(changed).toEqual(files.map((file) => [file.sha256 === null ? 'D' : inBase(file.path) ? 'M' : 'A', file.path]));
+  for (const file of files) {
+    if (file.sha256 === null) {
+      continue;
+    }
+    const [mode, , oid] = gitIn(repo, 'ls-tree', 'HEAD', '--', file.path).split(/\s+/);
+    expect(mode).toBe(file.mode);
+    const blob = spawnSync('git', ['cat-file', 'blob', oid], { cwd: repo });
+    expect(createHash('sha256').update(blob.stdout).digest('hex')).toBe(file.sha256);
+  }
+  // Nothing unrelated or binding entered the commit, and the real index matches the new HEAD.
+  expect(gitIn(repo, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toMatch(/keep\.txt\n?.*notes|\.agent-deck|notes\.txt/);
+  expect(gitIn(repo, 'show', 'HEAD:keep.txt')).toBe('keep v1');
+  expect(gitIn(repo, 'diff', '--cached', '--name-only')).toBe('');
+}
+
+describe('POST /api/agent-runs/:runId/finalize commits exactly the manifest (NOT-486)', () => {
+  for (const layout of ['full clone', 'linked worktree'] as const) {
+    it(`creates one commit on expectedBaseCommit in a ${layout}`, async () => {
+      const { app, repo, runId } = await preparedRun({
+        repo: (deck) => {
+          const origin = gitRepo(deck);
+          if (layout === 'full clone') {
+            const clone = path.join(fs.realpathSync(makeDir('ad-fin-clone-')), 'clone');
+            gitIn(path.dirname(clone), 'clone', '-q', origin, clone);
+            gitIn(clone, 'config', 'user.name', 'Fixture');
+            gitIn(clone, 'config', 'user.email', 'fixture@example.test');
+            gitIn(clone, 'config', 'commit.gpgsign', 'false');
+            bindFolder(clone, deck);
+            return clone;
+          }
+          const worktree = path.join(fs.realpathSync(makeDir('ad-fin-wt-')), 'wt');
+          gitIn(origin, 'worktree', 'add', '-q', '-b', 'feature', worktree);
+          bindFolder(worktree, deck);
+          return worktree;
+        },
+      });
+      const base = gitIn(repo, 'rev-parse', 'HEAD');
+      const unrelated = { keep: sha256File(path.join(repo, 'keep.txt')), notes: sha256File(path.join(repo, 'notes.txt')) };
+      const changes = await readChanges(app, runId);
+      const response = await postFinalize(app, app.runGrant.token, runId, finalizeBody(changes));
+      expect(response.statusCode, response.body).toBe(200);
+      const data = FinalizeAgentRunResponseSchema.parse(response.json().data);
+      expect(data).toMatchObject({
+        runId,
+        finalizationState: 'finalized',
+        parent: base,
+        manifestDigest: changes.manifestDigest,
+        fileCount: 4,
+        reviewId: 'review-1',
+      });
+      expect(response.body).not.toContain(repo);
+      expect(response.body).not.toContain(FILE_SENTINEL);
+      expect(response.body).not.toContain(MESSAGE_SENTINEL);
+      expectExactCommit(repo, data, base, changes.files);
+      if (layout === 'linked worktree') {
+        expect(gitIn(repo, 'symbolic-ref', 'HEAD')).toBe('refs/heads/feature');
+        expect(gitIn(repo, 'rev-parse', 'main')).toBe(base);
+      }
+      // Unrelated pre-existing work is byte-identical and still uncommitted.
+      expect(sha256File(path.join(repo, 'keep.txt'))).toBe(unrelated.keep);
+      expect(sha256File(path.join(repo, 'notes.txt'))).toBe(unrelated.notes);
+      const porcelain = spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: repo, encoding: 'utf8' });
+      expect(porcelain.stdout.split('\n').filter(Boolean).sort()).toEqual(
+        [' M keep.txt', '?? .agent-deck/use.json', '?? notes.txt'].sort(),
+      );
+      const status = AgentRunStatusSchema.parse((await getStatus(app, app.runGrant.token, runId)).json().data);
+      expect(status.finalization).toMatchObject({ state: 'finalized', commit: data.commit });
+    });
+  }
+});
+
+describe('finalization idempotency, locks, and ref races (NOT-486)', () => {
+  it('replays the same key without Git, conflicts on a changed body or key, and survives restart', async () => {
+    const { finalizer, calls } = counting();
+    const { app, repo, runId } = await preparedRun({ finalizer });
+    const changes = await readChanges(app, runId);
+    const body = finalizeBody(changes);
+    const key = freshKey();
+    const first = await postFinalize(app, app.runGrant.token, runId, body, key);
+    expect(first.statusCode, first.body).toBe(200);
+    const commitsAfter = gitIn(repo, 'rev-list', '--all', '--count');
+    const gitCalls = calls.length;
+
+    const replay = await postFinalize(app, app.runGrant.token, runId, { ...body, files: [...body.files].reverse() }, key);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().data).toEqual(first.json().data);
+    expect(calls.length).toBe(gitCalls);
+
+    const changedBody = await postFinalize(app, app.runGrant.token, runId, { ...body, reviewId: 'review-2' }, key);
+    expect(changedBody.statusCode).toBe(409);
+    expect(changedBody.json()).toMatchObject({ error_code: 'IDEMPOTENCY_CONFLICT' });
+    const otherKey = await postFinalize(app, app.runGrant.token, runId, body);
+    expect(otherKey.statusCode).toBe(409);
+    expect(otherKey.json()).toMatchObject({ error_code: 'IDEMPOTENCY_CONFLICT' });
+
+    const restarted = await buildApp({ restartOf: app, finalizer });
+    const afterRestart = await postFinalize(restarted, app.runGrant.token, runId, body, key);
+    expect(afterRestart.statusCode).toBe(200);
+    expect(afterRestart.json().data).toEqual(first.json().data);
+    expect(calls.length).toBe(gitCalls);
+    expect(gitIn(repo, 'rev-list', '--all', '--count')).toBe(commitsAfter);
+    expect(app.audit.list({ limit: 100 }).filter((row) => row.event === 'agent_run.finalized' && row.reasonCode === 'replayed')).toHaveLength(2);
+  });
+
+  it('concurrent requests produce one commit: same key shares it, another key conflicts', async () => {
+    const gate = deferred();
+    const { finalizer } = counting({ pause: async (stage) => (stage === 'staged' ? gate.promise : undefined) });
+    const { app, repo, runId } = await preparedRun({ finalizer });
+    const changes = await readChanges(app, runId);
+    const base = gitIn(repo, 'rev-parse', 'HEAD');
+    const key = freshKey();
+    const a = postFinalize(app, app.runGrant.token, runId, finalizeBody(changes), key);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const b = postFinalize(app, app.runGrant.token, runId, finalizeBody(changes), key);
+    const c = postFinalize(app, app.runGrant.token, runId, finalizeBody(changes));
+    const conflict = await c;
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({ error_code: 'IDEMPOTENCY_CONFLICT' });
+    gate.release();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(ra.statusCode, ra.body).toBe(200);
+    expect(rb.json().data).toEqual(ra.json().data);
+    expect(gitIn(repo, 'rev-list', '--count', `${base}..HEAD`)).toBe('1');
+  });
+
+  it('fails closed on a held Git index lock without removing it, then succeeds once released', async () => {
+    const { app, repo, runId } = await preparedRun();
+    const changes = await readChanges(app, runId);
+    const lock = path.join(gitIn(repo, 'rev-parse', '--absolute-git-dir'), 'index.lock');
+    fs.writeFileSync(lock, '');
+    const before = repoSnapshot(repo, WATCHED);
+    const key = freshKey();
+    const locked = await postFinalize(app, app.runGrant.token, runId, finalizeBody(changes), key);
+    expect(locked.statusCode).toBe(409);
+    expect(locked.json()).toMatchObject({ error_code: 'GIT_LOCK_CONFLICT' });
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(repoSnapshot(repo, WATCHED)).toEqual(before);
+
+    fs.rmSync(lock);
+    const retried = await postFinalize(app, app.runGrant.token, runId, finalizeBody(changes), key);
+    expect(retried.statusCode, retried.body).toBe(200);
+  });
+
+  it('a ref that moves before the compare-and-swap returns REF_RACE without a second commit', async () => {
+    let repo = '';
+    let raced = '';
+    const { finalizer } = counting({
+      pause: async (stage) => {
+        if (stage === 'commit-object') {
+          const tree = gitIn(repo, 'rev-parse', 'HEAD^{tree}');
+          raced = gitIn(repo, 'commit-tree', tree, '-p', 'HEAD', '-m', 'someone else');
+          gitIn(repo, 'update-ref', 'refs/heads/main', raced);
+        }
+      },
+    });
+    const prepared = await preparedRun({ finalizer });
+    repo = prepared.repo;
+    const { app, runId } = prepared;
+    const changes = await readChanges(app, runId);
+    const base = gitIn(repo, 'rev-parse', 'HEAD');
+    const unrelated = sha256File(path.join(repo, 'keep.txt'));
+    const response = await postFinalize(app, app.runGrant.token, runId, finalizeBody(changes));
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error_code: 'REF_RACE' });
+    expect(gitIn(repo, 'rev-parse', 'refs/heads/main')).toBe(raced);
+    expect(gitIn(repo, 'rev-list', '--count', `${base}..main`)).toBe('1');
+    expect(gitIn(repo, 'diff', '--cached', '--name-only', base)).toBe('');
+    expect(fs.existsSync(path.join(repo, '.git', 'index.lock'))).toBe(false);
+    expect(sha256File(path.join(repo, 'keep.txt'))).toBe(unrelated);
+    expect(fs.readdirSync(path.join(repo, '.git')).filter((name) => name.startsWith('agent-deck-finalize-'))).toEqual([]);
+    expect((await getStatus(app, app.runGrant.token, runId)).json().data.finalization).toMatchObject({ state: 'prepared' });
+  });
+});
+
+describe('finalization cancellation (NOT-486)', () => {
+  it('cancel before the commit removes only finalizer staging; cancel after the commit keeps history', async () => {
+    let stopAt: string | null = 'staged';
+    const reached = deferred();
+    const resume = deferred();
+    const { finalizer } = counting({
+      pause: async (stage) => {
+        if (stage === stopAt) {
+          reached.release();
+          await resume.promise;
+        }
+      },
+    });
+    const { app, repo, runId } = await preparedRun({ finalizer });
+    const changes = await readChanges(app, runId);
+    const before = repoSnapshot(repo, WATCHED);
+
+    const pending = postFinalize(app, app.runGrant.token, runId, finalizeBody(changes));
+    await reached.promise;
+    expect(fs.existsSync(path.join(repo, '.git', 'index.lock'))).toBe(true);
+    const cancel = await app.fastify.inject({
+      method: 'POST',
+      url: `/api/agent-runs/${runId}/cancel`,
+      headers: bearer(app.runGrant.token),
+    });
+    expect(cancel.statusCode).toBe(200);
+    resume.release();
+    const canceled = await pending;
+    expect(canceled.statusCode).toBe(409);
+    expect(canceled.json()).toMatchObject({ error_code: 'FINALIZATION_CANCELED' });
+    expect(repoSnapshot(repo, WATCHED)).toEqual(before);
+    expect(fs.readdirSync(path.join(repo, '.git')).filter((name) => name.startsWith('agent-deck-finalize-'))).toEqual([]);
+
+    // After the ref moved, cancellation is ignored: history is never rewritten.
+    stopAt = 'ref-updated';
+    const reachedAfter = deferred();
+    const resumeAfter = deferred();
+    const after = createGitFinalizer({
+      pause: async (stage) => {
+        if (stage === 'ref-updated') {
+          reachedAfter.release();
+          await resumeAfter.promise;
+        }
+      },
+    });
+    const restarted = await buildApp({ restartOf: app, finalizer: after });
+    const committing = postFinalize(restarted, app.runGrant.token, runId, finalizeBody(changes));
+    await reachedAfter.promise;
+    await restarted.fastify.inject({ method: 'POST', url: `/api/agent-runs/${runId}/cancel`, headers: bearer(app.runGrant.token) });
+    resumeAfter.release();
+    const committed = await committing;
+    expect(committed.statusCode, committed.body).toBe(200);
+    expectExactCommit(repo, committed.json().data, before.head, changes.files);
+  });
+});
+
+describe('finalization audit redaction (NOT-486)', () => {
+  it('audits identifiers, counts, digests, and commit ids only', async () => {
+    const { app, repo, runId } = await preparedRun();
+    const changes = await readChanges(app, runId);
+    await postFinalize(app, app.runGrant.token, runId, finalizeBody(changes, { expectedBaseCommit: 'f'.repeat(40) }));
+    const ok = await postFinalize(app, app.runGrant.token, runId, finalizeBody(changes));
+    expect(ok.statusCode).toBe(200);
+    const rows = app.audit.list({ limit: 100 });
+    const finalized = rows.find((row) => row.event === 'agent_run.finalized' && row.outcome === 'succeeded');
+    expect(finalized).toMatchObject({
+      actor: app.runGrant.grant.id,
+      targetId: runId,
+      reasonCode: null,
+      detail: {
+        manifestDigest: changes.manifestDigest,
+        baselineDigest: changes.baselineDigest,
+        fileCount: 4,
+        commit: ok.json().data.commit,
+        tree: ok.json().data.tree,
+      },
+    });
+    expect(finalized?.detail?.repositoryId).toMatch(/^repo_[0-9a-f]{24}$/);
+    expect(rows.find((row) => row.event === 'agent_run.finalized' && row.reasonCode === 'base_mismatch')).toMatchObject({
+      outcome: 'denied',
+    });
+    expect(rows.some((row) => row.event === 'agent_run.changes_read' && row.outcome === 'succeeded')).toBe(true);
+    const dump = JSON.stringify(rows);
+    for (const secret of [
+      PROMPT_SENTINEL,
+      RESULT_SENTINEL,
+      FILE_SENTINEL,
+      DIRTY_SENTINEL,
+      MESSAGE_SENTINEL,
+      app.runGrant.token,
+      parseGrantToken(app.runGrant.token)!.secret,
+      repo,
+      'tracked.txt',
+      'keep.txt',
+    ]) {
+      expect(dump).not.toContain(secret);
+    }
+  });
+});
+
+describe('finalization restart recovery (NOT-486)', () => {
+  it('a crash after the ref moved recovers as finalized; one before it releases and removes only its own staging', async () => {
+    const { app, repo, runId } = await preparedRun();
+    const changes = await readChanges(app, runId);
+    const base = changes.baseCommit;
+    const store = new FinalizationStore(app.db.getSqliteDatabase());
+    const gitDir = gitIn(repo, 'rev-parse', '--absolute-git-dir');
+
+    // Crash before the compare-and-swap: a claim, our private index, and our index.lock remain.
+    store.claim({ runId, grantId: app.runGrant.grant.id, idempotencyKey: 'crashed', requestHash: 'h' });
+    const lock = path.join(gitDir, 'index.lock');
+    fs.writeFileSync(lock, '');
+    fs.writeFileSync(path.join(gitDir, `agent-deck-finalize-${runId}-deadbeef.index`), 'x');
+    const foreign = path.join(gitDir, 'agent-deck-finalize-run-other-0000.index');
+    fs.writeFileSync(foreign, 'not ours');
+    store.markLocked(runId, fs.lstatSync(lock).ino);
+    const restarted = await buildApp({ restartOf: app });
+    expect(store.get(runId)).toBeNull();
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.readdirSync(gitDir).filter((name) => name.includes(runId))).toEqual([]);
+    expect(fs.existsSync(foreign)).toBe(true);
+    expect(gitIn(repo, 'rev-parse', 'HEAD')).toBe(base);
+    expect((await getStatus(restarted, app.runGrant.token, runId)).json().data.finalization).toMatchObject({ state: 'prepared' });
+
+    // Crash after the ref moved to the recorded commit: the outcome is durable.
+    const tree = gitIn(repo, 'rev-parse', 'HEAD^{tree}');
+    const commit = gitIn(repo, 'commit-tree', tree, '-p', base, '-m', 'recorded');
+    store.claim({ runId, grantId: app.runGrant.grant.id, idempotencyKey: 'crashed-2', requestHash: 'h2' });
+    const result = {
+      runId,
+      finalizationState: 'finalized' as const,
+      commit,
+      tree,
+      parent: base,
+      manifestDigest: changes.manifestDigest,
+      fileCount: changes.files.length,
+      reviewId: 'review-1',
+    };
+    store.markPending(runId, result);
+    gitIn(repo, 'update-ref', 'refs/heads/main', commit, base);
+    const again = await buildApp({ restartOf: app });
+    expect(store.get(runId)).toMatchObject({ state: 'finalized', result });
+    expect((await getStatus(again, app.runGrant.token, runId)).json().data.finalization).toMatchObject({
+      state: 'finalized',
+      commit,
+    });
   });
 });

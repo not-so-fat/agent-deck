@@ -146,6 +146,10 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['GET'], pattern: /^\/api\/agent-runs\/[^/]+$/, policy: 'requireRunGrantOrDashboard' },
   { methods: ['GET'], pattern: /^\/api\/agent-runs\/[^/]+\/events$/, policy: 'requireRunGrantOrDashboard' },
   { methods: ['POST'], pattern: /^\/api\/agent-runs\/[^/]+\/cancel$/, policy: 'requireRunGrantOrDashboard' },
+  // NOT-486: changes and finalization belong to the creating grant only; the
+  // route also requires `finalizationEnabled` to finalize.
+  { methods: ['GET'], pattern: /^\/api\/agent-runs\/[^/]+\/changes$/, policy: 'requireRunGrant' },
+  { methods: ['POST'], pattern: /^\/api\/agent-runs\/[^/]+\/finalize$/, policy: 'requireRunGrant' },
 
   // Agent or dashboard (dual-auth routes — handler branches on principal kind)
   { methods: ['GET'], pattern: /^\/api\/decks$/, policy: 'requireAgentOrDashboard' },

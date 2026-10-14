@@ -46,6 +46,7 @@ can inspect and cancel every run but cannot start one.
 | Missing, malformed, revoked, or expired bearer | 401 | `GRANT_REQUIRED` |
 | Grant not run-enabled | 403 | `RUN_CAPABILITY_REQUIRED` |
 | Deck not allowed, or run started by another grant | 403 | `RESOURCE_OUT_OF_SCOPE` |
+| Grant not finalization-enabled (finalize only) | 403 | `FINALIZATION_CAPABILITY_REQUIRED` |
 
 ## Endpoints
 
@@ -56,6 +57,8 @@ can inspect and cancel every run but cannot start one.
 | `GET /api/agent-runs/:runId` | Status |
 | `GET /api/agent-runs/:runId/events?after=<cursor>&limit=<n>` | Ordered normalized events |
 | `POST /api/agent-runs/:runId/cancel` | Idempotent cancel |
+| `GET /api/agent-runs/:runId/changes` | Candidate manifest of a terminal prepared run ([finalization](#finalization-one-reviewed-manifest--one-local-commit)) |
+| `POST /api/agent-runs/:runId/finalize` | One reviewed manifest → one local commit (requires `Idempotency-Key`) |
 
 Success bodies are `{ "success": true, "data": … }`; errors are
 `{ "success": false, "error": "<message>", "error_code": "<CODE>" }`.
@@ -127,6 +130,135 @@ and changes nothing. `409 RUN_NOT_CANCELABLE` means the run is live under
 another host process that recorded no process group (not reachable for runs
 this backend started).
 
+## Finalization: one reviewed manifest → one local commit
+
+A coordinator that reviewed an edit run can turn exactly the files the run
+changed into **one local commit** on the Agent Deck host — without the coding
+agent ever holding `.git` authority and without the caller running Git.
+
+**Policy / mechanism split.** The caller (for example Botmancers) owns the
+review *policy*: which run, which reviewed manifest, the `reviewId`, the
+commit message. Agent Deck owns the *mechanism*: it proves that manifest
+against the repository and creates the commit with a fixed set of Git
+plumbing commands (repository hooks and fsmonitor disabled). There is no
+endpoint that accepts Git arguments.
+
+**Same-host workspace.** The repository is always the run's captured `cwd`
+on the Agent Deck host. `/changes` and `/finalize` take no `cwd`; a request
+that adds one is `400 INVALID_REQUEST`.
+
+**Capability opt-in.** Finalizing needs a grant with **both** `runsEnabled`
+and `finalizationEnabled` (default `false`; existing and run-only grants
+cannot finalize). The owner enables it on the same route:
+
+```bash
+curl -X PUT http://127.0.0.1:1111/api/agent-grants/<grantId>/capabilities \
+  -b <dashboard-cookie> -H 'content-type: application/json' -d '{"finalizationEnabled":true}'
+```
+
+Only the **creating** grant, on a deck it is still allowed, reads `/changes`
+or finalizes; the owner dashboard cannot (`401 GRANT_REQUIRED`).
+
+### 1. Prepare before launch
+
+Add `"prepareFinalization": true` to `POST /api/agent-runs`. It is valid only
+with `"tools": "edit"`, a `cwd` inside a Git worktree whose `HEAD` is a commit
+on a local branch (or detached), and a **clean Git index** (nothing staged or
+unmerged). Otherwise the run fails before any adapter starts:
+`422 FINALIZATION_INVALID` or `409 INDEX_DIRTY`. A dirty *working tree* is
+fine: before launch Agent Deck records a private baseline of every
+pre-existing dirty path and its content digest. Status shows only
+
+```json
+"finalization": { "baselineRef": "bl_…", "baselineDigest": "<sha256>", "state": "prepared", "commit": null }
+```
+
+(`state` becomes `finalizing`, then `finalized` with the commit id). Runs
+without `prepareFinalization` report `"finalization": null` and can never be
+finalized (`409 FINALIZATION_NOT_PREPARED`).
+
+### 2. Read the candidate manifest
+
+Once the run is terminal (`ended`, `error`, `died`, or `canceled`; otherwise
+`409 RUN_NOT_TERMINAL`):
+
+```bash
+curl http://<agent-deck-host>/api/agent-runs/<runId>/changes -H "Authorization: Bearer $GRANT"
+# {"success":true,"data":{"runId":"run-…","baselineRef":"bl_…","baselineDigest":"…","baseCommit":"<HEAD>",
+#   "files":[{"path":"src/a.ts","sha256":"…","mode":"100644"},{"path":"old.txt","sha256":null,"mode":null}],
+#   "manifestDigest":"…"}}
+```
+
+`files` is every path the run produced, ordered by path: repository-relative,
+`sha256` of the exact working-tree bytes, Git `mode` (`100644`/`100755`), and
+`sha256: null, mode: null` for a deletion. Pre-existing dirty paths that the
+run left byte-identical are excluded; if the run changed one,
+`409 BASELINE_MISMATCH`. Agent Deck's own `.agent-deck/` folder (the deck
+binding) is never a candidate and never committable. No file content or host
+path is returned. A run that produced a symlink, a submodule change, or a
+nested repository is `422 PATH_INVALID`.
+
+### 3. Finalize
+
+```bash
+curl -X POST http://<agent-deck-host>/api/agent-runs/<runId>/finalize \
+  -H "Authorization: Bearer $GRANT" -H 'Idempotency-Key: review-42' -H 'content-type: application/json' \
+  -d '{"baselineDigest":"…","expectedBaseCommit":"<baseCommit>","reviewId":"review-42",
+       "commitMessage":"Fix the parser","files":[…exactly the reviewed manifest…]}'
+# 200 {"success":true,"data":{"runId":"run-…","finalizationState":"finalized","commit":"…","tree":"…",
+#      "parent":"<expectedBaseCommit>","manifestDigest":"…","fileCount":2,"reviewId":"review-42"}}
+```
+
+`reviewId` is 1–200 printable ASCII characters; `commitMessage` is non-empty,
+at most 8192 characters, and used verbatim; `files` holds 1–1000 entries.
+Before staging Agent Deck re-checks the baseline, `HEAD` and its ref, the
+index, every path (no absolute path, `..`, `.git` segment, `.agent-deck/`,
+duplicate, submodule, or path through a symlink), and the latest candidate
+snapshot: the manifest must equal it exactly — same paths, digests, and modes.
+It then stages exactly those paths **in a private index** from the verified
+bytes, re-reads the staged set and blob digests, writes one commit whose only
+parent is `expectedBaseCommit`, and moves the ref by compare-and-swap. The
+real index is held under Git's own `index.lock` throughout and replaced only
+after the ref moved, so it then matches the new `HEAD`; unrelated dirty files
+stay dirty and byte-identical. Agent Deck never checks out, resets, cleans,
+deletes working-tree files, pushes, or opens a pull request.
+
+| Failure | Status | `error_code` |
+|---------|--------|--------------|
+| Missing/invalid `Idempotency-Key` | 400 | `IDEMPOTENCY_KEY_REQUIRED` |
+| Body not the strict schema (empty manifest, extra field such as `cwd`) | 400 | `INVALID_REQUEST` |
+| Run not prepared / not terminal | 409 | `FINALIZATION_NOT_PREPARED` / `RUN_NOT_TERMINAL` |
+| Workspace no longer the captured Git worktree | 422 | `FINALIZATION_INVALID` |
+| `expectedBaseCommit` or `HEAD`/ref differs from the baseline | 409 | `BASE_MISMATCH` |
+| Index has staged or unmerged changes | 409 | `INDEX_DIRTY` |
+| `baselineDigest` stale, or a pre-existing dirty path changed | 409 | `BASELINE_MISMATCH` |
+| Absolute, traversal, `.git`, `.agent-deck/`, duplicate, submodule, or symlink path | 422 | `PATH_INVALID` |
+| Manifest names a path the run did not change, or omits one it did | 409 | `PATH_UNEXPECTED` |
+| A digest or mode differs from the working tree or staged blob | 409 | `DIGEST_MISMATCH` |
+| Same key with another body, or another finalization for this run | 409 | `IDEMPOTENCY_CONFLICT` |
+| `index.lock` or ref lock held, or another finalization on this repository ref | 409 | `GIT_LOCK_CONFLICT` |
+| The ref moved before the compare-and-swap | 409 | `REF_RACE` |
+| Canceled before the commit | 409 | `FINALIZATION_CANCELED` |
+| Git itself failed (for example no `user.name`/`user.email` on the host repo) | 500 | `FINALIZATION_FAILED` |
+
+**Idempotency.** A run has at most one finalization. The same
+`Idempotency-Key` with the same normalized request (manifest order does not
+matter) returns the original result — across backend restarts and without
+running Git again; a concurrent identical request waits for and shares the
+first one's result. Any other request for a finalized or in-progress run is
+`409 IDEMPOTENCY_CONFLICT`. A failure before the commit frees the key, so a
+corrected retry may reuse it.
+
+**Cancellation.** `POST /api/agent-runs/:runId/cancel`, or the caller
+disconnecting, cancels an in-flight finalization up to the moment the ref
+moves: the private index and the `index.lock` it created are removed and the
+working tree, real index, and ref are untouched (`409 FINALIZATION_CANCELED`).
+Once the ref moved the commit stands; cancellation never rewrites history.
+Finalizations serialize per repository and ref and fail closed — they never
+wait — on a held lock. If the backend dies mid-finalization, the next start
+marks it `finalized` when the ref already points at the recorded commit, and
+otherwise releases it, removing only the staging files it created.
+
 ## Restart recovery
 
 When the backend starts it reconciles every run still recorded as
@@ -145,7 +277,19 @@ Run creation, denial, terminal outcome, cancellation (`agent_run.canceled`,
 with `run_died`, `run_error`, or `run_canceled`) are audited with grant and
 run identifiers only — never prompts, results, paths, or credentials.
 
+Finalization adds `grant.finalization_enabled` / `grant.finalization_disabled`,
+`agent_run.finalization_prepared`, `agent_run.changes_read`, and
+`agent_run.finalized` (outcome plus a stable reason code such as
+`base_mismatch`, `git_lock_conflict`, or `replayed`). These rows carry a typed
+`detail` with only an opaque `repositoryId` (`repo_<hex>`, never the host
+path), the baseline and manifest digests, the file count, and the commit and
+tree ids when one exists — never file names, contents, or the commit message.
+
 ## Not in this API
+
+Push, pull-request creation, merge, branch management, checkout, reset,
+clean, and file deletion are deliberately absent: finalization stops at one
+local commit, and anything after it is the coordinator's (or owner's) job.
 
 A control plane on one host driving runners on others (runner registration,
 scheduling, leases, heartbeats, session migration, remote workspace

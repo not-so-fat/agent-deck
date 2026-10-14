@@ -1010,6 +1010,7 @@ type LifecycleInternals = {
   startCleanupSession: (id: string, opts: { closeTransport: boolean }) => Promise<boolean>;
   handleTransportPost: (id: string, req: unknown, res: unknown) => Promise<void>;
   handleMcpSessionRequest: (req: unknown, res: unknown) => Promise<void>;
+  httpServer: { listening: boolean } | null;
 };
 
 type RecordedBackendCall = { url: string; method: string; body?: string };
@@ -1428,6 +1429,8 @@ describe('transport session lifecycle without sockets (NOT-191)', () => {
       await server.start();
       const port = server.getPort();
       expect(port).toBeGreaterThan(0);
+      const listener = internals.httpServer;
+      expect(listener?.listening).toBe(true);
 
       // More sessions than the bound, so the shutdown path must serialize —
       // the same peak-concurrency evidence the sweep test records.
@@ -1443,15 +1446,10 @@ describe('transport session lifecycle without sockets (NOT-191)', () => {
       expect(internals.unregisterPeak).toBeLessThanOrEqual(8);
       expect(warnings).toHaveLength(0);
 
-      // The listener is gone: a fresh server binds exactly the released port.
-      const rebound = new AgentDeckMCPServer(port, 'http://127.0.0.1:1', undefined, '127.0.0.1', {
-        now: () => clock.now,
-        transportSweepIntervalMs: 0,
-        liveTouchKeepAliveMs: 0,
-      });
-      await rebound.start();
-      expect(rebound.getPort()).toBe(port);
-      await rebound.stop();
+      // The listener is closed and detached. Rebinding the same ephemeral port
+      // is not asserted: a parallel test file may legitimately claim it first.
+      expect(listener?.listening).toBe(false);
+      expect(internals.httpServer).toBeNull();
     } finally {
       vi.unstubAllGlobals();
       warnSpy.mockRestore();
