@@ -17,14 +17,13 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { writeRunMeta, type RunMeta } from '@agent-deck/backend/agent-run';
+
 import { resolveCliEntry } from './daemon-logs';
-import { agentDeckHome } from './managed/paths';
 import {
-  newRunId,
+  createCliRunService,
   validateRunPrereqs,
-  writeRunMeta,
   type RunDeps,
-  type RunMeta,
   type RunOptions,
 } from './run';
 
@@ -146,10 +145,7 @@ export async function startDetachedRun(
   }
   const { deck } = prereq;
 
-  const homeDir = deps.homeDir ?? agentDeckHome();
-  const runId = newRunId();
-  const logPath = options.log ?? path.join(homeDir, 'runs', runId, 'run.jsonl');
-  const metaPath = path.join(path.dirname(logPath), 'meta.json');
+  const { runId, logPath, metaPath } = createCliRunService(deps).allocate(options.log);
   const outPath = resolveRunOutPath(logPath);
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
 

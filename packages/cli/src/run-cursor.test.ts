@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { McpLaunchPlan } from './mcp-launcher';
-import type { NormalizedEvent, RunToolsProfile } from './run-adapter';
+import type { NormalizedEvent, RunToolsProfile } from '@agent-deck/backend/agent-run';
 import {
   buildCursorArgv,
   createCursorAdapter,
@@ -27,7 +27,7 @@ import {
   isCursorStatusAuthenticated,
   type CursorProbe,
   type CursorSpawn,
-} from './run-cursor';
+} from '@agent-deck/backend/agent-run';
 import { runRunCommand, type RunDeps, type RunMeta } from './run';
 
 const DECK = { id: 'deck-planner', name: 'planner' };

@@ -49,13 +49,12 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
-import { resolveConfigPath } from './mcp-config';
 import {
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
   type RunToolsProfile,
-} from './run-adapter';
+} from './adapter';
 
 /**
  * readonly: Muse's own read-only enforcement — `--disable-write` blocks
@@ -401,11 +400,23 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
-function museAuthFilePath(): string {
-  // Mirrors resolveMuseGlobalConfigDir (mcp-config.ts): Muse honors
+function museConfigHome(): string {
+  // Mirrors resolveMuseGlobalConfigDir (CLI mcp-config.ts): Muse honors
   // XDG_CONFIG_HOME for its user settings; otherwise ~/.config.
-  const configHome = process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), '.config');
-  return path.join(configHome, 'muse', 'auth.json');
+  return process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), '.config');
+}
+
+function museAuthFilePath(): string {
+  return path.join(museConfigHome(), 'muse', 'auth.json');
+}
+
+/**
+ * Where `agent-deck use --client muse` writes the agent-deck MCP entry:
+ * global Muse settings, then the cwd's project `.mcp.json`. Mirrors
+ * resolveConfigPath('muse', 'global' | 'project', cwd) in CLI mcp-config.ts.
+ */
+export function museMcpConfigPaths(cwd: string): string[] {
+  return [path.join(museConfigHome(), 'muse', 'settings.json'), path.join(cwd, '.mcp.json')];
 }
 
 /**
@@ -431,11 +442,7 @@ export function isMuseSignedIn(readFile: MuseFileReader): boolean {
  * without it no session receipt can ever appear in the log.
  */
 export function hasMuseMcpEntry(cwd: string, readFile: MuseFileReader): boolean {
-  const candidates = [
-    resolveConfigPath('muse', 'global'),
-    resolveConfigPath('muse', 'project', cwd),
-  ];
-  for (const candidate of candidates) {
+  for (const candidate of museMcpConfigPaths(cwd)) {
     const text = readFile(candidate);
     if (!text) {
       continue;

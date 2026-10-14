@@ -48,7 +48,7 @@ import {
   type ClientAdapter,
   type NormalizedEvent,
   type RunToolsProfile,
-} from './run-adapter';
+} from './adapter';
 
 export const CURSOR_JSON_VERSION_NOTE = 'cursor-agent 2026.10.01';
 
@@ -416,7 +416,7 @@ export function cursorEventsFromOutput(
   // global MCP entry is last-workspace-wins). Resume is exempt — the
   // harness prints the receipt on the first turn only, so a resumed turn
   // legitimately carries no new receipt. A present-but-wrong receipt is
-  // caught by the shared mismatch check in run.ts.
+  // caught by the shared mismatch check in service.ts.
   if (opts.resumeId === undefined && !/◆\s*[^·\r\n]+?\s*·/.test(stdout)) {
     throw new Error(
       "cursor-agent run produced no deck receipt (missing ◆ display_summary line): the session may be bound to another folder's deck. Ask the agent to call get_session_context and print display_summary verbatim, then retry.",

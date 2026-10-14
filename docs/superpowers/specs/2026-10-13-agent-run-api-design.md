@@ -22,6 +22,8 @@ Agent Deck already ships the execution behavior that the API needs:
 - `packages/backend/src/auth/client-grants.ts` and trusted-session policy provide remote authentication and deck allowlisting.
 - The personal hosted appliance already defines one owner, one Agent Deck installation, and authenticated remote clients.
 
+> **Compatibility note (NOT-479, slice 1).** The run service now lives in the backend package as `@agent-deck/backend/agent-run` (`packages/backend/src/agent-run/`), because the CLI already depends on the backend and the backend cannot depend on the CLI. It owns the binding gate, Claude probe, adapters, `meta.json`/JSONL records, and status/event reads; the CLI keeps argument parsing, console output, the prompt file, and `--detach`. Hosts inject `resolveDeck` and a read-only `resolveDeckBinding(cwd)`; the CLI supplies its collection lookup and folder assignment reader, and the backend must supply equivalents in slice 2. Two details for slice 2: validation and adapter remedies are still CLI-worded (they name `--cwd`, `--tools`, `agent-deck use`), so the HTTP layer should map them to API errors rather than echo them; and `status`/`events` resolve only default-location runs (`<home>/runs/<runId>/`), since a CLI `--log` elsewhere is not indexed.
+
 The missing boundary is a backend-owned run service and authenticated HTTP contract. Today `agent-deck run` is a local CLI process with host-local `cwd`, PID, log, and metadata state. The backend exposes no run lifecycle routes.
 
 ## 3. Concrete flows

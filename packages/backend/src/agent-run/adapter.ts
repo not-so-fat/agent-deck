@@ -1,12 +1,13 @@
 /**
- * Client adapters for `agent-deck run` (NOT-404).
+ * Client adapters for the host-local agent run service (NOT-404, NOT-479).
  *
  * All client-specific launching lives behind {@link ClientAdapter}; the run,
  * log, and status code only sees normalized events. New clients plug in by
- * adding an adapter plus a registry entry — no changes to run.ts are needed.
+ * adding an adapter plus a registry entry in `service.ts` — the run record
+ * and status paths need no changes.
  *
  * Tool profiles (`readonly`/`edit`) and meta.json stay owned by the shared run
- * code: adapters receive the profile name and map it to client flags.
+ * service: adapters receive the profile name and map it to client flags.
  */
 
 /** Read-only profile: exactly the botmancers prototype allowlist. */
