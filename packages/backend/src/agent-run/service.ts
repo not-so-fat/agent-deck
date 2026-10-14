@@ -146,7 +146,10 @@ export type AgentRunRejectionCode =
   | 'deck_mismatch'
   | 'client_unavailable'
   | 'profile_unsupported'
-  | 'resume_unverified';
+  | 'resume_unverified'
+  // NOT-486: a host-owned `beforeStart` gate (finalization baseline capture) failed closed.
+  | 'finalization_invalid'
+  | 'index_dirty';
 
 export type AgentRunValidation =
   | { ok: true; deck: RunDeck; resumedFrom?: RunResumeOrigin }
@@ -164,6 +167,13 @@ export type RunLaunchOptions = {
    * foreground client still receives the terminal's ^C.
    */
   ownProcessGroup?: boolean;
+  /**
+   * Host gate run after every validation and client preflight, immediately
+   * before the run record is written and the adapter starts (NOT-486: the
+   * finalization baseline). A rejection fails the launch closed with no model
+   * work.
+   */
+  beforeStart?: () => Promise<{ ok: true } | { ok: false; code: AgentRunRejectionCode; message: string }>;
 };
 
 export type FinishedRun = {
@@ -407,6 +417,12 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     const startPlan = adapter.planStart(startArgs);
     if (!startPlan.ok) {
       return { kind: 'rejected', code: 'profile_unsupported', message: startPlan.remedy };
+    }
+    if (launch.beforeStart) {
+      const gate = await launch.beforeStart();
+      if (!gate.ok) {
+        return { kind: 'rejected', code: gate.code, message: gate.message };
+      }
     }
 
     const runId = launch.runId ?? newRunId();

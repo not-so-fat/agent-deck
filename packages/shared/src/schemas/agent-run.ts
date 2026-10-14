@@ -52,6 +52,12 @@ export const CreateAgentRunRequestSchema = z
     tools: AgentRunToolsSchema.default('readonly'),
     /** Opaque client session id from an earlier run's status. */
     resumeSessionId: z.string().min(1).max(512).optional(),
+    /**
+     * NOT-486: capture a private pre-launch Git baseline so this run can be
+     * finalized into one local commit. Valid only with `tools: "edit"`, a Git
+     * worktree `cwd`, and a clean Git index.
+     */
+    prepareFinalization: z.boolean().default(false),
   })
   .strict();
 
@@ -71,6 +77,28 @@ export const CreateAgentRunResponseSchema = z
   })
   .strict();
 
+/** Lowercase hex Git object id (SHA-1 or SHA-256 repositories). */
+export const GitObjectIdSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+export const Sha256HexSchema = z.string().regex(/^[0-9a-f]{64}$/);
+/** Opaque reference to a run's private pre-launch Git baseline. */
+export const FinalizationBaselineRefSchema = z.string().regex(/^bl_[0-9a-f]{24}$/);
+
+/**
+ * `prepared`: baseline captured, not finalized; `finalizing`: one finalize
+ * request is in progress; `finalized`: one local commit was created.
+ */
+export const FinalizationStateSchema = z.enum(['prepared', 'finalizing', 'finalized']);
+
+/** Public finalization fields on a prepared run (never a host path or file content). */
+export const AgentRunFinalizationStatusSchema = z
+  .object({
+    baselineRef: FinalizationBaselineRefSchema,
+    baselineDigest: Sha256HexSchema,
+    state: FinalizationStateSchema,
+    commit: GitObjectIdSchema.nullable(),
+  })
+  .strict();
+
 export const AgentRunStatusSchema = z
   .object({
     runId: AgentRunIdSchema,
@@ -82,6 +110,8 @@ export const AgentRunStatusSchema = z
     sessionId: z.string().nullable(),
     startedAt: z.string(),
     lastEventAt: z.string().nullable(),
+    /** NOT-486: present only when the run was started with `prepareFinalization`. */
+    finalization: AgentRunFinalizationStatusSchema.nullable(),
   })
   .strict();
 
@@ -156,6 +186,74 @@ export const AgentRunCapabilitiesResponseSchema = z
   })
   .strict();
 
+/**
+ * NOT-486: one manifest entry. Repository-relative POSIX path; `sha256` is
+ * the SHA-256 of the exact working-tree bytes and `mode` the Git file mode.
+ * A deleted path carries `sha256: null` and `mode: null`.
+ */
+export const FINALIZATION_MANIFEST_MAX_FILES = 1000;
+export const FINALIZATION_PATH_MAX_CHARS = 1024;
+export const FINALIZATION_COMMIT_MESSAGE_MAX_CHARS = 8192;
+export const FINALIZATION_REVIEW_ID_MAX_CHARS = 200;
+
+export const FinalizationFileModeSchema = z.enum(['100644', '100755']);
+
+export const FinalizationManifestEntrySchema = z
+  .object({
+    path: z.string().min(1).max(FINALIZATION_PATH_MAX_CHARS),
+    sha256: Sha256HexSchema.nullable(),
+    mode: FinalizationFileModeSchema.nullable(),
+  })
+  .strict()
+  .refine((entry) => (entry.sha256 === null) === (entry.mode === null), {
+    message: 'sha256 and mode are both null (deleted) or both set',
+  });
+
+/** `GET /api/agent-runs/:runId/changes`: the candidate manifest, ordered by path. */
+export const AgentRunChangesResponseSchema = z
+  .object({
+    runId: AgentRunIdSchema,
+    baselineRef: FinalizationBaselineRefSchema,
+    baselineDigest: Sha256HexSchema,
+    /** Pass as `expectedBaseCommit` when finalizing. */
+    baseCommit: GitObjectIdSchema,
+    files: z.array(FinalizationManifestEntrySchema),
+    manifestDigest: Sha256HexSchema,
+  })
+  .strict();
+
+/** `POST /api/agent-runs/:runId/finalize` (requires `Idempotency-Key`). */
+export const FinalizeAgentRunRequestSchema = z
+  .object({
+    baselineDigest: Sha256HexSchema,
+    expectedBaseCommit: GitObjectIdSchema,
+    reviewId: z
+      .string()
+      .min(1)
+      .max(FINALIZATION_REVIEW_ID_MAX_CHARS)
+      .regex(/^[\x21-\x7e]+$/, 'reviewId must be printable ASCII without spaces'),
+    commitMessage: z
+      .string()
+      .max(FINALIZATION_COMMIT_MESSAGE_MAX_CHARS)
+      .refine((value) => value.trim().length > 0, 'commitMessage must not be empty')
+      .refine((value) => !value.includes('\u0000'), 'commitMessage must not contain NUL'),
+    files: z.array(FinalizationManifestEntrySchema).min(1).max(FINALIZATION_MANIFEST_MAX_FILES),
+  })
+  .strict();
+
+export const FinalizeAgentRunResponseSchema = z
+  .object({
+    runId: AgentRunIdSchema,
+    finalizationState: z.literal('finalized'),
+    commit: GitObjectIdSchema,
+    tree: GitObjectIdSchema,
+    parent: GitObjectIdSchema,
+    manifestDigest: Sha256HexSchema,
+    fileCount: z.number().int().positive(),
+    reviewId: z.string(),
+  })
+  .strict();
+
 /** Run-specific error codes (auth failures use the trusted-session codes). */
 export const AgentRunErrorCodeSchema = z.enum([
   'INVALID_REQUEST',
@@ -170,6 +268,20 @@ export const AgentRunErrorCodeSchema = z.enum([
   'RESUME_UNVERIFIED',
   'RUN_NOT_FOUND',
   'RUN_NOT_CANCELABLE',
+  // NOT-486: finalization.
+  'FINALIZATION_INVALID',
+  'FINALIZATION_NOT_PREPARED',
+  'RUN_NOT_TERMINAL',
+  'BASE_MISMATCH',
+  'INDEX_DIRTY',
+  'BASELINE_MISMATCH',
+  'PATH_INVALID',
+  'PATH_UNEXPECTED',
+  'DIGEST_MISMATCH',
+  'GIT_LOCK_CONFLICT',
+  'REF_RACE',
+  'FINALIZATION_CANCELED',
+  'FINALIZATION_FAILED',
 ]);
 
 export type AgentRunClient = z.infer<typeof AgentRunClientSchema>;
@@ -184,6 +296,13 @@ export type AgentRunEventsResponse = z.infer<typeof AgentRunEventsResponseSchema
 export type AgentRunErrorCode = z.infer<typeof AgentRunErrorCodeSchema>;
 export type AgentRunClientCapability = z.infer<typeof AgentRunClientCapabilitySchema>;
 export type AgentRunCapabilitiesResponse = z.infer<typeof AgentRunCapabilitiesResponseSchema>;
+export type FinalizationState = z.infer<typeof FinalizationStateSchema>;
+export type AgentRunFinalizationStatus = z.infer<typeof AgentRunFinalizationStatusSchema>;
+export type FinalizationFileMode = z.infer<typeof FinalizationFileModeSchema>;
+export type FinalizationManifestEntry = z.infer<typeof FinalizationManifestEntrySchema>;
+export type AgentRunChangesResponse = z.infer<typeof AgentRunChangesResponseSchema>;
+export type FinalizeAgentRunRequest = z.infer<typeof FinalizeAgentRunRequestSchema>;
+export type FinalizeAgentRunResponse = z.infer<typeof FinalizeAgentRunResponseSchema>;
 
 export type AgentRunErrorBody = {
   success: false;

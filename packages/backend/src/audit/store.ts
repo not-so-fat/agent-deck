@@ -25,6 +25,12 @@ export const AUDIT_EVENTS = [
   // NOT-481: cancellation and restart reconciliation (identifiers only).
   'agent_run.canceled',
   'agent_run.reconciled',
+  // NOT-486: finalization capability, baseline capture, and finalization.
+  'grant.finalization_enabled',
+  'grant.finalization_disabled',
+  'agent_run.finalization_prepared',
+  'agent_run.changes_read',
+  'agent_run.finalized',
 ] as const;
 
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
@@ -54,7 +60,38 @@ export type AuditReasonCode =
   | 'already_terminal'
   | 'run_not_cancelable'
   | 'run_canceled'
-  | 'run_died';
+  | 'run_died'
+  // NOT-486: finalization denial and failure reasons.
+  | 'finalization_capability_required'
+  | 'finalization_invalid'
+  | 'finalization_not_prepared'
+  | 'run_not_terminal'
+  | 'base_mismatch'
+  | 'index_dirty'
+  | 'baseline_mismatch'
+  | 'path_invalid'
+  | 'path_unexpected'
+  | 'digest_mismatch'
+  | 'git_lock_conflict'
+  | 'ref_race'
+  | 'finalization_canceled'
+  | 'finalization_failed'
+  | 'replayed';
+
+/**
+ * NOT-486: typed, identifier-only finalization facts. Every field is an
+ * opaque id, a hex digest or object id, or a count — never a path, a file
+ * name, a message, or content. Values that do not match are dropped.
+ */
+export type AuditDetail = {
+  /** Opaque repository identity (`repo_<hex>`), never the host path. */
+  repositoryId?: string;
+  baselineDigest?: string;
+  manifestDigest?: string;
+  fileCount?: number;
+  commit?: string;
+  tree?: string;
+};
 
 export type AuditEntry = {
   id: string;
@@ -65,6 +102,8 @@ export type AuditEntry = {
   targetId: string;
   outcome: AuditOutcome;
   reasonCode: AuditReasonCode | null;
+  /** Present only on events that carry finalization facts (NOT-486). */
+  detail?: AuditDetail;
 };
 
 export type WriteAuditEntry = Omit<AuditEntry, 'id' | 'timestamp' | 'installationId'> & {
@@ -87,7 +126,35 @@ type AuditRow = {
   target_id: string;
   outcome: AuditOutcome;
   reason_code: AuditReasonCode | null;
+  detail: string | null;
 };
+
+const HEX_ID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+const DETAIL_PATTERNS: Record<Exclude<keyof AuditDetail, 'fileCount'>, RegExp> = {
+  repositoryId: /^repo_[0-9a-f]{24}$/,
+  baselineDigest: /^[0-9a-f]{64}$/,
+  manifestDigest: /^[0-9a-f]{64}$/,
+  commit: HEX_ID,
+  tree: HEX_ID,
+};
+
+/** Keep only well-formed identifier fields; anything else never reaches the ledger. */
+export function sanitizeAuditDetail(detail: AuditDetail | undefined): AuditDetail | null {
+  if (!detail) {
+    return null;
+  }
+  const clean: AuditDetail = {};
+  for (const [key, pattern] of Object.entries(DETAIL_PATTERNS) as Array<[keyof typeof DETAIL_PATTERNS, RegExp]>) {
+    const value = detail[key];
+    if (typeof value === 'string' && pattern.test(value)) {
+      clean[key] = value;
+    }
+  }
+  if (typeof detail.fileCount === 'number' && Number.isInteger(detail.fileCount) && detail.fileCount >= 0) {
+    clean.fileCount = detail.fileCount;
+  }
+  return Object.keys(clean).length > 0 ? clean : null;
+}
 
 /**
  * Append-only, identifier-only security audit ledger.
@@ -120,6 +187,10 @@ export class AuditStore {
       CREATE INDEX IF NOT EXISTS audit_events_page_idx
         ON audit_events (timestamp DESC, id DESC);
     `);
+    const columns = this.db.prepare(`PRAGMA table_info(audit_events)`).all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'detail')) {
+      this.db.exec(`ALTER TABLE audit_events ADD COLUMN detail TEXT`);
+    }
   }
 
   append(entry: WriteAuditEntry): AuditEntry {
@@ -143,11 +214,15 @@ export class AuditStore {
       outcome: entry.outcome,
       reasonCode: entry.reasonCode,
     };
+    const detail = sanitizeAuditDetail(entry.detail);
+    if (detail) {
+      row.detail = detail;
+    }
     this.db
       .prepare(
         `INSERT INTO audit_events
-         (id, timestamp, installation_id, actor, event, target_id, outcome, reason_code)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, timestamp, installation_id, actor, event, target_id, outcome, reason_code, detail)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.id,
@@ -158,6 +233,7 @@ export class AuditStore {
         row.targetId,
         row.outcome,
         row.reasonCode,
+        detail ? JSON.stringify(detail) : null,
       );
     return row;
   }
@@ -167,7 +243,7 @@ export class AuditStore {
     const rows = cursor
       ? this.db
           .prepare(
-            `SELECT id, timestamp, installation_id, actor, event, target_id, outcome, reason_code
+            `SELECT id, timestamp, installation_id, actor, event, target_id, outcome, reason_code, detail
              FROM audit_events
              WHERE timestamp < ? OR (timestamp = ? AND id < ?)
              ORDER BY timestamp DESC, id DESC
@@ -176,7 +252,7 @@ export class AuditStore {
           .all(cursor.timestamp, cursor.timestamp, cursor.id, options.limit)
       : this.db
           .prepare(
-            `SELECT id, timestamp, installation_id, actor, event, target_id, outcome, reason_code
+            `SELECT id, timestamp, installation_id, actor, event, target_id, outcome, reason_code, detail
              FROM audit_events
              ORDER BY timestamp DESC, id DESC
              LIMIT ?`,
@@ -204,7 +280,7 @@ export class AuditStore {
 }
 
 function toAuditEntry(row: AuditRow): AuditEntry {
-  return {
+  const entry: AuditEntry = {
     id: row.id,
     timestamp: row.timestamp,
     installationId: row.installation_id,
@@ -214,4 +290,15 @@ function toAuditEntry(row: AuditRow): AuditEntry {
     outcome: row.outcome,
     reasonCode: row.reason_code,
   };
+  if (row.detail) {
+    try {
+      const detail = sanitizeAuditDetail(JSON.parse(row.detail) as AuditDetail);
+      if (detail) {
+        entry.detail = detail;
+      }
+    } catch {
+      // A malformed detail column is dropped, never surfaced.
+    }
+  }
+  return entry;
 }

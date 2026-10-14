@@ -699,7 +699,18 @@ describe('redaction and audit (NOT-480)', () => {
     const responses = [created, status, denied].map((response) => response.body);
 
     const statusKeys = Object.keys(status.json().data).sort();
-    expect(statusKeys).toEqual(['client', 'deckId', 'lastEventAt', 'runId', 'sessionId', 'startedAt', 'state', 'tools']);
+    expect(statusKeys).toEqual([
+      'client',
+      'deckId',
+      'finalization',
+      'lastEventAt',
+      'runId',
+      'sessionId',
+      'startedAt',
+      'state',
+      'tools',
+    ]);
+    expect(status.json().data.finalization).toBeNull();
     for (const body of responses) {
       expect(body).not.toContain(PROMPT_SENTINEL);
       expect(body).not.toContain(RESULT_SENTINEL);

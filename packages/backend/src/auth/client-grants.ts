@@ -47,7 +47,11 @@ export type ClientPrincipal =
  * capability (NOT-480): model spend and host filesystem authority are never
  * implied by MCP access, so it defaults off and only the owner turns it on.
  */
-export type GrantPrincipal = Extract<ClientPrincipal, { kind: 'grant' }> & { runsEnabled: boolean };
+export type GrantPrincipal = Extract<ClientPrincipal, { kind: 'grant' }> & {
+  runsEnabled: boolean;
+  /** Run-finalization capability (NOT-486): separate from, and in addition to, `runsEnabled`. */
+  finalizationEnabled: boolean;
+};
 
 /** Persisted grant row (never carries the bearer secret). */
 export type ClientGrant = {
@@ -58,6 +62,8 @@ export type ClientGrant = {
   allowedDecks: string[];
   /** Agent-run capability (NOT-480); false = MCP-only. */
   runsEnabled: boolean;
+  /** Run-finalization capability (NOT-486); false = cannot finalize runs. */
+  finalizationEnabled: boolean;
   installationId: string;
   createdAt: string;
   expiresAt: string | null;
@@ -83,6 +89,7 @@ type GrantRow = {
   default_deck: string;
   allowed_decks: string;
   runs_enabled: number;
+  finalization_enabled: number;
   installation_id: string;
   created_at: string;
   expires_at: string | null;
@@ -151,6 +158,8 @@ export type IssueGrantInput = {
   allowedDecks?: string[];
   /** Explicit agent-run capability (NOT-480). Omitted = MCP-only. */
   runsEnabled?: boolean;
+  /** Explicit run-finalization capability (NOT-486). Omitted = cannot finalize. */
+  finalizationEnabled?: boolean;
   expiresAt?: string | null;
   installationId?: string;
 };
@@ -186,6 +195,10 @@ export class ClientGrantStore {
     if (!columns.some((column) => column.name === 'runs_enabled')) {
       this.db.exec(`ALTER TABLE agent_grants ADD COLUMN runs_enabled INTEGER NOT NULL DEFAULT 0`);
     }
+    // NOT-486: no existing grant gains finalization authority.
+    if (!columns.some((column) => column.name === 'finalization_enabled')) {
+      this.db.exec(`ALTER TABLE agent_grants ADD COLUMN finalization_enabled INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   /**
@@ -219,8 +232,8 @@ export class ClientGrantStore {
       .prepare(
         `INSERT INTO agent_grants
          (id, label, verifier_version, secret_hash, default_deck, allowed_decks, runs_enabled,
-          installation_id, created_at, expires_at, revoked_at, last_used_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+          finalization_enabled, installation_id, created_at, expires_at, revoked_at, last_used_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
       )
       .run(
         id,
@@ -230,6 +243,7 @@ export class ClientGrantStore {
         defaultDeck,
         JSON.stringify(allowed),
         input.runsEnabled ? 1 : 0,
+        input.finalizationEnabled ? 1 : 0,
         input.installationId ?? this.installationId,
         createdAt,
         input.expiresAt ?? null,
@@ -244,7 +258,7 @@ export class ClientGrantStore {
     const row = this.db
       .prepare(
         `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks, runs_enabled,
-                installation_id, created_at, expires_at, revoked_at, last_used_at
+                finalization_enabled, installation_id, created_at, expires_at, revoked_at, last_used_at
          FROM agent_grants WHERE id = ?`,
       )
       .get(id) as GrantRow | undefined;
@@ -255,7 +269,7 @@ export class ClientGrantStore {
     const rows = this.db
       .prepare(
         `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks, runs_enabled,
-                installation_id, created_at, expires_at, revoked_at, last_used_at
+                finalization_enabled, installation_id, created_at, expires_at, revoked_at, last_used_at
          FROM agent_grants ORDER BY created_at ASC`,
       )
       .all() as GrantRow[];
@@ -279,7 +293,7 @@ export class ClientGrantStore {
     const row = this.db
       .prepare(
         `SELECT id, label, verifier_version, secret_hash, default_deck, allowed_decks, runs_enabled,
-                installation_id, created_at, expires_at, revoked_at, last_used_at
+                finalization_enabled, installation_id, created_at, expires_at, revoked_at, last_used_at
          FROM agent_grants WHERE id = ?`,
       )
       .get(parsed.grantId) as GrantRow | undefined;
@@ -306,6 +320,7 @@ export class ClientGrantStore {
       defaultDeck: row.default_deck,
       allowedDecks: parseAllowedDecks(row.allowed_decks),
       runsEnabled: row.runs_enabled === 1,
+      finalizationEnabled: row.finalization_enabled === 1,
     };
   }
 
@@ -316,6 +331,14 @@ export class ClientGrantStore {
   setRunsEnabled(id: string, enabled: boolean): boolean {
     const result = this.db
       .prepare(`UPDATE agent_grants SET runs_enabled = ? WHERE id = ? AND revoked_at IS NULL`)
+      .run(enabled ? 1 : 0, id);
+    return result.changes > 0;
+  }
+
+  /** Owner toggle for the run-finalization capability (NOT-486); same rules as runs. */
+  setFinalizationEnabled(id: string, enabled: boolean): boolean {
+    const result = this.db
+      .prepare(`UPDATE agent_grants SET finalization_enabled = ? WHERE id = ? AND revoked_at IS NULL`)
       .run(enabled ? 1 : 0, id);
     return result.changes > 0;
   }
@@ -339,6 +362,7 @@ function toPublicGrant(row: GrantRow): ClientGrantPublic {
     defaultDeck: row.default_deck,
     allowedDecks: parseAllowedDecks(row.allowed_decks),
     runsEnabled: row.runs_enabled === 1,
+    finalizationEnabled: row.finalization_enabled === 1,
     installationId: row.installation_id,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
