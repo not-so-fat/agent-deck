@@ -189,6 +189,8 @@ describe('ClientGrantStore run capability (NOT-480)', () => {
     `);
     const store = new ClientGrantStore(db);
     expect(store.getGrant('ag_legacy')?.runsEnabled).toBe(false);
+    // NOT-486: and no existing grant gains finalization.
+    expect(store.getGrant('ag_legacy')?.finalizationEnabled).toBe(false);
     // Reopening over the migrated table is a no-op.
     expect(new ClientGrantStore(db).getGrant('ag_legacy')?.runsEnabled).toBe(false);
   });

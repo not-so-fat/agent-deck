@@ -395,21 +395,25 @@ export function createGitFinalizer(deps: GitFinalizerDeps = {}): GitFinalizer {
     return [...new Set(paths)].sort();
   };
 
-  /** Index entries that are submodules (gitlinks) at or above any of `paths`. */
-  const gitlinksAmong = async (root: string, paths: string[], indexFile?: string): Promise<Set<string>> => {
+  /** Paths that are, or sit inside, a submodule (gitlink) in `commit`. */
+  const gitlinksAmong = async (root: string, commit: string, paths: string[]): Promise<Set<string>> => {
     if (paths.length === 0) {
       return new Set();
     }
-    const listed = await git(
-      root,
-      ['ls-files', '-s', '-z', '--', ...paths.map((p) => `:(literal)${p}`)],
-      indexFile ? { indexFile } : {},
-    );
+    const names = new Set<string>();
+    for (const p of paths) {
+      const segments = p.split('/');
+      for (let i = 1; i <= segments.length; i += 1) {
+        names.add(segments.slice(0, i).join('/'));
+      }
+    }
+    // Non-recursive: each named entry itself (a directory shows as one tree entry).
+    const listed = await git(root, ['ls-tree', '-z', commit, '--', ...names]);
     const links = new Set<string>();
     for (const record of splitNul(listed.stdout)) {
       const line = record.toString('utf8');
       const tab = line.indexOf('\t');
-      if (tab > 0 && line.startsWith('160000 ')) {
+      if (tab > 0 && line.startsWith('160000 ') && names.has(line.slice(tab + 1))) {
         links.add(line.slice(tab + 1));
       }
     }
@@ -458,7 +462,7 @@ export function createGitFinalizer(deps: GitFinalizerDeps = {}): GitFinalizer {
       }
     }
     const produced = current.filter((rel) => !recorded.has(rel));
-    const links = await gitlinksAmong(root, produced.map((rel) => rel.replace(/\/$/, '')), indexFile);
+    const links = await gitlinksAmong(root, baseline.baseCommit, produced.map((rel) => rel.replace(/\/$/, '')));
     const files: FinalizationManifestEntry[] = [];
     for (const raw of produced) {
       const rel = raw.replace(/\/$/, '');
@@ -537,8 +541,13 @@ export function createGitFinalizer(deps: GitFinalizerDeps = {}): GitFinalizer {
     async finalize(baseline, input, options = {}) {
       const root = baseline.repoRoot;
       const checkpoint = async (stage: FinalizeStage): Promise<void> => {
+        if (stage === 'ref-updated') {
+          // History already moved: nothing after this point may report failure.
+          await Promise.resolve(deps.pause?.(stage, input.runId)).catch(() => {});
+          return;
+        }
         await deps.pause?.(stage, input.runId);
-        if (stage !== 'ref-updated' && options.signal?.aborted) {
+        if (options.signal?.aborted) {
           throw new FinalizationError('finalization_canceled', 'Finalization was canceled before the commit');
         }
       };
@@ -604,7 +613,7 @@ export function createGitFinalizer(deps: GitFinalizerDeps = {}): GitFinalizer {
             throw new FinalizationError('path_invalid', 'A manifest path is a symlink, directory, or special file');
           }
         }
-        if ((await gitlinksAmong(root, input.files.map((file) => file.path), privateIndex)).size > 0) {
+        if ((await gitlinksAmong(root, baseline.baseCommit, input.files.map((file) => file.path))).size > 0) {
           throw new FinalizationError('path_invalid', 'A manifest path is a submodule');
         }
         const snapshot = await candidate(baseline, privateIndex);

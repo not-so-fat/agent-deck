@@ -274,6 +274,59 @@ describe('owner-only agent grants (NOT-318)', () => {
     expect(unknown.statusCode).toBe(404);
   });
 
+  it('finalization is a separate opt-in capability toggled by the owner (NOT-486)', async () => {
+    const { fastify, store, grants, audit, deckA } = await buildApp();
+    const auth = dashboardAuthHeaders(store);
+    const created = await fastify.inject({
+      method: 'POST',
+      url: '/api/agent-grants',
+      headers: auth,
+      payload: { label: 'coordinator', defaultDeck: deckA.id, runsEnabled: true },
+    });
+    const { grant } = created.json().data;
+    expect(grant).toMatchObject({ runsEnabled: true, finalizationEnabled: false });
+
+    const invalid = await fastify.inject({
+      method: 'PUT',
+      url: `/api/agent-grants/${grant.id}/capabilities`,
+      headers: auth,
+      payload: { finalizationEnabled: 'yes' },
+    });
+    expect(invalid.statusCode).toBe(400);
+    const empty = await fastify.inject({
+      method: 'PUT',
+      url: `/api/agent-grants/${grant.id}/capabilities`,
+      headers: auth,
+      payload: {},
+    });
+    expect(empty.statusCode).toBe(400);
+
+    const enabled = await fastify.inject({
+      method: 'PUT',
+      url: `/api/agent-grants/${grant.id}/capabilities`,
+      headers: auth,
+      payload: { finalizationEnabled: true },
+    });
+    expect(enabled.statusCode).toBe(200);
+    // Toggling finalization leaves the run capability as it was.
+    expect(enabled.json().data).toMatchObject({ runsEnabled: true, finalizationEnabled: true });
+    expect(audit.list({ limit: 20 }).filter((row) => row.event === 'grant.finalization_enabled')).toMatchObject([
+      { actor: 'owner', targetId: grant.id, outcome: 'succeeded', reasonCode: null },
+    ]);
+
+    const runsOff = await fastify.inject({
+      method: 'PUT',
+      url: `/api/agent-grants/${grant.id}/capabilities`,
+      headers: auth,
+      payload: { runsEnabled: false },
+    });
+    expect(runsOff.json().data).toMatchObject({ runsEnabled: false, finalizationEnabled: true });
+    expect(grants.getGrant(grant.id)).toMatchObject({ runsEnabled: false, finalizationEnabled: true });
+
+    const legacy = grants.issueGrant({ label: 'legacy', defaultDeck: deckA.id, runsEnabled: true });
+    expect(legacy.grant.finalizationEnabled).toBe(false);
+  });
+
   it('agent session headers do not satisfy the dashboard policy', async () => {
     const { fastify, store, deckA } = await buildApp();
     const session = store.createRuntimeSession({ deckId: deckA.id });
