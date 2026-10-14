@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { McpLaunchPlan } from './mcp-launcher';
 import type { RunToolsProfile } from '@agent-deck/backend/agent-run';
 import {
+  CODEX_NO_FINAL_MESSAGE,
   buildCodexArgv,
   codexEventsFromLine,
   createCodexAdapter,
@@ -23,6 +24,7 @@ import {
   type CodexSpawn,
 } from '@agent-deck/backend/agent-run';
 import { runRunCommand, type RunDeps, type RunMeta } from './run';
+import { runRunLogCommand } from './run-status';
 
 const DECK = { id: 'deck-planner', name: 'planner' };
 
@@ -31,6 +33,17 @@ const CODEX_FIXTURE_LINES = fs
   .trim()
   .split('\n');
 const CODEX_THREAD_ID = (JSON.parse(CODEX_FIXTURE_LINES[0]) as { thread_id: string }).thread_id;
+
+// Synthetic (NOT-482): commentary, reasoning, command and MCP tool items, two
+// commentary messages, then the final answer and usage, in codex-cli 0.157.1's
+// `exec --json` item shapes.
+const CODEX_FINAL_FIXTURE_LINES = fs
+  .readFileSync(fileURLToPath(new URL('./run-codex-final.fixture.jsonl', import.meta.url)), 'utf8')
+  .trim()
+  .split('\n');
+const CODEX_FINAL_THREAD_ID = (JSON.parse(CODEX_FINAL_FIXTURE_LINES[0]) as { thread_id: string })
+  .thread_id;
+const CODEX_FINAL_ANSWER = 'Review verdict: approve. The change is scoped and tested.';
 
 const tmpDirs: string[] = [];
 let logs: string[];
@@ -145,10 +158,17 @@ function readMeta(logPath: string): RunMeta {
 
 const codexLine = (value: unknown): string => JSON.stringify(value);
 
+/** A successful turn; appends a final `agent_message` when `items` has none. */
 function successStream(threadId: string, items: unknown[] = []): string[] {
+  const hasMessage = items.some(
+    (item) => (item as { type?: string }).type === 'agent_message',
+  );
+  const finalItems = hasMessage
+    ? items
+    : [...items, { id: 'item_final', type: 'agent_message', text: 'done' }];
   return [
     codexLine({ type: 'thread.started', thread_id: threadId }),
-    ...items.map((item) => codexLine({ type: 'item.completed', item })),
+    ...finalItems.map((item) => codexLine({ type: 'item.completed', item })),
     codexLine({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 3 } }),
   ];
 }
@@ -166,6 +186,14 @@ describe('codex fixture mapping (NOT-404)', () => {
     expect(lines.map((line) => line.t)).toEqual(['notice', 'text', 'result', 'end']);
     expect(lines[1]).toMatchObject({ t: 'text', text: 'OK' });
     expect(lines[2]).toMatchObject({ t: 'result', sessionId: CODEX_THREAD_ID, subtype: 'success' });
+    expect(lines[2]['result']).toBe('OK');
+    expect(lines[2]['usage']).toEqual({
+      input_tokens: 18324,
+      cached_input_tokens: 0,
+      cache_write_input_tokens: 0,
+      output_tokens: 5,
+      reasoning_output_tokens: 0,
+    });
     expect(lines[3]).toMatchObject({ t: 'end', sessionId: CODEX_THREAD_ID });
     expect(readMeta(logPathFromStdout())).toMatchObject({
       client: 'codex',
@@ -223,7 +251,7 @@ describe('codex fixture mapping (NOT-404)', () => {
     expect(await runRunCommand(codexArgs(cwd), deps)).toBe(0);
 
     const lines = readJsonLines(logPathFromStdout());
-    expect(lines.map((line) => line.t)).toEqual(['tool', 'tool', 'result', 'end']);
+    expect(lines.map((line) => line.t)).toEqual(['tool', 'tool', 'text', 'result', 'end']);
     expect(lines[0]).toMatchObject({ t: 'tool', name: 'command:git status' });
     expect(lines[1]).toMatchObject({ t: 'tool', name: 'get_session_context' });
   });
@@ -238,7 +266,7 @@ describe('codex fixture mapping (NOT-404)', () => {
     expect(await runRunCommand(codexArgs(cwd), deps)).toBe(0);
 
     const lines = readJsonLines(logPathFromStdout());
-    expect(lines.map((line) => line.t)).toEqual(['notice', 'result', 'end']);
+    expect(lines.map((line) => line.t)).toEqual(['notice', 'text', 'result', 'end']);
     expect(String(lines[0]['message'])).toContain('unparseable codex output');
   });
 
@@ -264,6 +292,107 @@ describe('codex fixture mapping (NOT-404)', () => {
       state: 'error',
       sessionId: 'thread_doomed',
     });
+  });
+});
+
+describe('codex final assistant result (NOT-482)', () => {
+  it('commentary, tools, final message, and usage yield one success result carrying the final text', async () => {
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const homeDir = makeDir('agent-deck-codex-home-');
+    const deps = makeDeps(cwd, homeDir, { lines: CODEX_FINAL_FIXTURE_LINES });
+
+    expect(await runRunCommand(codexArgs(cwd), deps)).toBe(0);
+
+    const lines = readJsonLines(logPathFromStdout());
+    expect(lines.map((line) => line.t)).toEqual([
+      'text',
+      'tool',
+      'tool',
+      'text',
+      'text',
+      'result',
+      'end',
+    ]);
+    // Streaming text stays observable, final answer included.
+    expect(lines.filter((line) => line.t === 'text').map((line) => line.text)).toEqual([
+      "I'll check the deck binding and the diff first.",
+      'Looking at the changed files now.',
+      CODEX_FINAL_ANSWER,
+    ]);
+    const results = lines.filter((line) => line.t === 'result');
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      t: 'result',
+      subtype: 'success',
+      sessionId: CODEX_FINAL_THREAD_ID,
+      result: CODEX_FINAL_ANSWER,
+      usage: {
+        input_tokens: 24110,
+        cached_input_tokens: 3072,
+        output_tokens: 212,
+        reasoning_output_tokens: 64,
+      },
+    });
+    expect(typeof results[0]['result']).toBe('string');
+    expect(readMeta(logPathFromStdout())).toMatchObject({
+      state: 'ended',
+      sessionId: CODEX_FINAL_THREAD_ID,
+    });
+  });
+
+  it('a completed turn with no assistant message fails explicitly instead of an empty success', async () => {
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const homeDir = makeDir('agent-deck-codex-home-');
+    const deps = makeDeps(cwd, homeDir, {
+      lines: [
+        codexLine({ type: 'thread.started', thread_id: 'thread_silent' }),
+        codexLine({ type: 'turn.started' }),
+        codexLine({ type: 'item.completed', item: { id: 'i1', type: 'command_execution', command: 'ls' } }),
+        codexLine({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 0 } }),
+      ],
+    });
+
+    const code = await runRunCommand(codexArgs(cwd), deps);
+
+    expect(code).not.toBe(0);
+    const lines = readJsonLines(logPathFromStdout());
+    expect(lines.map((line) => line.t)).toEqual(['tool', 'result', 'end']);
+    expect(lines[1]).toMatchObject({
+      t: 'result',
+      subtype: 'failed',
+      sessionId: 'thread_silent',
+      usage: { input_tokens: 10, output_tokens: 0 },
+    });
+    expect(String(lines[1]['result'])).toContain('without a final assistant message');
+    expect(readMeta(logPathFromStdout())).toMatchObject({ state: 'error', sessionId: 'thread_silent' });
+  });
+
+  it('run log --json --follow preserves the final string result, session id, and terminal event', async () => {
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const homeDir = makeDir('agent-deck-codex-home-');
+    const deps = makeDeps(cwd, homeDir, { lines: CODEX_FINAL_FIXTURE_LINES });
+
+    expect(await runRunCommand(codexArgs(cwd), deps)).toBe(0);
+    const runId = (logs.at(-1)?.match(/^run (\S+) /) ?? [])[1] ?? '';
+    expect(runId).toMatch(/^run-/);
+
+    logs.length = 0;
+    expect(await runRunLogCommand([runId, '--json', '--follow'], { homeDir, followPollMs: 10 })).toBe(0);
+
+    const printed = logs
+      .join('\n')
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(printed.map((line) => line.t)).toEqual(['text', 'tool', 'tool', 'text', 'text', 'result', 'end']);
+    expect(printed.at(-2)).toMatchObject({
+      t: 'result',
+      subtype: 'success',
+      sessionId: CODEX_FINAL_THREAD_ID,
+      result: CODEX_FINAL_ANSWER,
+      usage: { input_tokens: 24110 },
+    });
+    expect(printed.at(-1)).toMatchObject({ t: 'end', sessionId: CODEX_FINAL_THREAD_ID });
   });
 });
 
@@ -577,6 +706,37 @@ describe('codex line parser edges (NOT-404)', () => {
       codexLine({ type: 'turn.failed', error: 'blew up' }),
     ]);
     expect(events).toEqual([{ kind: 'result', subtype: 'failed', result: 'blew up', sessionId: 't1' }]);
+  });
+
+  it('turn.completed carries the last agent message of the turn and usage separately', () => {
+    const events = parse([
+      codexLine({ type: 'thread.started', thread_id: 't1' }),
+      codexLine({ type: 'turn.started' }),
+      codexLine({ type: 'item.completed', item: { type: 'agent_message', text: 'first' } }),
+      codexLine({ type: 'item.completed', item: { type: 'agent_message', text: 'final' } }),
+      codexLine({ type: 'turn.completed', usage: { output_tokens: 2 } }),
+    ]);
+    expect(events.at(-1)).toEqual({
+      kind: 'result',
+      subtype: 'success',
+      result: 'final',
+      usage: { output_tokens: 2 },
+      sessionId: 't1',
+    });
+  });
+
+  it('a new turn does not inherit the previous turn\'s final message', () => {
+    const events = parse([
+      codexLine({ type: 'turn.started' }),
+      codexLine({ type: 'item.completed', item: { type: 'agent_message', text: 'old' } }),
+      codexLine({ type: 'turn.completed' }),
+      codexLine({ type: 'turn.started' }),
+      codexLine({ type: 'turn.completed' }),
+    ]);
+    expect(events.filter((event) => event.kind === 'result')).toEqual([
+      { kind: 'result', subtype: 'success', result: 'old' },
+      { kind: 'result', subtype: 'failed', result: CODEX_NO_FINAL_MESSAGE },
+    ]);
   });
 
   it('prefers the tool name, then the command, then the item type', () => {
