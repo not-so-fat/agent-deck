@@ -360,6 +360,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
               sessionId,
               subtype: event.subtype,
               result: event.result,
+              ...(event.usage !== undefined ? { usage: event.usage } : {}),
             });
           } else {
             appendLine({

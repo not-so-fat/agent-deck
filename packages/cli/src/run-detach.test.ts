@@ -666,6 +666,62 @@ describe('run --detach against the built CLI (NOT-401)', () => {
   );
 
   it(
+    'a detached codex run keeps the final string result through run log --json --follow (NOT-482)',
+    { timeout: 30_000 },
+    async () => {
+      const fixture = fs.readFileSync(path.join(CLI_PACKAGE, 'src', 'run-codex-final.fixture.jsonl'), 'utf8');
+      const threadId = (JSON.parse(fixture.split('\n')[0]) as { thread_id: string }).thread_id;
+      const setup = await setupFakeRun({ behavior: {} });
+      // A stand-in codex binary: answers the preflight probes, then streams
+      // the fixture slowly enough that the starter returns mid-run.
+      const fakeCodex = path.join(setup.home, 'fake-codex.mjs');
+      fs.writeFileSync(
+        fakeCodex,
+        [
+          `#!${process.execPath}`,
+          `const args = process.argv.slice(2);`,
+          `if (args[0] === '--version') { console.log('codex-cli 0.157.1'); process.exit(0); }`,
+          `if (args[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0); }`,
+          `const lines = ${JSON.stringify(fixture.trim().split('\n'))};`,
+          `for (const line of lines) { console.log(line); await new Promise((r) => setTimeout(r, 150)); }`,
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      const env = { ...setup.env, CODEX_BIN: fakeCodex };
+
+      const { done } = runStarter(
+        ['run', DECK.name, '--client', 'codex', '--cwd', setup.cwd, '--prompt', 'review it', '--detach'],
+        env,
+      );
+      const started = await done;
+      expect(started.code, `starter stderr: ${started.stderr}`).toBe(0);
+      const { runId, pid, logPath } = parseStarterLine(started.stdout);
+      childPids.push(pid);
+
+      const { done: followed } = runStarter(['run', 'log', runId, '--json', '--follow'], env);
+      const follow = await followed;
+      expect(follow.code, `log stderr: ${follow.stderr}`).toBe(0);
+
+      const printed = follow.stdout
+        .split('\n')
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(printed.map((line) => line.t)).toEqual(['text', 'tool', 'tool', 'text', 'text', 'result', 'end']);
+      expect(printed.filter((line) => line.t === 'result')).toHaveLength(1);
+      expect(printed.at(-2)).toMatchObject({
+        t: 'result',
+        subtype: 'success',
+        sessionId: threadId,
+        result: 'Review verdict: approve. The change is scoped and tested.',
+        usage: { input_tokens: 24110, output_tokens: 212 },
+      });
+      expect(printed.at(-1)).toMatchObject({ t: 'end', sessionId: threadId });
+      expect(readMeta(logPath)).toMatchObject({ runId, client: 'codex', state: 'ended', sessionId: threadId });
+    },
+  );
+
+  it(
     'a child that crashes before its first log line fails the starter with the tail',
     { timeout: 30_000 },
     async () => {
