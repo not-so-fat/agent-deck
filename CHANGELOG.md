@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.2.0 — 2026-10-15
+
+### Feature: same-host agent run API (NOT-479 to NOT-486)
+
+- One host-local execution service (`createAgentRunService` in `@agent-deck/backend`) now owns the client adapters, run records and start/resume lifecycle; `agent-deck run` and the backend share it with unchanged JSONL and `meta.json` shapes (NOT-479).
+- Authenticated HTTP API for remote grants that carry the explicit run capability (default off, owner toggle): `POST /api/agent-runs` (Idempotency-Key required, bounded body, deck allowlist), resume, status and cursor-ordered normalized events. Failed bearers are rate-limited in hosted mode (NOT-480).
+- `GET /api/agent-runs/capabilities` lists only clients whose real host preflight passes; idempotent `POST /api/agent-runs/:runId/cancel` signals the run-owned process group; running records are reconciled after a backend restart. Caller reference in `docs/AGENT_RUN_API.md`; real Codex smoke recorded (NOT-481).
+- Optional finalization behind a separate grant capability (default off): `GET /changes` returns the reviewed path/sha256/mode manifest, `POST /finalize` creates exactly one local commit on `expectedBaseCommit` with a compare-and-swap ref move (NOT-486).
+
+### Codex run adapter (NOT-482, NOT-484)
+
+- Codex runs emit a stable final assistant result.
+- Codex resume allows trusted same-profile edit continuation.
+
 ## 2.1.1 — 2026-10-12
 
 ### Docs / plugin packaging (NOT-432)
