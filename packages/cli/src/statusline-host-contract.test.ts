@@ -14,9 +14,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installStatuslineScript } from './statusline-setup';
 
 const CLI_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'bin.js');
-const HOST_TIMEOUT_MS = 2000;
+// Stay under vitest's 5s default test timeout; a stdin-EOF hang never completes, so it still trips.
+const HOST_TIMEOUT_MS = 4000;
 /** Soft budget — hang regression is HOST_TIMEOUT_MS; allow load under full suite. */
-const HOST_BUDGET_MS = 1500;
+const HOST_BUDGET_MS = 3000;
 
 function nodeOnlyPath(): string {
   return [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter);
