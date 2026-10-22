@@ -38,6 +38,7 @@ import { registerFeedbackSignalRoutes } from '../routes/feedback-signals';
 import { getAgentDeckVersion } from '../lib/version';
 import { seedDefaultServicesIfEmpty } from '../data/seed-default-services';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
+import { startHealthReprobe } from '../services/health-reprobe';
 import { FileStoreWriter } from '../store/writer';
 import { ensureStoreReady } from '../store/startup';
 import { TrustedSessionStore } from '../trusted-session/store';
@@ -224,9 +225,15 @@ export async function createServer() {
   fastify.decorate('collectionWarningService', collectionWarningService);
   fastify.decorate('liveDisplayRegistry', liveDisplayRegistry);
 
+  // NOT-512: re-probe `unhealthy` MCP services with backoff so they
+  // self-heal without a dashboard visit. Declared before the onClose hook so
+  // shutdown clears the timer; assigned after the broadcast decorators below.
+  let stopHealthReprobe: (() => void) | undefined;
+
   fastify.addHook('onClose', async () => {
     clearInterval(staleSessionTimer);
     liveDisplayRegistry.stopStaleSweep();
+    stopHealthReprobe?.();
     await mcpClient.cleanup();
     db.close();
   });
@@ -245,6 +252,16 @@ export async function createServer() {
   fastify.decorate('broadcastToAll', (message: WebSocketMessage) => {
     console.log('Broadcasting to all:', message);
     // This will be implemented when WebSocket is properly connected
+  });
+
+  // NOT-512: background self-heal for `unhealthy` MCP services. The probe's
+  // own token resolution refreshes OAuth on use, so no refresh scheduler is
+  // needed. Started after the broadcast decorators so ticks observe the real
+  // WebSocket broadcast; the timer is unref'd and cleared on shutdown.
+  stopHealthReprobe = startHealthReprobe({
+    listServices: () => serviceManager.getAllServices(),
+    checkHealth: (serviceId) => serviceManager.checkServiceHealth(serviceId),
+    broadcast: (update) => fastify.broadcastServiceUpdate(update),
   });
 
   return fastify;
