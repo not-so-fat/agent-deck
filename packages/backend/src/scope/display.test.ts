@@ -356,7 +356,7 @@ describe('resolveDeckDisplay', () => {
     expect(display.displayLine).not.toContain('Saved Deck');
   });
 
-  it('NOT-513: invalid host session id falls back to folder behavior', async () => {
+  it('NOT-513 repair round 2: supplied-but-invalid host session id names no deck (session starting)', async () => {
     const workspace = path.join(tempDir, 'invalid-id');
     const deck = await db.createDeck({ name: 'Solo Deck' });
     registry.upsert({
@@ -371,6 +371,29 @@ describe('resolveDeckDisplay', () => {
 
     const display = await resolveDeckDisplay(
       { workspaceRoot: workspace, hostSessionId: 'not a session id at all!!!' },
+      db,
+      registry,
+    );
+    expect(display.deckId).toBeNull();
+    expect(display.displayLine).toBe(SESSION_STARTING_LINE);
+    expect(display.displayLine).not.toContain('Solo Deck');
+  });
+
+  it('NOT-513 repair round 2: blank host session id keeps folder behavior', async () => {
+    const workspace = path.join(tempDir, 'blank-id');
+    const deck = await db.createDeck({ name: 'Solo Deck' });
+    registry.upsert({
+      mcpSessionId: 'mcp-solo',
+      workspaceRoot: workspace,
+      deckId: deck.id,
+      deckName: deck.name,
+      source: 'launch',
+      updatedAt: minutesAgo(1),
+      cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+    });
+
+    const display = await resolveDeckDisplay(
+      { workspaceRoot: workspace, hostSessionId: '   ' },
       db,
       registry,
     );

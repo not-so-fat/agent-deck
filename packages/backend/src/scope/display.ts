@@ -20,10 +20,11 @@ const DEFAULT_MCP_PORT = 1110;
 export type ResolveDeckDisplayInput = {
   workspaceRoot: string;
   /**
-   * Host-side session id the status line asks for (NOT-513). When present
-   * the resolver returns the matching live entry's deck, or the neutral
-   * "session starting" state when nothing matches yet — never another
-   * session's deck. Absent keeps today's folder-only behavior exactly.
+   * Host-side session id the status line asks for (NOT-513). When supplied
+   * (even malformed) the resolver returns the matching live entry's deck,
+   * or the neutral "session starting" state when nothing matches — never
+   * another session's deck. Absent (undefined/blank) keeps today's
+   * folder-only behavior exactly.
    */
   hostSessionId?: string;
 };
@@ -337,10 +338,15 @@ export async function resolveDeckDisplay(
 ): Promise<DeckDisplay> {
   const normalizedRoot = input.workspaceRoot.trim();
   const match = registry.resolveWorkspaceSessions(normalizedRoot);
+  // NOT-513 repair round 2: a supplied id that fails normalization is still
+  // a supplied id — it must yield "session starting", never the folder guess.
+  // Only a truly absent (undefined/blank) id keeps folder-only behavior.
+  const hostSupplied =
+    typeof input.hostSessionId === 'string' && input.hostSessionId.trim() !== '';
   const hostSessionId = normalizeHostSessionId(input.hostSessionId) ?? undefined;
-  if (hostSessionId) {
+  if (hostSupplied) {
     const own =
-      match.kind === 'none'
+      !hostSessionId || match.kind === 'none'
         ? undefined
         : match.entries.find((entry) => entry.hostSessionId === hostSessionId);
     if (!own) {
