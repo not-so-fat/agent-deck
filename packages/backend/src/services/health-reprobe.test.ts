@@ -209,6 +209,42 @@ describe('health-reprobe (NOT-512)', () => {
     }
   });
 
+  it('keeps attempts within the cap when probes take time on a 60s tick grid', async () => {
+    const service = makeService({ id: 'svc-1' });
+    const probeStartedAt: number[] = [];
+    let now = 0;
+    const fake = createFakeClock(0);
+    const checkHealth = vi.fn(async (): Promise<HealthProbeResult> => {
+      probeStartedAt.push(now);
+      // Each probe takes 10s of (fake) wall time before failing.
+      now += 10_000;
+      return UNHEALTHY;
+    });
+    const deps: HealthReprobeDeps = {
+      listServices: vi.fn(async () => [service]),
+      checkHealth,
+      broadcast: vi.fn(),
+    };
+    const stop = startHealthReprobe(deps, {
+      clock: { ...fake.clock, now: () => now },
+    });
+    try {
+      // Ticks fire strictly on the 60s grid regardless of probe duration.
+      for (let tick = 0; tick <= 60; tick++) {
+        now = tick * HEALTH_REPROBE_INTERVAL_MS;
+        await fake.fire();
+      }
+      expect(probeStartedAt).toEqual([
+        0, 60_000, 180_000, 420_000, 900_000, 1_800_000, 2_700_000, 3_600_000,
+      ]);
+      const gaps = probeStartedAt.slice(1).map((t, i) => t - probeStartedAt[i]);
+      expect(gaps).toEqual([60_000, 120_000, 240_000, 480_000, 900_000, 900_000, 900_000]);
+      expect(Math.max(...gaps)).toBeLessThanOrEqual(15 * 60_000);
+    } finally {
+      stop();
+    }
+  });
+
   it('never probes OAuth services with no token, nor healthy/unknown/a2a services', async () => {
     const noTokenOAuth = makeService({
       id: 'oauth-none',

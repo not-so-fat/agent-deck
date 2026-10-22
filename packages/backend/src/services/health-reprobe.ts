@@ -124,7 +124,11 @@ export function startHealthReprobe(
     nextAttemptAt.set(serviceId, now + computeReprobeDelayMs(failures));
   };
 
-  const probe = async (service: Service): Promise<void> => {
+  // `startedAt` is the tick time that launched the attempt. Backoff deadlines
+  // are measured from it, not from when the (possibly slow) probe finished,
+  // so a capped deadline lands exactly on a tick of the 60s grid and
+  // successive attempts are never more than the cap apart.
+  const probe = async (service: Service, startedAt: number): Promise<void> => {
     try {
       const result = await deps.checkHealth(service.id);
       if (result.success && 'health' in result && result.health === 'healthy') {
@@ -137,17 +141,18 @@ export function startHealthReprobe(
           lastPing: new Date(clock.now()).toISOString(),
         });
       } else {
-        scheduleNextAttempt(service.id, clock.now());
+        scheduleNextAttempt(service.id, startedAt);
       }
     } catch (error) {
       onError(error, service.id);
-      scheduleNextAttempt(service.id, clock.now());
+      scheduleNextAttempt(service.id, startedAt);
     } finally {
       inFlight.delete(service.id);
     }
   };
 
   const tick = async (): Promise<void> => {
+    const now = clock.now();
     let services: Service[];
     try {
       services = await deps.listServices();
@@ -155,7 +160,6 @@ export function startHealthReprobe(
       onError(error);
       return;
     }
-    const now = clock.now();
     const due: Service[] = [];
     for (const service of services) {
       if (!isReprobeCandidate(service)) {
@@ -171,7 +175,7 @@ export function startHealthReprobe(
       inFlight.add(service.id);
       due.push(service);
     }
-    await Promise.all(due.map((service) => probe(service)));
+    await Promise.all(due.map((service) => probe(service, now)));
   };
 
   const onTick = (): Promise<void> => tick().catch((error) => onError(error));
