@@ -364,6 +364,178 @@ describe('ServiceManager', () => {
     });
   });
 
+  describe('MCP retry with fresh client (NOT-511)', () => {
+    const serviceId = '123e4567-e89b-12d3-a456-426614174000';
+    const service = {
+      id: serviceId,
+      name: 'Test Service',
+      type: 'mcp',
+      url: 'https://example.com',
+    };
+
+    it('returns tools and ends healthy when discovery retry succeeds', async () => {
+      mockDbManager.getService.mockResolvedValue(service);
+      mockMCPClientManager.discoverTools
+        .mockRejectedValueOnce(new Error('token expired'))
+        .mockResolvedValueOnce([
+          {
+            name: 'testTool',
+            description: 'A test tool',
+            inputSchema: { type: 'object' },
+          },
+        ]);
+
+      const result = await serviceManager.discoverServiceTools(serviceId);
+
+      expect(result).toEqual([
+        {
+          name: 'testTool',
+          description: 'A test tool',
+          inputSchema: { type: 'object' },
+          enabled: true,
+        },
+      ]);
+      expect(mockMCPClientManager.discoverTools).toHaveBeenCalledTimes(2);
+      expect(mockMCPClientManager.invalidateClient).toHaveBeenCalledTimes(1);
+      expect(mockMCPClientManager.invalidateClient).toHaveBeenCalledWith(serviceId);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(serviceId, true, 'healthy');
+    });
+
+    it('marks unhealthy after two failed discovery attempts with unchanged error shape', async () => {
+      mockDbManager.getService.mockResolvedValue(service);
+      mockMCPClientManager.discoverTools.mockRejectedValue(new Error('Connection failed'));
+
+      const result = await serviceManager.discoverServiceTools(serviceId);
+
+      expect(mockMCPClientManager.discoverTools).toHaveBeenCalledTimes(2);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(serviceId, false, 'unhealthy');
+      expect(result).toEqual({ success: false, error: 'Connection failed' });
+    });
+
+    it('returns the result and ends healthy when a tool call retry succeeds', async () => {
+      const callInput: ServiceCallInput = {
+        serviceId,
+        toolName: 'testTool',
+        arguments: { param1: 'value1' },
+      };
+      mockDbManager.getService.mockResolvedValue(service);
+      mockMCPClientManager.callTool
+        .mockRejectedValueOnce(new Error('token expired'))
+        .mockResolvedValueOnce({ result: 'success' });
+
+      const result = await serviceManager.callServiceTool(callInput);
+
+      expect(result).toEqual({ success: true, result: { result: 'success' } });
+      expect(mockMCPClientManager.callTool).toHaveBeenCalledTimes(2);
+      expect(mockMCPClientManager.invalidateClient).toHaveBeenCalledTimes(1);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(serviceId, true, 'healthy');
+    });
+
+    it('marks unhealthy after two failed tool calls with unchanged error shape', async () => {
+      const callInput: ServiceCallInput = {
+        serviceId,
+        toolName: 'get_page',
+        arguments: {},
+      };
+      mockDbManager.getService.mockResolvedValue({
+        ...service,
+        name: 'Docmost',
+        url: 'https://docmost.example.com/mcp',
+      });
+      mockMCPClientManager.callTool.mockRejectedValue(
+        new Error('Failed to connect to MCP service: SSE error: Invalid content type, expected "text/event-stream"'),
+      );
+
+      const result = await serviceManager.callServiceTool(callInput);
+
+      expect(mockMCPClientManager.callTool).toHaveBeenCalledTimes(2);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(serviceId, false, 'unhealthy');
+      expect(result).toEqual({
+        success: false,
+        error: 'Failed to call tool',
+        error_code: 'MCP_TRANSPORT_ERROR',
+        details: {
+          service_id: serviceId,
+          service_name: 'Docmost',
+          remote_url: 'https://docmost.example.com/mcp',
+          tool_name: 'get_page',
+          cause: 'Failed to connect to MCP service: SSE error: Invalid content type, expected "text/event-stream"',
+          phase: 'callTool',
+        },
+        serviceName: 'Docmost',
+        toolName: 'get_page',
+      });
+    });
+
+    it('retries discovery for an OAuth service that still holds a token', async () => {
+      mockDbManager.getService.mockResolvedValue({
+        ...service,
+        oauthClientId: 'linear-client',
+        oauthHasToken: true,
+      });
+      mockMCPClientManager.discoverTools
+        .mockRejectedValueOnce(new Error('expired access token'))
+        .mockResolvedValueOnce([
+          {
+            name: 'testTool',
+            description: 'A test tool',
+            inputSchema: { type: 'object' },
+          },
+        ]);
+
+      const result = await serviceManager.discoverServiceTools(serviceId);
+
+      expect(mockMCPClientManager.discoverTools).toHaveBeenCalledTimes(2);
+      expect(mockMCPClientManager.invalidateClient).toHaveBeenCalledTimes(1);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(serviceId, true, 'healthy');
+      expect(result).toEqual([
+        {
+          name: 'testTool',
+          description: 'A test tool',
+          inputSchema: { type: 'object' },
+          enabled: true,
+        },
+      ]);
+    });
+
+    it('does not retry discovery for an OAuth service with no token at all', async () => {
+      mockDbManager.getService.mockResolvedValue({
+        ...service,
+        oauthClientId: 'linear-client',
+        oauthHasToken: false,
+      });
+      mockMCPClientManager.discoverTools.mockRejectedValue(new Error('No access token'));
+
+      const result = await serviceManager.discoverServiceTools(serviceId);
+
+      expect(mockMCPClientManager.discoverTools).toHaveBeenCalledTimes(1);
+      expect(mockMCPClientManager.invalidateClient).toHaveBeenCalledTimes(1);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(serviceId, false, 'unhealthy');
+      expect(result).toEqual({ success: false, error: 'No access token' });
+    });
+
+    it('does not retry a tool call for an OAuth service with no token at all', async () => {
+      const callInput: ServiceCallInput = {
+        serviceId,
+        toolName: 'testTool',
+        arguments: {},
+      };
+      mockDbManager.getService.mockResolvedValue({
+        ...service,
+        oauthClientId: 'linear-client',
+        oauthHasToken: false,
+      });
+      mockMCPClientManager.callTool.mockRejectedValue(new Error('No access token'));
+
+      const result = await serviceManager.callServiceTool(callInput);
+
+      expect(mockMCPClientManager.callTool).toHaveBeenCalledTimes(1);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(serviceId, false, 'unhealthy');
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Failed to call tool');
+    });
+  });
+
   describe('Service Call', () => {
     it('should call tool for MCP service', async () => {
       const serviceId = '123e4567-e89b-12d3-a456-426614174000';
