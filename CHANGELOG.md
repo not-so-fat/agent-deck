@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.1 — 2026-10-21
+
+### Fix: MCP service health (NOT-511, NOT-512)
+
+- An MCP service is no longer marked unhealthy on the first failure: the probe retries once with a freshly refreshed token first (NOT-511).
+- Unhealthy MCP services are re-probed in the background with backoff, so they recover without a dashboard visit (NOT-512).
+
+### Fix: status line (NOT-513)
+
+- The status line now identifies the session it is drawing for, so a new session no longer shows the wrong deck (NOT-513).
+
 ## 2.2.0 — 2026-10-15
 
 ### Feature: same-host agent run API (NOT-479 to NOT-486)
