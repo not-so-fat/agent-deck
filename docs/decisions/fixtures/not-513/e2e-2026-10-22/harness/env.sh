@@ -1,0 +1,5 @@
+export AGENT_DECK_HOME=/tmp/not513-e2e/home
+export AGENT_DECK_DB_PATH=/tmp/not513-e2e/home/agent_deck.db
+export PORT=8513 AGENT_DECK_PORT=8513 AGENT_DECK_MCP_PORT=8514
+export AGENT_DECK_BACKEND_URL=http://127.0.0.1:8513
+export AGENT_DECK_NO_OPEN=1

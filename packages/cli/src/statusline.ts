@@ -1,10 +1,12 @@
 import {
   DeckDisplay,
   formatDisplayLine,
+  resolveStatusLineSessionId,
   resolveStatusLineWorkspace,
   StatusLinePayloadSchema,
 } from '@agent-deck/shared';
 import { parseCliBackendPort, CLI_DEFAULT_BACKEND_PORT, resolveCliBackendPortEnv } from './defaults';
+import { resolveHostSessionId } from './host-session';
 import { stripAnsi } from './strip-ansi';
 
 const DEFAULT_TIMEOUT_MS = 1500;
@@ -72,8 +74,12 @@ async function fetchDisplay(
   backendUrl: string,
   workspaceRoot: string,
   timeoutMs: number,
+  hostSessionId?: string,
 ): Promise<DeckDisplay | null> {
   const params = new URLSearchParams({ workspaceRoot });
+  if (hostSessionId) {
+    params.set('hostSessionId', hostSessionId);
+  }
   const url = `${backendUrl}/api/scope/display?${params.toString()}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -129,10 +135,34 @@ export function resolveStatuslineWorkspace(args: string[], stdin: string): strin
   return process.cwd();
 }
 
+/**
+ * NOT-513: host-side session id for status-line self-match. The stdin
+ * `session_id` wins when present; the `CLAUDE_CODE_SESSION_ID` env fallback
+ * covers hosts that invoke the command without a payload. Absent entirely
+ * (Cursor, `--workspace` debug without a session) keeps today's behavior.
+ */
+export function resolveStatuslineHostSessionId(stdin: string): string | undefined {
+  if (stdin.trim()) {
+    try {
+      const payload = StatusLinePayloadSchema.safeParse(JSON.parse(stdin));
+      if (payload.success) {
+        const sessionId = resolveStatusLineSessionId(payload.data);
+        if (sessionId) {
+          return sessionId;
+        }
+      }
+    } catch {
+      // ignore malformed stdin — fall back to env
+    }
+  }
+  return resolveHostSessionId();
+}
+
 export async function runStatusline(args: string[]): Promise<number> {
   const { workspace: workspaceArg } = parseArgs(args);
   const stdin = workspaceArg?.trim() ? '' : await readStdin();
   const workspaceRoot = resolveStatuslineWorkspace(args, stdin);
+  const hostSessionId = workspaceArg?.trim() ? undefined : resolveStatuslineHostSessionId(stdin);
 
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const backendPorts = resolveBackendPorts();
@@ -141,7 +171,7 @@ export async function runStatusline(args: string[]): Promise<number> {
 
   for (const backendPort of backendPorts) {
     const backendUrl = `http://${host}:${backendPort}`;
-    const display = await fetchDisplay(backendUrl, workspaceRoot, timeoutMs);
+    const display = await fetchDisplay(backendUrl, workspaceRoot, timeoutMs, hostSessionId);
     if (display?.displayLine) {
       printStatusLine(display.displayLine);
       return 0;

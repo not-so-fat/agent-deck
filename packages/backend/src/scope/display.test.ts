@@ -2,7 +2,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { formatDisplayLine, MULTIPLE_SESSION_DECKS_LINE } from '@agent-deck/shared';
+import {
+  formatDisplayLine,
+  MULTIPLE_SESSION_DECKS_LINE,
+  SESSION_STARTING_LINE,
+} from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
 import { writeUseManifest } from '../playbooks/stub-sync';
 import { LiveDisplayRegistry } from './live-display-registry';
@@ -266,6 +270,135 @@ describe('resolveDeckDisplay', () => {
     expect(display.source).toBe('unbound');
     expect(display.displayLine).not.toContain('Unrelated Deck');
     expect(display.displayLine).not.toContain('Deleted Deck');
+  });
+
+  it('NOT-513: host session id selects its own entry among disagreeing sessions', async () => {
+    const workspace = path.join(tempDir, 'self-match');
+    const deckA = await db.createDeck({ name: 'Alpha Deck' });
+    const deckB = await db.createDeck({ name: 'Beta Deck' });
+
+    const fresh = new LiveDisplayRegistry();
+    fresh.upsert({
+      mcpSessionId: 'mcp-other',
+      workspaceRoot: workspace,
+      deckId: deckA.id,
+      deckName: deckA.name,
+      source: 'launch',
+      updatedAt: minutesAgo(1),
+      cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+    });
+    fresh.upsert({
+      mcpSessionId: 'mcp-own',
+      workspaceRoot: workspace,
+      deckId: deckB.id,
+      deckName: deckB.name,
+      source: 'session_override',
+      hostSessionId: '01970000-0000-4000-8000-000000000001',
+      updatedAt: minutesAgo(2),
+      cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+    });
+
+    const display = await resolveDeckDisplay(
+      { workspaceRoot: workspace, hostSessionId: '01970000-0000-4000-8000-000000000001' },
+      db,
+      fresh,
+    );
+    expect(display.deckId).toBe(deckB.id);
+    expect(display.displayLine).toContain('Beta Deck');
+    expect(display.displayLine).not.toContain('Alpha Deck');
+    expect(display.displayLine).not.toContain('multiple session decks');
+  });
+
+  it('NOT-513: unknown host session id names no deck (session starting)', async () => {
+    const workspace = path.join(tempDir, 'starting');
+    const deckA = await db.createDeck({ name: 'Alpha Deck' });
+    const deckB = await db.createDeck({ name: 'Beta Deck' });
+
+    const fresh = new LiveDisplayRegistry();
+    for (const [id, deck] of [
+      ['mcp-a', deckA],
+      ['mcp-b', deckB],
+    ] as const) {
+      fresh.upsert({
+        mcpSessionId: id,
+        workspaceRoot: workspace,
+        deckId: deck.id,
+        deckName: deck.name,
+        source: 'launch',
+        updatedAt: minutesAgo(1),
+        cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+      });
+    }
+
+    const display = await resolveDeckDisplay(
+      { workspaceRoot: workspace, hostSessionId: '01970000-0000-4000-8000-000000000002' },
+      db,
+      fresh,
+    );
+    expect(display.deckId).toBeNull();
+    expect(display.displayLine).toBe(SESSION_STARTING_LINE);
+    expect(display.displayLine).not.toContain('Alpha Deck');
+    expect(display.displayLine).not.toContain('Beta Deck');
+  });
+
+  it('NOT-513: unknown host session id with no live entries stays starting, not the workspace default', async () => {
+    const workspace = path.join(tempDir, 'starting-default');
+    const deck = await db.createDeck({ name: 'Saved Deck' });
+    writeUseManifest(workspace, { version: 3, deckId: deck.id, deckName: deck.name });
+
+    const display = await resolveDeckDisplay(
+      { workspaceRoot: workspace, hostSessionId: '01970000-0000-4000-8000-000000000003' },
+      db,
+      registry,
+    );
+    expect(display.deckId).toBeNull();
+    expect(display.displayLine).toBe(SESSION_STARTING_LINE);
+    expect(display.displayLine).not.toContain('Saved Deck');
+  });
+
+  it('NOT-513 repair round 2: supplied-but-invalid host session id names no deck (session starting)', async () => {
+    const workspace = path.join(tempDir, 'invalid-id');
+    const deck = await db.createDeck({ name: 'Solo Deck' });
+    registry.upsert({
+      mcpSessionId: 'mcp-solo',
+      workspaceRoot: workspace,
+      deckId: deck.id,
+      deckName: deck.name,
+      source: 'launch',
+      updatedAt: minutesAgo(1),
+      cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+    });
+
+    const display = await resolveDeckDisplay(
+      { workspaceRoot: workspace, hostSessionId: 'not a session id at all!!!' },
+      db,
+      registry,
+    );
+    expect(display.deckId).toBeNull();
+    expect(display.displayLine).toBe(SESSION_STARTING_LINE);
+    expect(display.displayLine).not.toContain('Solo Deck');
+  });
+
+  it('NOT-513 repair round 2: blank host session id keeps folder behavior', async () => {
+    const workspace = path.join(tempDir, 'blank-id');
+    const deck = await db.createDeck({ name: 'Solo Deck' });
+    registry.upsert({
+      mcpSessionId: 'mcp-solo',
+      workspaceRoot: workspace,
+      deckId: deck.id,
+      deckName: deck.name,
+      source: 'launch',
+      updatedAt: minutesAgo(1),
+      cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+    });
+
+    const display = await resolveDeckDisplay(
+      { workspaceRoot: workspace, hostSessionId: '   ' },
+      db,
+      registry,
+    );
+    expect(display.deckId).toBe(deck.id);
+    expect(display.displayLine).toContain('Solo Deck');
   });
 
   it('NOT-296 repair: same deck with different bind sources agrees instead of staying neutral', async () => {

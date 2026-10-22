@@ -305,6 +305,18 @@ export function formatAmbiguousSessionDisplayLine(): string {
 }
 
 /**
+ * Neutral pre-registration line (NOT-513): the status line asked with its
+ * own host session id but no live entry matches it yet — its own MCP session
+ * has not registered. Names no deck: never another session's deck, and not
+ * the saved workspace default either.
+ */
+export const SESSION_STARTING_LINE = '◆ Agent Deck · session starting';
+
+export function formatSessionStartingDisplayLine(): string {
+  return SESSION_STARTING_LINE;
+}
+
+/**
  * Append a concise session-override marker to an already-bounded display line
  * (NOT-211). The explicit `sessionOverride` flag (id-based decision) wins over
  * the name comparison when defined; otherwise names are compared as a

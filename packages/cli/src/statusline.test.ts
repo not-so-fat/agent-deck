@@ -6,7 +6,13 @@ import { PassThrough } from 'node:stream';
 import { DatabaseManager } from '../../backend/src/models/database';
 import { LiveDisplayRegistry } from '../../backend/src/scope/live-display-registry';
 import { resolveDeckDisplay } from '../../backend/src/scope/display';
-import { readStdin, resolveStatuslineWorkspace, runStatusline } from './statusline';
+import { SESSION_STARTING_LINE } from '@agent-deck/shared';
+import {
+  readStdin,
+  resolveStatuslineHostSessionId,
+  resolveStatuslineWorkspace,
+  runStatusline,
+} from './statusline';
 
 describe('statusline', () => {
   it('prefers --workspace over stdin cwd', () => {
@@ -241,6 +247,163 @@ describe('statusline', () => {
       expect(code).toBe(0);
       expect(output).toContain('Shared Deck');
       expect(output).toContain('2 sessions');
+    });
+  });
+
+  describe('host session id resolution (NOT-513)', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('prefers stdin session_id over the env fallback', () => {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'env-session-id');
+      expect(
+        resolveStatuslineHostSessionId(JSON.stringify({ session_id: 'stdin-session-id' })),
+      ).toBe('stdin-session-id');
+    });
+
+    it('falls back to the env when stdin carries no session id', () => {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'env-session-id');
+      expect(resolveStatuslineHostSessionId(JSON.stringify({ cwd: '/repo' }))).toBe(
+        'env-session-id',
+      );
+    });
+
+    it('returns undefined when neither stdin nor env names a session', () => {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', '');
+      expect(resolveStatuslineHostSessionId(JSON.stringify({ cwd: '/repo' }))).toBeUndefined();
+      expect(resolveStatuslineHostSessionId('')).toBeUndefined();
+    });
+  });
+
+  describe('host session id routing into the backend (NOT-513 repair round 2)', () => {
+    // stdin-driven end to end: the status line sends its own session id as
+    // the hostSessionId query parameter, and the backend's neutral answer
+    // for an unmatched id reaches the CLI without naming any deck.
+    let tmpHome: string;
+    let db: DatabaseManager;
+    let registry: LiveDisplayRegistry;
+    let seenHostSessionIds: Array<string | null>;
+
+    afterEach(async () => {
+      vi.unstubAllEnvs();
+      vi.restoreAllMocks();
+      await db?.close();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    });
+
+    async function seedDisagreeingSessions(): Promise<{
+      workspace: string;
+      deckAName: string;
+      deckBName: string;
+      ownHostSessionId: string;
+    }> {
+      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-statusline-host-'));
+      vi.stubEnv('AGENT_DECK_HOME', tmpHome);
+      db = new DatabaseManager(path.join(tmpHome, 'agent_deck.db'));
+      registry = new LiveDisplayRegistry();
+      seenHostSessionIds = [];
+      const workspace = path.join(tmpHome, 'repo');
+      const deckA = await db.createDeck({ name: 'Alpha Deck' });
+      const deckB = await db.createDeck({ name: 'Beta Deck' });
+      const ownHostSessionId = '01970000-0000-4000-8000-0000000000a1';
+      // NOT-309: fixtures model live sessions, so they stay inside the stale bound.
+      const stamp = new Date().toISOString();
+      registry.upsert({
+        mcpSessionId: 'mcp-host-other',
+        workspaceRoot: workspace,
+        deckId: deckA.id,
+        deckName: deckA.name,
+        source: 'launch',
+        hostSessionId: '01970000-0000-4000-8000-0000000000b2',
+        updatedAt: stamp,
+        cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+      });
+      registry.upsert({
+        mcpSessionId: 'mcp-host-own',
+        workspaceRoot: workspace,
+        deckId: deckB.id,
+        deckName: deckB.name,
+        source: 'session_override',
+        hostSessionId: ownHostSessionId,
+        updatedAt: stamp,
+        cardCounts: { mcp: 0, credentials: 0, playbooks: 0 },
+      });
+
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = new URL(String(input));
+        seenHostSessionIds.push(url.searchParams.get('hostSessionId'));
+        const display = await resolveDeckDisplay(
+          {
+            workspaceRoot: url.searchParams.get('workspaceRoot') ?? '',
+            hostSessionId: url.searchParams.get('hostSessionId') ?? undefined,
+          },
+          db,
+          registry,
+        );
+        return new Response(JSON.stringify({ success: true, data: display }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      return { workspace, deckAName: deckA.name, deckBName: deckB.name, ownHostSessionId };
+    }
+
+    async function runWithStdinPayload(
+      payload: string,
+    ): Promise<{ code: number; output: string }> {
+      const input = new PassThrough();
+      const original = process.stdin;
+      Object.defineProperty(process, 'stdin', { value: input, configurable: true });
+
+      const chunks: string[] = [];
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = ((chunk: string | Uint8Array) => {
+        chunks.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+
+      try {
+        const runPromise = runStatusline([]);
+        input.write(payload);
+        const code = await Promise.race([
+          runPromise,
+          new Promise<number>((_, reject) => {
+            setTimeout(() => reject(new Error('runStatusline hung')), 3000);
+          }),
+        ]);
+        return { code, output: chunks.join('') };
+      } finally {
+        process.stdout.write = originalWrite;
+        Object.defineProperty(process, 'stdin', { value: original, configurable: true });
+      }
+    }
+
+    it('an unmatched stdin session id names no deck (session starting)', async () => {
+      const { workspace, deckAName, deckBName } = await seedDisagreeingSessions();
+      const unknownId = '01970000-0000-4000-8000-000000000099';
+      const { code, output } = await runWithStdinPayload(
+        JSON.stringify({ cwd: workspace, session_id: unknownId }),
+      );
+      expect(code).toBe(0);
+      expect(seenHostSessionIds).toEqual([unknownId]);
+      expect(output).toContain(SESSION_STARTING_LINE);
+      expect(output).not.toContain(deckAName);
+      expect(output).not.toContain(deckBName);
+    });
+
+    it('a matching stdin session id names its own entry deck', async () => {
+      const { workspace, deckAName, deckBName, ownHostSessionId } =
+        await seedDisagreeingSessions();
+      const { code, output } = await runWithStdinPayload(
+        JSON.stringify({ cwd: workspace, session_id: ownHostSessionId }),
+      );
+      expect(code).toBe(0);
+      expect(seenHostSessionIds).toEqual([ownHostSessionId]);
+      expect(output).toContain(deckBName);
+      expect(output).not.toContain(deckAName);
+      expect(output).not.toContain('multiple session decks');
     });
   });
 

@@ -41,3 +41,12 @@ export const AGENT_DECK_BRIDGE_LIVENESS_HEADER = 'x-agent-deck-bridge-liveness';
 
 /** Header value advertising the v1 bridge-owned `ping` heartbeat contract. */
 export const AGENT_DECK_BRIDGE_LIVENESS_V1 = '1';
+
+/**
+ * Host-side session id for status-line self-match (NOT-513). The bridge sends
+ * the id its host assigned the session (Claude Code: `CLAUDE_CODE_SESSION_ID`
+ * env) on every request; the status line sends the same id back as a query
+ * parameter. Display-routing metadata only: it never selects a deck, grants
+ * access, changes mode, or participates in authorization.
+ */
+export const AGENT_DECK_HOST_SESSION_ID_HEADER = 'x-agent-deck-host-session-id';

@@ -54,6 +54,16 @@ export function normalizeCorrelationId(raw: unknown): string | null {
 }
 
 /**
+ * Host-side session id for status-line self-match (NOT-513). Same opaque
+ * bounded-token class as the correlation id: a UUID or strict token is
+ * accepted verbatim, anything else is dropped — never coerced — so free
+ * text can never become a registry key or query value.
+ */
+export function normalizeHostSessionId(raw: unknown): string | null {
+  return normalizeCorrelationId(raw);
+}
+
+/**
  * Raw event payload exposed by GET /api/usage/events.
  * Contains only non-sensitive usage metadata — never tool arguments,
  * tool results, command contents, URLs, headers, OAuth data, or API keys.

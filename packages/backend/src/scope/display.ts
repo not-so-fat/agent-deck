@@ -6,6 +6,8 @@ import {
   countDeckCards,
   formatAmbiguousSessionDisplayLine,
   formatDisplayLine,
+  formatSessionStartingDisplayLine,
+  normalizeHostSessionId,
   normalizeWorkspaceRoot,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
@@ -17,6 +19,14 @@ const DEFAULT_MCP_PORT = 1110;
 
 export type ResolveDeckDisplayInput = {
   workspaceRoot: string;
+  /**
+   * Host-side session id the status line asks for (NOT-513). When supplied
+   * (even malformed) the resolver returns the matching live entry's deck,
+   * or the neutral "session starting" state when nothing matches — never
+   * another session's deck. Absent (undefined/blank) keeps today's
+   * folder-only behavior exactly.
+   */
+  hostSessionId?: string;
 };
 
 async function isMcpServerUp(): Promise<boolean> {
@@ -302,6 +312,24 @@ async function resolveSavedWorkspaceDeck(
   return null;
 }
 
+/**
+ * NOT-513: neutral pre-registration display. The status line asked with its
+ * own host session id but no live entry matches it yet, so the line names no
+ * deck — never another session's deck, and not the saved workspace default.
+ */
+function buildSessionStartingDisplay(workspaceRoot: string): DeckDisplay {
+  return {
+    workspaceRoot,
+    deckId: null,
+    deckName: null,
+    source: 'unbound',
+    cardCounts: { ...EMPTY_COUNTS },
+    agentDeckOnline: true,
+    mcpOnline: true,
+    displayLine: formatSessionStartingDisplayLine(),
+  };
+}
+
 /** Resolve bound-deck display from live MCP sessions, falling back to an explicitly labeled workspace default. */
 export async function resolveDeckDisplay(
   input: ResolveDeckDisplayInput,
@@ -310,6 +338,30 @@ export async function resolveDeckDisplay(
 ): Promise<DeckDisplay> {
   const normalizedRoot = input.workspaceRoot.trim();
   const match = registry.resolveWorkspaceSessions(normalizedRoot);
+  // NOT-513 repair round 2: a supplied id that fails normalization is still
+  // a supplied id — it must yield "session starting", never the folder guess.
+  // Only a truly absent (undefined/blank) id keeps folder-only behavior.
+  const hostSupplied =
+    typeof input.hostSessionId === 'string' && input.hostSessionId.trim() !== '';
+  const hostSessionId = normalizeHostSessionId(input.hostSessionId) ?? undefined;
+  if (hostSupplied) {
+    const own =
+      !hostSessionId || match.kind === 'none'
+        ? undefined
+        : match.entries.find((entry) => entry.hostSessionId === hostSessionId);
+    if (!own) {
+      return buildSessionStartingDisplay(normalizedRoot);
+    }
+    const deck = await db.getDeck(own.deckId);
+    return buildDisplay({ workspaceRoot: normalizedRoot }, own.source, deck, {
+      mcpOnline: true,
+      updatedAt: own.updatedAt,
+      liveDeckName: own.deckName,
+      liveDeckId: own.deckId,
+      liveCardCounts: own.cardCounts,
+      liveBadge: own.badge,
+    });
+  }
   if (match.kind === 'single') {
     const live = match.entries[0];
     const deck = await db.getDeck(live.deckId);

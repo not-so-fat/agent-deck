@@ -15,10 +15,12 @@ import {
   AGENT_DECK_BRIDGE_LIVENESS_HEADER,
   AGENT_DECK_BRIDGE_LIVENESS_V1,
   AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_HOST_SESSION_ID_HEADER,
   AGENT_DECK_RECOVERED_SESSION_HEADER,
 } from '@agent-deck/shared';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
+import { resolveHostSessionId } from './host-session';
 
 /** JSON-RPC message as it crosses the bridge — we route on shape, not on schema. */
 type JsonRpcMessage = {
@@ -678,6 +680,15 @@ export class McpStdioHttpBridge {
     if (this.sessionId) {
       headers[SESSION_HEADER] = this.sessionId;
     }
+    // NOT-513: host-side session id for status-line self-match (Claude Code
+    // sets it for every session child). Rides every request — handshake,
+    // tool calls, pulses — so the server adopts it whenever it first shows
+    // up. Read fresh per call: the env is fixed for the process lifetime,
+    // and older servers ignore unknown headers.
+    const hostSessionId = resolveHostSessionId();
+    if (hostSessionId) {
+      headers[AGENT_DECK_HOST_SESSION_ID_HEADER] = hostSessionId;
+    }
     return headers;
   }
 
@@ -1208,6 +1219,9 @@ export class McpStdioHttpBridge {
     // A response that arrives over this stream belongs to the session that opened
     // it, the same way a POST reply belongs to the session it was sent on.
     const generation = this.sessionGeneration;
+    // NOT-513: same host-session id as requestHeaders() (the inline headers
+    // here skip that helper for the stream Accept type).
+    const hostSessionId = resolveHostSessionId();
     try {
       const response = await this.fetchImpl(this.url, {
         method: 'GET',
@@ -1216,6 +1230,7 @@ export class McpStdioHttpBridge {
           Accept: 'text/event-stream',
           [SESSION_HEADER]: sessionId!,
           [AGENT_DECK_BRIDGE_LIVENESS_HEADER]: AGENT_DECK_BRIDGE_LIVENESS_V1,
+          ...(hostSessionId ? { [AGENT_DECK_HOST_SESSION_ID_HEADER]: hostSessionId } : {}),
         },
         signal: abort.signal,
       });

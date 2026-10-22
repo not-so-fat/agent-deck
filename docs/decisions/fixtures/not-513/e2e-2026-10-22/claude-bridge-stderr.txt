@@ -1,0 +1,4 @@
+2026-10-22T01:28:00.476Z bridge spawn CLAUDE_CODE_SESSION_ID=75dc1403-2035-4764-8940-291b9accaa3e cwd=/private/tmp/not513-e2e/ws
+[agent-deck] bridge: MCP session (none) is no longer valid (HTTP 400) — the server restarted. Re-initializing.
+[agent-deck] bridge: cannot re-initialize — no initialize request seen yet
+[agent-deck] bridge: MCP server restarted and re-initialization failed

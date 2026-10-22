@@ -17,6 +17,11 @@ export type LiveDisplayEntry = {
   updatedAt: string;
   badge: string;
   clientName?: string;
+  /**
+   * Host-side session id for status-line self-match (NOT-513). Absent for
+   * entries registered before the bridge sent one, and for non-Claude hosts.
+   */
+  hostSessionId?: string;
   lastActivityAt: string;
 };
 
@@ -157,6 +162,9 @@ export class LiveDisplayRegistry {
       ...input,
       workspaceRoot,
       clientName: input.clientName ?? existing?.clientName,
+      // NOT-513: same preserve rule as folder/client — a re-register that
+      // omits the host id (e.g. deck-switch refresh) must not drop it.
+      hostSessionId: input.hostSessionId?.trim() || existing?.hostSessionId,
       badge,
       lastActivityAt: input.updatedAt,
     };

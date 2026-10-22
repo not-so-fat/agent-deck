@@ -6,6 +6,7 @@ import {
   AGENT_DECK_SESSION_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   normalizeCorrelationId,
+  normalizeHostSessionId,
   type BindingActiveSource,
 } from '@agent-deck/shared';
 import type { ClientPrincipal } from './auth/client-grants';
@@ -49,6 +50,13 @@ export class McpSessionBindingStore {
    * later header change can never move usage attribution or authority.
    */
   private correlationByMcp = new Map<string, string>();
+  /**
+   * Host-side session id per MCP session (NOT-513). Adopt-once like the
+   * correlation id: the first valid value seen sticks for the session
+   * lifetime. Display-routing metadata only — never consulted for deck,
+   * workspace, mode, or auth.
+   */
+  private hostSessionByMcp = new Map<string, string>();
   /** MCP session ids authenticated via launch-selected deck (NOT-105). */
   private launchByMcp = new Set<string>();
   /** MCP session ids authenticated via remote bearer grant (NOT-318). */
@@ -188,6 +196,29 @@ export class McpSessionBindingStore {
     return this.correlationByMcp.get(mcpSessionId);
   }
 
+  /**
+   * Adopt the session's host-side session id (NOT-513). First valid value
+   * wins; later values — valid or not — are ignored, and invalid input is
+   * dropped, never coerced. Returns the stored value (or undefined when
+   * nothing stuck).
+   */
+  setHostSessionId(mcpSessionId: string, raw: unknown): string | undefined {
+    const existing = this.hostSessionByMcp.get(mcpSessionId);
+    if (existing) {
+      return existing;
+    }
+    const normalized = normalizeHostSessionId(raw);
+    if (normalized) {
+      this.hostSessionByMcp.set(mcpSessionId, normalized);
+      return normalized;
+    }
+    return undefined;
+  }
+
+  getHostSessionId(mcpSessionId: string): string | undefined {
+    return this.hostSessionByMcp.get(mcpSessionId);
+  }
+
   isUnassigned(mcpSessionId: string): boolean {
     return this.unassignedByMcp.has(mcpSessionId);
   }
@@ -210,6 +241,7 @@ export class McpSessionBindingStore {
     this.runtimeSessionByMcp.delete(sessionId);
     this.modeByMcp.delete(sessionId);
     this.correlationByMcp.delete(sessionId);
+    this.hostSessionByMcp.delete(sessionId);
     this.launchByMcp.delete(sessionId);
     this.grantByMcp.delete(sessionId);
     this.unassignedByMcp.delete(sessionId);

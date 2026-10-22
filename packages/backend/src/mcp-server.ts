@@ -6,6 +6,7 @@ import {
   AGENT_DECK_BRIDGE_LIVENESS_V1,
   AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_HOST_SESSION_ID_HEADER,
   AGENT_DECK_RECOVERED_SESSION_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
@@ -73,6 +74,19 @@ function readLaunchDeckHeader(req: Request): string | undefined {
  */
 function readCorrelationIdHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_CORRELATION_HEADER];
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  return value || undefined;
+}
+
+/**
+ * NOT-513: host-side session id for status-line self-match (Claude Code sends
+ * its `CLAUDE_CODE_SESSION_ID` via the bridge on every request). Returned
+ * unvalidated — the binding store normalizes with the same opaque-token
+ * rule as the correlation id, and it is display-routing metadata only: it
+ * can never select a deck, grant access, change mode, or participate in auth.
+ */
+function readHostSessionIdHeader(req: Request): string | undefined {
+  const raw = req.headers[AGENT_DECK_HOST_SESSION_ID_HEADER];
   const value = typeof raw === 'string' ? raw.trim() : '';
   return value || undefined;
 }
@@ -510,6 +524,9 @@ export class AgentDeckMCPServer {
     }
 
     const clientName = this.sessions.get(sessionId)?.server.server.getClientVersion()?.name;
+    // NOT-513: undefined values are dropped by JSON.stringify, so sessions
+    // without an adopted host id register exactly the previous body.
+    const hostSessionId = this.sessionBinding.getHostSessionId(sessionId);
     const result = await this.callBackendAPI(
       '/api/scope/live-display',
       {
@@ -522,6 +539,7 @@ export class AgentDeckMCPServer {
           deckName: deck.name,
           source: resolveDeckBindingSource(snapshot),
           clientName,
+          hostSessionId,
           cardCounts: countDeckCards(deck),
           updatedAt: new Date().toISOString(),
         }),
@@ -553,6 +571,18 @@ export class AgentDeckMCPServer {
     this.lastClientActivityAtMs.set(sessionId, this.nowMs());
     if (hasBridgeLivenessHeader(req)) {
       this.heartbeatCapableSessions.add(sessionId);
+    }
+  }
+
+  /**
+   * NOT-513: adopt the host-side session id the bridge sent for status-line
+   * self-match. Adopt-once inside the store; invalid values are dropped, and
+   * the id is display-routing metadata only — never deck, auth, or mode.
+   */
+  private adoptHostSessionId(sessionId: string, req: Request): void {
+    const hostSessionId = readHostSessionIdHeader(req);
+    if (hostSessionId) {
+      this.sessionBinding.setHostSessionId(sessionId, hostSessionId);
     }
   }
 
@@ -2035,6 +2065,9 @@ export class AgentDeckMCPServer {
       // NOT-191: the handshake is the session's first client activity, and it
       // is also where a heartbeat-capable bridge is first recognized.
       this.noteClientActivity(transport.sessionId, req);
+      // NOT-513: adopt the host-side session id before the first live-display
+      // register, so the entry carries it from the start.
+      this.adoptHostSessionId(transport.sessionId, req);
       if (!this.sessionBinding.isUnassigned(transport.sessionId)) {
         void this.registerLiveDisplay(transport.sessionId).catch(() => {});
       }
@@ -2084,6 +2117,9 @@ export class AgentDeckMCPServer {
       return;
     }
     this.noteClientActivity(sessionId, req);
+    // NOT-513: adopt-once, so a header that arrives only on later requests
+    // (or a re-register after bind_workspace) still lands on the entry.
+    this.adoptHostSessionId(sessionId, req);
     if (req.method === 'DELETE' && (this.inFlightRequests.get(sessionId) ?? 0) > 0) {
       // NOT-191: never delete a session under running work. The close is
       // deferred and runs when the last in-flight request lands (or on the

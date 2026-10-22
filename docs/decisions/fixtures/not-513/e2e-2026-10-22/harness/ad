@@ -1,0 +1,2 @@
+#!/bin/sh
+exec node /Users/not_so_fat/.agent-dealer/execution/worktrees/github.com/not-so-fat/agent-deck/512b0a9f-2257-45f5-af53-b31d02ce165e-developer/packages/cli/dist/bin.js "$@"
