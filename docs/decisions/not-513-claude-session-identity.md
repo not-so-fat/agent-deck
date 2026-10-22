@@ -34,41 +34,71 @@ line command (`statusline-probe.sh` — logs env and stdin). Both live under
 
 | # | Candidate | Readable by bridge (MCP child) | Readable by status line command | Verdict |
 |---|-----------|-------------------------------|---------------------------------|---------|
-| 1 | `CLAUDE_CODE_SESSION_ID` env | **Yes** — present in every run, fresh UUID per `claude` invocation (5 runs: `037a8613…`, `9baf06e1…`, `eec883b2…`, `cf1b7641…`, `7285c3c6…`); unset in the parent shell, so genuinely set by Claude | **Yes** — same main-process session id (`V()`); see binary evidence below | **Shared identifier** |
-| 2 | stdin `session_id` | No (MCP children get no such payload) | Yes (documented payload; `resolveStatusLineSessionId` already parses it) | Status-line side only — used as first choice, env as fallback |
-| 3 | MCP `initialize` params | **No** — observed params are `{protocolVersion, capabilities, clientInfo}` only, no session/token field | n/a | Eliminated |
+| 1 | `CLAUDE_CODE_SESSION_ID` env | **Yes** — observed in every run (print and interactive); unset in the parent shell, so genuinely set by Claude | **Yes** — observed in the interactive run, same value as the MCP child | **Shared identifier** |
+| 2 | stdin `session_id` | No (MCP children get no such payload) | **Yes** — observed in the interactive run, equal to the env value | Status-line side; used first, env as fallback |
+| 3 | MCP `initialize` params | **No** — params are `{protocolVersion, capabilities, clientInfo}` only, no session field | n/a | Eliminated |
 
-Raw MCP-child spawn env (run 1, `run2-mcp.log` / `run3-plus-mcp.log`):
+### Interactive run (real TUI, 2026-10-22T01:09Z)
 
-```json
-{"env_session_like":{"MUSE_SESSION_ID":"1682286c-a0a9-490e-820a-f2603243a135","CLAUDE_CODE_TOOL_USE_ID":"call_01a…","AI_AGENT":"claude-code_2-1-307_harness","CLAUDE_CODE_ENTRYPOINT":"sdk-cli","CLAUDE_PROJECT_DIR":"/private/tmp/not513-probe","CLAUDE_CODE_SESSION_ID":"037a8613-6b9a-41fd-a7f3-24ddb543a456","CLAUDECODE":"1"}}
+`claude --settings settings.json --mcp-config mcp.json` was started under a pty
+([`pty-run.py`](./fixtures/not-513/pty-run.py)) with `CLAUDE_CODE_SESSION_ID`,
+`CLAUDECODE`, `MUSE_SESSION_ID` and `CLAUDE_CODE_ENTRYPOINT` removed from the
+parent env. It accepted the folder-trust prompt, sent no prompt and exited.
+Raw logs (only `CLAUDE_CODE_MESSAGING_TOKEN` redacted) are in
+[`fixtures/not-513/interactive-2026-10-22/`](./fixtures/not-513/interactive-2026-10-22/).
+
+Status line command (`statusline-probe.log`), first render at `01:09:42Z`:
+
+```
+--- stdin ---
+{"session_id":"3ed21291-5aef-4a13-ae71-b2eaf165588d","transcript_path":"…/3ed21291-5aef-4a13-ae71-b2eaf165588d.jsonl","cwd":"/private/tmp/not513-probe",…,"version":"2.1.307",…}
+--- session-like env ---
+CLAUDE_CODE_CHILD_SESSION=1
+CLAUDE_CODE_ENTRYPOINT=cli
+CLAUDE_CODE_SESSION_ID=3ed21291-5aef-4a13-ae71-b2eaf165588d
+CLAUDE_PID=13716
+CLAUDE_PROJECT_DIR=/private/tmp/not513-probe
+CLAUDECODE=1
 ```
 
+MCP child (`mcp-probe.log`), same session:
+
 ```json
-{"event":"msg","method":"initialize","id":0,"params":{"protocolVersion":"2025-11-25","capabilities":{"roots":{"listChanged":true},"elicitation":{"form":{},"url":{}}},"clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.307","description":"Anthropic's agentic coding tool","websiteUrl":"https://claude.com/claude-code"}}}
+{"event":"spawn","time":"2026-10-22T01:09:42.552Z","pid":13781,"env_session_like":{…,"CLAUDE_CODE_ENTRYPOINT":"cli","CLAUDE_PROJECT_DIR":"/private/tmp/not513-probe","CLAUDE_CODE_SESSION_ID":"3ed21291-5aef-4a13-ae71-b2eaf165588d","CLAUDECODE":"1"}}
+{"event":"msg","time":"2026-10-22T01:09:45.400Z","method":"initialize","id":0,"params":{"protocolVersion":"2025-11-25","capabilities":{"roots":{"listChanged":true},"elicitation":{"form":{},"url":{}}},"clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.307",…}}}
 ```
 
-Notes on the observations:
+SessionStart hook (`hook-probe.log`) saw the same `session_id` on stdin and
+the same `CLAUDE_CODE_SESSION_ID` in its env.
 
-- `MUSE_SESSION_ID` in the probe env is **inherited harness env** (it equals the
-  builder session's own id and is set in the parent shell) — not set by Claude,
-  not a candidate.
-- The status line command and hooks do **not** run in `claude -p` (print) mode:
-  `statusline-probe.log` and `hook-probe.log` stayed empty across all print
-  runs, and interactive TUI could not be started in this sandbox (no pty
-  devices: `script` → `openpty: Operation not permitted`, python `pty` →
-  `out of pty devices`). So the status-line half rests on static evidence:
-- Static evidence (`strings` on the 2.1.307 binary): the main process assigns
-  its own env once per session (`process.env.CLAUDE_CODE_SESSION_ID=V()`),
-  and both MCP-spawn sites build the child env with
-  `{…, CLAUDE_PROJECT_DIR, CLAUDE_CODE_SESSION_ID:V(), CLAUDECODE:"1", …}` —
-  exactly matching the runtime probe. Every Claude-spawned child therefore
-  shares the same session id unless its spawn path explicitly scrubs it;
-  the status line command takes `session_id` on stdin as well, so the
-  status line resolves stdin first and env second and both name the same
-  session.
-- Operator follow-up (acceptance criterion 5) still covers the real
-  interactive first-render check.
+What this shows:
+
+- **Equality:** the status line's stdin `session_id`, the status line's
+  `CLAUDE_CODE_SESSION_ID` env, and the MCP child's `CLAUDE_CODE_SESSION_ID`
+  env are all `3ed21291-5aef-4a13-ae71-b2eaf165588d` in one session. The
+  bridge and the status line can both read the same id.
+- **Ordering:** the status line first rendered at `01:09:42Z`, before the
+  MCP child received `initialize` (`01:09:45.400Z`). So the first lines
+  always come before registration, and the "session starting" state is
+  what the user sees until the bridge registers.
+- `CLAUDE_CODE_SESSION_ID` was not in the parent env, so Claude set it.
+
+### Earlier print-mode runs
+
+In `claude -p` runs the MCP child env carried `CLAUDE_CODE_SESSION_ID`, a fresh
+UUID each run (5 runs: `037a8613…`, `9baf06e1…`, `eec883b2…`, `cf1b7641…`,
+`7285c3c6…`). The status line and hooks never ran in print mode. The
+`initialize` params were identical to the interactive run. `MUSE_SESSION_ID`
+in those logs came from the harness parent env, not from Claude.
+
+### Not verified in the sandbox
+
+The full first-render check with Agent Deck's own bridge and status line
+(acceptance criterion 5) needs this branch's backend on the default ports.
+The operator's production instance holds those ports, so the check stays an
+**[operator]** step: start `claude` in this repo on a non-default deck. The
+expected result is `◆ Agent Deck · session starting` and then the launched
+deck, never the folder default or another session's deck.
 
 ## Decisions
 
@@ -97,7 +127,7 @@ never sets the env var and its payload shape is untouched).
 
 - workspace match contains an entry with that `hostSessionId` → that
   entry's deck (even when other sessions disagree — that is the point);
-- otherwise → the neutral `◆ Agent Deck · session starting` state, which
+- otherwise (no match, or a non-blank id that fails format validation) → the neutral `◆ Agent Deck · session starting` state, which
   names no deck: never another session's deck, and not the saved
   workspace default either (the session simply has not registered yet).
 
