@@ -503,9 +503,14 @@ describe('run --detach against the built CLI (NOT-401)', () => {
   }
 
   async function waitForEnd(logPath: string, timeoutMs = 20_000): Promise<Array<Record<string, unknown>>> {
+    // The end line lands before meta.json is rewritten; wait for both so
+    // callers asserting the terminal meta state don't race the child.
     const appeared = await waitUntil(() => {
       try {
-        return readLines(logPath).some((line) => line.t === 'end');
+        return (
+          readLines(logPath).some((line) => line.t === 'end') &&
+          readMeta(logPath).state !== 'running'
+        );
       } catch {
         return false;
       }
