@@ -1,0 +1,8 @@
+=== 2026-10-22T01:09:42Z pid=13768 ===
+--- stdin ---
+{"session_id":"3ed21291-5aef-4a13-ae71-b2eaf165588d","transcript_path":"/Users/not_so_fat/.claude/projects/-private-tmp-not513-probe/3ed21291-5aef-4a13-ae71-b2eaf165588d.jsonl","cwd":"/private/tmp/not513-probe","scratchpad_dir":"/private/tmp/claude-501/-private-tmp-not513-probe/3ed21291-5aef-4a13-ae71-b2eaf165588d/scratchpad","hook_event_name":"SessionStart","source":"startup","model":"claude-sonnet-5-5"}
+--- session env ---
+CLAUDE_CODE_CHILD_SESSION=1
+CLAUDE_CODE_SESSION_ID=3ed21291-5aef-4a13-ae71-b2eaf165588d
+CLAUDE_PROJECT_DIR=/private/tmp/not513-probe
+CLAUDECODE=1

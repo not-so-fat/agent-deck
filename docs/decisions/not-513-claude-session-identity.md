@@ -47,7 +47,7 @@ parent env. It accepted the folder-trust prompt, sent no prompt and exited.
 Raw logs (only `CLAUDE_CODE_MESSAGING_TOKEN` redacted) are in
 [`fixtures/not-513/interactive-2026-10-22/`](./fixtures/not-513/interactive-2026-10-22/).
 
-Status line command (`statusline-probe.log`), first render at `01:09:42Z`:
+Status line command (`statusline-probe.txt`), first render at `01:09:42Z`:
 
 ```
 --- stdin ---
@@ -61,14 +61,14 @@ CLAUDE_PROJECT_DIR=/private/tmp/not513-probe
 CLAUDECODE=1
 ```
 
-MCP child (`mcp-probe.log`), same session:
+MCP child (`mcp-probe.txt`), same session:
 
 ```json
 {"event":"spawn","time":"2026-10-22T01:09:42.552Z","pid":13781,"env_session_like":{…,"CLAUDE_CODE_ENTRYPOINT":"cli","CLAUDE_PROJECT_DIR":"/private/tmp/not513-probe","CLAUDE_CODE_SESSION_ID":"3ed21291-5aef-4a13-ae71-b2eaf165588d","CLAUDECODE":"1"}}
 {"event":"msg","time":"2026-10-22T01:09:45.400Z","method":"initialize","id":0,"params":{"protocolVersion":"2025-11-25","capabilities":{"roots":{"listChanged":true},"elicitation":{"form":{},"url":{}}},"clientInfo":{"name":"claude-code","title":"Claude Code","version":"2.1.307",…}}}
 ```
 
-SessionStart hook (`hook-probe.log`) saw the same `session_id` on stdin and
+SessionStart hook (`hook-probe.txt`) saw the same `session_id` on stdin and
 the same `CLAUDE_CODE_SESSION_ID` in its env.
 
 What this shows:
