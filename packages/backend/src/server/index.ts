@@ -11,7 +11,7 @@ import { OAuthManager } from '../services/oauth-manager';
 import { registerServiceRoutes } from '../routes/services';
 import { registerDeckRoutes } from '../routes/decks';
 import { registerOAuthRoutes } from '../routes/oauth';
-import { registerWebSocketRoutes } from '../routes/websocket';
+import { installWebSocketBroadcasting, registerWebSocketRoutes } from '../routes/websocket';
 import mcpRoutes from '../routes/mcp';
 import { registerLocalMCPRoutes } from '../routes/local-mcp';
 import { registerCredentialRoutes } from '../routes/credentials';
@@ -155,8 +155,13 @@ export async function createServer() {
   // line. Reads also sweep lazily, so this timer is belt-and-braces.
   liveDisplayRegistry.startStaleSweep();
 
+  // Broadcast decorators live on the root scope so every route plugin and the
+  // NOT-512 health re-probe reach the real WebSocket subscribers; decorating
+  // inside the encapsulated `/api/ws` plugin would not be visible here.
+  const webSocketHub = installWebSocketBroadcasting(fastify);
+
   // Register routes
-  await fastify.register(registerWebSocketRoutes, { prefix: '/api/ws' });
+  await fastify.register(registerWebSocketRoutes, { prefix: '/api/ws', hub: webSocketHub });
   await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
   await fastify.register(registerDeckRoutes, { prefix: '/api/decks', storeWriter });
   await fastify.register(registerCredentialRoutes, { prefix: '/api/credentials' });
@@ -227,7 +232,7 @@ export async function createServer() {
 
   // NOT-512: re-probe `unhealthy` MCP services with backoff so they
   // self-heal without a dashboard visit. Declared before the onClose hook so
-  // shutdown clears the timer; assigned after the broadcast decorators below.
+  // shutdown clears the timer; assigned below once all services are wired.
   let stopHealthReprobe: (() => void) | undefined;
 
   fastify.addHook('onClose', async () => {
@@ -238,26 +243,10 @@ export async function createServer() {
     db.close();
   });
 
-  // Add broadcast decorators for WebSocket functionality
-  fastify.decorate('broadcastServiceUpdate', (update: ServiceStatusUpdate) => {
-    console.log('Broadcasting service update:', update);
-    // This will be implemented when WebSocket is properly connected
-  });
-
-  fastify.decorate('broadcastDeckUpdate', (update: DeckUpdate) => {
-    console.log('Broadcasting deck update:', update);
-    // This will be implemented when WebSocket is properly connected
-  });
-
-  fastify.decorate('broadcastToAll', (message: WebSocketMessage) => {
-    console.log('Broadcasting to all:', message);
-    // This will be implemented when WebSocket is properly connected
-  });
-
   // NOT-512: background self-heal for `unhealthy` MCP services. The probe's
   // own token resolution refreshes OAuth on use, so no refresh scheduler is
-  // needed. Started after the broadcast decorators so ticks observe the real
-  // WebSocket broadcast; the timer is unref'd and cleared on shutdown.
+  // needed. `fastify.broadcastServiceUpdate` is the root-scope WebSocket hub
+  // broadcaster; the timer is unref'd and cleared on shutdown.
   stopHealthReprobe = startHealthReprobe({
     listServices: () => serviceManager.getAllServices(),
     checkHealth: (serviceId) => serviceManager.checkServiceHealth(serviceId),

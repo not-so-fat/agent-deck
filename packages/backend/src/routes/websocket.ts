@@ -7,8 +7,101 @@ interface WebSocketConnection {
   subscriptions: Set<string>;
 }
 
-export async function registerWebSocketRoutes(fastify: FastifyInstance) {
+/**
+ * Connection registry plus the broadcast functions that write to it.
+ *
+ * Owned by the root server scope (see `installWebSocketBroadcasting`) rather
+ * than by the encapsulated `/api/ws` plugin: decorators added inside a
+ * registered plugin stay inside it, so sibling plugins and root-scope callers
+ * (e.g. the NOT-512 health re-probe) would otherwise only see a stub.
+ */
+export interface WebSocketHub {
+  connections: Map<string, WebSocketConnection>;
+  broadcastServiceUpdate: (update: ServiceStatusUpdate) => void;
+  broadcastDeckUpdate: (update: DeckUpdate) => void;
+  broadcastToAll: (message: WebSocketMessage) => void;
+}
+
+export function createWebSocketHub(): WebSocketHub {
   const connections = new Map<string, WebSocketConnection>();
+
+  function broadcastToSubscribers(channel: string, message: WebSocketMessage) {
+    console.log(`Broadcasting to ${channel} channel:`, message.type, `(${connections.size} connections)`);
+    
+    if (connections.size === 0) {
+      console.log('No WebSocket connections available for broadcasting');
+      return;
+    }
+    
+    for (const connection of connections.values()) {
+      if (connection.subscriptions.has(channel)) {
+        try {
+          connection.socket.send(JSON.stringify(message));
+        } catch (error) {
+          console.error(`Failed to send message to connection ${connection.id}:`, error);
+          // Remove broken connection
+          connections.delete(connection.id);
+        }
+      }
+    }
+  }
+
+  return {
+    connections,
+    broadcastServiceUpdate: (update: ServiceStatusUpdate) => {
+      console.log('Broadcasting service update:', update);
+      const message: WebSocketMessage = {
+        type: 'service_update',
+        data: update,
+        timestamp: new Date().toISOString(),
+      };
+      
+      broadcastToSubscribers('services', message);
+    },
+    broadcastDeckUpdate: (update: DeckUpdate) => {
+      console.log('Broadcasting deck update:', update);
+      const message: WebSocketMessage = {
+        type: 'deck_update',
+        data: update,
+        timestamp: new Date().toISOString(),
+      };
+      
+      broadcastToSubscribers('decks', message);
+    },
+    // Broadcast to all connections
+    broadcastToAll: (message: WebSocketMessage) => {
+      for (const connection of connections.values()) {
+        try {
+          connection.socket.send(JSON.stringify(message));
+        } catch (error) {
+          console.error(`Failed to send message to connection ${connection.id}:`, error);
+          // Remove broken connection
+          connections.delete(connection.id);
+        }
+      }
+    },
+  };
+}
+
+/**
+ * Create the hub and decorate the given (root) instance with its broadcast
+ * functions so every plugin and root-scope caller reaches real subscribers.
+ * Call before registering `registerWebSocketRoutes` with the returned hub.
+ */
+export function installWebSocketBroadcasting(fastify: FastifyInstance): WebSocketHub {
+  const hub = createWebSocketHub();
+  fastify.decorate('broadcastServiceUpdate', hub.broadcastServiceUpdate);
+  fastify.decorate('broadcastDeckUpdate', hub.broadcastDeckUpdate);
+  fastify.decorate('broadcastToAll', hub.broadcastToAll);
+  return hub;
+}
+
+export interface WebSocketRoutesOptions {
+  hub: WebSocketHub;
+}
+
+export async function registerWebSocketRoutes(fastify: FastifyInstance, options: WebSocketRoutesOptions) {
+  const { connections } = options.hub;
 
   // Enable WebSocket connections
   fastify.get('/events', { websocket: true }, (socket, _req) => {
@@ -118,63 +211,6 @@ export async function registerWebSocketRoutes(fastify: FastifyInstance) {
       console.error('Error sending pong message:', error);
     }
   }
-
-  // Broadcast functions for other parts of the application
-  fastify.decorate('broadcastServiceUpdate', (update: ServiceStatusUpdate) => {
-    console.log('Broadcasting service update:', update);
-    const message: WebSocketMessage = {
-      type: 'service_update',
-      data: update,
-      timestamp: new Date().toISOString(),
-    };
-    
-    broadcastToSubscribers('services', message);
-  });
-
-  fastify.decorate('broadcastDeckUpdate', (update: DeckUpdate) => {
-    console.log('Broadcasting deck update:', update);
-    const message: WebSocketMessage = {
-      type: 'deck_update',
-      data: update,
-      timestamp: new Date().toISOString(),
-    };
-    
-    broadcastToSubscribers('decks', message);
-  });
-
-  function broadcastToSubscribers(channel: string, message: WebSocketMessage) {
-    console.log(`Broadcasting to ${channel} channel:`, message.type, `(${connections.size} connections)`);
-    
-    if (connections.size === 0) {
-      console.log('No WebSocket connections available for broadcasting');
-      return;
-    }
-    
-    for (const connection of connections.values()) {
-      if (connection.subscriptions.has(channel)) {
-        try {
-          connection.socket.send(JSON.stringify(message));
-        } catch (error) {
-          console.error(`Failed to send message to connection ${connection.id}:`, error);
-          // Remove broken connection
-          connections.delete(connection.id);
-        }
-      }
-    }
-  }
-
-  // Broadcast to all connections
-  fastify.decorate('broadcastToAll', (message: WebSocketMessage) => {
-    for (const connection of connections.values()) {
-      try {
-        connection.socket.send(JSON.stringify(message));
-      } catch (error) {
-        console.error(`Failed to send message to connection ${connection.id}:`, error);
-        // Remove broken connection
-        connections.delete(connection.id);
-      }
-    }
-  });
 }
 
 // Extend FastifyInstance to include broadcast methods
