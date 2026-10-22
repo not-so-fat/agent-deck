@@ -1,0 +1,7 @@
+# after the claude session exited; sibling bridge still live (CLAUDE_CODE_SESSION_ID=11111111-2222-4333-8444-555555555555)
+## folder-only (no id):
+◆ Agent Deck · multiple session decks · see chat receipt
+## hostSessionId=sibling:
+◆ Other Session · 0 MCP · 0 keys · 0 playbooks · ⌘fox (updated 2026-10-21 18:27) · session (default Folder Default)
+## hostSessionId=ended claude session 75dc1403-…:
+◆ Launched Deck · 0 MCP · 0 keys · 0 playbooks · ⌘ember (updated 2026-10-21 18:28) · session (default Folder Default)

@@ -91,14 +91,73 @@ UUID each run (5 runs: `037a8613…`, `9baf06e1…`, `eec883b2…`, `cf1b7641…
 `initialize` params were identical to the interactive run. `MUSE_SESSION_ID`
 in those logs came from the harness parent env, not from Claude.
 
-### Not verified in the sandbox
+### First-render check with Agent Deck's own bridge and status line (2026-10-22T01:27Z)
 
-The full first-render check with Agent Deck's own bridge and status line
-(acceptance criterion 5) needs this branch's backend on the default ports.
-The operator's production instance holds those ports, so the check stays an
-**[operator]** step: start `claude` in this repo on a non-default deck. The
-expected result is `◆ Agent Deck · session starting` and then the launched
-deck, never the folder default or another session's deck.
+This is acceptance criterion 5, run at this branch's code. Raw logs and the
+harness are in
+[`fixtures/not-513/e2e-2026-10-22/`](./fixtures/not-513/e2e-2026-10-22/).
+
+Setup. The operator's production instance holds the default ports, so this
+branch's backend and MCP server ran isolated on `8513`/`8514`, with a temp
+`AGENT_DECK_HOME` ([`env.sh`](./fixtures/not-513/e2e-2026-10-22/harness/env.sh)).
+The bridge and the status line were the real built CLI
+(`node packages/cli/dist/bin.js mcp-launch` / `statusline`). Each was wrapped
+only to log ([`bridge-wrap.sh`](./fixtures/not-513/e2e-2026-10-22/harness/bridge-wrap.sh),
+[`statusline-wrap.sh`](./fixtures/not-513/e2e-2026-10-22/harness/statusline-wrap.sh)).
+The status line had `refreshInterval: 1`. A temp git folder
+(`/private/tmp/not513-e2e/ws`) stood in for the repo, so that its `.mcp.json` and
+`use.json` writes stayed out of the worktree.
+
+- Three decks: `Folder Default`, `Launched Deck`, `Other Session`.
+- **Sibling session.** A real `agent-deck mcp-launch` bridge ran with
+  `CLAUDE_CODE_SESSION_ID=11111111-…` on `Other Session`
+  ([`sibling.mjs`](./fixtures/not-513/e2e-2026-10-22/harness/sibling.mjs)). It
+  stayed live for the whole run. With only that entry, the old folder-only
+  query named `◆ Other Session …`, which is the reported bug.
+- **New session.** With `use.json` = `Launched Deck`, real interactive
+  `claude` 2.1.307 was started under a pty with `--strict-mcp-config`
+  ([`pty-run.py`](./fixtures/not-513/e2e-2026-10-22/harness/pty-run.py)).
+- **Folder default changed.** About 16 s after the session's bridge
+  registered, the driver ran `agent-deck use "Folder Default"`. This changes
+  the folder default the way a second terminal would, so the launched deck
+  and the folder default differ. (`mcp-launch` takes its deck from `use.json`
+  when it starts, so this is the race-free way to get a session whose deck
+  is not the folder default.)
+
+Result. These are all 53 status line renders, from
+[`statusline-renders.txt`](./fixtures/not-513/e2e-2026-10-22/statusline-renders.txt):
+
+```
+01:28:00.191Z  ◆ Agent Deck · session starting                                  (1 render)
+01:28:01.416Z  ◆ Launched Deck · 0 MCP · 0 keys · 0 playbooks · ⌘ember (…)        (14 renders)
+01:28:15.412Z  ◆ Launched Deck · … · ⌘ember (…) · session (default Folder Default) (38 renders, after `use "Folder Default"`)
+```
+
+- Every render carried stdin `session_id` = env `CLAUDE_CODE_SESSION_ID` =
+  `75dc1403-2035-4764-8940-291b9accaa3e`. The bridge was spawned with the
+  same value (`claude-bridge-stderr.txt`).
+- The first render named no deck. Every later render named `Launched Deck`.
+  No render named `Other Session`, and none showed `Folder Default` as its
+  deck. The folder-only query was logged next to each render, and the whole
+  time it would have shown `◆ Agent Deck · multiple session decks` (and
+  `◆ Other Session` before registration).
+- The terminal output shows Claude drawing `◆ Agent Deck · session starting`
+  and then patching it in place to `◆ Launched Deck · 0 MCP · …`
+  ([`terminal-statusline-bytes.txt`](./fixtures/not-513/e2e-2026-10-22/terminal-statusline-bytes.txt)).
+
+Side observations. Neither is caused by this change and both are out of
+scope here:
+
+- Claude 2.1.307 sends a `server/discover` probe before `initialize` (also
+  in the earlier probe log). The bridge has no session yet, gets an HTTP 400,
+  and logs a spurious "server restarted … re-initialization failed" line.
+  `initialize` and registration then go through normally.
+- After `/exit`, this session's live entry was still registered
+  (`post-run-display.txt`). So Claude did not end the bridge with a clean
+  stdin close. A bridge whose stdin closes cleanly does unregister: a manual
+  check at the same build went from the deck to `session starting`. The
+  leftover entry is aged out by the NOT-309 expiry. It is keyed by its own
+  host session id, so it can never be shown to another session.
 
 ## Decisions
 
@@ -141,9 +200,10 @@ resolution; a `hostSessionId` that matches nothing always yields
 
 ## Consequences
 
-- A new Claude session's first status line names its own deck as soon as its
+- A new Claude session's status line names its own deck as soon as its
   bridge handshake registers, and shows `session starting` (not a sibling
-  session's deck) before that.
+  session's deck) before that. In the real run, that was one render, about
+  1.2 s.
 - Mixed-version note: bridge and status line ship in the same CLI, so they
   upgrade together; a new status line against an old bridge (no stored id)
   stays on `session starting` for that folder until the bridge upgrades.
