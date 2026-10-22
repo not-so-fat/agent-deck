@@ -17,6 +17,9 @@ const LiveDisplayBodySchema = z.object({
   deckName: z.string().min(1),
   source: DeckDisplaySourceSchema.exclude(['unbound']),
   clientName: z.string().min(1).optional(),
+  // NOT-513: host-side session id for status-line self-match. Absent for
+  // entries registered before the bridge sent one, and for non-Claude hosts.
+  hostSessionId: z.string().min(1).max(200).optional(),
   cardCounts: DeckCardCountsSchema,
   updatedAt: z.string().datetime(),
 });
@@ -72,7 +75,9 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
     }
   });
 
-  fastify.get<{ Querystring: { workspaceRoot?: string } }>('/display', async (request, reply) => {
+  fastify.get<{ Querystring: { workspaceRoot?: string; hostSessionId?: string } }>(
+    '/display',
+    async (request, reply) => {
     try {
       const workspaceRoot = request.query.workspaceRoot?.trim();
       if (!workspaceRoot) {
@@ -82,8 +87,11 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
         } satisfies ApiResponse);
       }
 
+      // NOT-513: the status line sends the id its host assigned the session;
+      // absent (Cursor, old CLI) keeps today's folder-only behavior exactly.
+      const hostSessionId = request.query.hostSessionId?.trim() || undefined;
       const display = await resolveDeckDisplay(
-        { workspaceRoot },
+        hostSessionId ? { workspaceRoot, hostSessionId } : { workspaceRoot },
         fastify.db,
         fastify.liveDisplayRegistry,
       );
@@ -97,7 +105,8 @@ export async function registerScopeRoutes(fastify: FastifyInstance) {
         error: error instanceof Error ? error.message : 'Unknown error',
       } satisfies ApiResponse);
     }
-  });
+    },
+  );
 
   fastify.post('/live-display', async (request, reply) => {
     try {

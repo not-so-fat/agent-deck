@@ -1,0 +1,1 @@
+{ "mcpServers": { "probe": { "command": "node", "args": ["/tmp/not513-probe/mcp-probe.mjs"] } } }

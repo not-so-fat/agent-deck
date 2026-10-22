@@ -6,7 +6,12 @@ import { PassThrough } from 'node:stream';
 import { DatabaseManager } from '../../backend/src/models/database';
 import { LiveDisplayRegistry } from '../../backend/src/scope/live-display-registry';
 import { resolveDeckDisplay } from '../../backend/src/scope/display';
-import { readStdin, resolveStatuslineWorkspace, runStatusline } from './statusline';
+import {
+  readStdin,
+  resolveStatuslineHostSessionId,
+  resolveStatuslineWorkspace,
+  runStatusline,
+} from './statusline';
 
 describe('statusline', () => {
   it('prefers --workspace over stdin cwd', () => {
