@@ -482,6 +482,46 @@ export class ServiceManager {
     return { ...service, headers };
   }
 
+  /**
+   * NOT-511: whether a failed MCP operation is worth retrying with a fresh
+   * client. A cached client's Authorization header is resolved at connect
+   * time, so an expired OAuth token fails the first attempt even though the
+   * resolver could refresh it — the retry rebuilds the client and re-resolves.
+   * When the service needs OAuth but has no token at all, the failure is real
+   * and a retry cannot help.
+   */
+  private shouldRetryMcpCall(service: Service): boolean {
+    const needsOAuth = Boolean(
+      service.oauthClientId ||
+        service.oauthAuthorizationUrl ||
+        service.oauthTokenUrl,
+    );
+    if (!needsOAuth) {
+      return true;
+    }
+    return Boolean(service.oauthHasToken || service.oauthAccessToken);
+  }
+
+  /**
+   * NOT-511: run an MCP operation, retrying exactly once with a fresh client
+   * after `invalidateClient` when the first attempt fails. The rebuilt client
+   * re-resolves the access token (refreshing it if expired). No backoff.
+   */
+  private async withFreshMcpClientOnRetry<T>(
+    service: Service,
+    operation: () => Promise<T>,
+  ): Promise<{ value: T; retried: boolean }> {
+    try {
+      return { value: await operation(), retried: false };
+    } catch (firstError) {
+      if (!this.shouldRetryMcpCall(service)) {
+        throw firstError;
+      }
+      this.mcpClient.invalidateClient(service.id);
+      return { value: await operation(), retried: true };
+    }
+  }
+
   async discoverServiceTools(
     serviceId: string,
     options?: { forAgent?: boolean },
@@ -496,7 +536,9 @@ export class ServiceManager {
       const prepared = await this.prepareServiceForRemoteCall(service);
 
       if (service.type === 'mcp' || service.type === 'local-mcp') {
-        tools = await this.mcpClient.discoverTools(prepared);
+        ({ value: tools } = await this.withFreshMcpClientOnRetry(service, () =>
+          this.mcpClient.discoverTools(prepared),
+        ));
       } else if (service.type === 'a2a') {
         tools = await this.discoverA2ATools(service);
       } else {
@@ -581,11 +623,18 @@ export class ServiceManager {
       const prepared = await this.prepareServiceForRemoteCall(service);
 
       if (service.type === 'mcp' || service.type === 'local-mcp') {
-        const result = await this.mcpClient.callTool(
-          prepared,
-          validatedInput.toolName,
-          validatedInput.arguments
+        const { value: result, retried } = await this.withFreshMcpClientOnRetry(
+          service,
+          () =>
+            this.mcpClient.callTool(
+              prepared,
+              validatedInput.toolName,
+              validatedInput.arguments,
+            ),
         );
+        if (retried) {
+          await this.db.updateServiceStatus(validatedInput.serviceId, true, 'healthy');
+        }
         return normalizeServiceToolResult({
           result,
           service,
