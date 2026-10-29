@@ -1,0 +1,1 @@
+Report absolute complexity as separate byte, word, and non-empty-line measurements. Preserve capability through independent checks.

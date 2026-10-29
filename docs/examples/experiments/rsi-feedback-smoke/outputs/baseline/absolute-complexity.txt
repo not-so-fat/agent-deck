@@ -1,0 +1,1 @@
+Use a diff penalty so each candidate stays near the current playbook.
