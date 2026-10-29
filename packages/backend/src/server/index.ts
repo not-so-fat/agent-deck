@@ -35,6 +35,7 @@ import { PlaybookManager } from '../playbooks/playbook-manager';
 import { PatchManager } from '../playbooks/patch-manager';
 import { registerPlaybookPatchRoutes } from '../routes/playbook-patches';
 import { registerFeedbackSignalRoutes } from '../routes/feedback-signals';
+import { registerEvaluationScenarioRoutes } from '../routes/evaluation-scenarios';
 import { getAgentDeckVersion } from '../lib/version';
 import { seedDefaultServicesIfEmpty } from '../data/seed-default-services';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
@@ -169,6 +170,7 @@ export async function createServer() {
   await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
   await fastify.register(registerPlaybookPatchRoutes, { prefix: '/api/playbook-patches' });
   await fastify.register(registerFeedbackSignalRoutes, { prefix: '/api/feedback-signals' });
+  await fastify.register(registerEvaluationScenarioRoutes, { prefix: '/api/evaluation-scenarios' });
   await fastify.register(registerCollectionRoutes, { prefix: '/api/collection' });
   await fastify.register(registerExportImportRoutes, { prefix: '/api' });
   await fastify.register(registerOAuthRoutes, { prefix: '/api/oauth' });

@@ -30,6 +30,11 @@ import {
   FeedbackSignal,
   FeedbackSignalSource,
   FeedbackSignalStatus,
+  EvaluationScenario,
+  EvaluationScenarioSchema,
+  EvaluationScenarioStatus,
+  CreateEvaluationScenarioInput,
+  UpdateEvaluationScenarioInput,
   StoreCredentialMeta,
   StoreDeck,
   StorePlaybookFile,
@@ -39,7 +44,8 @@ import {
 import { 
   serializeForDatabase, 
   deserializeFromDatabase,
-  generateId 
+  generateId,
+  generateShortId,
 } from '@agent-deck/shared';
 
 export const STORE_CONTENT_HASH = 'store_content_hash';
@@ -443,6 +449,22 @@ export class DatabaseManager {
     `);
 
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS evaluation_scenarios (
+        id TEXT PRIMARY KEY,
+        target_playbook_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        task_input TEXT NOT NULL DEFAULT '',
+        historical_failed_output TEXT,
+        expectations_json TEXT NOT NULL DEFAULT '[]',
+        source_signal_ids_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'ready', 'retired')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (target_playbook_id) REFERENCES playbooks (id)
+      )
+    `);
+
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS deck_workspaces (
         workspace_root TEXT NOT NULL,
         deck_id TEXT NOT NULL,
@@ -701,6 +723,8 @@ export class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_status ON feedback_signals(status);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_playbook ON feedback_signals(candidate_playbook_id);
       CREATE INDEX IF NOT EXISTS idx_feedback_signals_linked_patch ON feedback_signals(linked_patch_id);
+      CREATE INDEX IF NOT EXISTS idx_evaluation_scenarios_playbook_status
+        ON evaluation_scenarios(target_playbook_id, status);
     `);
   }
 
@@ -2437,6 +2461,142 @@ export class DatabaseManager {
     if (!signal.linkedPatchId) return false;
     const patch = await this.getPlaybookPatch(signal.linkedPatchId);
     return patch?.status === 'proposed';
+  }
+
+  private mapEvaluationScenarioRow(row: any): EvaluationScenario {
+    return EvaluationScenarioSchema.parse({
+      id: row.id,
+      targetPlaybookId: row.target_playbook_id,
+      name: row.name,
+      taskInput: row.task_input,
+      historicalFailedOutput: row.historical_failed_output ?? null,
+      expectations: JSON.parse(row.expectations_json),
+      sourceSignalIds: JSON.parse(row.source_signal_ids_json),
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    });
+  }
+
+  private async validateEvaluationScenarioReferences(
+    targetPlaybookId: string,
+    sourceSignalIds: string[],
+  ): Promise<void> {
+    if (!(await this.getPlaybook(targetPlaybookId))) {
+      throw new Error(`Referenced playbook not found: ${targetPlaybookId}`);
+    }
+    for (const signalId of sourceSignalIds) {
+      if (!(await this.getFeedbackSignal(signalId))) {
+        throw new Error(`Referenced feedback signal not found: ${signalId}`);
+      }
+    }
+  }
+
+  async createEvaluationScenario(
+    input: CreateEvaluationScenarioInput,
+  ): Promise<EvaluationScenario> {
+    const now = new Date().toISOString();
+    const scenario = EvaluationScenarioSchema.parse({
+      ...input,
+      id: input.id ?? `es_${generateShortId()}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await this.validateEvaluationScenarioReferences(
+      scenario.targetPlaybookId,
+      scenario.sourceSignalIds,
+    );
+    this.db.prepare(`
+      INSERT INTO evaluation_scenarios (
+        id, target_playbook_id, name, task_input, historical_failed_output,
+        expectations_json, source_signal_ids_json, status, created_at, updated_at
+      ) VALUES (
+        @id, @target_playbook_id, @name, @task_input, @historical_failed_output,
+        @expectations_json, @source_signal_ids_json, @status, @created_at, @updated_at
+      )
+    `).run({
+      id: scenario.id,
+      target_playbook_id: scenario.targetPlaybookId,
+      name: scenario.name,
+      task_input: scenario.taskInput,
+      historical_failed_output: scenario.historicalFailedOutput,
+      expectations_json: JSON.stringify(scenario.expectations),
+      source_signal_ids_json: JSON.stringify(scenario.sourceSignalIds),
+      status: scenario.status,
+      created_at: scenario.createdAt,
+      updated_at: scenario.updatedAt,
+    });
+    return scenario;
+  }
+
+  async getEvaluationScenario(id: string): Promise<EvaluationScenario | null> {
+    const row = this.db
+      .prepare('SELECT * FROM evaluation_scenarios WHERE id = ?')
+      .get(id);
+    return row ? this.mapEvaluationScenarioRow(row) : null;
+  }
+
+  async listEvaluationScenarios(filter?: {
+    targetPlaybookId?: string;
+    status?: EvaluationScenarioStatus;
+  }): Promise<EvaluationScenario[]> {
+    const clauses: string[] = [];
+    const params: Record<string, string> = {};
+    if (filter?.targetPlaybookId) {
+      clauses.push('target_playbook_id = @target_playbook_id');
+      params.target_playbook_id = filter.targetPlaybookId;
+    }
+    if (filter?.status) {
+      clauses.push('status = @status');
+      params.status = filter.status;
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this.db
+      .prepare(`SELECT * FROM evaluation_scenarios ${where} ORDER BY created_at ASC, id ASC`)
+      .all(params);
+    return rows.map((row) => this.mapEvaluationScenarioRow(row));
+  }
+
+  async updateEvaluationScenario(
+    id: string,
+    input: UpdateEvaluationScenarioInput,
+  ): Promise<EvaluationScenario | null> {
+    const existing = await this.getEvaluationScenario(id);
+    if (!existing) return null;
+    const updated = EvaluationScenarioSchema.parse({
+      ...existing,
+      ...input,
+      id,
+      createdAt: existing.createdAt,
+      updatedAt: new Date().toISOString(),
+    });
+    await this.validateEvaluationScenarioReferences(
+      updated.targetPlaybookId,
+      updated.sourceSignalIds,
+    );
+    this.db.prepare(`
+      UPDATE evaluation_scenarios SET
+        target_playbook_id = @target_playbook_id,
+        name = @name,
+        task_input = @task_input,
+        historical_failed_output = @historical_failed_output,
+        expectations_json = @expectations_json,
+        source_signal_ids_json = @source_signal_ids_json,
+        status = @status,
+        updated_at = @updated_at
+      WHERE id = @id
+    `).run({
+      id,
+      target_playbook_id: updated.targetPlaybookId,
+      name: updated.name,
+      task_input: updated.taskInput,
+      historical_failed_output: updated.historicalFailedOutput,
+      expectations_json: JSON.stringify(updated.expectations),
+      source_signal_ids_json: JSON.stringify(updated.sourceSignalIds),
+      status: updated.status,
+      updated_at: updated.updatedAt,
+    });
+    return updated;
   }
 
   // Cleanup

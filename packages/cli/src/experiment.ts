@@ -1,9 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-
-type Expectation =
-  | { id: string; type: 'contains' | 'not_contains' | 'equals'; value: string; caseSensitive?: boolean }
-  | { id: string; type: 'regex'; value: string; flags?: string };
+import type { DeterministicExpectation as Expectation } from '@agent-deck/shared';
 
 type ExperimentCase = {
   id: string;
