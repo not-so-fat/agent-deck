@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0 — 2026-10-29
+
+### Feature: `agent-deck experiment evaluate`
+
+- New `agent-deck experiment evaluate <manifest.json> [--json]` command deterministically compares frozen baseline and candidate outputs against per-case expectations (`contains`, `not_contains`, `equals`, `regex`) and reports absolute artifact complexity (bytes, words, non-empty lines).
+- No optimizer or automatic promotion: candidate generation, live runs and human acceptance stay outside the evaluator.
+- Example manifests in `docs/examples/experiments/` (`basic`, `rsi-feedback-smoke`); the smoke example turns two real feedback signals into cases and proves the data path, not that the candidate is better.
+
 ## 2.2.1 — 2026-10-21
 
 ### Fix: MCP service health (NOT-511, NOT-512)
