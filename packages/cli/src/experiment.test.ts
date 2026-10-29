@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { evaluationScenarioToExperimentCase, type EvaluationScenario } from '@agent-deck/shared';
 import { evaluateExperiment, parseExperimentManifest, runExperimentCommand } from './experiment';
 
 const temporaryDirectories: string[] = [];
@@ -54,6 +55,35 @@ afterEach(async () => {
 });
 
 describe('experiment evaluator', () => {
+  it('accepts copied ready-scenario JSON as an evaluator case without observations', () => {
+    const scenario: EvaluationScenario = {
+      id: 'es_feedback_blocker',
+      targetPlaybookId: 'pb_review_pr',
+      name: 'Blocking review',
+      description: 'Surface blocking review findings.',
+      taskInput: 'Review the supplied pull request.',
+      historicalFailedOutput: 'Looks good.',
+      sourceSignalIds: ['fs_first', 'fs_second'],
+      expectations: [{ id: 'mentions-blocker', type: 'contains', value: 'blocking' }],
+      status: 'ready',
+      createdAt: '2026-10-29T00:00:00.000Z',
+      updatedAt: '2026-10-29T00:00:00.000Z',
+    };
+    const copied = JSON.parse(JSON.stringify(evaluationScenarioToExperimentCase(scenario)));
+    expect(Object.keys(copied)).toEqual(['id', 'description', 'sourceSignalIds', 'expectations']);
+    expect(copied).not.toHaveProperty('taskInput');
+    expect(copied).not.toHaveProperty('historicalFailedOutput');
+    expect(parseExperimentManifest({
+      version: 1,
+      name: 'Copied scenario',
+      cases: [copied],
+      variants: [
+        { id: 'baseline', baseline: true, artifactFile: 'a.md', observations: [{ caseId: copied.id, outputFile: 'a.txt' }] },
+        { id: 'candidate', artifactFile: 'b.md', observations: [{ caseId: copied.id, outputFile: 'b.txt' }] },
+      ],
+    }).cases[0]).toEqual(copied);
+  });
+
   it('deterministically compares frozen outputs, provenance, and absolute complexity', async () => {
     const manifestPath = await fixture();
     const report = await evaluateExperiment(manifestPath);

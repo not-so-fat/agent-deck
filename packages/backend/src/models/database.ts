@@ -217,6 +217,11 @@ export class DatabaseManager {
     // NOT-304: opaque run-correlation id on the normalized usage stream.
     // Nullable so pre-correlation stores stay valid with null.
     this.addColumnIfMissing('card_usage_events', 'correlation_id', 'TEXT');
+    this.addColumnIfMissing(
+      'evaluation_scenarios',
+      'description',
+      "TEXT NOT NULL DEFAULT ''",
+    );
 
     // Feedback redesign: unreviewed → open (link-on-propose / actioned-on-accept).
     if (this.tableExists('feedback_signals')) {
@@ -453,6 +458,7 @@ export class DatabaseManager {
         id TEXT PRIMARY KEY,
         target_playbook_id TEXT NOT NULL,
         name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
         task_input TEXT NOT NULL DEFAULT '',
         historical_failed_output TEXT,
         expectations_json TEXT NOT NULL DEFAULT '[]',
@@ -2468,6 +2474,7 @@ export class DatabaseManager {
       id: row.id,
       targetPlaybookId: row.target_playbook_id,
       name: row.name,
+      description: row.description ?? '',
       taskInput: row.task_input,
       historicalFailedOutput: row.historical_failed_output ?? null,
       expectations: JSON.parse(row.expectations_json),
@@ -2508,16 +2515,17 @@ export class DatabaseManager {
     );
     this.db.prepare(`
       INSERT INTO evaluation_scenarios (
-        id, target_playbook_id, name, task_input, historical_failed_output,
+        id, target_playbook_id, name, description, task_input, historical_failed_output,
         expectations_json, source_signal_ids_json, status, created_at, updated_at
       ) VALUES (
-        @id, @target_playbook_id, @name, @task_input, @historical_failed_output,
+        @id, @target_playbook_id, @name, @description, @task_input, @historical_failed_output,
         @expectations_json, @source_signal_ids_json, @status, @created_at, @updated_at
       )
     `).run({
       id: scenario.id,
       target_playbook_id: scenario.targetPlaybookId,
       name: scenario.name,
+      description: scenario.description,
       task_input: scenario.taskInput,
       historical_failed_output: scenario.historicalFailedOutput,
       expectations_json: JSON.stringify(scenario.expectations),
@@ -2578,6 +2586,7 @@ export class DatabaseManager {
       UPDATE evaluation_scenarios SET
         target_playbook_id = @target_playbook_id,
         name = @name,
+        description = @description,
         task_input = @task_input,
         historical_failed_output = @historical_failed_output,
         expectations_json = @expectations_json,
@@ -2589,6 +2598,7 @@ export class DatabaseManager {
       id,
       target_playbook_id: updated.targetPlaybookId,
       name: updated.name,
+      description: updated.description,
       task_input: updated.taskInput,
       historical_failed_output: updated.historicalFailedOutput,
       expectations_json: JSON.stringify(updated.expectations),
