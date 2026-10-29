@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "name": "Minimal playbook counterfactual",
+  "cases": [
+    {
+      "id": "prefer-existing-method",
+      "description": "The response should reuse an established method instead of proposing a new algorithm.",
+      "expectations": [
+        {
+          "id": "mentions-existing-method",
+          "type": "contains",
+          "value": "existing method"
+        },
+        {
+          "id": "does-not-invent",
+          "type": "not_contains",
+          "value": "invent a new algorithm"
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "baseline",
+      "baseline": true,
+      "artifactFile": "artifacts/baseline.md",
+      "observations": [
+        {
+          "caseId": "prefer-existing-method",
+          "outputFile": "outputs/baseline/prefer-existing-method.txt"
+        }
+      ]
+    },
+    {
+      "id": "candidate",
+      "artifactFile": "artifacts/candidate.md",
+      "observations": [
+        {
+          "caseId": "prefer-existing-method",
+          "outputFile": "outputs/candidate/prefer-existing-method.txt"
+        }
+      ]
+    }
+  ]
+}

@@ -28,6 +28,7 @@ import { runInstall } from './install';
 import { runUseCommand } from './use';
 import { runRunCommand } from './run';
 import { runMcpLaunch } from './mcp-launcher';
+import { runExperimentCommand } from './experiment';
 import { getAgentDeckVersion } from './version';
 import { terminalColorsEnabled, terminalStyle } from './terminal-style';
 
@@ -78,6 +79,8 @@ function printUsage() {
   agent-deck import-feedback-signals <transcript-dir> [--backend-url URL] [--output <path>]
   agent-deck bootstrap [--host claude|cursor|all] [--workspace <path>] [--since <date>] [--limit <n>] [--out <dir>]
     Mine local Claude Code session history into playbook-proposal digests (offline).
+  agent-deck experiment evaluate <manifest.json> [--json]
+    Deterministically compare frozen baseline/candidate outputs and absolute artifact complexity.
   agent-deck exec [--deck DECK_ID] [--connections cred_a,cred_b] [--dry-run] -- <command...>`);
 }
 
@@ -105,6 +108,7 @@ const TOP_LEVEL_COMMANDS = [
   'store',
   'import-feedback-signals',
   'bootstrap',
+  'experiment',
   'exec',
 ] as const;
 
@@ -462,6 +466,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return runImportFeedbackSignalsCommand(rest);
     case 'bootstrap':
       return runBootstrapCommand(rest);
+    case 'experiment':
+      return runExperimentCommand(rest);
     case 'exec':
       return runExec(rest);
     default:

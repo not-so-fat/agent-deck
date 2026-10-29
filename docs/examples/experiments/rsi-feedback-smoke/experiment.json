@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "RSI feedback-derived configuration smoke",
+  "cases": [
+    {
+      "id": "absolute-complexity",
+      "description": "Treat complexity as an absolute measurement rather than protecting an already-complex baseline.",
+      "sourceSignalIds": ["fs_ijy4kbf7v3o9szvgy8elg4"],
+      "expectations": [
+        {
+          "id": "uses-absolute-complexity",
+          "type": "contains",
+          "value": "absolute complexity"
+        },
+        {
+          "id": "avoids-diff-objective",
+          "type": "not_contains",
+          "value": "diff penalty"
+        }
+      ]
+    },
+    {
+      "id": "reuse-existing-methods",
+      "description": "Build a modular evaluation substrate and keep algorithms under test outside it.",
+      "sourceSignalIds": ["fs_qgzm7luvg3hw2ovqt1gz3k"],
+      "expectations": [
+        {
+          "id": "reuses-method",
+          "type": "contains",
+          "value": "existing method"
+        },
+        {
+          "id": "keeps-modular-boundary",
+          "type": "contains",
+          "value": "modular"
+        },
+        {
+          "id": "avoids-algorithm-invention",
+          "type": "not_contains",
+          "value": "invent a new algorithm"
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "baseline",
+      "baseline": true,
+      "artifactFile": "artifacts/baseline.md",
+      "observations": [
+        {
+          "caseId": "absolute-complexity",
+          "outputFile": "outputs/baseline/absolute-complexity.txt"
+        },
+        {
+          "caseId": "reuse-existing-methods",
+          "outputFile": "outputs/baseline/reuse-existing-methods.txt"
+        }
+      ]
+    },
+    {
+      "id": "candidate",
+      "artifactFile": "artifacts/candidate.md",
+      "observations": [
+        {
+          "caseId": "absolute-complexity",
+          "outputFile": "outputs/candidate/absolute-complexity.txt"
+        },
+        {
+          "caseId": "reuse-existing-methods",
+          "outputFile": "outputs/candidate/reuse-existing-methods.txt"
+        }
+      ]
+    }
+  ]
+}

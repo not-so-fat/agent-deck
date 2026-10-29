@@ -1,0 +1,1 @@
+Reuse an existing method and keep the evaluation substrate modular. Candidate generation remains outside the evaluator.
