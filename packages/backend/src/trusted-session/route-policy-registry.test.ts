@@ -45,5 +45,9 @@ describe('HTTP route policy registry', () => {
     expect(resolveRoutePolicy('PUT', '/api/playbooks/pb_123')).toBe('requireDashboard');
     expect(resolveRoutePolicy('PUT', '/api/services/svc_123/tool-settings')).toBe('requireDashboard');
     expect(resolveRoutePolicy('POST', '/api/playbook-patches')).toBe('requireAgentOrDashboard');
+    expect(resolveRoutePolicy('GET', '/api/evaluation-scenarios')).toBe('requireDashboard');
+    expect(resolveRoutePolicy('POST', '/api/evaluation-scenarios')).toBe('requireDashboard');
+    expect(resolveRoutePolicy('GET', '/api/evaluation-scenarios/es_123')).toBe('requireDashboard');
+    expect(resolveRoutePolicy('PUT', '/api/evaluation-scenarios/es_123')).toBe('requireDashboard');
   });
 });
