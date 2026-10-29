@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.1 — 2026-10-29
+
+### Feature: evaluation scenarios (NOT-535)
+
+- New dashboard-authenticated REST API for evaluation scenarios, manually curated feedback-derived cases for one target playbook: `POST/GET /api/evaluation-scenarios`, `GET/PUT /api/evaluation-scenarios/:id`. A scenario can only become `ready` with task input, a historical failed output, at least one existing feedback signal and one deterministic expectation. Reference in `docs/EVALUATION_SCENARIOS_API.md`.
+- The Feedback page can now curate evaluation scenarios from selected signals with a scenario editor. Expectation types match the `agent-deck experiment evaluate` evaluator.
+
 ## 2.3.0 — 2026-10-29
 
 ### Feature: `agent-deck experiment evaluate`
