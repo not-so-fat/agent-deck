@@ -100,12 +100,26 @@ export default function FeedbackSignalsPage() {
       {view === 'feedback' ? <>
         <p className="text-sm text-gray-400">Review correction signals or curate same-playbook rows into deterministic evaluation scenarios.</p>
         <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-800 bg-gray-900/40 p-3">
-          <label className="text-xs text-gray-500"><span className="font-ui-display">Playbook</span><select className="mt-1 block min-w-[12rem] rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100" value={playbookId} onChange={(e) => { setPlaybookId(e.target.value); setSelected(new Set()); }}><option value="">All</option>{playbooks.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}</select></label>
+          <label className="text-xs text-gray-500">
+            <span className="font-ui-display">Playbook</span>
+            <select
+              className="mt-1 block min-w-[12rem] rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100"
+              value={playbookId}
+              onChange={(e) => { setPlaybookId(e.target.value); setSelected(new Set()); }}
+            >
+              <option value="">All</option>
+              {playbooks.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
+            </select>
+          </label>
           <div className="flex flex-wrap gap-1">{([['open', 'Open'], ['actioned', 'Actioned'], ['discarded', 'Discarded'], ['all', 'All']] as const).map(([value, label]) => <Button key={value} size="sm" variant={statusFilter === value ? 'gold' : 'outline'} aria-pressed={statusFilter === value} onClick={() => { setStatusFilter(value); setSelected(new Set()); }}>{label}</Button>)}</div>
           {statusFilter === 'open' && <label className="flex items-center gap-2 text-xs text-gray-400"><input type="checkbox" checked={includeInProposal} onChange={(e) => setIncludeInProposal(e.target.checked)} />Include already in an open proposal</label>}
           <div className="ml-auto flex flex-wrap items-start gap-2">
             <div className="flex flex-col items-end"><Button size="sm" variant="gold" disabled={!eligibility.eligible} onClick={() => { if (eligibility.eligible) { setEditorError(null); setEditor({ kind: 'create', playbookId: eligibility.playbookId, signalIds: selectedSignals.map((s) => s.id) }); } }}><FlaskConical className="mr-1 h-3.5 w-3.5" />Create scenario</Button>{!eligibility.eligible && selected.size > 0 && <p role="status" className="mt-1 max-w-xs text-right text-xs text-amber-300">{eligibility.reason}</p>}</div>
-            <Button size="sm" variant="outline" disabled={signals.length === 0} onClick={() => void copyForAgent()}><Copy className="mr-1 h-3.5 w-3.5" />Copy for agent{selected.size > 0 ? ` (${selected.size})` : ''}</Button>
+            <Button size="sm" variant="outline" disabled={signals.length === 0} onClick={() => void copyForAgent()}>
+              <Copy className="mr-1 h-3.5 w-3.5" />
+              <span className="font-ui-display">Copy for agent</span>
+              {selected.size > 0 ? ` (${selected.size})` : ''}
+            </Button>
             <Button size="sm" variant="destructive" disabled={openSelected.length === 0 || discardMutation.isPending} onClick={() => discardMutation.mutate(openSelected)}><Trash2 className="mr-1 h-3.5 w-3.5" />Discard selected</Button>
           </div>
         </div>
