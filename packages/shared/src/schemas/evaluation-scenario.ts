@@ -111,6 +111,7 @@ const EvaluationScenarioFieldsSchema = ScenarioEvidenceSchema.extend({
   id: EvaluationScenarioIdSchema,
   targetPlaybookId: PlaybookIdSchema,
   name: z.string().trim().min(1, 'Name is required'),
+  description: z.string().default(''),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -126,6 +127,7 @@ export const CreateEvaluationScenarioSchema = ScenarioEvidenceSchema.extend({
   id: EvaluationScenarioIdSchema.optional(),
   targetPlaybookId: PlaybookIdSchema,
   name: z.string().trim().min(1, 'Name is required'),
+  description: z.string().default(''),
   taskInput: z.string().default(''),
   historicalFailedOutput: z.string().nullable().default(null),
   expectations: z.array(DeterministicExpectationSchema).default([]),
@@ -138,6 +140,7 @@ export type CreateEvaluationScenarioInput = z.infer<typeof CreateEvaluationScena
 export const UpdateEvaluationScenarioSchema = z.object({
   targetPlaybookId: PlaybookIdSchema.optional(),
   name: z.string().trim().min(1, 'Name is required').optional(),
+  description: z.string().optional(),
   taskInput: z.string().optional(),
   historicalFailedOutput: z.string().nullable().optional(),
   expectations: z.array(DeterministicExpectationSchema).optional(),
@@ -153,3 +156,22 @@ export const ListEvaluationScenariosQuerySchema = z.object({
 });
 
 export type ListEvaluationScenariosQuery = z.infer<typeof ListEvaluationScenariosQuerySchema>;
+
+export type EvaluationScenarioExperimentCase = {
+  id: string;
+  description: string;
+  sourceSignalIds: string[];
+  expectations: DeterministicExpectation[];
+};
+
+/** Exact deterministic evaluator case shape; intentionally excludes task/output observations. */
+export function evaluationScenarioToExperimentCase(
+  scenario: EvaluationScenario,
+): EvaluationScenarioExperimentCase {
+  return {
+    id: scenario.id,
+    description: scenario.description,
+    sourceSignalIds: [...scenario.sourceSignalIds],
+    expectations: scenario.expectations.map((expectation) => ({ ...expectation })),
+  };
+}
