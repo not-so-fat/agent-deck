@@ -7,6 +7,7 @@ import {
   AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_HOST_SESSION_ID_HEADER,
+  AGENT_DECK_PLAYBOOK_PIN_HEADER,
   AGENT_DECK_RECOVERED_SESSION_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
@@ -74,6 +75,18 @@ function readLaunchDeckHeader(req: Request): string | undefined {
  */
 function readCorrelationIdHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_CORRELATION_HEADER];
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  return value || undefined;
+}
+
+/**
+ * Pinned playbook version for one run's MCP session (NOT-537). Returned
+ * unvalidated — the binding store normalizes and adopt-once semantics keep
+ * it from ever selecting a deck, granting access, changing mode, or
+ * participating in authorization.
+ */
+function readPlaybookPinHeader(req: Request): string | undefined {
+  const raw = req.headers[AGENT_DECK_PLAYBOOK_PIN_HEADER];
   const value = typeof raw === 'string' ? raw.trim() : '';
   return value || undefined;
 }
@@ -583,6 +596,19 @@ export class AgentDeckMCPServer {
     const hostSessionId = readHostSessionIdHeader(req);
     if (hostSessionId) {
       this.sessionBinding.setHostSessionId(sessionId, hostSessionId);
+    }
+  }
+
+  /**
+   * NOT-537: adopt the pinned playbook version the launcher sent for this
+   * run. Adopt-once inside the store — the first valid
+   * `<playbookId>=<versionId>` value sticks and later changes are ignored —
+   * and invalid values are dropped, never coerced.
+   */
+  private adoptPlaybookPin(sessionId: string, req: Request): void {
+    const pin = readPlaybookPinHeader(req);
+    if (pin) {
+      this.sessionBinding.setPlaybookPin(sessionId, pin);
     }
   }
 
@@ -1597,6 +1623,7 @@ export class AgentDeckMCPServer {
     if (correlationId) {
       this.sessionBinding.setCorrelationId(sessionId, correlationId);
     }
+    this.adoptPlaybookPin(sessionId, req);
   }
 
   /**
@@ -1667,6 +1694,7 @@ export class AgentDeckMCPServer {
     if (followUpCorrelation) {
       this.sessionBinding.setCorrelationId(sessionId, followUpCorrelation);
     }
+    this.adoptPlaybookPin(sessionId, req);
     return true;
   }
 
@@ -1694,6 +1722,7 @@ export class AgentDeckMCPServer {
       if (followUpCorrelation) {
         this.sessionBinding.setCorrelationId(sessionId, followUpCorrelation);
       }
+      this.adoptPlaybookPin(sessionId, req);
       return;
     }
 
@@ -1740,6 +1769,7 @@ export class AgentDeckMCPServer {
     if (correlationId) {
       this.sessionBinding.setCorrelationId(sessionId, correlationId);
     }
+    this.adoptPlaybookPin(sessionId, req);
   }
 
   private async disconnectTrustedSession(sessionId: string, _req?: Request): Promise<void> {

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
-import { countDeckCards, formatDisplayLine, normalizeCorrelationId, PatchOpSchema } from '@agent-deck/shared';
+import { countDeckCards, formatDisplayLine, normalizeCorrelationId, PatchOpSchema, type PlaybookPin } from '@agent-deck/shared';
 import type { ElicitationResult } from './elicitation';
 import { presentDeckSwitchApproval, submitDeckSwitchApprovalViaBackend } from './elicitation';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
@@ -59,6 +59,8 @@ export type McpToolHost = {
     isLaunchSession(sessionId: string): boolean;
     isUnassigned?(sessionId: string): boolean;
     hasSessionDeckOverride(sessionId: string): boolean;
+    /** NOT-537: pinned playbook version for this MCP session, if any. */
+    getPlaybookPin?(sessionId: string): PlaybookPin | undefined;
   };
   badgeBySession: Map<string, string>;
   backendUrl: string;
@@ -237,6 +239,50 @@ function withDeckSwitchRefreshHint(payload: unknown): unknown {
  */
 async function loadAuthorizedBoundDeck(host: McpToolHost): Promise<AuthorizedBoundDeck> {
   return (await host.callBackendAPI('/api/scope/deck')) as AuthorizedBoundDeck;
+}
+
+/**
+ * NOT-537: the pinned playbook version for this MCP session, if the launch
+ * carried one. Absent for every session without the pin header — and for
+ * test hosts that predate the binding — so unpinned behavior is untouched.
+ */
+function getSessionPlaybookPin(host: McpToolHost): PlaybookPin | undefined {
+  return host.sessionBinding.getPlaybookPin?.(host.getSessionId());
+}
+
+type PinnedPlaybookVersion = {
+  id: string;
+  title: string;
+  body: string;
+  triggers: string[];
+};
+
+/**
+ * NOT-537: rewrite the pinned playbook's summary entry to the stored
+ * version's title and triggers, so discovery behaves as it did at that
+ * version. The version is fetched only when the pinned id is actually on
+ * the deck — otherwise there is nothing to rewrite and no fetch to fail.
+ */
+async function applyPlaybookPinToSummaries(
+  host: McpToolHost,
+  pin: PlaybookPin | undefined,
+  playbooks: unknown,
+): Promise<unknown> {
+  if (!pin || !Array.isArray(playbooks)) {
+    return playbooks;
+  }
+  const entries = playbooks as Array<Record<string, unknown>>;
+  if (!entries.some((entry) => entry?.id === pin.playbookId)) {
+    return playbooks;
+  }
+  const version = (await host.callBackendAPI(
+    `/api/playbooks/${encodeURIComponent(pin.playbookId)}/versions/${encodeURIComponent(pin.versionId)}`,
+  )) as PinnedPlaybookVersion;
+  return entries.map((entry) =>
+    entry?.id === pin.playbookId
+      ? { ...entry, title: version.title, triggers: version.triggers }
+      : entry,
+  );
 }
 
 function toPlaybookSummaries(playbooks: unknown): Array<{ id: string; title: string; triggers: string[] }> {
@@ -542,8 +588,14 @@ function registerRuntimeTools(host: McpToolHost): void {
       const badge = host.badgeBySession.get(sessionId);
       const cardCounts = deck ? countDeckCards(deck) : { mcp: 0, credentials: 0, playbooks: 0 };
       const displaySummary = formatDisplayLine(deck?.name ?? null, cardCounts, { badge });
+      const playbooks = await applyPlaybookPinToSummaries(
+        host,
+        getSessionPlaybookPin(host),
+        deck?.playbooks,
+      );
       return host.toolResult({
         ...deck,
+        playbooks,
         operatingInstructions: resolveOperatingInstructions(deck),
         display_summary: displaySummary,
       });
@@ -567,6 +619,11 @@ function registerRuntimeTools(host: McpToolHost): void {
       const deck = await loadAuthorizedBoundDeck(host);
       const badge = host.badgeBySession.get(sessionId);
       const { snapshot, displaySummary } = describeBindingDisplay(host, sessionId, deck, badge);
+      const playbooks = await applyPlaybookPinToSummaries(
+        host,
+        getSessionPlaybookPin(host),
+        deck?.playbooks,
+      );
       return host.toolResult({
         workspaceRoot: snapshot.workspaceRoot,
         effective_deck_id: deck?.id,
@@ -576,7 +633,7 @@ function registerRuntimeTools(host: McpToolHost): void {
         display_summary: displaySummary,
         services: deck?.services ?? [],
         credentials: deck?.credentials ?? [],
-        playbooks: toPlaybookSummaries(deck?.playbooks),
+        playbooks: toPlaybookSummaries(playbooks),
         operatingInstructions: resolveOperatingInstructions(deck),
       });
     } catch (error) {
@@ -591,7 +648,25 @@ function registerRuntimeTools(host: McpToolHost): void {
   }, async ({ playbook_id }) => {
     try {
       const playbook = await host.callBackendAPI(`/api/playbooks/${encodeURIComponent(playbook_id)}`);
-      return host.toolResult(playbook);
+      // NOT-537: a pinned session reads the stored version's title, body
+      // and triggers for the pinned id, with no openPatches (later lessons
+      // cannot leak into a baseline run) and a pinnedVersionId marker.
+      // Every other id — and every unpinned session — is unchanged.
+      const pin = getSessionPlaybookPin(host);
+      if (!pin || pin.playbookId !== playbook_id) {
+        return host.toolResult(playbook);
+      }
+      const version = (await host.callBackendAPI(
+        `/api/playbooks/${encodeURIComponent(playbook_id)}/versions/${encodeURIComponent(pin.versionId)}`,
+      )) as PinnedPlaybookVersion;
+      return host.toolResult({
+        ...playbook,
+        title: version.title,
+        body: version.body,
+        triggers: version.triggers,
+        openPatches: [],
+        pinnedVersionId: version.id,
+      });
     } catch (error) {
       return host.toolError(error);
     }
@@ -755,6 +830,17 @@ function registerRuntimeTools(host: McpToolHost): void {
     },
   }, async ({ kind, playbook_id, ops, new_playbook, rationale, evidence, signal_ids, supersedes }) => {
     try {
+      // NOT-537: a pinned session cannot file playbook proposals, so an
+      // evaluation run can never pollute feedback or patch data. Fail
+      // before any backend call, so no patch or signal row is created.
+      const pin = getSessionPlaybookPin(host);
+      if (pin) {
+        return host.toolError(
+          new Error(
+            `Playbook proposals are disabled in this session: it is pinned to ${pin.playbookId}=${pin.versionId}. Start a run without --playbook-version to propose patches.`,
+          ),
+        );
+      }
       const deckId = await host.getBoundDeckId();
       const result = await host.callBackendAPI('/api/playbook-patches', {
         method: 'POST',
