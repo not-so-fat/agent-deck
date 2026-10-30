@@ -4,17 +4,14 @@ import { isValidUUID } from '../utils/id';
  * One pinned playbook version for a run's MCP session (NOT-537).
  *
  * The pin travels as `<playbookId>=<versionId>` — the `--playbook-version`
- * flag value, the `AGENT_DECK_PLAYBOOK_PIN` env var, and the
- * `x-agent-deck-playbook-pin` launch header all share this shape. One pin
- * per run; it lives only as long as the run's MCP session.
+ * flag value, the run's pin env var, and the `x-agent-deck-playbook-pin`
+ * launch header all share this shape. One pin per run; it lives only as
+ * long as the run's MCP session.
  */
 export type PlaybookPin = {
   playbookId: string;
   versionId: string;
 };
-
-/** Env var the run adapters set and `mcp-launch` reads (NOT-537). */
-export const AGENT_DECK_PLAYBOOK_PIN_ENV = 'AGENT_DECK_PLAYBOOK_PIN';
 
 const PLAYBOOK_ID_RE = /^pb_[a-z0-9_]+$/;
 

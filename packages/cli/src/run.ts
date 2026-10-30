@@ -25,6 +25,7 @@ import {
   runClientMessage,
   type AgentRunRequest,
   type AgentRunService,
+  type AgentRunServiceDeps,
   type ClaudeAdapterDeps,
   type ClaudeClientProbe,
   type ClientAdapter,
@@ -39,6 +40,7 @@ import {
   type RunQueryOptions,
   type RunToolsProfile,
 } from '@agent-deck/backend/agent-run';
+import { normalizePlaybookPin, type PlaybookPin } from '@agent-deck/shared';
 
 import { createCollectionAdmin } from './backend-runtime';
 import { agentDeckHome } from './managed/paths';
@@ -91,6 +93,8 @@ export type RunOptions = {
   detach: boolean;
   /** Internal: the starter passes the allocated run id so the child reuses it. */
   runIdOverride?: string;
+  /** Pinned playbook version for this run's MCP session (NOT-537). */
+  playbookPin?: PlaybookPin;
 };
 
 export function parseRunArgs(args: string[]): RunOptions | { error: string } {
@@ -104,6 +108,8 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
   let resume: string | undefined;
   let detach = false;
   let runIdOverride: string | undefined;
+  let playbookPinRaw: string | undefined;
+  let playbookPinCount = 0;
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -121,6 +127,9 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
       log = args[++i];
     } else if (arg === '--resume') {
       resume = args[++i];
+    } else if (arg === '--playbook-version') {
+      playbookPinCount += 1;
+      playbookPinRaw = args[++i];
     } else if (arg === '--detach') {
       detach = true;
     } else if (arg === '--_run-id') {
@@ -157,6 +166,19 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
   if (tools !== 'readonly' && tools !== 'edit') {
     return { error: `--tools must be one of: readonly, edit (got "${tools}")` };
   }
+  if (playbookPinCount > 1) {
+    return { error: '--playbook-version may only be given once: one pin per run is supported' };
+  }
+  let playbookPin: PlaybookPin | undefined;
+  if (playbookPinCount === 1) {
+    const parsed = normalizePlaybookPin(playbookPinRaw);
+    if (!parsed) {
+      return {
+        error: `Invalid --playbook-version ${JSON.stringify(playbookPinRaw ?? '')}: expected <playbookId>=<versionId>`,
+      };
+    }
+    playbookPin = parsed;
+  }
 
   return {
     deckRef,
@@ -169,6 +191,7 @@ export function parseRunArgs(args: string[]): RunOptions | { error: string } {
     ...(resume ? { resume } : {}),
     detach,
     ...(runIdOverride ? { runIdOverride } : {}),
+    ...(playbookPin ? { playbookPin } : {}),
   };
 }
 
@@ -190,6 +213,8 @@ export type RunDeps = {
   claudeProbe?: ClaudeClientProbe;
   /** Injected in tests: replaces every client adapter with a fixture. */
   createAdapter?: (client: RunClient) => ClientAdapter;
+  /** Injected in tests; production reads the local database (NOT-537). */
+  resolvePlaybookPin?: AgentRunServiceDeps['resolvePlaybookPin'];
 };
 
 /**
@@ -283,7 +308,10 @@ function defaultResolveDeck(ref: string): Promise<{ id: string; name: string } |
   return createCollectionAdmin().resolveDeck(ref);
 }
 
-export type RunPrereqDeps = Pick<RunDeps, 'resolveDeck' | 'resolveLaunchPlan' | 'claudeProbe'>;
+export type RunPrereqDeps = Pick<
+  RunDeps,
+  'resolveDeck' | 'resolveLaunchPlan' | 'claudeProbe' | 'resolvePlaybookPin'
+>;
 
 function selectResolveDeck(
   deps: RunPrereqDeps,
@@ -335,6 +363,8 @@ export function createCliRunService(deps: RunDeps = {}): AgentRunService {
   return createAgentRunService({
     homeDir: deps.homeDir ?? agentDeckHome(),
     resolveDeck: selectResolveDeck(deps),
+    resolvePlaybookPin:
+      deps.resolvePlaybookPin ?? ((input) => createCollectionAdmin().resolvePlaybookPin(input)),
     async resolveDeckBinding(cwd) {
       const plan = await resolveLaunchPlan(cwd);
       return {
@@ -366,6 +396,7 @@ function runRequest(options: RunOptions, prompt: string): AgentRunRequest {
     prompt,
     tools: options.tools,
     ...(options.resume ? { resumeId: options.resume } : {}),
+    ...(options.playbookPin ? { playbookPin: options.playbookPin } : {}),
   };
 }
 
@@ -402,7 +433,7 @@ export async function validateRunPrereqs(
 
 export function printRunHelp(): void {
   console.log(`Usage:
-  agent-deck run <deck> --client claude|codex|cursor|muse --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
+  agent-deck run <deck> --client claude|codex|cursor|muse --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--playbook-version <playbookId>=<versionId>] [--detach]
   agent-deck run status <runId> [--json]
   agent-deck run log <runId> [--tail <n>] [--follow] [--json]
   agent-deck run list [--json] [--limit <n>]
@@ -435,6 +466,13 @@ key instead); API-key setup is otherwise out of scope for this path.
                          it continues only a session an agent-deck run started
                          on this deck, client, and canonical cwd with the same
                          --tools; anything else fails closed before launch.
+  --playbook-version <playbookId>=<versionId>
+                         Pin one playbook to a stored version for this run
+                         only, so a baseline-vs-candidate evaluation can run
+                         a real agent against each version. The run's MCP
+                         session reads that version's title, body, and
+                         triggers with no open patches, and cannot file
+                         playbook proposals. The live playbook is untouched.
   --detach             Start in the background in a new session, so the run
                          survives this shell disconnecting. Prints runId, pid,
                          and the log path, then exits. Every other flag is

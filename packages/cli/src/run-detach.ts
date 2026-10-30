@@ -50,6 +50,7 @@ const RUN_VALUE_FLAGS = new Set([
   '--tools',
   '--log',
   '--resume',
+  '--playbook-version',
   '--_run-id',
 ]);
 

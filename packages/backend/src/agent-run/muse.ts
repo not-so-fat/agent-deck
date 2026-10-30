@@ -50,6 +50,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 import {
+  playbookPinEnv,
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
@@ -166,7 +167,7 @@ export type MuseChild = {
 };
 
 /** `control` (NOT-481): spawn as a new process-group leader and report its id. */
-export type MuseSpawnOptions = { cwd: string; control?: RunProcessControl };
+export type MuseSpawnOptions = { cwd: string; control?: RunProcessControl; env?: NodeJS.ProcessEnv };
 
 export type MuseSpawn = (bin: string, argv: string[], opts: MuseSpawnOptions) => MuseChild;
 
@@ -175,6 +176,7 @@ export function defaultMuseSpawn(bin: string, argv: string[], opts: MuseSpawnOpt
     cwd: opts.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: opts.control !== undefined,
+    ...(opts.env ? { env: opts.env } : {}),
   });
   if (opts.control && child.pid !== undefined) {
     opts.control.onProcessGroup(child.pid);
@@ -552,7 +554,12 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
         );
       let child: MuseChild;
       try {
-        child = spawnFn(bin, argv, { cwd: args.cwd, ...(args.control ? { control: args.control } : {}) });
+        const env = playbookPinEnv(args.playbookPin);
+        child = spawnFn(bin, argv, {
+          cwd: args.cwd,
+          ...(args.control ? { control: args.control } : {}),
+          ...(env ? { env } : {}),
+        });
       } catch (error) {
         throw wrapSpawnError(error);
       }

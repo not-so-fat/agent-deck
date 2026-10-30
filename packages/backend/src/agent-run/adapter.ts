@@ -136,6 +136,12 @@ export type AdapterStartArgs = {
    */
   resumedFrom?: RunResumeOrigin;
   control?: RunProcessControl;
+  /**
+   * Pinned playbook version for this run (NOT-537). Adapters pass it to the
+   * agent process so its MCP launch sends the pin header; the pin lives only
+   * as long as the run's MCP session.
+   */
+  playbookPin?: RunPlaybookPin;
 };
 
 export type AdapterPreflight = { ok: true } | { ok: false; remedy: string };
@@ -147,6 +153,34 @@ export type AdapterPreflight = { ok: true } | { ok: false; remedy: string };
  * the run exits before spawning anything.
  */
 export type AdapterStartPlan = { ok: true; trustOverride: boolean } | { ok: false; remedy: string };
+
+/**
+ * Pinned playbook version for one run (NOT-537). Same shape as the shared
+ * `PlaybookPin`, declared here because agent-run imports nothing outside
+ * node built-ins and its own modules (see the module-boundary test).
+ */
+export type RunPlaybookPin = {
+  playbookId: string;
+  versionId: string;
+};
+
+/** Env var the run adapters set and `mcp-launch` reads (NOT-537). */
+export const PLAYBOOK_PIN_ENV_VAR = 'AGENT_DECK_PLAYBOOK_PIN';
+
+/** Canonical `<playbookId>=<versionId>` form for the pin env. */
+export function formatRunPlaybookPin(pin: RunPlaybookPin): string {
+  return `${pin.playbookId}=${pin.versionId}`;
+}
+
+/**
+ * Child env carrying the run's playbook pin (NOT-537): the agent process
+ * inherits it, and `mcp-launch` turns it into the pin launch header for the
+ * run's MCP session. Undefined when the run has no pin, so unpinned spawns
+ * pass no `env` at all and behave exactly as before.
+ */
+export function playbookPinEnv(pin: RunPlaybookPin | undefined): NodeJS.ProcessEnv | undefined {
+  return pin ? { ...process.env, [PLAYBOOK_PIN_ENV_VAR]: formatRunPlaybookPin(pin) } : undefined;
+}
 
 export type ClientAdapter = {
   readonly id: RunClient;

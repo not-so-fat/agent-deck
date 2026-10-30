@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PLAYBOOK_PIN_ENV_VAR } from '@agent-deck/backend/agent-run';
 import {
   AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_PLAYBOOK_PIN_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
 
@@ -143,6 +145,68 @@ describe('mcp-launch assignment headers', () => {
     });
     expect(plan.headers.join('\n')).not.toMatch(AGENT_DECK_DECK_ID_HEADER);
     expect(NO_ASSIGNMENT_MESSAGE).toContain('agent-deck use');
+  });
+});
+
+describe('playbook pin launch header (NOT-537)', () => {
+  const endpoint = { host: '127.0.0.1', mcpPort: 1110 };
+  const PIN = 'pb_baseline=123e4567-e89b-42d3-a456-426614174000';
+  let previousPin: string | undefined;
+  let hadPinEnv = false;
+
+  beforeEach(() => {
+    hadPinEnv = PLAYBOOK_PIN_ENV_VAR in process.env;
+    previousPin = process.env[PLAYBOOK_PIN_ENV_VAR];
+    delete process.env[PLAYBOOK_PIN_ENV_VAR];
+  });
+
+  afterEach(() => {
+    if (hadPinEnv && previousPin !== undefined) {
+      process.env[PLAYBOOK_PIN_ENV_VAR] = previousPin;
+    } else {
+      delete process.env[PLAYBOOK_PIN_ENV_VAR];
+    }
+  });
+
+  function setPinEnv(value: string | undefined) {
+    if (value === undefined) {
+      delete process.env[PLAYBOOK_PIN_ENV_VAR];
+    } else {
+      process.env[PLAYBOOK_PIN_ENV_VAR] = value;
+    }
+  }
+
+  it('reads the pin from the run adapters env var', () => {
+    expect(PLAYBOOK_PIN_ENV_VAR).toBe('AGENT_DECK_PLAYBOOK_PIN');
+  });
+
+  it('sends the pin header only when the run set a pin', async () => {
+    const workspace = makeWorkspace();
+    await writeAssignment(workspace, { deckId: 'deck-v3', deckName: 'dev' });
+
+    setPinEnv(undefined);
+    const plain = await resolveMcpLaunchPlan(workspace, endpoint);
+    expect(plain.headers).toEqual([
+      `${AGENT_DECK_DECK_ID_HEADER}: deck-v3`,
+      `${AGENT_DECK_WORKSPACE_HEADER}: ${workspace}`,
+    ]);
+
+    setPinEnv(PIN);
+    const pinned = await resolveMcpLaunchPlan(workspace, endpoint);
+    expect(pinned.headers).toEqual([
+      `${AGENT_DECK_DECK_ID_HEADER}: deck-v3`,
+      `${AGENT_DECK_WORKSPACE_HEADER}: ${workspace}`,
+      `${AGENT_DECK_PLAYBOOK_PIN_HEADER}: ${PIN}`,
+    ]);
+  });
+
+  it('drops an invalid pin instead of sending a malformed header', async () => {
+    const workspace = makeWorkspace();
+    await writeAssignment(workspace, { deckId: 'deck-v3', deckName: 'dev' });
+
+    setPinEnv('not a pin');
+    const plan = await resolveMcpLaunchPlan(workspace, endpoint);
+    expect(plan.headers.join('\n')).not.toMatch(AGENT_DECK_PLAYBOOK_PIN_HEADER);
   });
 });
 

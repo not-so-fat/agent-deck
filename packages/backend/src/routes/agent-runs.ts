@@ -153,6 +153,10 @@ function rejectionReply(code: AgentRunRejectionCode, request: CreateAgentRunRequ
         message: 'prepareFinalization requires a clean Git index (nothing staged or unmerged)',
         reason: 'index_dirty',
       };
+    // NOT-537: unreachable over HTTP (create requests carry no pin), but the
+    // mapping stays exhaustive over every rejection the service can return.
+    case 'playbook_pin_invalid':
+      return { status: 400, code: 'INVALID_REQUEST', message: 'playbook pin is invalid', reason: 'invalid_request' };
   }
 }
 

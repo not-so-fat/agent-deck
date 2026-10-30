@@ -1,18 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { AGENT_DECK_PLAYBOOK_PIN_HEADER } from '../constants/client-scope';
-import {
-  AGENT_DECK_PLAYBOOK_PIN_ENV,
-  formatPlaybookPin,
-  normalizePlaybookPin,
-} from './playbook-pin';
+import { formatPlaybookPin, normalizePlaybookPin } from './playbook-pin';
 
 const VERSION = '123e4567-e89b-42d3-a456-426614174000';
 
 describe('playbook pin value (NOT-537)', () => {
-  it('defines the launch header and env var names', () => {
+  it('defines the launch header name once', () => {
     expect(AGENT_DECK_PLAYBOOK_PIN_HEADER).toBe('x-agent-deck-playbook-pin');
-    expect(AGENT_DECK_PLAYBOOK_PIN_ENV).toBe('AGENT_DECK_PLAYBOOK_PIN');
   });
 
   it('parses a well-formed pin', () => {

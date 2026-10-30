@@ -6,6 +6,8 @@
  */
 import {
   allowedToolsForProfile,
+  formatRunPlaybookPin,
+  PLAYBOOK_PIN_ENV_VAR,
   RUN_PERMISSION_MODE,
   RUN_SETTING_SOURCES,
   type AdapterStartArgs,
@@ -109,38 +111,57 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
           args.control.signal.addEventListener('abort', () => controller.abort(), { once: true });
         }
       }
-      const stream = query({
-        prompt: args.prompt,
-        options: {
-          cwd: args.cwd,
-          ...(args.resumeId ? { resume: args.resumeId } : {}),
-          settingSources: [...RUN_SETTING_SOURCES],
-          permissionMode: RUN_PERMISSION_MODE,
-          allowedTools: [...allowedToolsForProfile(args.tools)],
-          ...(abortController ? { abortController } : {}),
-        },
-      });
-      for await (const message of stream) {
-        const sessionId =
-          typeof message.session_id === 'string' && message.session_id
-            ? message.session_id
-            : undefined;
-        const withSession = sessionId ? { sessionId } : {};
-        if (message.type === 'assistant') {
-          for (const block of message.message?.content ?? []) {
-            if (block.type === 'text' && typeof block.text === 'string') {
-              yield { kind: 'text', text: block.text, ...withSession };
-            } else if (block.type === 'tool_use' && typeof block.name === 'string') {
-              yield { kind: 'tool', name: block.name, ...withSession };
+      // NOT-537: the SDK runs in-process and spawns the agent-deck MCP
+      // server as a child, so the pin reaches `mcp-launch` through the
+      // process env. Scoped to this stream and always restored — an
+      // unpinned run never touches the env at all.
+      const pinValue = args.playbookPin ? formatRunPlaybookPin(args.playbookPin) : undefined;
+      const previousPin = process.env[PLAYBOOK_PIN_ENV_VAR];
+      if (pinValue) {
+        process.env[PLAYBOOK_PIN_ENV_VAR] = pinValue;
+      }
+      try {
+        const stream = query({
+          prompt: args.prompt,
+          options: {
+            cwd: args.cwd,
+            ...(args.resumeId ? { resume: args.resumeId } : {}),
+            settingSources: [...RUN_SETTING_SOURCES],
+            permissionMode: RUN_PERMISSION_MODE,
+            allowedTools: [...allowedToolsForProfile(args.tools)],
+            ...(abortController ? { abortController } : {}),
+          },
+        });
+        for await (const message of stream) {
+          const sessionId =
+            typeof message.session_id === 'string' && message.session_id
+              ? message.session_id
+              : undefined;
+          const withSession = sessionId ? { sessionId } : {};
+          if (message.type === 'assistant') {
+            for (const block of message.message?.content ?? []) {
+              if (block.type === 'text' && typeof block.text === 'string') {
+                yield { kind: 'text', text: block.text, ...withSession };
+              } else if (block.type === 'tool_use' && typeof block.name === 'string') {
+                yield { kind: 'tool', name: block.name, ...withSession };
+              }
             }
+          } else if (message.type === 'result') {
+            yield {
+              kind: 'result',
+              subtype: message.subtype ?? '',
+              result: message.result,
+              ...withSession,
+            };
           }
-        } else if (message.type === 'result') {
-          yield {
-            kind: 'result',
-            subtype: message.subtype ?? '',
-            result: message.result,
-            ...withSession,
-          };
+        }
+      } finally {
+        if (pinValue) {
+          if (previousPin === undefined) {
+            delete process.env[PLAYBOOK_PIN_ENV_VAR];
+          } else {
+            process.env[PLAYBOOK_PIN_ENV_VAR] = previousPin;
+          }
         }
       }
     },
