@@ -511,6 +511,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       state: 'running',
       ...(startPlan.trustOverride ? { trustOverride: true as const } : {}),
       ...(resumedFrom ? { resumedFrom } : {}),
+      ...(request.playbookPin ? { playbookPin: request.playbookPin } : {}),
     };
     writeRunMeta(metaPath, meta);
 

@@ -78,9 +78,9 @@ export async function resolveMcpLaunchPlan(
   },
 ): Promise<McpLaunchPlan> {
   const assignment = await readAssignment(workspaceRoot);
-  // NOT-537: a run with --playbook-version sets this env for its agent
-  // process, and the agent's `mcp-launch` turns it into the pin header. An
-  // invalid value is dropped, so only a well-formed pin ever travels.
+  // NOT-537: a pinned run's client sets this env on its agent-deck MCP
+  // server entry, and `mcp-launch` turns it into the pin header. An invalid
+  // value is dropped, so only a well-formed pin ever travels.
   const pin = normalizePlaybookPin(process.env[PLAYBOOK_PIN_ENV_VAR]);
   const pinHeader = pin ? `${AGENT_DECK_PLAYBOOK_PIN_HEADER}: ${formatPlaybookPin(pin)}` : undefined;
   if (!assignment) {

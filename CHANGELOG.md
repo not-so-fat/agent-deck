@@ -5,6 +5,7 @@
 ### Feature: pinned playbook runs (NOT-537)
 
 - New `agent-deck run --playbook-version <playbookId>=<versionId>` flag runs one session against a stored older version of one playbook, so a baseline-vs-candidate evaluation can test each version without touching the live playbook. The run's MCP session reads that version's title, body and triggers with no open patches (marked with `pinnedVersionId`) and cannot file playbook proposals; the pin lives only as long as the run's session.
+- The pin travels through each client's explicit per-run MCP server env (a `-c mcp_servers.agent-deck` override for Codex, an inline SDK MCP server for Claude), since MCP stdio servers never see inherited process env. Cursor and Muse have no such override, so a pinned run with those clients fails closed before any model work instead of silently reading the live playbook. The pin is recorded in the run's `meta.json` as `playbookPin`.
 
 ## 2.3.1 — 2026-10-29
 

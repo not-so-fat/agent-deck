@@ -7,7 +7,10 @@ import {
   appendRunLogLine,
   createAgentRunService,
   createCodexAdapter,
+  createCursorAdapter,
   createRunAdapter,
+  readRunMeta,
+  runPaths,
   RUN_SUPPORTED_CLIENTS,
   writeRunMeta,
   type AdapterStartArgs,
@@ -739,6 +742,59 @@ describe('codex resume provenance (NOT-484)', () => {
       `Cannot resume codex thread ${THREAD} with --tools edit: run run-x started it with --tools readonly`,
     );
     expect(calls).toHaveLength(1);
+  });
+
+  it('fails a pinned cursor run closed in the plan with no model work (NOT-537)', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    // Real cursor plan gate, stubbed preflight/stream so the test is hermetic.
+    const cursorPlan = createCursorAdapter().planStart;
+    const adapter = fixtureAdapter('cursor', { events: successEvents() });
+    const service = makeService(home, adapter, {
+      createAdapter: () => ({
+        ...adapter,
+        planStart: (args) => cursorPlan(args),
+      }),
+      resolvePlaybookPin: async () => ({ versionPlaybookId: 'pb_baseline', playbookOnDeck: true }),
+    }).service;
+
+    const outcome = await service.start(
+      request(cwd, {
+        client: 'cursor',
+        playbookPin: { playbookId: 'pb_baseline', versionId: '123e4567-e89b-42d3-a456-426614174000' },
+      }),
+    );
+
+    expect(outcome).toEqual({
+      kind: 'rejected',
+      code: 'profile_unsupported',
+      message:
+        '--playbook-version is not supported with --client cursor: cursor-agent has no per-run MCP env override, so the pin would never reach the session. Re-run with --client codex or --client claude.',
+    });
+    expect(adapter.starts).toEqual([]);
+  });
+
+  it('records the pin in meta.json on a pinned run (NOT-537)', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const adapter = fixtureAdapter('claude', { events: successEvents() });
+    const service = makeService(home, adapter, {
+      resolvePlaybookPin: async () => ({ versionPlaybookId: 'pb_baseline', playbookOnDeck: true }),
+    }).service;
+
+    const outcome = await service.start(
+      request(cwd, {
+        client: 'claude',
+        playbookPin: { playbookId: 'pb_baseline', versionId: '123e4567-e89b-42d3-a456-426614174000' },
+      }),
+    );
+    if (outcome.kind !== 'finished') throw new Error(JSON.stringify(outcome));
+    const meta = readRunMeta(runPaths(home, outcome.runId).metaPath);
+    if (!meta.ok) throw new Error(meta.reason);
+    expect(meta.meta.playbookPin).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
+    });
   });
 });
 

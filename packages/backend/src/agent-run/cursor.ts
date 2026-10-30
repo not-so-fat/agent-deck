@@ -44,7 +44,6 @@ import { spawn, spawnSync } from 'node:child_process';
 import readline from 'node:readline';
 
 import {
-  playbookPinEnv,
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
@@ -484,6 +483,17 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
             'Pass the chat id printed as sessionId in a previous run log.',
         };
       }
+      // NOT-537: cursor-agent offers no per-run MCP server env override, and
+      // MCP stdio servers never see inherited process env — so a pinned run
+      // would silently read the live playbook. Fail closed before any model
+      // work instead of producing a wrong baseline.
+      if (args.playbookPin) {
+        return {
+          ok: false,
+          remedy:
+            '--playbook-version is not supported with --client cursor: cursor-agent has no per-run MCP env override, so the pin would never reach the session. Re-run with --client codex or --client claude.',
+        };
+      }
       // --trust is passed on every launch, so every cursor run records the
       // workspace-trust grant.
       return { ok: true, trustOverride: true };
@@ -501,11 +511,9 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
         );
       let child: CursorChild;
       try {
-        const env = playbookPinEnv(args.playbookPin);
         child = spawnFn(bin, argv, {
           cwd: args.cwd,
           ...(args.control ? { control: args.control } : {}),
-          ...(env ? { env } : {}),
         });
       } catch (error) {
         throw wrapSpawnError(error);

@@ -137,8 +137,12 @@ export type AdapterStartArgs = {
   resumedFrom?: RunResumeOrigin;
   control?: RunProcessControl;
   /**
-   * Pinned playbook version for this run (NOT-537). Adapters pass it to the
-   * agent process so its MCP launch sends the pin header; the pin lives only
+   * Pinned playbook version for this run (NOT-537). Each adapter carries it
+   * to its MCP launch through that client's explicit per-server env
+   * mechanism — inherited process env never reaches an MCP stdio server
+   * (Codex documents a restricted env; the MCP SDK's StdioClientTransport
+   * only inherits a safe allowlist plus the configured server `env`). Clients
+   * with no per-run override fail closed in `planStart`. The pin lives only
    * as long as the run's MCP session.
    */
   playbookPin?: RunPlaybookPin;
@@ -164,22 +168,17 @@ export type RunPlaybookPin = {
   versionId: string;
 };
 
-/** Env var the run adapters set and `mcp-launch` reads (NOT-537). */
+/**
+ * Env var the run adapters set in their client's explicit per-server MCP env
+ * and `mcp-launch` reads (NOT-537). Never carried by process inheritance:
+ * MCP stdio servers start with a restricted env, so an inherited variable
+ * would silently never arrive and the run would read the live playbook.
+ */
 export const PLAYBOOK_PIN_ENV_VAR = 'AGENT_DECK_PLAYBOOK_PIN';
 
-/** Canonical `<playbookId>=<versionId>` form for the pin env. */
+/** Canonical `<playbookId>=<versionId>` form for the pin env value. */
 export function formatRunPlaybookPin(pin: RunPlaybookPin): string {
   return `${pin.playbookId}=${pin.versionId}`;
-}
-
-/**
- * Child env carrying the run's playbook pin (NOT-537): the agent process
- * inherits it, and `mcp-launch` turns it into the pin launch header for the
- * run's MCP session. Undefined when the run has no pin, so unpinned spawns
- * pass no `env` at all and behave exactly as before.
- */
-export function playbookPinEnv(pin: RunPlaybookPin | undefined): NodeJS.ProcessEnv | undefined {
-  return pin ? { ...process.env, [PLAYBOOK_PIN_ENV_VAR]: formatRunPlaybookPin(pin) } : undefined;
 }
 
 export type ClientAdapter = {
