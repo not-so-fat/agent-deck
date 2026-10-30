@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.3.2 — 2026-10-29
 
 ### Feature: pinned playbook runs (NOT-537)
 
