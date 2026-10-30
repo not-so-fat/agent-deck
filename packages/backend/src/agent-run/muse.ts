@@ -166,7 +166,7 @@ export type MuseChild = {
 };
 
 /** `control` (NOT-481): spawn as a new process-group leader and report its id. */
-export type MuseSpawnOptions = { cwd: string; control?: RunProcessControl };
+export type MuseSpawnOptions = { cwd: string; control?: RunProcessControl; env?: NodeJS.ProcessEnv };
 
 export type MuseSpawn = (bin: string, argv: string[], opts: MuseSpawnOptions) => MuseChild;
 
@@ -175,6 +175,7 @@ export function defaultMuseSpawn(bin: string, argv: string[], opts: MuseSpawnOpt
     cwd: opts.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: opts.control !== undefined,
+    ...(opts.env ? { env: opts.env } : {}),
   });
   if (opts.control && child.pid !== undefined) {
     opts.control.onProcessGroup(child.pid);
@@ -526,6 +527,17 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
             'then retry. If Muse reports the server needs authorization, run `muse mcp login agent-deck` (see `muse mcp --help`).',
         };
       }
+      // NOT-537: `muse exec -c` only sets session settings (unknown keys
+      // refuse the run), not MCP server env — and MCP stdio servers never
+      // see inherited process env. A pinned run would silently read the live
+      // playbook, so fail closed before any model work.
+      if (args.playbookPin) {
+        return {
+          ok: false,
+          remedy:
+            '--playbook-version is not supported with --client muse: muse has no per-run MCP env override, so the pin would never reach the session. Re-run with --client codex or --client claude.',
+        };
+      }
       // Never trust the workspace from run: no --trust-workspace/--yolo, so
       // trustOverride stays false and the untrusted warning surfaces as a
       // notice (agent delegation unavailable is a known limit).
@@ -552,7 +564,10 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
         );
       let child: MuseChild;
       try {
-        child = spawnFn(bin, argv, { cwd: args.cwd, ...(args.control ? { control: args.control } : {}) });
+        child = spawnFn(bin, argv, {
+          cwd: args.cwd,
+          ...(args.control ? { control: args.control } : {}),
+        });
       } catch (error) {
         throw wrapSpawnError(error);
       }

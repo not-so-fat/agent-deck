@@ -1,8 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import Fastify from 'fastify';
+import { afterEach, beforeEach, describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import {
   AGENT_DECK_BRIDGE_LIVENESS_HEADER,
   AGENT_DECK_BRIDGE_LIVENESS_V1,
   AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_PLAYBOOK_PIN_HEADER,
+  generateId,
 } from '@agent-deck/shared';
 import {
   AgentDeckMCPServer,
@@ -16,7 +19,21 @@ import {
   resolveLiveTouchKeepAliveMs,
 } from './mcp-server';
 import type { McpSessionBindingStore } from './mcp-session-binding';
-import { installStrictConsoleCapture } from './mcp-tools/test-harness';
+import {
+  callToolMcpResult,
+  installStrictConsoleCapture,
+  openSession,
+  startMcpServer,
+} from './mcp-tools/test-harness';
+import { DatabaseManager } from './models/database';
+import { PatchManager } from './playbooks/patch-manager';
+import { PlaybookManager } from './playbooks/playbook-manager';
+import { registerPlaybookPatchRoutes } from './routes/playbook-patches';
+import { registerPlaybookRoutes } from './routes/playbooks';
+import { registerScopeRoutes } from './routes/scope';
+import { registerTrustedSessionRoutes } from './routes/trusted-session';
+import { registerHttpPolicyHook } from './trusted-session/policy-hook';
+import { TrustedSessionStore } from './trusted-session/store';
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
 
@@ -1456,5 +1473,332 @@ describe('transport session lifecycle without sockets (NOT-191)', () => {
       logSpy.mockRestore();
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe('pinned playbook version over MCP (NOT-537)', () => {
+  const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
+  let mcpServer: AgentDeckMCPServer | undefined;
+  let previousSkipDeckHeader: string | undefined;
+  let previousSkipAdmin: string | undefined;
+  let previousStubSync: string | undefined;
+
+  beforeEach(() => {
+    previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
+    process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
+    delete process.env.AGENT_DECK_STUB_SYNC;
+  });
+
+  afterEach(async () => {
+    if (mcpServer) {
+      await mcpServer.stop();
+      mcpServer = undefined;
+    }
+    while (servers.length) {
+      await servers.pop()?.close();
+    }
+    if (previousSkipDeckHeader === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipDeckHeader;
+    }
+    if (previousSkipAdmin === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = previousSkipAdmin;
+    }
+    if (previousStubSync === undefined) {
+      delete process.env.AGENT_DECK_STUB_SYNC;
+    } else {
+      process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
+    }
+  });
+
+  async function buildListeningBackend() {
+    const db = new DatabaseManager(':memory:');
+    const deck = await db.createDeck({ name: 'eval' });
+
+    const playbook = await db.createPlaybook({
+      id: 'pb_baseline',
+      title: 'current title',
+      body: '## Gotchas\n- Current lesson.\n',
+      triggers: ['current trigger'],
+    });
+    await db.addPlaybookToDeck({ deckId: deck.id, playbookId: playbook.id, position: 0 });
+    const other = await db.createPlaybook({
+      id: 'pb_other',
+      title: 'other title',
+      body: '## Gotchas\n- Other lesson.\n',
+      triggers: ['other trigger'],
+    });
+    await db.addPlaybookToDeck({ deckId: deck.id, playbookId: other.id, position: 0 });
+
+    const older = await db.createPlaybookVersion({
+      id: generateId(),
+      playbookId: playbook.id,
+      title: 'older title',
+      body: '## Gotchas\n- Older lesson.\n',
+      triggers: ['older trigger'],
+      patchId: null,
+      actor: 'agent',
+    });
+    const newer = await db.createPlaybookVersion({
+      id: generateId(),
+      playbookId: playbook.id,
+      title: 'current title',
+      body: '## Gotchas\n- Current lesson.\n',
+      triggers: ['current trigger'],
+      patchId: null,
+      actor: 'agent',
+    });
+
+    const store = new TrustedSessionStore(db.getSqliteDatabase());
+    const playbookManager = new PlaybookManager(db);
+    const patchManager = new PatchManager(db, playbookManager);
+    // One open lesson on the live playbook: the pinned session must not see it.
+    await patchManager.propose(
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: '- Later lesson.' }],
+        rationale: 'seeded open patch',
+      },
+      'ide',
+      null,
+      deck.id,
+    );
+
+    const fastify = Fastify();
+    fastify.decorate('db', db);
+    fastify.decorate('trustedSessionStore', store);
+    fastify.decorate('credentialManager', {
+      applySecretStatus: async (credentials: unknown[]) => credentials,
+    });
+    fastify.decorate('playbookManager', playbookManager);
+    fastify.decorate('patchManager', patchManager);
+
+    registerHttpPolicyHook(fastify);
+    await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
+    await fastify.register(registerPlaybookPatchRoutes, { prefix: '/api/playbook-patches' });
+    await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+    await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
+    await fastify.listen({ port: 0, host: '127.0.0.1' });
+    servers.push(fastify);
+
+    const address = fastify.server.address();
+    const backendPort =
+      typeof address === 'object' && address && 'port' in address ? address.port : 0;
+
+    return {
+      backendUrl: `http://127.0.0.1:${backendPort}`,
+      db,
+      deck,
+      playbook,
+      other,
+      older,
+      newer,
+    };
+  }
+
+  function headersFor(deckId: string, pin?: string) {
+    return {
+      [AGENT_DECK_DECK_ID_HEADER]: deckId,
+      ...(pin ? { [AGENT_DECK_PLAYBOOK_PIN_HEADER]: pin } : {}),
+    };
+  }
+
+  it('returns the pinned version in a pinned session and the live body otherwise', async () => {
+    const { backendUrl, deck, playbook, other, older } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const pin = `${playbook.id}=${older.id}`;
+    const pinnedHeaders = headersFor(deck.id, pin);
+    const pinnedSession = await openSession(started.port, 1, pinnedHeaders);
+
+    const pinned = await callToolMcpResult(
+      started.port,
+      pinnedSession,
+      'get_playbook',
+      { playbook_id: playbook.id },
+      2,
+      pinnedHeaders,
+    );
+    expect(pinned.isError).toBe(false);
+    expect(pinned.data).toMatchObject({
+      id: playbook.id,
+      title: 'older title',
+      body: '## Gotchas\n- Older lesson.\n',
+      triggers: ['older trigger'],
+      openPatches: [],
+      pinnedVersionId: older.id,
+    });
+
+    // Any other id in the same pinned session is unchanged.
+    const untouched = await callToolMcpResult(
+      started.port,
+      pinnedSession,
+      'get_playbook',
+      { playbook_id: other.id },
+      3,
+      pinnedHeaders,
+    );
+    expect(untouched.isError).toBe(false);
+    expect(untouched.data).toMatchObject({ id: other.id, title: 'other title' });
+    expect(untouched.data).not.toHaveProperty('pinnedVersionId');
+
+    // A run without the flag sees the live body and its real openPatches.
+    const plainHeaders = headersFor(deck.id);
+    const plainSession = await openSession(started.port, 10, plainHeaders);
+    const current = await callToolMcpResult(
+      started.port,
+      plainSession,
+      'get_playbook',
+      { playbook_id: playbook.id },
+      11,
+      plainHeaders,
+    );
+    expect(current.isError).toBe(false);
+    expect(current.data).toMatchObject({
+      id: playbook.id,
+      title: 'current title',
+      body: '## Gotchas\n- Current lesson.\n',
+    });
+    expect(current.data).not.toHaveProperty('pinnedVersionId');
+    expect((current.data.openPatches as unknown[]).length).toBe(1);
+  });
+
+  it('keeps the first adopted pin when later headers change', async () => {
+    const { backendUrl, deck, playbook, older, newer } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const pinnedHeaders = headersFor(deck.id, `${playbook.id}=${older.id}`);
+    const sessionId = await openSession(started.port, 1, pinnedHeaders);
+
+    // A later request carrying a different pin must not move the session.
+    const movedHeaders = headersFor(deck.id, `${playbook.id}=${newer.id}`);
+    const still = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_playbook',
+      { playbook_id: playbook.id },
+      2,
+      movedHeaders,
+    );
+    expect(still.isError).toBe(false);
+    expect(still.data).toMatchObject({ body: '## Gotchas\n- Older lesson.\n', pinnedVersionId: older.id });
+  });
+
+  it('shows the pinned title and triggers in session summaries', async () => {
+    const { backendUrl, deck, playbook, older } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const pinnedHeaders = headersFor(deck.id, `${playbook.id}=${older.id}`);
+    const sessionId = await openSession(started.port, 1, pinnedHeaders);
+
+    const context = await callToolMcpResult(started.port, sessionId, 'get_session_context', {}, 2, pinnedHeaders);
+    expect(context.isError).toBe(false);
+    const summaries = context.data.playbooks as Array<{ id: string; title: string; triggers: string[] }>;
+    expect(summaries.find((entry) => entry.id === playbook.id)).toEqual({
+      id: playbook.id,
+      title: 'older title',
+      triggers: ['older trigger'],
+    });
+
+    const bound = await callToolMcpResult(started.port, sessionId, 'get_bound_deck', {}, 3, pinnedHeaders);
+    expect(bound.isError).toBe(false);
+    const deckPlaybooks = bound.data.playbooks as Array<{ id: string; title: string; triggers: string[] }>;
+    expect(deckPlaybooks.find((entry) => entry.id === playbook.id)).toMatchObject({
+      id: playbook.id,
+      title: 'older title',
+      triggers: ['older trigger'],
+    });
+  });
+
+  it('blocks proposals in a pinned session and files them unpinned', async () => {
+    const { backendUrl, db, deck, playbook, older } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const pinnedHeaders = headersFor(deck.id, `${playbook.id}=${older.id}`);
+    const pinnedSession = await openSession(started.port, 1, pinnedHeaders);
+
+    const patchesBefore = await db.listPlaybookPatches();
+    const signalsBefore = await db.listFeedbackSignals();
+    const blocked = await callToolMcpResult(
+      started.port,
+      pinnedSession,
+      'propose_playbook_patch',
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: '- Pinned lesson.' }],
+        rationale: 'an evaluation run must not file this',
+      },
+      2,
+      pinnedHeaders,
+    );
+    expect(blocked.isError).toBe(true);
+    expect(String(blocked.data.error)).toContain(`pinned to ${playbook.id}=${older.id}`);
+    expect(await db.listPlaybookPatches()).toHaveLength(patchesBefore.length);
+    expect(await db.listFeedbackSignals()).toHaveLength(signalsBefore.length);
+
+    const plainHeaders = headersFor(deck.id);
+    const plainSession = await openSession(started.port, 10, plainHeaders);
+    const filed = await callToolMcpResult(
+      started.port,
+      plainSession,
+      'propose_playbook_patch',
+      {
+        kind: 'update',
+        playbook_id: playbook.id,
+        ops: [{ op: 'add_item', section: 'Gotchas', text: '- Unpinned lesson.' }],
+        rationale: 'a normal session files this',
+      },
+      11,
+      plainHeaders,
+    );
+    expect(filed.isError).toBe(false);
+    expect(await db.listPlaybookPatches()).toHaveLength(patchesBefore.length + 1);
+    expect(await db.listFeedbackSignals()).toHaveLength(signalsBefore.length + 1);
+  });
+
+  it('never modifies the live playbook, and later sessions see the live body', async () => {
+    const { backendUrl, db, deck, playbook, older } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    const before = (await db.getPlaybook(playbook.id))?.body;
+    const pinnedHeaders = headersFor(deck.id, `${playbook.id}=${older.id}`);
+    const pinnedSession = await openSession(started.port, 1, pinnedHeaders);
+    const pinned = await callToolMcpResult(
+      started.port,
+      pinnedSession,
+      'get_playbook',
+      { playbook_id: playbook.id },
+      2,
+      pinnedHeaders,
+    );
+    expect(pinned.isError).toBe(false);
+    expect((await db.getPlaybook(playbook.id))?.body).toBe(before);
+
+    const plainHeaders = headersFor(deck.id);
+    const freshSession = await openSession(started.port, 10, plainHeaders);
+    const current = await callToolMcpResult(
+      started.port,
+      freshSession,
+      'get_playbook',
+      { playbook_id: playbook.id },
+      11,
+      plainHeaders,
+    );
+    expect(current.isError).toBe(false);
+    expect(current.data).toMatchObject({ body: before });
+    expect(current.data).not.toHaveProperty('pinnedVersionId');
   });
 });

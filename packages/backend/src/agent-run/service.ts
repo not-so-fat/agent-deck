@@ -22,6 +22,7 @@ import {
   type ClientAdapter,
   type RunClient,
   type RunClientProfiles,
+  type RunPlaybookPin,
   type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
@@ -87,6 +88,16 @@ export function defaultKillProcessGroup(pgid: number): void {
 
 export type RunDeck = { id: string; name: string };
 
+/**
+ * What `--playbook-version` validation needs about one pin (NOT-537):
+ * which playbook the version snapshot belongs to (null when the version
+ * id is unknown) and whether the requested playbook is on the run's deck.
+ */
+export type PlaybookPinResolution = {
+  versionPlaybookId: string | null;
+  playbookOnDeck: boolean;
+};
+
 /** The deck a working directory is assigned to; empty when unassigned. */
 export type RunDeckBinding = { deckId?: string; deckName?: string };
 
@@ -111,6 +122,16 @@ export type AgentRunServiceDeps = {
   createAdapter?: (client: RunClient) => ClientAdapter;
   /** Signals one run-owned process group (NOT-481); defaults to {@link defaultKillProcessGroup}. */
   killProcessGroup?: (pgid: number) => void;
+  /**
+   * Version + deck-membership lookup for `--playbook-version` (NOT-537).
+   * The CLI resolves it against the local database; a run that carries a
+   * pin without a resolver fails closed.
+   */
+  resolvePlaybookPin?: (input: {
+    playbookId: string;
+    versionId: string;
+    deckId: string;
+  }) => Promise<PlaybookPinResolution>;
 };
 
 export type AgentRunRequest = {
@@ -124,6 +145,8 @@ export type AgentRunRequest = {
   tools: RunToolsProfile;
   /** Continue this client session id under a new run. */
   resumeId?: string;
+  /** Pinned playbook version for this run's MCP session (NOT-537). */
+  playbookPin?: RunPlaybookPin;
 };
 
 export type PreparedRun = {
@@ -149,7 +172,9 @@ export type AgentRunRejectionCode =
   | 'resume_unverified'
   // NOT-486: a host-owned `beforeStart` gate (finalization baseline capture) failed closed.
   | 'finalization_invalid'
-  | 'index_dirty';
+  | 'index_dirty'
+  // NOT-537: the `--playbook-version` pin is unknown, mismatched, or off-deck.
+  | 'playbook_pin_invalid';
 
 export type AgentRunValidation =
   | { ok: true; deck: RunDeck; resumedFrom?: RunResumeOrigin }
@@ -356,6 +381,47 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       };
     }
 
+    // The pinned version must exist, belong to the pinned playbook, and sit
+    // on the run's deck (NOT-537). Every failure lands before any model work
+    // with a one-line error naming the problem.
+    if (request.playbookPin) {
+      if (!deps.resolvePlaybookPin) {
+        return {
+          ok: false,
+          code: 'playbook_pin_invalid',
+          error: 'Playbook pin validation is unavailable: no version resolver is configured',
+        };
+      }
+      const pin = await deps.resolvePlaybookPin({
+        playbookId: request.playbookPin.playbookId,
+        versionId: request.playbookPin.versionId,
+        deckId: deck.id,
+      });
+      if (!pin.versionPlaybookId) {
+        return {
+          ok: false,
+          code: 'playbook_pin_invalid',
+          error: `Unknown playbook version: ${request.playbookPin.versionId}`,
+        };
+      }
+      if (pin.versionPlaybookId !== request.playbookPin.playbookId) {
+        return {
+          ok: false,
+          code: 'playbook_pin_invalid',
+          error:
+            `Playbook version ${request.playbookPin.versionId} belongs to ${pin.versionPlaybookId}, ` +
+            `not ${request.playbookPin.playbookId}`,
+        };
+      }
+      if (!pin.playbookOnDeck) {
+        return {
+          ok: false,
+          code: 'playbook_pin_invalid',
+          error: `Playbook ${request.playbookPin.playbookId} is not on deck "${deck.name}"`,
+        };
+      }
+    }
+
     // Codex resume cannot re-apply a sandbox, so it continues only a session
     // an Agent Deck run started with the same client, deck, canonical cwd,
     // and tool profile (NOT-484).
@@ -413,6 +479,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       tools: request.tools,
       ...(request.resumeId ? { resumeId: request.resumeId } : {}),
       ...(resumedFrom ? { resumedFrom } : {}),
+      ...(request.playbookPin ? { playbookPin: request.playbookPin } : {}),
     };
     const startPlan = adapter.planStart(startArgs);
     if (!startPlan.ok) {
@@ -444,6 +511,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       state: 'running',
       ...(startPlan.trustOverride ? { trustOverride: true as const } : {}),
       ...(resumedFrom ? { resumedFrom } : {}),
+      ...(request.playbookPin ? { playbookPin: request.playbookPin } : {}),
     };
     writeRunMeta(metaPath, meta);
 

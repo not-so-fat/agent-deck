@@ -7,7 +7,9 @@ import {
   AGENT_DECK_WORKSPACE_HEADER,
   normalizeCorrelationId,
   normalizeHostSessionId,
+  normalizePlaybookPin,
   type BindingActiveSource,
+  type PlaybookPin,
 } from '@agent-deck/shared';
 import type { ClientPrincipal } from './auth/client-grants';
 
@@ -28,6 +30,12 @@ export type SessionBindingSnapshot = {
    * recording; never consulted for deck, workspace, mode, or auth.
    */
   correlationId?: string;
+  /**
+   * Pinned playbook version (NOT-537). Changes only what `get_playbook`
+   * and the playbook summaries show for the pinned playbook id; never
+   * consulted for deck, workspace, mode, or auth.
+   */
+  playbookPin?: PlaybookPin;
 };
 
 /** Remote-grant scope held per MCP session (NOT-318). */
@@ -57,6 +65,13 @@ export class McpSessionBindingStore {
    * workspace, mode, or auth.
    */
   private hostSessionByMcp = new Map<string, string>();
+  /**
+   * Pinned playbook version per MCP session (NOT-537). Adopt-once like
+   * the correlation id: the first valid `<playbookId>=<versionId>` value
+   * sticks for the session lifetime. Lives only in this memory store —
+   * nothing is persisted, so a restart drops every pin.
+   */
+  private pinByMcp = new Map<string, PlaybookPin>();
   /** MCP session ids authenticated via launch-selected deck (NOT-105). */
   private launchByMcp = new Set<string>();
   /** MCP session ids authenticated via remote bearer grant (NOT-318). */
@@ -170,6 +185,7 @@ export class McpSessionBindingStore {
     this.deckIdBySession.delete(mcpSessionId);
     this.modeByMcp.delete(mcpSessionId);
     this.correlationByMcp.delete(mcpSessionId);
+    this.pinByMcp.delete(mcpSessionId);
     this.unassignedByMcp.add(mcpSessionId);
   }
 
@@ -219,6 +235,29 @@ export class McpSessionBindingStore {
     return this.hostSessionByMcp.get(mcpSessionId);
   }
 
+  /**
+   * Adopt the session's pinned playbook version (NOT-537). First valid
+   * value wins; later values — valid or not — are ignored so a pin can
+   * never steer an established session. Invalid input is dropped, never
+   * coerced. Returns the stored value (or undefined when nothing stuck).
+   */
+  setPlaybookPin(mcpSessionId: string, raw: unknown): PlaybookPin | undefined {
+    const existing = this.pinByMcp.get(mcpSessionId);
+    if (existing) {
+      return existing;
+    }
+    const normalized = normalizePlaybookPin(raw);
+    if (normalized) {
+      this.pinByMcp.set(mcpSessionId, normalized);
+      return normalized;
+    }
+    return undefined;
+  }
+
+  getPlaybookPin(mcpSessionId: string): PlaybookPin | undefined {
+    return this.pinByMcp.get(mcpSessionId);
+  }
+
   isUnassigned(mcpSessionId: string): boolean {
     return this.unassignedByMcp.has(mcpSessionId);
   }
@@ -242,6 +281,7 @@ export class McpSessionBindingStore {
     this.modeByMcp.delete(sessionId);
     this.correlationByMcp.delete(sessionId);
     this.hostSessionByMcp.delete(sessionId);
+    this.pinByMcp.delete(sessionId);
     this.launchByMcp.delete(sessionId);
     this.grantByMcp.delete(sessionId);
     this.unassignedByMcp.delete(sessionId);
@@ -283,6 +323,7 @@ export class McpSessionBindingStore {
       deckId,
       runtimeSessionId,
       correlationId: this.correlationByMcp.get(sessionId),
+      playbookPin: this.pinByMcp.get(sessionId),
       mode: this.modeByMcp.get(sessionId),
       // Every authenticated MCP session is a launch session (NOT-105/108).
       // Non-launch paths are env defaults or explicit session overrides (tests / skip-header).

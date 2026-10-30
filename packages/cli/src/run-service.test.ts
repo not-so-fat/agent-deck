@@ -90,6 +90,7 @@ function makeDeps(homeDir: string, cwd: string, adapter: ClientAdapter): RunDeps
     resolveLaunchPlan: (async () => plan) as unknown as RunDeps['resolveLaunchPlan'],
     claudeProbe: async () => ({ ok: true }),
     createAdapter: () => adapter,
+    resolvePlaybookPin: async () => ({ versionPlaybookId: null, playbookOnDeck: false }),
   };
 }
 
@@ -222,5 +223,114 @@ describe('agent-deck run on the shared run service (NOT-479)', () => {
       fs.readFileSync(path.join(home, 'runs', runId, 'meta.json'), 'utf8'),
     ) as RunMeta;
     expect(meta).toMatchObject({ state: 'error', tools: 'edit', sessionId: 'ses_m' });
+  });
+});
+
+describe('agent-deck run --playbook-version (NOT-537)', () => {
+  const VERSION = '123e4567-e89b-42d3-a456-426614174000';
+  const OTHER_VERSION = '223e4567-e89b-42d3-a456-426614174001';
+  const PIN = `pb_baseline=${VERSION}`;
+
+  function makePinDeps(
+    home: string,
+    cwd: string,
+    adapter: ClientAdapter,
+    resolvePlaybookPin: RunDeps['resolvePlaybookPin'],
+  ): RunDeps {
+    return { ...makeDeps(home, cwd, adapter), resolvePlaybookPin };
+  }
+
+  it('fails a repeated flag before any model work starts', async () => {
+    const home = makeDir('ad-cli-pin-home-');
+    const cwd = makeDir('ad-cli-pin-cwd-');
+    const adapter = fixtureAdapter('codex', []);
+
+    const code = await runRunCommand(
+      ['svc', '--client', 'codex', '--cwd', cwd, '--prompt', 'brief', '--playbook-version', PIN, '--playbook-version', `pb_other=${OTHER_VERSION}`],
+      makeDeps(home, cwd, adapter),
+    );
+
+    expect(code).toBe(1);
+    expect(errors).toEqual(['--playbook-version may only be given once: one pin per run is supported']);
+    expect(adapter.starts).toEqual([]);
+  });
+
+  it('fails a malformed value before any model work starts', async () => {
+    const home = makeDir('ad-cli-pin-home-');
+    const cwd = makeDir('ad-cli-pin-cwd-');
+    const adapter = fixtureAdapter('codex', []);
+
+    const code = await runRunCommand(
+      ['svc', '--client', 'codex', '--cwd', cwd, '--prompt', 'brief', '--playbook-version', 'not-a-pin'],
+      makeDeps(home, cwd, adapter),
+    );
+
+    expect(code).toBe(1);
+    expect(errors).toEqual(['Invalid --playbook-version "not-a-pin": expected <playbookId>=<versionId>']);
+    expect(adapter.starts).toEqual([]);
+  });
+
+  it('fails an unknown version id before any model work starts', async () => {
+    const home = makeDir('ad-cli-pin-home-');
+    const cwd = makeDir('ad-cli-pin-cwd-');
+    const adapter = fixtureAdapter('codex', []);
+
+    const code = await runRunCommand(
+      ['svc', '--client', 'codex', '--cwd', cwd, '--prompt', 'brief', '--playbook-version', PIN],
+      makePinDeps(home, cwd, adapter, async () => ({ versionPlaybookId: null, playbookOnDeck: true })),
+    );
+
+    expect(code).toBe(1);
+    expect(errors).toEqual([`Unknown playbook version: ${VERSION}`]);
+    expect(adapter.starts).toEqual([]);
+  });
+
+  it('fails a version that belongs to a different playbook', async () => {
+    const home = makeDir('ad-cli-pin-home-');
+    const cwd = makeDir('ad-cli-pin-cwd-');
+    const adapter = fixtureAdapter('codex', []);
+
+    const code = await runRunCommand(
+      ['svc', '--client', 'codex', '--cwd', cwd, '--prompt', 'brief', '--playbook-version', PIN],
+      makePinDeps(home, cwd, adapter, async () => ({ versionPlaybookId: 'pb_other', playbookOnDeck: true })),
+    );
+
+    expect(code).toBe(1);
+    expect(errors).toEqual([`Playbook version ${VERSION} belongs to pb_other, not pb_baseline`]);
+    expect(adapter.starts).toEqual([]);
+  });
+
+  it('fails a playbook that is not on the run deck', async () => {
+    const home = makeDir('ad-cli-pin-home-');
+    const cwd = makeDir('ad-cli-pin-cwd-');
+    const adapter = fixtureAdapter('codex', []);
+
+    const code = await runRunCommand(
+      ['svc', '--client', 'codex', '--cwd', cwd, '--prompt', 'brief', '--playbook-version', PIN],
+      makePinDeps(home, cwd, adapter, async () => ({ versionPlaybookId: 'pb_baseline', playbookOnDeck: false })),
+    );
+
+    expect(code).toBe(1);
+    expect(errors).toEqual(['Playbook pb_baseline is not on deck "svc"']);
+    expect(adapter.starts).toEqual([]);
+  });
+
+  it('starts a pinned run with the pin on the adapter start args', async () => {
+    const home = makeDir('ad-cli-pin-home-');
+    const cwd = makeDir('ad-cli-pin-cwd-');
+    const adapter = fixtureAdapter('codex', [
+      { kind: 'result', subtype: 'success', result: 'pinned ok', sessionId: 'thread-1' },
+    ]);
+
+    const code = await runRunCommand(
+      ['svc', '--client', 'codex', '--cwd', cwd, '--prompt', 'brief', '--playbook-version', PIN],
+      makePinDeps(home, cwd, adapter, async () => ({ versionPlaybookId: 'pb_baseline', playbookOnDeck: true })),
+    );
+
+    expect(errors).toEqual([]);
+    expect(code).toBe(0);
+    expect(adapter.starts).toEqual([
+      { cwd, prompt: 'brief', tools: 'readonly', playbookPin: { playbookId: 'pb_baseline', versionId: VERSION } },
+    ]);
   });
 });

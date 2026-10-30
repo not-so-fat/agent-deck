@@ -2025,7 +2025,19 @@ export class DatabaseManager {
     const rows = this.db
       .prepare('SELECT * FROM playbook_versions WHERE playbook_id = ? ORDER BY created_at DESC')
       .all(playbookId) as any[];
-    return rows.map((row) => ({
+    return rows.map((row) => DatabaseManager.mapPlaybookVersionRow(row));
+  }
+
+  /** One stored version snapshot by id (NOT-537); null when unknown. */
+  async getPlaybookVersion(versionId: string): Promise<PlaybookVersion | null> {
+    const row = this.db.prepare('SELECT * FROM playbook_versions WHERE id = ?').get(versionId) as
+      | any
+      | undefined;
+    return row ? DatabaseManager.mapPlaybookVersionRow(row) : null;
+  }
+
+  private static mapPlaybookVersionRow(row: any): PlaybookVersion {
+    return {
       id: row.id,
       playbookId: row.playbook_id,
       title: row.title,
@@ -2034,7 +2046,7 @@ export class DatabaseManager {
       patchId: row.patch_id ?? null,
       actor: row.actor,
       createdAt: row.created_at,
-    }));
+    };
   }
 
   private static readonly CARD_USAGE_CARD_TYPES: readonly string[] = [

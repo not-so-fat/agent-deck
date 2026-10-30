@@ -31,6 +31,7 @@ Launch form (`run.ts` `printRunHelp`): `agent-deck run <deck> --client claude|co
 | `--tools readonly\|edit` | Tool profile, default `readonly`. Passed again on resume; nothing is inherited. |
 | `--log` | Log file. Default `~/.agent-deck/runs/<runId>/run.jsonl`; `meta.json` sits next to the log either way. |
 | `--resume <sessionId>` | Continue a previous client session id under a new run log. |
+| `--playbook-version <playbookId>=<versionId>` | Pin one playbook to a stored version for this run only (baseline evaluation). |
 | `--detach` | Start in the background in a new session, so the run survives the launching shell going away (`run-detach.ts`). Prints `run <runId> detached: pid <pid> log <path>`; child stdout/stderr go to `run.out` next to the log. Stop a run with `kill <pid>` (`run.ts` `printRunHelp`). |
 
 Examples (one per client, plus polling):
@@ -43,6 +44,8 @@ agent-deck run mydeck --client muse --cwd /path/to/repo --prompt-file ./brief.md
 agent-deck run status <runId> --json
 agent-deck run log <runId> --tail 50
 ```
+
+Pinned playbook runs (`run.ts` `parseRunArgs`, `agent-run/service.ts` validation): `agent-deck run mydeck --client codex --cwd /path/to/repo --prompt "..." --tools readonly --playbook-version pb_my_playbook=<versionId>` runs one session against a stored older version of one playbook, so a baseline-vs-candidate evaluation can test each version with a real agent. The run's MCP session reads that version's title, body and triggers with no open patches (the `get_playbook` result carries `pinnedVersionId`) and cannot file playbook proposals; the live playbook is never modified, the pin dies with the run's session, and a repeated flag, a malformed value, an unknown version, a version from another playbook, or a playbook off the run's deck all fail before any model work starts. Supported with `--client codex` (pin travels as a `-c mcp_servers.agent-deck` override) and `--client claude` (pin travels as an inline SDK MCP server); `--client cursor` and `--client muse` have no per-run MCP env override, so a pinned run there fails closed before any model work. The pin is recorded in the run's `meta.json` as `playbookPin`.
 
 ## Clients at a glance
 

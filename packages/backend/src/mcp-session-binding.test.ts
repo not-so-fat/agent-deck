@@ -103,6 +103,90 @@ describe('McpSessionBindingStore', () => {
   });
 });
 
+describe('McpSessionBindingStore playbook pin (NOT-537)', () => {
+  const PIN = 'pb_baseline=123e4567-e89b-42d3-a456-426614174000';
+  const OTHER = 'pb_other=223e4567-e89b-42d3-a456-426614174001';
+
+  function launch(store: McpSessionBindingStore, session: string, deck: string) {
+    store.setLaunchSession(session, {
+      runtimeSessionId: `ses_${session}`,
+      deckId: deck,
+      workspaceRoot: '/tmp/work',
+      mode: 'normal',
+    });
+  }
+
+  it('adopts the first valid pin and ignores later changes', () => {
+    const store = new McpSessionBindingStore();
+    launch(store, 's1', 'deck-a');
+
+    expect(store.setPlaybookPin('s1', PIN)).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
+    });
+    // A second request sending a different value never moves the session pin.
+    expect(store.setPlaybookPin('s1', OTHER)).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
+    });
+    expect(store.setPlaybookPin('s1', 'not a pin')).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
+    });
+    expect(store.getPlaybookPin('s1')).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
+    });
+  });
+
+  it('drops invalid pins without storing anything', () => {
+    const store = new McpSessionBindingStore();
+    launch(store, 's1', 'deck-a');
+
+    expect(store.setPlaybookPin('s1', 'Fix the login bug')).toBeUndefined();
+    expect(store.setPlaybookPin('s1', 'pb_baseline=not-a-uuid')).toBeUndefined();
+    expect(store.setPlaybookPin('s1', '')).toBeUndefined();
+    expect(store.getPlaybookPin('s1')).toBeUndefined();
+    // A later valid value can still attach when nothing stuck yet.
+    expect(store.setPlaybookPin('s1', PIN)).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
+    });
+  });
+
+  it('keeps sessions independent and reports the pin in the snapshot', () => {
+    const store = new McpSessionBindingStore();
+    launch(store, 's1', 'deck-a');
+    launch(store, 's2', 'deck-a');
+
+    store.setPlaybookPin('s1', PIN);
+    expect(store.getPlaybookPin('s2')).toBeUndefined();
+
+    const snapshot = store.getBinding('s1');
+    expect(snapshot.playbookPin).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
+    });
+    // Deck, workspace, mode, source, and trusted identity are unchanged.
+    expect(snapshot.deckId).toBe('deck-a');
+    expect(snapshot.deckSource).toBe('launch');
+  });
+
+  it('clearSession and markUnassigned drop the pin', () => {
+    const store = new McpSessionBindingStore();
+    launch(store, 's1', 'deck-a');
+    launch(store, 's2', 'deck-a');
+    store.setPlaybookPin('s1', PIN);
+    store.setPlaybookPin('s2', OTHER);
+
+    store.clearSession('s1');
+    expect(store.getPlaybookPin('s1')).toBeUndefined();
+
+    store.markUnassigned('s2');
+    expect(store.getPlaybookPin('s2')).toBeUndefined();
+  });
+});
+
 describe('resolveBindingActiveSource (NOT-211)', () => {
   const deckA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const deckB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';

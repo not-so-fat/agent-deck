@@ -9,6 +9,7 @@ import {
   OpenPlaybookPatchSummary,
   Playbook,
   PlaybookSummary,
+  PlaybookVersion,
   PlaybookWithDependencies,
   trustedSessionError,
 } from '@agent-deck/shared';
@@ -203,6 +204,42 @@ export async function registerPlaybookRoutes(fastify: FastifyInstance) {
       } satisfies ApiResponse);
     }
   });
+
+  fastify.get<{ Params: { id: string; versionId: string } }>(
+    '/:id/versions/:versionId',
+    async (request, reply) => {
+      try {
+        // NOT-537: one stored snapshot for a pinned MCP session. Agent reads
+        // stay scoped to the bound deck; the dashboard may read any version.
+        if (!isDashboardClient(request)) {
+          await requirePlaybookOnBoundDeck(request, fastify.db, request.params.id);
+        }
+        const version = await fastify.db.getPlaybookVersion(request.params.versionId);
+        if (!version) {
+          return reply.status(404).send({
+            success: false,
+            error: 'Playbook version not found',
+          } satisfies ApiResponse);
+        }
+        if (version.playbookId !== request.params.id) {
+          return reply.status(400).send({
+            success: false,
+            error: `Playbook version ${request.params.versionId} belongs to ${version.playbookId}, not ${request.params.id}`,
+          } satisfies ApiResponse);
+        }
+        return reply.send({ success: true, data: version } satisfies ApiResponse<PlaybookVersion>);
+      } catch (error) {
+        const scoped = boundDeckScopeResponse(error);
+        if (scoped.error_code) {
+          return reply.status(scoped.status).send(trustedSessionError(scoped.error_code, scoped.message));
+        }
+        return reply.status(scoped.status).send({
+          success: false,
+          error: scoped.message,
+        } satisfies ApiResponse);
+      }
+    },
+  );
 
   fastify.post('/', async (request, reply) => {
     try {

@@ -6,9 +6,13 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
+import { PLAYBOOK_PIN_ENV_VAR } from '@agent-deck/backend/agent-run';
 import {
   AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_PLAYBOOK_PIN_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
+  formatPlaybookPin,
+  normalizePlaybookPin,
 } from '@agent-deck/shared';
 import { openAdminElevationApproval } from './admin-elevation';
 import {
@@ -74,11 +78,19 @@ export async function resolveMcpLaunchPlan(
   },
 ): Promise<McpLaunchPlan> {
   const assignment = await readAssignment(workspaceRoot);
+  // NOT-537: a pinned run's client sets this env on its agent-deck MCP
+  // server entry, and `mcp-launch` turns it into the pin header. An invalid
+  // value is dropped, so only a well-formed pin ever travels.
+  const pin = normalizePlaybookPin(process.env[PLAYBOOK_PIN_ENV_VAR]);
+  const pinHeader = pin ? `${AGENT_DECK_PLAYBOOK_PIN_HEADER}: ${formatPlaybookPin(pin)}` : undefined;
   if (!assignment) {
     return {
       workspaceRoot,
       mcpUrl: buildMcpUrl(endpoint),
-      headers: [`${AGENT_DECK_WORKSPACE_HEADER}: ${workspaceRoot}`],
+      headers: [
+        `${AGENT_DECK_WORKSPACE_HEADER}: ${workspaceRoot}`,
+        ...(pinHeader ? [pinHeader] : []),
+      ],
       unassigned: true,
     };
   }
@@ -103,6 +115,7 @@ export async function resolveMcpLaunchPlan(
     headers: [
       `${AGENT_DECK_DECK_ID_HEADER}: ${assignment.deckId}`,
       `${AGENT_DECK_WORKSPACE_HEADER}: ${workspaceRoot}`,
+      ...(pinHeader ? [pinHeader] : []),
     ],
   };
 }

@@ -43,6 +43,17 @@ export const AGENT_DECK_BRIDGE_LIVENESS_HEADER = 'x-agent-deck-bridge-liveness';
 export const AGENT_DECK_BRIDGE_LIVENESS_V1 = '1';
 
 /**
+ * Pinned playbook version for one run's MCP session (NOT-537).
+ *
+ * Value shape is `<playbookId>=<versionId>`. Adopt-once per MCP session like
+ * the correlation id: the first valid value sticks, later changes are
+ * ignored, and invalid values are dropped. The pin changes only what
+ * `get_playbook` and the playbook summaries show for that one playbook id;
+ * it never selects a deck, grants access, or participates in authorization.
+ */
+export const AGENT_DECK_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
+
+/**
  * Host-side session id for status-line self-match (NOT-513). The bridge sends
  * the id its host assigned the session (Claude Code: `CLAUDE_CODE_SESSION_ID`
  * env) on every request; the status line sends the same id back as a query

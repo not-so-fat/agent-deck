@@ -25,6 +25,11 @@ export type CliCollectionAdmin = {
   listDeckPlaybookStubs(
     deckId: string,
   ): Promise<Array<{ id: string; title: string; triggers: string[] }>>;
+  resolvePlaybookPin(input: {
+    playbookId: string;
+    versionId: string;
+    deckId: string;
+  }): Promise<{ versionPlaybookId: string | null; playbookOnDeck: boolean }>;
 };
 
 export function createCollectionAdmin(): CliCollectionAdmin {

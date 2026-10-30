@@ -136,6 +136,16 @@ export type AdapterStartArgs = {
    */
   resumedFrom?: RunResumeOrigin;
   control?: RunProcessControl;
+  /**
+   * Pinned playbook version for this run (NOT-537). Each adapter carries it
+   * to its MCP launch through that client's explicit per-server env
+   * mechanism — inherited process env never reaches an MCP stdio server
+   * (Codex documents a restricted env; the MCP SDK's StdioClientTransport
+   * only inherits a safe allowlist plus the configured server `env`). Clients
+   * with no per-run override fail closed in `planStart`. The pin lives only
+   * as long as the run's MCP session.
+   */
+  playbookPin?: RunPlaybookPin;
 };
 
 export type AdapterPreflight = { ok: true } | { ok: false; remedy: string };
@@ -147,6 +157,29 @@ export type AdapterPreflight = { ok: true } | { ok: false; remedy: string };
  * the run exits before spawning anything.
  */
 export type AdapterStartPlan = { ok: true; trustOverride: boolean } | { ok: false; remedy: string };
+
+/**
+ * Pinned playbook version for one run (NOT-537). Same shape as the shared
+ * `PlaybookPin`, declared here because agent-run imports nothing outside
+ * node built-ins and its own modules (see the module-boundary test).
+ */
+export type RunPlaybookPin = {
+  playbookId: string;
+  versionId: string;
+};
+
+/**
+ * Env var the run adapters set in their client's explicit per-server MCP env
+ * and `mcp-launch` reads (NOT-537). Never carried by process inheritance:
+ * MCP stdio servers start with a restricted env, so an inherited variable
+ * would silently never arrive and the run would read the live playbook.
+ */
+export const PLAYBOOK_PIN_ENV_VAR = 'AGENT_DECK_PLAYBOOK_PIN';
+
+/** Canonical `<playbookId>=<versionId>` form for the pin env value. */
+export function formatRunPlaybookPin(pin: RunPlaybookPin): string {
+  return `${pin.playbookId}=${pin.versionId}`;
+}
 
 export type ClientAdapter = {
   readonly id: RunClient;

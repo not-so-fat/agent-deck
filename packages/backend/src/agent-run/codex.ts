@@ -26,9 +26,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import readline from 'node:readline';
 
 import {
+  formatRunPlaybookPin,
+  PLAYBOOK_PIN_ENV_VAR,
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
+  type RunPlaybookPin,
   type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
@@ -50,7 +53,51 @@ export type CodexArgvArgs = {
   tools: RunToolsProfile;
   resumeId?: string;
   insideGitRepo: boolean;
+  /** Pinned playbook version, carried as a `-c` MCP override (NOT-537). */
+  playbookPin?: RunPlaybookPin;
 };
+
+/** Escape one TOML basic-string value (the pin is `id=uuid`; belt and suspenders). */
+export function tomlEscape(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+/**
+ * MCP endpoint the pin override preserves. Codex starts MCP stdio servers
+ * with a restricted env, so the override must repeat the endpoint
+ * explicitly — mirroring `mcp-launch` defaults. Malformed values fall back
+ * to the defaults rather than breaking a pinned run.
+ */
+export function codexPinEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+): { port: string; host: string } {
+  const port = env.AGENT_DECK_MCP_PORT?.trim() ?? '';
+  const host = env.AGENT_DECK_HOST?.trim() ?? '';
+  return {
+    port: /^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535 ? port : '1110',
+    host: host ? host : '127.0.0.1',
+  };
+}
+
+/**
+ * The `-c` override value carrying the run's playbook pin (NOT-537). A full
+ * `mcp_servers.agent-deck` definition — partial overrides (`...env={...}`)
+ * fail codex bootstrap with "invalid transport" because the plugin-supplied
+ * server has no config.toml base to merge with (verified on codex-cli
+ * 0.157.1: the full override replaces the plugin server's env for the run).
+ * Unpinned runs pass no `-c` at all and behave exactly as before.
+ */
+export function buildCodexPinConfigOverride(
+  pin: RunPlaybookPin,
+  endpoint: { port: string; host: string } = codexPinEndpoint(),
+): string {
+  const env = [
+    `${PLAYBOOK_PIN_ENV_VAR}="${tomlEscape(formatRunPlaybookPin(pin))}"`,
+    `AGENT_DECK_MCP_PORT="${tomlEscape(endpoint.port)}"`,
+    `AGENT_DECK_HOST="${tomlEscape(endpoint.host)}"`,
+  ].join(',');
+  return `mcp_servers.agent-deck={command="agent-deck",args=["mcp-launch"],env={${env}}}`;
+}
 
 /**
  * Resume ids are codex thread ids (UUIDs); a leading `-` is never legitimate
@@ -79,6 +126,9 @@ export function assertSafeResumeId(resumeId: string): void {
  * The `--` terminator keeps dash-leading prompts (markdown bullets, YAML
  * frontmatter, or a literal `--dangerously-...` string) from being parsed
  * as codex options.
+ * A pinned run adds `-c <mcp_servers.agent-deck override>` (accepted by both
+ * `exec` and `exec resume`) so the run's MCP servers start with the pin env;
+ * a process env var would never arrive (restricted MCP env).
  */
 export function buildCodexArgv(args: CodexArgvArgs): string[] {
   const argv = ['exec'];
@@ -86,6 +136,9 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
   if (resuming) {
     assertSafeResumeId(args.resumeId as string);
     argv.push('resume');
+  }
+  if (args.playbookPin) {
+    argv.push('-c', buildCodexPinConfigOverride(args.playbookPin));
   }
   argv.push('--json');
   if (!args.insideGitRepo) {
@@ -133,7 +186,7 @@ export type CodexChild = {
 };
 
 /** `control` (NOT-481): spawn as a new process-group leader and report its id. */
-export type CodexSpawnOptions = { cwd: string; control?: RunProcessControl };
+export type CodexSpawnOptions = { cwd: string; control?: RunProcessControl; env?: NodeJS.ProcessEnv };
 
 export type CodexSpawn = (bin: string, argv: string[], opts: CodexSpawnOptions) => CodexChild;
 
@@ -142,6 +195,7 @@ export function defaultCodexSpawn(bin: string, argv: string[], opts: CodexSpawnO
     cwd: opts.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: opts.control !== undefined,
+    ...(opts.env ? { env: opts.env } : {}),
   });
   if (opts.control && child.pid !== undefined) {
     opts.control.onProcessGroup(child.pid);
@@ -393,6 +447,7 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
         tools: args.tools,
         ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
         insideGitRepo,
+        ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
       });
       // planStart rejects a resume without a matching resumedFrom.
       if (args.resumeId !== undefined && args.resumedFrom) {
@@ -410,7 +465,12 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
         );
       let child: CodexChild;
       try {
-        child = spawnFn(bin, argv, { cwd: args.cwd, ...(args.control ? { control: args.control } : {}) });
+        // No pin env on the child: the `-c` argv override above is the only
+        // carrier (Codex MCP servers never see inherited env).
+        child = spawnFn(bin, argv, {
+          cwd: args.cwd,
+          ...(args.control ? { control: args.control } : {}),
+        });
       } catch (error) {
         throw wrapSpawnError(error);
       }

@@ -133,6 +133,23 @@ export function createCliCollectionAdmin() {
     ): Promise<Array<{ id: string; title: string; triggers: string[] }>> {
       return playbooks.listSummariesForDeck(deckId);
     },
+
+    /**
+     * `--playbook-version` lookup for `agent-deck run` (NOT-537): which
+     * playbook the version snapshot belongs to (null when unknown) and
+     * whether the requested playbook is on the run's deck.
+     */
+    async resolvePlaybookPin(input: {
+      playbookId: string;
+      versionId: string;
+      deckId: string;
+    }): Promise<{ versionPlaybookId: string | null; playbookOnDeck: boolean }> {
+      const version = await db.getPlaybookVersion(input.versionId);
+      return {
+        versionPlaybookId: version ? version.playbookId : null,
+        playbookOnDeck: await playbooks.isPlaybookOnDeck(input.deckId, input.playbookId),
+      };
+    },
   };
 }
 

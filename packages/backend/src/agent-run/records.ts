@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { RunClient, RunToolsProfile } from './adapter';
+import type { RunClient, RunPlaybookPin, RunToolsProfile } from './adapter';
 
 export type RunLogLine =
   | { t: 'text'; ts: string; text: string }
@@ -75,6 +75,8 @@ export type RunMeta = {
   trustOverride?: true;
   /** Present only on a resume: the run that started the session. */
   resumedFrom?: RunResumeOrigin;
+  /** Present only on a pinned run: the playbook version the session read (NOT-537). */
+  playbookPin?: RunPlaybookPin;
 };
 
 export type RunInspectState = RunMetaState;
