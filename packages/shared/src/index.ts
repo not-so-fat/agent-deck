@@ -14,6 +14,7 @@ export * from './schemas/session-bootstrap';
 export * from './schemas/trusted-session';
 export * from './schemas/card-usage';
 export * from './schemas/agent-run';
+export * from './schemas/playbook-pin';
 
 // Additional types not covered by schemas
 export * from './types/api';
@@ -48,6 +49,7 @@ export {
   AGENT_DECK_BRIDGE_LIVENESS_HEADER,
   AGENT_DECK_BRIDGE_LIVENESS_V1,
   AGENT_DECK_HOST_SESSION_ID_HEADER,
+  AGENT_DECK_PLAYBOOK_PIN_HEADER,
 } from './constants/client-scope';
 export {
   AGENT_DECK_SESSION_HEADER,
