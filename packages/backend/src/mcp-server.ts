@@ -34,7 +34,7 @@ import {
   McpSessionBindingStore,
   resolveDeckBindingSource,
 } from './mcp-session-binding';
-import { registerMcpTools } from './mcp-tools/register';
+import { registerMcpTools, type McpToolInputSchema } from './mcp-tools/register';
 import {
   DECK_SWITCH_ELICITATION_TIMEOUT_MS,
   supportsFormElicitation,
@@ -1033,7 +1033,7 @@ export class AgentDeckMCPServer {
   /** Avoid TS2589 when registering many MCP tools (SDK overload recursion). */
   private registerTool(
     name: string,
-    config: { title: string; description: string; inputSchema: Record<string, z.ZodTypeAny> },
+    config: { title: string; description: string; inputSchema: McpToolInputSchema },
     handler: (...args: any[]) => Promise<any>,
   ): void {
     (this.server as { registerTool: (...args: unknown[]) => unknown }).registerTool(
@@ -1698,6 +1698,18 @@ export class AgentDeckMCPServer {
     return true;
   }
 
+  /**
+   * NOT-539: the launch-bound execution workspace for `start_run` comes from
+   * the launcher only — the workspace header on the launch request or the
+   * host's AGENT_DECK_WORKSPACE — never from `bind_workspace`. Adopt-once.
+   */
+  private adoptExecutionWorkspace(sessionId: string, req: Request): void {
+    this.sessionBinding.setExecutionWorkspace(
+      sessionId,
+      readWorkspaceRootHeader(req) ?? (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined),
+    );
+  }
+
   private async authenticateLaunchDeck(sessionId: string, req: Request): Promise<void> {
     const deckId = readLaunchDeckHeader(req);
     if (!deckId) {
@@ -1716,6 +1728,7 @@ export class AgentDeckMCPServer {
       if (workspaceRoot) {
         this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
       }
+      this.adoptExecutionWorkspace(sessionId, req);
       // Adopt-once: a launch that arrived without correlation can still
       // attach one; an established value never moves (NOT-304).
       const followUpCorrelation = readCorrelationIdHeader(req);
@@ -1761,6 +1774,7 @@ export class AgentDeckMCPServer {
       workspaceRoot,
       mode: body.data.mode,
     });
+    this.adoptExecutionWorkspace(sessionId, req);
 
     // Attach the opaque run-correlation id to this launch-selected session
     // (NOT-304). Adopt-once and validated inside the store: an invalid or
