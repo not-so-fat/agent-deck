@@ -72,6 +72,13 @@ export class McpSessionBindingStore {
    * nothing is persisted, so a restart drops every pin.
    */
   private pinByMcp = new Map<string, PlaybookPin>();
+  /**
+   * Launch-bound execution workspace per MCP session (NOT-539): the host
+   * folder the launcher named (workspace header or host env) when it
+   * authenticated a launch session. Adopt-once and never moved by
+   * `bind_workspace`, so the agent cannot choose where `start_run` executes.
+   */
+  private executionWorkspaceByMcp = new Map<string, string>();
   /** MCP session ids authenticated via launch-selected deck (NOT-105). */
   private launchByMcp = new Set<string>();
   /** MCP session ids authenticated via remote bearer grant (NOT-318). */
@@ -120,6 +127,29 @@ export class McpSessionBindingStore {
 
   isLaunchSession(mcpSessionId: string): boolean {
     return this.launchByMcp.has(mcpSessionId);
+  }
+
+  /**
+   * Adopt the launch-bound execution workspace (NOT-539). Only launch
+   * sessions — not remote-grant or unassigned ones — carry one; the first
+   * value wins for the session lifetime. Returns the stored value.
+   */
+  setExecutionWorkspace(mcpSessionId: string, workspaceRoot: string | undefined): string | undefined {
+    const existing = this.executionWorkspaceByMcp.get(mcpSessionId);
+    if (existing || !this.launchByMcp.has(mcpSessionId) || this.grantByMcp.has(mcpSessionId)) {
+      return existing;
+    }
+    const trimmed = workspaceRoot?.trim();
+    if (!trimmed || !path.isAbsolute(trimmed)) {
+      return undefined;
+    }
+    const resolved = path.resolve(trimmed);
+    this.executionWorkspaceByMcp.set(mcpSessionId, resolved);
+    return resolved;
+  }
+
+  getExecutionWorkspace(mcpSessionId: string): string | undefined {
+    return this.executionWorkspaceByMcp.get(mcpSessionId);
   }
 
   /**
@@ -186,6 +216,7 @@ export class McpSessionBindingStore {
     this.modeByMcp.delete(mcpSessionId);
     this.correlationByMcp.delete(mcpSessionId);
     this.pinByMcp.delete(mcpSessionId);
+    this.executionWorkspaceByMcp.delete(mcpSessionId);
     this.unassignedByMcp.add(mcpSessionId);
   }
 
@@ -282,6 +313,7 @@ export class McpSessionBindingStore {
     this.correlationByMcp.delete(sessionId);
     this.hostSessionByMcp.delete(sessionId);
     this.pinByMcp.delete(sessionId);
+    this.executionWorkspaceByMcp.delete(sessionId);
     this.launchByMcp.delete(sessionId);
     this.grantByMcp.delete(sessionId);
     this.unassignedByMcp.delete(sessionId);

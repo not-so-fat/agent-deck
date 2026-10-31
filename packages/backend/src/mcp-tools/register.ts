@@ -12,10 +12,14 @@ import { McpToolProfile, profileIncludes } from './profile';
 import { SWITCH_BEFORE_BIND_MESSAGE, mcpPolicyError, mcpPolicyErrorWithMessage, requireMcpAdmin, requireMcpDashboard } from './policy';
 import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
 import { unassignedDeckBinding } from '../mcp-unassigned';
+import { registerRunTools } from './run-tools';
+
+/** A raw Zod shape, or a whole object schema (`.strict()` rejects unknown fields; NOT-539). */
+export type McpToolInputSchema = Record<string, z.ZodTypeAny> | z.AnyZodObject;
 
 type RegisterToolFn = (
   name: string,
-  config: { title: string; description: string; inputSchema: Record<string, z.ZodTypeAny> },
+  config: { title: string; description: string; inputSchema: McpToolInputSchema },
   handler: (...args: any[]) => Promise<any>,
 ) => void;
 
@@ -61,6 +65,8 @@ export type McpToolHost = {
     hasSessionDeckOverride(sessionId: string): boolean;
     /** NOT-537: pinned playbook version for this MCP session, if any. */
     getPlaybookPin?(sessionId: string): PlaybookPin | undefined;
+    /** NOT-539: launch-bound execution workspace for start_run, if the launcher named one. */
+    getExecutionWorkspace?(sessionId: string): string | undefined;
   };
   badgeBySession: Map<string, string>;
   backendUrl: string;
@@ -151,6 +157,7 @@ export function registerMcpTools(host: McpToolHost): void {
     return;
   }
   registerRuntimeTools(host);
+  registerRunTools(host);
   if (profileIncludes(host.profile, 'editing')) {
     registerEditingTools(host);
   }

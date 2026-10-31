@@ -4,6 +4,9 @@ The integration surface for coordinators (Botmancers, Tank, your own scripts)
 that start and observe coding-agent runs through Agent Deck without shelling
 out to `agent-deck run` or reading host files. The local operator surface is
 still the CLI; see [DELEGATION.md](./DELEGATION.md) for per-client behavior.
+A bound MCP session uses the `start_run` / `get_run` / `cancel_run` tools
+instead, with its session deck and launch-bound workspace — see
+[MCP_RUN_TOOLS.md](./MCP_RUN_TOOLS.md).
 
 Design: [2026-10-13 agent run API design](./superpowers/specs/2026-10-13-agent-run-api-design.md).
 Shared Zod schemas: `packages/shared/src/schemas/agent-run.ts`. Routes:
