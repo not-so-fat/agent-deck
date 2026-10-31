@@ -58,6 +58,20 @@ as a stand-in for the real run.
 | `get_session_context` | denied by this session's permission mode |
 | Sandbox shell → host loopback | not probed this round (no reason to contact the host from the sandbox) |
 
+### Re-check (2026-10-31, repair round 3, runtime session badge `s73`)
+
+The repair round 3 developer session was checked again. It still does not
+qualify, so the receipt is still empty. Fake or fixture receipts are not
+substituted.
+
+| Check | Result |
+|---|---|
+| `bind_workspace` / `get_bound_deck` | ok — deck `builder`, `deck_source: launch`, `session_deck_override: true` |
+| Agent Deck CLI on sandbox `PATH` | still present (`~/.local/bin/agent-deck`, located with `command -v` only, not executed) — fails "no CLI" |
+| `start_run` / `get_run` / `cancel_run` in this session's MCP tool list | still absent. The host serving this session has no NOT-539 run tools |
+| `get_session_context` | denied by this session's permission mode (same as round 2) |
+| Sandbox shell → host loopback | not probed |
+
 This proof depends on the operator, and a developer session can't produce it:
 it needs a host upgrade to a build that contains NOT-539 (merged to `main`), plus
 a Dealer sandbox profile that takes the CLI off `PATH` and blocks loopback.

@@ -2,7 +2,7 @@
 
 Canonical install and environment reference. For OAuth / hosting / Slack confusion, start with **[OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md)**.
 
-To delegate a task to a local session on a deck, `agent-deck run` launches a signed-in client bound to that deck — see [DELEGATION.md](./DELEGATION.md) for per-client flags, resume, and trust behavior.
+**Delegating a task to another session:** agents delegate only through Agent Deck MCP (`get_session_context`, optional human-approved `switch_deck`, `start_run`, `get_run`, `cancel_run`) following the [`agent-deck-run` skill](../skills/agent-deck-run/SKILL.md). The caller's shell is not the Agent Deck host, so an agent or coding sandbox never runs the Agent Deck CLI, calls host loopback ports, or installs a second copy to delegate. The host CLI run command is exceptional: a human operator uses it in a terminal on the Agent Deck host itself, for installation checks, diagnostics, and recovery. See [DELEGATION.md](./DELEGATION.md) for both paths and per-client resume and trust behavior.
 
 ## Prerequisites
 

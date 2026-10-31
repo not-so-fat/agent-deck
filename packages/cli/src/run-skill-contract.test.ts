@@ -104,6 +104,23 @@ describe('NOT-540 static no-CLI regression check', () => {
     }
   });
 
+  it('setup guide delegation paragraph names MCP as the agent path and the host CLI as exceptional', () => {
+    const setup = fs.readFileSync(path.join(repoRoot, 'docs', 'SETUP.md'), 'utf8');
+    const start = setup.indexOf('**Delegating a task to another session:**');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = setup.indexOf('\n\n', start);
+    const paragraph = setup.slice(start, end === -1 ? undefined : end);
+    expect(forbiddenFallbacks(paragraph)).toEqual([]);
+    for (const tool of ['get_session_context', 'switch_deck', 'start_run', 'get_run', 'cancel_run']) {
+      expect(paragraph).toContain(`\`${tool}\``);
+    }
+    expect(paragraph).toContain('exceptional');
+    expect(paragraph).toContain('on the Agent Deck host itself');
+    // The pre-NOT-540 sentence presented the CLI as the delegation path.
+    expect(forbiddenFallbacks('To delegate a task to a local session on a deck, `agent-deck run` launches a signed-in client')).not.toEqual([]);
+    expect(setup).not.toMatch(/To delegate a task[^\n]*`agent-deck run`/);
+  });
+
   it('finds no fallback in the Muse-managed copy of the run skill', () => {
     expect(forbiddenFallbacks(readMuseSkillTemplate('agent-deck-run'))).toEqual([]);
   });
