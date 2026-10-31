@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.4.0 — 2026-10-31
 
 ### Change: delegation is MCP-only for agents (NOT-540)
 
