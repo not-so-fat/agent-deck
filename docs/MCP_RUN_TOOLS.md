@@ -27,8 +27,13 @@ sandbox.
 
 - `start_run` accepts no `deckId` and no `cwd`; an extra field is rejected
   before any launch.
-- The workspace is adopted once per MCP session. `bind_workspace` can change
-  the display workspace but never the execution workspace.
+- The workspace is read once, at the session's initial launch
+  authentication, and stored on the backend runtime session. It never
+  changes after that. A launch that named no workspace stays without one: a
+  later request carrying a workspace header does not add one. `bind_workspace`
+  can change the display workspace but never the execution workspace.
+- The backend run routes take the cwd and the run scope from that stored
+  value only. They ignore any workspace a caller sends with a run request.
 - The host directory must still exist (`WORKSPACE_INVALID` otherwise).
 - The folder's `.agent-deck/use.json` is neither required nor read nor written
   for this entry point. The CLI and the grant-authenticated HTTP API keep
