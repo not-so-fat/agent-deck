@@ -1,7 +1,8 @@
 # NOT-540 smoke: MCP-only delegation from a real Agent Dealer sandbox
 
-Status: **pending operator run** — CI fixture evidence is recorded below. The
-real-sandbox receipts are not recorded yet (see "Developer-session finding").
+Status: **blocked on operator environment**. CI fixture evidence is recorded below.
+The real-sandbox receipts are not recorded yet (see "Developer-session finding"
+and "Re-check"). The `[operator]` acceptance criterion is still open.
 
 Records only safe identifiers and outcomes. No prompts containing secrets, no
 host credentials, no host log paths.
@@ -41,6 +42,26 @@ session badge `s63`) did **not** qualify, so the real smoke was not run from it:
 | Agent Deck CLI on sandbox `PATH` | present (`~/.local/bin/agent-deck`) — fails "no CLI" |
 | Sandbox shell → host loopback | reachable (one read-only health probe, used only to check whether the environment qualified; no delegation call) — fails "no loopback" |
 | `start_run` / `get_run` / `cancel_run` in this session's MCP tool list | absent — the installed host is 2.3.2, before NOT-539 shipped |
+
+### Re-check (2026-10-31, repair round 2, runtime session badge `s68`)
+
+The developer session that was launched to fix the "real smoke missing" review
+finding was checked again. It still does not qualify, so no receipt was filled
+in. Synthetic or fake-provider receipts are deliberately **not** recorded here
+as a stand-in for the real run.
+
+| Check | Result |
+|---|---|
+| `bind_workspace` / `get_bound_deck` | ok — deck `builder`, `deck_source: launch` |
+| Agent Deck CLI on sandbox `PATH` | still present, reports `2.3.2` — fails "no CLI" |
+| `start_run` / `get_run` / `cancel_run` in this session's MCP tool list | still absent — the host has not been upgraded to a NOT-539 build |
+| `get_session_context` | denied by this session's permission mode |
+| Sandbox shell → host loopback | not probed this round (no reason to contact the host from the sandbox) |
+
+This proof depends on the operator, and a developer session can't produce it:
+it needs a host upgrade to a build that contains NOT-539 (merged to `main`), plus
+a Dealer sandbox profile that takes the CLI off `PATH` and blocks loopback.
+Both are environment changes outside this PR's scope and the sandbox's authority.
 
 Next action: after NOT-539 + NOT-540 ship and the host is upgraded, launch one
 Dealer role session in a sandbox that has no Agent Deck CLI on `PATH` and no
