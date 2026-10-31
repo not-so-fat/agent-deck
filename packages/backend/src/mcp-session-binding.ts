@@ -77,8 +77,9 @@ export class McpSessionBindingStore {
    * folder the launcher named (workspace header or host env) when it
    * authenticated a launch session. Adopt-once and never moved by
    * `bind_workspace`, so the agent cannot choose where `start_run` executes.
+   * `null` records a launch that named no workspace (frozen absence).
    */
-  private executionWorkspaceByMcp = new Map<string, string>();
+  private executionWorkspaceByMcp = new Map<string, string | null>();
   /** MCP session ids authenticated via launch-selected deck (NOT-105). */
   private launchByMcp = new Set<string>();
   /** MCP session ids authenticated via remote bearer grant (NOT-318). */
@@ -130,26 +131,27 @@ export class McpSessionBindingStore {
   }
 
   /**
-   * Adopt the launch-bound execution workspace (NOT-539). Only launch
-   * sessions — not remote-grant or unassigned ones — carry one; the first
-   * value wins for the session lifetime. Returns the stored value.
+   * Freeze the launch-bound execution workspace (NOT-539). Only launch
+   * sessions — not remote-grant or unassigned ones — carry one. The first
+   * call decides for the session lifetime, recording absence as firmly as a
+   * path: a session launched without workspace metadata never acquires one.
+   * Returns the stored value.
    */
-  setExecutionWorkspace(mcpSessionId: string, workspaceRoot: string | undefined): string | undefined {
-    const existing = this.executionWorkspaceByMcp.get(mcpSessionId);
-    if (existing || !this.launchByMcp.has(mcpSessionId) || this.grantByMcp.has(mcpSessionId)) {
-      return existing;
+  freezeExecutionWorkspace(mcpSessionId: string, workspaceRoot: string | undefined): string | undefined {
+    if (this.executionWorkspaceByMcp.has(mcpSessionId)) {
+      return this.executionWorkspaceByMcp.get(mcpSessionId) ?? undefined;
     }
-    const trimmed = workspaceRoot?.trim();
-    if (!trimmed || !path.isAbsolute(trimmed)) {
+    if (!this.launchByMcp.has(mcpSessionId) || this.grantByMcp.has(mcpSessionId)) {
       return undefined;
     }
-    const resolved = path.resolve(trimmed);
+    const trimmed = workspaceRoot?.trim();
+    const resolved = trimmed && path.isAbsolute(trimmed) ? path.resolve(trimmed) : null;
     this.executionWorkspaceByMcp.set(mcpSessionId, resolved);
-    return resolved;
+    return resolved ?? undefined;
   }
 
   getExecutionWorkspace(mcpSessionId: string): string | undefined {
-    return this.executionWorkspaceByMcp.get(mcpSessionId);
+    return this.executionWorkspaceByMcp.get(mcpSessionId) ?? undefined;
   }
 
   /**

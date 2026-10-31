@@ -5,7 +5,6 @@ import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from
 
 import {
   AGENT_RUN_EVENTS_DEFAULT_LIMIT,
-  AGENT_RUN_EXECUTION_WORKSPACE_HEADER,
   AGENT_RUN_WORKSPACE_REQUIRED_MESSAGE,
   SessionAgentRunResponseSchema,
   StartSessionAgentRunRequestSchema,
@@ -990,10 +989,10 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
     // NOT-539: trusted-session run routes behind the Agent Deck MCP
     // `start_run` / `get_run` / `cancel_run` tools. The deck is the runtime
     // session's live deck (a human-approved session-only switch included) and
-    // the workspace is the launch-bound one the MCP server forwards in the
-    // execution-workspace header — never a body field, and never the folder's
-    // `.agent-deck/use.json`. Reads and cancel reach only runs whose captured
-    // deck and canonical cwd match the caller's current session.
+    // the workspace is the launch-bound one captured on the runtime session
+    // row when the launcher connected — never a header or body field, and
+    // never the folder's `.agent-deck/use.json`. Reads and cancel reach only
+    // runs whose captured deck and canonical cwd match the caller's session.
     const sessionCaller = (request: FastifyRequest, reply: FastifyReply): SessionCaller | null => {
       const principal = request.requestPrincipal;
       if (principal?.kind !== 'agent') {
@@ -1003,10 +1002,12 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
         return null;
       }
       // Remote-grant MCP sessions name no trusted host workspace.
-      const row = fastify.trustedSessionStore.getRuntimeSessionRow(principal.session.sessionId);
-      const raw = request.headers[AGENT_RUN_EXECUTION_WORKSPACE_HEADER];
-      const workspace = typeof raw === 'string' ? raw.trim() : '';
-      if (row?.grant_id || !workspace) {
+      const sessionId = principal.session.sessionId;
+      const row = fastify.trustedSessionStore.getRuntimeSessionRow(sessionId);
+      const workspace = row?.grant_id
+        ? ''
+        : (fastify.trustedSessionStore.getRuntimeSessionExecutionWorkspace(sessionId) ?? '');
+      if (!workspace) {
         void sendError(reply, {
           status: 422,
           code: 'WORKSPACE_REQUIRED',

@@ -526,19 +526,64 @@ describe('MCP agent run tools (NOT-539)', () => {
       }
     }
 
-    // The backend refuses the same start without the execution-workspace header.
+    // A follow-up request that now names a workspace cannot grant one: the
+    // launch's absence was frozen at initial authentication.
+    const lateHeaders = dealerHeaders(ctx.deckA.id, worktree());
+    const late = await call(ctx, { id: session.id, headers: lateHeaders }, 'start_run', { client: 'claude', prompt: 'p' });
+    expect(late.isError).toBe(true);
+    expect(late.data.error_code).toBe('WORKSPACE_REQUIRED');
+    const afterLate = await call(ctx, { id: session.id, headers: lateHeaders }, 'start_run', { client: 'claude', prompt: 'p' });
+    expect(afterLate.data.error_code).toBe('WORKSPACE_REQUIRED');
+
+    // The backend refuses the same start, whatever workspace a caller claims.
     const runtimeSessionId = ctx.store.findActiveRuntimeSessionByMcpSessionId(session.id)?.sessionId;
-    const direct = await fetch(`${ctx.backendUrl}/api/trusted-session/agent-runs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', [AGENT_DECK_SESSION_HEADER]: String(runtimeSessionId) },
-      body: JSON.stringify({ client: 'claude', prompt: 'p' }),
-    });
-    expect(direct.status).toBe(422);
-    expect(((await direct.json()) as { error_code: string }).error_code).toBe('WORKSPACE_REQUIRED');
+    for (const claimed of [{}, { 'x-agent-deck-execution-workspace': worktree() }, { [AGENT_DECK_WORKSPACE_HEADER]: worktree() }]) {
+      const direct = await fetch(`${ctx.backendUrl}/api/trusted-session/agent-runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [AGENT_DECK_SESSION_HEADER]: String(runtimeSessionId), ...claimed },
+        body: JSON.stringify({ client: 'claude', prompt: 'p' }),
+      });
+      expect(direct.status).toBe(422);
+      expect(((await direct.json()) as { error_code: string }).error_code).toBe('WORKSPACE_REQUIRED');
+    }
 
     expect(ctx.launch).not.toHaveBeenCalled();
     expect(ctx.createAdapter).not.toHaveBeenCalled();
     expect(ctx.starts).toHaveLength(0);
+  });
+
+  it('derives the run workspace and scope from the runtime session, ignoring a caller-claimed workspace', async () => {
+    const ctx = await setup();
+    const wt = worktree();
+    const other = worktree();
+    const session = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
+    const runtimeSessionId = String(ctx.store.findActiveRuntimeSessionByMcpSessionId(session.id)?.sessionId);
+    const forged = { [AGENT_DECK_SESSION_HEADER]: runtimeSessionId, 'x-agent-deck-execution-workspace': other };
+
+    const started = await fetch(`${ctx.backendUrl}/api/trusted-session/agent-runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...forged },
+      body: JSON.stringify({ client: 'claude', prompt: 'p' }),
+    });
+    expect(started.status).toBe(202);
+    const { runId } = ((await started.json()) as { data: { runId: string } }).data;
+    await untilTerminal(ctx, session, runId);
+    expect(ctx.starts).toHaveLength(1);
+    expect(fs.realpathSync(ctx.starts[0].cwd)).toBe(fs.realpathSync(wt));
+
+    // A run launched in `other` stays out of scope for this session even
+    // when the caller claims `other` as its workspace.
+    const elsewhere = await open(ctx, dealerHeaders(ctx.deckA.id, other));
+    const foreign = await startRun(ctx, elsewhere);
+    for (const [method, suffix] of [['GET', ''], ['POST', '/cancel']] as const) {
+      const response = await fetch(`${ctx.backendUrl}/api/trusted-session/agent-runs/${foreign}${suffix}`, {
+        method,
+        headers: forged,
+      });
+      expect(response.status).toBe(403);
+      expect(((await response.json()) as { error_code: string }).error_code).toBe('RESOURCE_OUT_OF_SCOPE');
+    }
+    await untilTerminal(ctx, elsewhere, foreign);
   });
 
   it('fails WORKSPACE_INVALID when the launch worktree no longer exists', async () => {

@@ -85,13 +85,6 @@ export const StartSessionAgentRunRequestSchema = z
   .strict();
 
 /**
- * NOT-539: launch-bound execution workspace the Agent Deck MCP server sends
- * on trusted-session run calls. Distinct from the display workspace header,
- * which `bind_workspace` can move.
- */
-export const AGENT_RUN_EXECUTION_WORKSPACE_HEADER = 'x-agent-deck-execution-workspace';
-
-/**
  * NOT-539: `WORKSPACE_REQUIRED` remedy. The agent cannot fix this itself, so
  * it names the launcher — never a CLI command, a port, or a local URL.
  */

@@ -301,22 +301,34 @@ describe('resolveDeckBindingSource', () => {
 describe('launch-bound execution workspace (NOT-539)', () => {
   const launch = { runtimeSessionId: 'ses_rt', deckId: 'deck-a' };
 
-  it('adopts the first launch value and never moves with bind_workspace or later headers', () => {
+  it('freezes the first launch value and never moves with bind_workspace or later headers', () => {
     const store = new McpSessionBindingStore();
     store.setLaunchSession('mcp-1', { ...launch, workspaceRoot: '/work/role-a' });
-    expect(store.setExecutionWorkspace('mcp-1', '/work/role-a')).toBe('/work/role-a');
+    expect(store.freezeExecutionWorkspace('mcp-1', '/work/role-a')).toBe('/work/role-a');
 
     store.setWorkspace('mcp-1', '/somewhere/else');
     store.setTrustedSession('mcp-1', { ...launch, workspaceRoot: '/somewhere/else' });
-    expect(store.setExecutionWorkspace('mcp-1', '/work/role-b')).toBe('/work/role-a');
+    expect(store.freezeExecutionWorkspace('mcp-1', '/work/role-b')).toBe('/work/role-a');
     expect(store.getExecutionWorkspace('mcp-1')).toBe('/work/role-a');
     expect(store.getBinding('mcp-1').workspaceRoot).toBe('/somewhere/else');
+  });
+
+  it('freezes absence: a launch without a workspace never acquires one later', () => {
+    const store = new McpSessionBindingStore();
+    store.setLaunchSession('bare', launch);
+    expect(store.freezeExecutionWorkspace('bare', undefined)).toBeUndefined();
+    expect(store.freezeExecutionWorkspace('bare', '/work/late')).toBeUndefined();
+    expect(store.getExecutionWorkspace('bare')).toBeUndefined();
+
+    store.setLaunchSession('relative', launch);
+    expect(store.freezeExecutionWorkspace('relative', 'work/a')).toBeUndefined();
+    expect(store.freezeExecutionWorkspace('relative', '/work/a')).toBeUndefined();
   });
 
   it('is absent for non-launch, remote-grant, relative, and cleared sessions', () => {
     const store = new McpSessionBindingStore({ workspace: '/env/default' });
     store.setTrustedSession('plain', launch);
-    expect(store.setExecutionWorkspace('plain', '/work/a')).toBeUndefined();
+    expect(store.freezeExecutionWorkspace('plain', '/work/a')).toBeUndefined();
 
     store.setGrantSession('grant', {
       ...launch,
@@ -325,14 +337,13 @@ describe('launch-bound execution workspace (NOT-539)', () => {
       defaultDeck: 'deck-a',
       allowedDecks: ['deck-a'],
     });
-    expect(store.setExecutionWorkspace('grant', '/work/a')).toBeUndefined();
+    expect(store.freezeExecutionWorkspace('grant', '/work/a')).toBeUndefined();
 
-    store.setLaunchSession('relative', launch);
-    expect(store.setExecutionWorkspace('relative', 'work/a')).toBeUndefined();
-    expect(store.setExecutionWorkspace('relative', undefined)).toBeUndefined();
+    store.setLaunchSession('relative-2', launch);
+    expect(store.freezeExecutionWorkspace('relative-2', 'work/a')).toBeUndefined();
 
     store.setLaunchSession('cleared', launch);
-    store.setExecutionWorkspace('cleared', '/work/a');
+    store.freezeExecutionWorkspace('cleared', '/work/a');
     store.clearSession('cleared');
     expect(store.getExecutionWorkspace('cleared')).toBeUndefined();
   });

@@ -345,7 +345,21 @@ export class TrustedSessionStore {
         ON deck_switch_requests (runtime_session_id, requested_deck_id, status, expires_at);
     `);
     this.ensureGrantColumn();
+    this.ensureExecutionWorkspaceColumn();
     this.ensureDashboardAbsoluteExpiryColumn();
+  }
+
+  /**
+   * NOT-539: nullable launch-bound execution workspace on runtime sessions.
+   * Written once at creation from the launcher's metadata and never updated,
+   * so `start_run` / `get_run` / `cancel_run` derive their cwd and scope from
+   * trusted state rather than anything the caller sends later.
+   */
+  private ensureExecutionWorkspaceColumn(): void {
+    const cols = this.db.pragma('table_info(runtime_sessions)') as Array<{ name: string }>;
+    if (!cols.some((col) => col.name === 'execution_workspace')) {
+      this.db.exec(`ALTER TABLE runtime_sessions ADD COLUMN execution_workspace TEXT`);
+    }
   }
 
   private ensureDashboardAbsoluteExpiryColumn(): void {
@@ -417,6 +431,8 @@ export class TrustedSessionStore {
     mcpSessionId?: string;
     /** NOT-318: owning remote grant, when opened by a bearer grant. */
     grantId?: string;
+    /** NOT-539: launch-bound host workspace; immutable for the session lifetime. */
+    executionWorkspace?: string;
   }): RuntimeSession {
     const id = prefixTrustedId('ses', randomUUID());
     const lastSeenAt = nowIso();
@@ -425,10 +441,19 @@ export class TrustedSessionStore {
     this.db
       .prepare(
         `INSERT INTO runtime_sessions
-         (id, mcp_session_id, deck_id, mode, last_seen_at, expires_at, admin_expires_at, grant_id)
-         VALUES (?, ?, ?, 'normal', ?, ?, NULL, ?)`,
+         (id, mcp_session_id, deck_id, mode, last_seen_at, expires_at, admin_expires_at, grant_id,
+          execution_workspace)
+         VALUES (?, ?, ?, 'normal', ?, ?, NULL, ?, ?)`,
       )
-      .run(id, input.mcpSessionId ?? null, input.deckId, lastSeenAt, expiresAt, input.grantId ?? null);
+      .run(
+        id,
+        input.mcpSessionId ?? null,
+        input.deckId,
+        lastSeenAt,
+        expiresAt,
+        input.grantId ?? null,
+        input.grantId ? null : (input.executionWorkspace ?? null),
+      );
 
     return this.toRuntimeSession(this.getRuntimeSessionRow(id)!);
   }
@@ -630,6 +655,14 @@ export class TrustedSessionStore {
         )
         .get(sessionId) as RuntimeSessionRow | undefined) ?? null
     );
+  }
+
+  /** NOT-539: the launch-bound execution workspace captured at creation, if any. */
+  getRuntimeSessionExecutionWorkspace(sessionId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT execution_workspace FROM runtime_sessions WHERE id = ?`)
+      .get(sessionId) as { execution_workspace: string | null } | undefined;
+    return row?.execution_workspace ?? null;
   }
 
   touchRuntimeSession(sessionId: string): RuntimeSession | null {

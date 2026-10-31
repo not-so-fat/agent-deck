@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import {
   AGENT_RUN_EVENTS_MAX_LIMIT,
-  AGENT_RUN_EXECUTION_WORKSPACE_HEADER,
   AGENT_RUN_WORKSPACE_REQUIRED_MESSAGE,
   StartSessionAgentRunRequestSchema,
   type StartSessionAgentRunRequest,
@@ -20,6 +19,10 @@ import type { McpToolHost } from './register';
  * bound the session to — so `start_run` takes neither, and an extra `deckId`
  * or `cwd` is rejected before launch. `get_run` and `cancel_run` reach only
  * runs captured on this session's current deck and workspace.
+ *
+ * The backend is the authority: it reads the workspace frozen on the runtime
+ * session row at launch and ignores anything the caller sends. The local
+ * check below only fails fast with the same `WORKSPACE_REQUIRED` code.
  */
 
 const GetRunInputSchema = z
@@ -54,14 +57,13 @@ export function registerRunTools(host: McpToolHost): void {
       'Start (or resume with resumeSessionId) one coding-agent run on the Agent Deck host, in the workspace this session was launched for and on this session\'s current deck. Takes no deck or cwd. tools defaults to "readonly"; prepareFinalization needs tools "edit"; playbookVersion pins one playbook version for the run. Returns { runId, state } — follow with get_run.',
     inputSchema: StartSessionAgentRunRequestSchema,
   }, async (input: StartSessionAgentRunRequest) => {
-    const workspace = executionWorkspace();
-    if (!workspace) {
+    if (!executionWorkspace()) {
       return workspaceRequired();
     }
     try {
       const result = await host.callBackendAPI('/api/trusted-session/agent-runs', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', [AGENT_RUN_EXECUTION_WORKSPACE_HEADER]: workspace },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(input),
       });
       return host.toolResult(result);
@@ -76,8 +78,7 @@ export function registerRunTools(host: McpToolHost): void {
       'Status of one run started from this session\'s deck and workspace, plus the next page of ordered events after the optional cursor. Pass the returned nextCursor as after to continue; the run is finished once state is ended, error, died, or canceled.',
     inputSchema: GetRunInputSchema,
   }, async ({ runId, after, limit }: z.infer<typeof GetRunInputSchema>) => {
-    const workspace = executionWorkspace();
-    if (!workspace) {
+    if (!executionWorkspace()) {
       return workspaceRequired();
     }
     try {
@@ -89,9 +90,7 @@ export function registerRunTools(host: McpToolHost): void {
         params.set('limit', String(limit));
       }
       const query = params.toString();
-      const result = await host.callBackendAPI(`${runPath(runId)}${query ? `?${query}` : ''}`, {
-        headers: { [AGENT_RUN_EXECUTION_WORKSPACE_HEADER]: workspace },
-      });
+      const result = await host.callBackendAPI(`${runPath(runId)}${query ? `?${query}` : ''}`);
       return host.toolResult(result);
     } catch (error) {
       return runError(error);
@@ -104,14 +103,12 @@ export function registerRunTools(host: McpToolHost): void {
       'Cancel one live run started from this session\'s deck and workspace. Idempotent: a repeated or already-finished cancel returns the current status unchanged.',
     inputSchema: CancelRunInputSchema,
   }, async ({ runId }: z.infer<typeof CancelRunInputSchema>) => {
-    const workspace = executionWorkspace();
-    if (!workspace) {
+    if (!executionWorkspace()) {
       return workspaceRequired();
     }
     try {
       const result = await host.callBackendAPI(`${runPath(runId)}/cancel`, {
         method: 'POST',
-        headers: { [AGENT_RUN_EXECUTION_WORKSPACE_HEADER]: workspace },
       });
       return host.toolResult(result);
     } catch (error) {

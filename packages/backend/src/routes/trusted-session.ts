@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import path from 'node:path';
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -432,7 +433,9 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.post<{ Body: { deckId: string; mcpSessionId?: string; grantId?: string } }>(
+  fastify.post<{
+    Body: { deckId: string; mcpSessionId?: string; grantId?: string; executionWorkspace?: string };
+  }>(
     '/mcp/connect-deck',
     async (request, reply) => {
       try {
@@ -452,6 +455,14 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         // so deck-switch creation/approval can enforce the same allowlist.
         // Loopback launcher calls omit it and stay unconstrained.
         const grantId = request.body.grantId?.trim() || undefined;
+        // NOT-539: the launcher's host workspace becomes the session's
+        // immutable execution workspace. Only a fresh launch row captures it;
+        // grant sessions never carry one, and a reused row keeps its own.
+        const rawWorkspace = request.body.executionWorkspace;
+        const executionWorkspace =
+          !grantId && typeof rawWorkspace === 'string' && path.isAbsolute(rawWorkspace.trim())
+            ? path.resolve(rawWorkspace.trim())
+            : undefined;
         let session;
         if (mcpId) {
           const historical = store.findLatestRuntimeSessionByMcpSessionId(mcpId);
@@ -465,6 +476,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             deckId,
             mcpSessionId: mcpId,
             ...(grantId ? { grantId } : {}),
+            ...(executionWorkspace ? { executionWorkspace } : {}),
           });
         }
 
