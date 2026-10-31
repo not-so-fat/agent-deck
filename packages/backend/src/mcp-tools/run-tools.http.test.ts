@@ -595,4 +595,125 @@ describe('MCP agent run tools (NOT-539)', () => {
     expect(result.data).toMatchObject({ error_code: 'WORKSPACE_INVALID' });
     expect(ctx.createAdapter).not.toHaveBeenCalled();
   });
+
+  /**
+   * NOT-540: the documented `agent-deck-run` skill loop, end to end, from a
+   * Dealer-style launch (deck header + role worktree, no `.agent-deck/use.json`):
+   * get_session_context → session-only switch_deck → get_session_context →
+   * pinned start_run → cursor-paged get_run to terminal → resume via
+   * start_run(resumeSessionId) → cancel_run — with the saved workspace default
+   * absent before and after.
+   */
+  it('NOT-540: runs the skill loop from a Dealer-style launch and leaves the saved workspace default absent', async () => {
+    const gate = deferred();
+    let mode: 'success' | 'held' = 'success';
+    const ctx = await setup({
+      steps: () =>
+        mode === 'held'
+          ? [{ event: { kind: 'text', text: 'working', sessionId: 'ses_1' } }, { event: { kind: 'text', text: 'never' }, gate: gate.promise }]
+          : successSteps(),
+    });
+    const wt = gitWorktree();
+    const before = snapshotTree(wt);
+    const playbook = await ctx.db.createPlaybook({ id: 'pb_eval', title: 'live', body: 'live body', triggers: ['eval'] });
+    await ctx.db.addPlaybookToDeck({ deckId: ctx.deckB.id, playbookId: playbook.id, position: 0 });
+    const version = await ctx.db.createPlaybookVersion({
+      id: generateId(),
+      playbookId: playbook.id,
+      title: 'baseline',
+      body: 'baseline body',
+      triggers: ['eval'],
+      patchId: null,
+      actor: 'agent',
+    });
+
+    // Launch-selected deck + workspace, exactly as Dealer starts a role session.
+    const session = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
+    await call(ctx, session, 'bind_workspace', { workspaceRoot: wt, deckId: ctx.deckA.id });
+    const opener = await call(ctx, session, 'get_session_context', {});
+    expect(opener.isError).toBe(false);
+    expect(opener.data.effective_deck_id).toBe(ctx.deckA.id);
+    const bindingBefore = await call(ctx, session, 'get_session_binding', {});
+    expect(bindingBefore.data.workspace_default_deck_id).toBeNull();
+
+    // 1. Session-only switch, then refresh context.
+    await approveSessionSwitch(ctx, session, 'beta');
+    const refreshed = await call(ctx, session, 'get_session_context', {});
+    expect(refreshed.data.effective_deck_id).toBe(ctx.deckB.id);
+
+    // 2-3. Brief in memory; pinned-version start on the switched deck.
+    const runId = await startRun(ctx, session, {
+      tools: 'readonly',
+      prompt: 'Goal: summarize README.md. Done when: one sentence. If unclear, end your turn with the question.',
+      playbookVersion: { playbookId: playbook.id, versionId: version.id },
+    });
+
+    // 4. Page get_run with its event cursor until terminal and drained.
+    const events: Array<{ seq: number; type: string }> = [];
+    let after: string | undefined;
+    let status: Record<string, unknown> = {};
+    for (let i = 0; i < 400; i += 1) {
+      const read = await call(ctx, session, 'get_run', { runId, limit: 2, ...(after ? { after } : {}) });
+      expect(read.isError, JSON.stringify(read.data)).toBe(false);
+      status = read.data;
+      const page = read.data.events as Array<{ seq: number; type: string }>;
+      events.push(...page.map(({ seq, type }) => ({ seq, type })));
+      after = String(read.data.nextCursor ?? after ?? '');
+      const terminal = ['ended', 'error', 'died', 'canceled'].includes(String(read.data.state));
+      if (terminal && page.length === 0) break;
+      if (!terminal) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(status).toMatchObject({ runId, deckId: ctx.deckB.id, client: 'claude', tools: 'readonly', state: 'ended', sessionId: 'ses_1' });
+    expect(events.map((event) => event.type)).toEqual(['text', 'tool', 'notice', 'result', 'end']);
+    expect(ctx.launch.mock.calls[0][0]).toMatchObject({
+      deckRef: ctx.deckB.id,
+      cwd: wt,
+      tools: 'readonly',
+      playbookPin: { playbookId: playbook.id, versionId: version.id },
+    });
+    expect(ctx.starts[0].cwd).toBe(wt);
+
+    // 6a. Resume the same session through start_run (profile passed again).
+    const resumed = await startRun(ctx, session, { tools: 'readonly', resumeSessionId: String(status.sessionId) });
+    const resumedTerminal = await untilTerminal(ctx, session, resumed);
+    expect(resumedTerminal).toMatchObject({ runId: resumed, deckId: ctx.deckB.id, state: 'ended', sessionId: 'ses_1' });
+    expect(ctx.launch.mock.calls[1][0]).toMatchObject({ resumeId: 'ses_1', cwd: wt, deckRef: ctx.deckB.id });
+
+    // 6b. Cancel a live run through cancel_run.
+    mode = 'held';
+    const live = await startRun(ctx, session, { tools: 'readonly', resumeSessionId: 'ses_1' });
+    for (let i = 0; i < 200; i += 1) {
+      const read = await call(ctx, session, 'get_run', { runId: live });
+      if (read.data.state === 'running') break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const canceled = await call(ctx, session, 'cancel_run', { runId: live });
+    expect(canceled.data).toMatchObject({ runId: live, state: 'canceled' });
+    gate.release();
+
+    // The saved workspace default stayed absent; the worktree was not touched.
+    const bindingAfter = await call(ctx, session, 'get_session_binding', {});
+    expect(bindingAfter.data.workspace_default_deck_id).toBeNull();
+    expect(bindingAfter.data.effective_deck_id).toBe(ctx.deckB.id);
+    expect(fs.existsSync(path.join(wt, '.agent-deck', 'use.json'))).toBe(false);
+    expect(snapshotTree(wt)).toEqual(before);
+
+    // CI receipt: safe identifiers and outcomes only (no prompt text).
+    console.info(
+      'NOT-540 receipt',
+      JSON.stringify({
+        runId,
+        sessionId: status.sessionId,
+        tools: status.tools,
+        effectiveDeck: 'beta',
+        worktree: path.basename(wt),
+        events: events.map((event) => `${event.seq}:${event.type}`),
+        terminal: status.state,
+        resumed: { runId: resumed, state: resumedTerminal.state },
+        canceled: { runId: live, state: canceled.data.state },
+        workspaceDefault: bindingAfter.data.workspace_default_deck_id,
+        useJson: 'absent',
+      }),
+    );
+  });
 });
