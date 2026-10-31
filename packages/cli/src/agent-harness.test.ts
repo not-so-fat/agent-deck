@@ -256,11 +256,14 @@ describe('NOT-425 delegating to another session', () => {
     return text.slice(start, end === -1 ? undefined : end);
   }
 
-  it('mentions agent-deck run with the safety defaults in global and project scope', () => {
+  it('delegates through Agent Deck MCP with the safety defaults in global and project scope (NOT-540)', () => {
     for (const [label, text] of texts()) {
       const paragraph = delegationParagraph(text);
-      expect(paragraph, label).toContain('agent-deck run');
-      expect(paragraph, label).toContain('--tools readonly');
+      expect(paragraph, label).toContain('start_run');
+      expect(paragraph, label).toContain('get_run');
+      expect(paragraph, label).toContain('cancel_run');
+      expect(paragraph, label).not.toContain('agent-deck run');
+      expect(paragraph, label).toContain('tools: "readonly"');
       expect(paragraph, label).toContain('must not choose the deck');
       expect(paragraph, label).toContain('skills/agent-deck-run/SKILL.md');
       expect(paragraph, label).toContain('docs/DELEGATION.md');
