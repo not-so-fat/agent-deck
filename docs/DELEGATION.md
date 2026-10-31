@@ -1,5 +1,28 @@
 # `agent-deck run` delegation reference (per-client)
 
+## Agent-operated delegation is MCP; the host CLI is exceptional
+
+There are two ways to start a run. They use the same Agent Run service on the
+Agent Deck host.
+
+| | Who | How | When |
+|---|---|---|---|
+| **Normal: agent-operated** | An agent in a bound Agent Deck MCP session, including a Dealer role worktree or any coding sandbox | MCP tools only: `get_session_context`, optional human-approved `switch_deck`, `start_run`, `get_run`, `cancel_run` ([MCP_RUN_TOOLS.md](./MCP_RUN_TOOLS.md)); protocol in the [`agent-deck-run` skill](../skills/agent-deck-run/SKILL.md) | Every delegation an agent performs |
+| **Exceptional: host CLI** | A human operator (or a script) in a terminal on the Agent Deck host itself | `agent-deck run …` and the poll subcommands below | Installation checks, diagnostics, and recovery |
+
+The caller's shell is not the Agent Deck host. A delegating agent never runs
+the `agent-deck` CLI, writes a prompt file for it, calls the host's loopback
+ports, inspects host processes, or installs a second Agent Deck copy as a
+fallback. If MCP, the launch workspace, or the provider is unavailable, it
+reports the structured error (`WORKSPACE_REQUIRED`, `CLIENT_UNAVAILABLE`, …)
+and stops. `packages/cli/src/run-skill-contract.test.ts` enforces this for the
+skill and every generated harness paragraph.
+
+The rest of this file is the host-side reference. Per-client behavior
+(resume ids, tool mappings, trust, sign-in) applies to both paths: `start_run`
+passes the same `client`, `tools`, `resumeSessionId`, and `playbookVersion` to
+the same adapters.
+
 One reference for orchestrators and operators: how `agent-deck run` behaves per
 client. The brief–launch–monitor–review–resume protocol lives in the
 orchestrator skill, and the first-run walk-through lives in the friend path

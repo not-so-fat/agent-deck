@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Change: delegation is MCP-only for agents (NOT-540)
+
+- The `agent-deck-run` skill and the generated harness delegation paragraph now delegate exclusively through Agent Deck MCP: `get_session_context`, optional human-approved `switch_deck`, `start_run` (brief built in memory, explicit tool profile, resume id, finalization preparation, pinned playbook version), `get_run` paged by cursor to a terminal state, and `cancel_run`. Each failure (missing MCP, `WORKSPACE_REQUIRED`, provider unavailable, a rejected switch, `error`/`died`, cancellation) stops with a short report instead of a CLI remedy; reports carry `runId`, `sessionId`, tool profile, and terminal state with no host log path. `agent-deck setup` refreshes the skill and harness for Claude, Codex, Cursor, and Muse. The host CLI `agent-deck run` stays available for operators (installation, diagnostics, recovery); see `docs/DELEGATION.md`.
+
 ### Feature: MCP run tools (NOT-539)
 
 - Bound MCP sessions get `start_run`, `get_run` and `cancel_run`: start or resume a host-local run (tool profile, finalization preparation, one pinned playbook version), page its ordered events with a cursor, and cancel it — without the CLI or host loopback access. The deck is the session's live deck (a session-only `switch_deck` included) and the cwd is the workspace the launcher bound the session to; neither is a tool argument, and `.agent-deck/use.json` is not consulted. A session launched without a workspace gets `WORKSPACE_REQUIRED`. Reference in `docs/MCP_RUN_TOOLS.md`.
