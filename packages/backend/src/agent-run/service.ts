@@ -147,6 +147,13 @@ export type AgentRunRequest = {
   resumeId?: string;
   /** Pinned playbook version for this run's MCP session (NOT-537). */
   playbookPin?: RunPlaybookPin;
+  /**
+   * NOT-539: deck binding already proven by a trusted caller (the MCP
+   * runtime session's live deck for its launch-bound workspace). Replaces
+   * the folder-assignment lookup for this run only; the CLI and the grant
+   * HTTP API never set it, so they keep reading the folder assignment.
+   */
+  trustedBinding?: RunDeckBinding;
 };
 
 export type PreparedRun = {
@@ -271,6 +278,8 @@ export type AgentRunService = {
   /** Allocate a run id and record paths without starting anything. */
   allocate(logPath?: string): { runId: string; logPath: string; metaPath: string };
   status(runId: string): CollectedStatus;
+  /** The run's meta.json record (captured deck, cwd, client, tools); null when absent or corrupt. */
+  record(runId: string): RunMeta | null;
   list(limit: number): RunStatusInfo[];
   /** Ordered normalized events from the canonical JSONL log; null for an unknown run. */
   events(runId: string): LogRead | null;
@@ -362,7 +371,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
 
     // Fail closed before any model call: the session's MCP launch must already
     // resolve to the requested deck. Never rewrite the folder assignment here.
-    const binding = await deps.resolveDeckBinding(request.cwd);
+    const binding = request.trustedBinding ?? (await deps.resolveDeckBinding(request.cwd));
     if (binding.deckId !== deck.id) {
       if (!binding.deckId) {
         return {
@@ -711,6 +720,14 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     },
     allocate,
     status: (runId) => collectRunStatus(runId, deps.homeDir),
+    record(runId) {
+      const { metaPath } = runPaths(deps.homeDir, runId);
+      if (!fs.existsSync(metaPath)) {
+        return null;
+      }
+      const read = readRunMeta(metaPath);
+      return read.ok ? read.meta : null;
+    },
     list: (limit) => listRunInfos(deps.homeDir, limit),
     events(runId) {
       const { metaPath, logPath } = runPaths(deps.homeDir, runId);

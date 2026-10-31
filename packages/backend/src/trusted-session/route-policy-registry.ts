@@ -62,6 +62,14 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+$/,
     policy: 'requireAgentOrDashboard',
   },
+  // NOT-539: MCP start_run / get_run / cancel_run on the session's own deck and launch workspace.
+  { methods: ['POST'], pattern: /^\/api\/trusted-session\/agent-runs$/, policy: 'requireAgentResource' },
+  { methods: ['GET'], pattern: /^\/api\/trusted-session\/agent-runs\/[^/]+$/, policy: 'requireAgentResource' },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/trusted-session\/agent-runs\/[^/]+\/cancel$/,
+    policy: 'requireAgentResource',
+  },
   { methods: ['GET'], pattern: /^\/api\/scope\/deck$/, policy: 'requireAgentResource' },
   { methods: ['POST'], pattern: /^\/api\/scope\/live-display$/, policy: 'requireAgentResource' },
   { methods: ['DELETE'], pattern: /^\/api\/scope\/live-display\/[^/]+$/, policy: 'requireAgentResource' },

@@ -34,7 +34,7 @@ import {
   McpSessionBindingStore,
   resolveDeckBindingSource,
 } from './mcp-session-binding';
-import { registerMcpTools } from './mcp-tools/register';
+import { registerMcpTools, type McpToolInputSchema } from './mcp-tools/register';
 import {
   DECK_SWITCH_ELICITATION_TIMEOUT_MS,
   supportsFormElicitation,
@@ -1033,7 +1033,7 @@ export class AgentDeckMCPServer {
   /** Avoid TS2589 when registering many MCP tools (SDK overload recursion). */
   private registerTool(
     name: string,
-    config: { title: string; description: string; inputSchema: Record<string, z.ZodTypeAny> },
+    config: { title: string; description: string; inputSchema: McpToolInputSchema },
     handler: (...args: any[]) => Promise<any>,
   ): void {
     (this.server as { registerTool: (...args: unknown[]) => unknown }).registerTool(
@@ -1698,6 +1698,16 @@ export class AgentDeckMCPServer {
     return true;
   }
 
+  /**
+   * NOT-539: the launch-bound execution workspace for `start_run` comes from
+   * the launcher only — the workspace header on the initial launch request or
+   * the host's AGENT_DECK_WORKSPACE — never from `bind_workspace` or a
+   * follow-up request. Read once, at initial launch authentication.
+   */
+  private readLaunchExecutionWorkspace(req: Request): string | undefined {
+    return readWorkspaceRootHeader(req) ?? (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
+  }
+
   private async authenticateLaunchDeck(sessionId: string, req: Request): Promise<void> {
     const deckId = readLaunchDeckHeader(req);
     if (!deckId) {
@@ -1716,6 +1726,8 @@ export class AgentDeckMCPServer {
       if (workspaceRoot) {
         this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
       }
+      // The execution workspace — present or absent — was frozen at initial
+      // launch authentication; a follow-up header never grants or moves it.
       // Adopt-once: a launch that arrived without correlation can still
       // attach one; an established value never moves (NOT-304).
       const followUpCorrelation = readCorrelationIdHeader(req);
@@ -1726,12 +1738,14 @@ export class AgentDeckMCPServer {
       return;
     }
 
+    const executionWorkspace = this.readLaunchExecutionWorkspace(req);
     const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         deckId,
         mcpSessionId: sessionId,
+        ...(executionWorkspace ? { executionWorkspace } : {}),
       }),
     });
 
@@ -1761,6 +1775,9 @@ export class AgentDeckMCPServer {
       workspaceRoot,
       mode: body.data.mode,
     });
+    // Freezes presence and absence alike: a launch without workspace metadata
+    // keeps returning WORKSPACE_REQUIRED for the session lifetime.
+    this.sessionBinding.freezeExecutionWorkspace(sessionId, executionWorkspace);
 
     // Attach the opaque run-correlation id to this launch-selected session
     // (NOT-304). Adopt-once and validated inside the store: an invalid or

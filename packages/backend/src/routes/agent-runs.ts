@@ -1,9 +1,13 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import {
   AGENT_RUN_EVENTS_DEFAULT_LIMIT,
+  AGENT_RUN_WORKSPACE_REQUIRED_MESSAGE,
+  SessionAgentRunResponseSchema,
+  StartSessionAgentRunRequestSchema,
   AGENT_RUN_IDEMPOTENCY_HEADER,
   AGENT_RUN_REQUEST_BODY_LIMIT_BYTES,
   AGENT_RUN_TERMINAL_STATES,
@@ -29,11 +33,13 @@ import {
   type FinalizeAgentRunResponse,
 } from '@agent-deck/shared';
 
-import type {
-  AgentRunRejectionCode,
-  AgentRunService,
-  LaunchedRun,
-  RunReconciliation,
+import {
+  canonicalCwd,
+  type AgentRunRejectionCode,
+  type AgentRunService,
+  type LaunchedRun,
+  type RunMeta,
+  type RunReconciliation,
 } from '../agent-run';
 import { auditRunTarget } from '../agent-run-api/auth';
 import { FinalizationStore, type StoredBaseline } from '../agent-run-api/finalization-store';
@@ -96,7 +102,10 @@ type CreateResult =
   | { ok: true; status: 202; body: { runId: string; state: AgentRunState } }
   | { ok: false; error: ErrorReply };
 
-function rejectionReply(code: AgentRunRejectionCode, request: CreateAgentRunRequest): ErrorReply {
+function rejectionReply(
+  code: AgentRunRejectionCode,
+  request: Pick<CreateAgentRunRequest, 'client' | 'tools' | 'resumeSessionId'>,
+): ErrorReply {
   switch (code) {
     case 'prompt_empty':
       return { status: 400, code: 'INVALID_REQUEST', message: 'prompt must not be empty', reason: 'invalid_request' };
@@ -354,7 +363,7 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
     };
   };
 
-  const statusBody = (entry: AgentRunIndexEntry) => {
+  const statusBody = (entry: Pick<AgentRunIndexEntry, 'runId' | 'deckId' | 'client' | 'tools' | 'createdAt'>) => {
     const current = publicState(entry.runId);
     return AgentRunStatusSchema.parse({
       runId: entry.runId,
@@ -367,6 +376,66 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
       lastEventAt: current.lastEventAt,
       finalization: finalizationStatus(entry.runId),
     });
+  };
+
+  /** One cursor page of public events; cancellation is final, so nothing after it is delivered. */
+  const eventsPage = (runId: string, after: number, limit: number) => {
+    const log = service.events(runId);
+    const events: AgentRunEvent[] = [];
+    for (const [position, { event }] of (log?.events ?? []).entries()) {
+      const seq = position + 1;
+      if (seq <= after) {
+        continue;
+      }
+      if (events.length >= limit) {
+        break;
+      }
+      const mapped = toPublicEvent(seq, event);
+      if (mapped) {
+        events.push(mapped);
+        if (mapped.type === 'canceled') {
+          break;
+        }
+      }
+    }
+    const nextCursor = String(events.length > 0 ? events[events.length - 1].seq : after);
+    return { events, nextCursor };
+  };
+
+  /**
+   * NOT-486: the baseline is captured after every launch gate and before the
+   * adapter starts. `prepared()` holds the stored baseline once captured.
+   */
+  const finalizationGate = (runId: string, cwd: string) => {
+    let prepared: StoredBaseline | null = null;
+    return {
+      prepared: () => prepared,
+      beforeStart: async () => {
+        try {
+          prepared = finalizations.saveBaseline(runId, await finalizer.captureBaseline(cwd));
+          return { ok: true as const };
+        } catch (error) {
+          if (!(error instanceof FinalizationError)) {
+            throw error;
+          }
+          return {
+            ok: false as const,
+            code: error.code === 'index_dirty' ? ('index_dirty' as const) : ('finalization_invalid' as const),
+            message: error.message,
+          };
+        }
+      },
+    };
+  };
+
+  const auditPrepared = (actor: AuditActor, runId: string, gate: ReturnType<typeof finalizationGate> | null): void => {
+    const baseline = gate?.prepared()?.baseline;
+    if (baseline) {
+      audit(actor, 'agent_run.finalization_prepared', runId, 'succeeded', null, {
+        repositoryId: repositoryIdOf(baseline),
+        baselineDigest: baseline.digest,
+      });
+    }
   };
 
   const watchCompletion = (grantId: string, launched: LaunchedRun): void => {
@@ -423,25 +492,8 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
       return { ok: true, status: 202, body: { runId: existing.runId, state: publicState(existing.runId).state } };
     }
 
-    // NOT-486: the baseline is captured after every launch gate and before the adapter starts.
-    let prepared: StoredBaseline | null = null;
-    const beforeStart = body.prepareFinalization
-      ? async () => {
-          try {
-            prepared = finalizations.saveBaseline(runId, await finalizer.captureBaseline(body.cwd));
-            return { ok: true as const };
-          } catch (error) {
-            if (!(error instanceof FinalizationError)) {
-              throw error;
-            }
-            return {
-              ok: false as const,
-              code: error.code === 'index_dirty' ? ('index_dirty' as const) : ('finalization_invalid' as const),
-              message: error.message,
-            };
-          }
-        }
-      : undefined;
+    const gate = body.prepareFinalization ? finalizationGate(runId, body.cwd) : null;
+    const beforeStart = gate?.beforeStart;
 
     const launch = (async (): Promise<CreateResult> => {
       const outcome = await service.launch(
@@ -462,13 +514,7 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
         return { ok: false, error: rejectionReply(outcome.code, body) };
       }
       audit(grant.grantId as AuditActor, 'agent_run.created', runId, 'succeeded', null);
-      const baseline = (prepared as StoredBaseline | null)?.baseline;
-      if (baseline) {
-        audit(grant.grantId as AuditActor, 'agent_run.finalization_prepared', runId, 'succeeded', null, {
-          repositoryId: repositoryIdOf(baseline),
-          baselineDigest: baseline.digest,
-        });
-      }
+      auditPrepared(grant.grantId as AuditActor, runId, gate);
       watchCompletion(grant.grantId, outcome);
       return { ok: true, status: 202, body: { runId, state: publicState(runId).state } };
     })().catch((error: unknown): CreateResult => {
@@ -700,25 +746,7 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
         const { state } = publicState(entry.runId);
         const after = query.data.after ? Number(query.data.after) : 0;
         const limit = query.data.limit ?? AGENT_RUN_EVENTS_DEFAULT_LIMIT;
-        const log = service.events(entry.runId);
-        const events: AgentRunEvent[] = [];
-        for (const [position, { event }] of (log?.events ?? []).entries()) {
-          const seq = position + 1;
-          if (seq <= after) {
-            continue;
-          }
-          if (events.length >= limit) {
-            break;
-          }
-          const mapped = toPublicEvent(seq, event);
-          if (mapped) {
-            events.push(mapped);
-            if (mapped.type === 'canceled') {
-              break; // Cancellation is final: nothing after it is delivered.
-            }
-          }
-        }
-        const nextCursor = String(events.length > 0 ? events[events.length - 1].seq : after);
+        const { events, nextCursor } = eventsPage(entry.runId, after, limit);
         const data = AgentRunEventsResponseSchema.parse({ runId: entry.runId, state, events, nextCursor });
         return reply.header('Cache-Control', 'no-store').send({ success: true, data });
       },
@@ -957,8 +985,205 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
         }
       },
     );
+
+    // NOT-539: trusted-session run routes behind the Agent Deck MCP
+    // `start_run` / `get_run` / `cancel_run` tools. The deck is the runtime
+    // session's live deck (a human-approved session-only switch included) and
+    // the workspace is the launch-bound one captured on the runtime session
+    // row when the launcher connected — never a header or body field, and
+    // never the folder's `.agent-deck/use.json`. Reads and cancel reach only
+    // runs whose captured deck and canonical cwd match the caller's session.
+    const sessionCaller = (request: FastifyRequest, reply: FastifyReply): SessionCaller | null => {
+      const principal = request.requestPrincipal;
+      if (principal?.kind !== 'agent') {
+        void reply
+          .status(httpStatusForTrustedError('GRANT_REQUIRED'))
+          .send(trustedSessionError('GRANT_REQUIRED', 'No deck selected for this connection'));
+        return null;
+      }
+      // Remote-grant MCP sessions name no trusted host workspace.
+      const sessionId = principal.session.sessionId;
+      const row = fastify.trustedSessionStore.getRuntimeSessionRow(sessionId);
+      const workspace = row?.grant_id
+        ? ''
+        : (fastify.trustedSessionStore.getRuntimeSessionExecutionWorkspace(sessionId) ?? '');
+      if (!workspace) {
+        void sendError(reply, {
+          status: 422,
+          code: 'WORKSPACE_REQUIRED',
+          message: AGENT_RUN_WORKSPACE_REQUIRED_MESSAGE,
+          reason: 'workspace_invalid',
+        });
+        return null;
+      }
+      if (!path.isAbsolute(workspace)) {
+        void sendError(reply, {
+          status: 422,
+          code: 'WORKSPACE_INVALID',
+          message: 'The session workspace is not an absolute host path',
+          reason: 'workspace_invalid',
+        });
+        return null;
+      }
+      return { deckId: principal.deckId, workspace, canonical: canonicalCwd(workspace) ?? path.resolve(workspace) };
+    };
+
+    const sessionRun = (
+      request: FastifyRequest<{ Params: { runId: string } }>,
+      reply: FastifyReply,
+    ): { caller: SessionCaller; record: RunMeta } | null => {
+      const caller = sessionCaller(request, reply);
+      if (!caller) {
+        return null;
+      }
+      const runId = request.params.runId;
+      const record = AgentRunIdSchema.safeParse(runId).success ? service.record(runId) : null;
+      if (!record) {
+        void reply.status(404).send(agentRunError('RUN_NOT_FOUND', 'Run not found'));
+        return null;
+      }
+      const outOfScope = (message: string): null => {
+        audit('local-launch', 'agent_run.denied', record.runId, 'denied', 'resource_out_of_scope');
+        void reply
+          .status(httpStatusForTrustedError('RESOURCE_OUT_OF_SCOPE'))
+          .send(trustedSessionError('RESOURCE_OUT_OF_SCOPE', message));
+        return null;
+      };
+      if (record.deck !== caller.deckId) {
+        return outOfScope("Run was started on another deck than this session's");
+      }
+      if ((record.canonicalCwd ?? path.resolve(record.cwd)) !== caller.canonical) {
+        return outOfScope("Run was started in another workspace than this session's");
+      }
+      return { caller, record };
+    };
+
+    const sessionStatus = (record: RunMeta) =>
+      statusBody({
+        runId: record.runId,
+        deckId: record.deck,
+        client: record.client,
+        tools: record.tools,
+        createdAt: record.startedAt,
+      });
+
+    scope.post<{ Body: unknown }>(
+      '/trusted-session/agent-runs',
+      { bodyLimit: AGENT_RUN_REQUEST_BODY_LIMIT_BYTES },
+      async (request, reply) => {
+        const caller = sessionCaller(request, reply);
+        if (!caller) {
+          return reply;
+        }
+        const deny = (error: ErrorReply) => {
+          audit('local-launch', 'agent_run.denied', auditDeckTarget(caller.deckId), 'denied', error.reason);
+          return sendError(reply, error);
+        };
+        const parsed = StartSessionAgentRunRequestSchema.safeParse(request.body);
+        if (!parsed.success) {
+          // Field names only: issue messages could echo the prompt.
+          const fields = [
+            ...new Set(
+              parsed.error.issues.flatMap((issue) =>
+                issue.code === 'unrecognized_keys' ? issue.keys : [issue.path.join('.') || 'body'],
+              ),
+            ),
+          ];
+          return deny({
+            status: 400,
+            code: 'INVALID_REQUEST',
+            message: `Invalid start_run request: ${fields.join(', ')}`,
+            reason: 'invalid_request',
+          });
+        }
+        const body = parsed.data;
+        if (body.prepareFinalization && body.tools !== 'edit') {
+          return deny({
+            status: 422,
+            code: 'FINALIZATION_INVALID',
+            message: 'prepareFinalization requires tools "edit"',
+            reason: 'finalization_invalid',
+          });
+        }
+
+        const { runId } = service.allocate();
+        const gate = body.prepareFinalization ? finalizationGate(runId, caller.workspace) : null;
+        const outcome = await service.launch(
+          {
+            deckRef: caller.deckId,
+            client: body.client,
+            cwd: caller.workspace,
+            prompt: body.prompt,
+            tools: body.tools,
+            ...(body.resumeSessionId ? { resumeId: body.resumeSessionId } : {}),
+            ...(body.playbookVersion ? { playbookPin: body.playbookVersion } : {}),
+            trustedBinding: { deckId: caller.deckId },
+          },
+          { runId, ownProcessGroup: true, ...(gate ? { beforeStart: gate.beforeStart } : {}) },
+        );
+        if (outcome.kind === 'rejected') {
+          finalizations.deleteBaseline(runId);
+          const error = rejectionReply(outcome.code, body);
+          // The service's pin message names the exact problem and nothing host-private.
+          return deny(outcome.code === 'playbook_pin_invalid' ? { ...error, message: outcome.message } : error);
+        }
+        audit('local-launch', 'agent_run.created', runId, 'succeeded', null);
+        auditPrepared('local-launch', runId, gate);
+        watchCompletion('local-launch', outcome);
+        const data = CreateAgentRunResponseSchema.parse({ runId, state: publicState(runId).state });
+        return reply.header('Cache-Control', 'no-store').status(202).send({ success: true, data });
+      },
+    );
+
+    scope.get<{ Params: { runId: string }; Querystring: Record<string, unknown> }>(
+      '/trusted-session/agent-runs/:runId',
+      { exposeHeadRoute: false },
+      async (request, reply) => {
+        const found = sessionRun(request, reply);
+        if (!found) {
+          return reply;
+        }
+        const query = AgentRunEventsQuerySchema.safeParse(request.query ?? {});
+        if (!query.success) {
+          return reply
+            .status(400)
+            .send(agentRunError('INVALID_REQUEST', 'after must be a cursor and limit 1-1000'));
+        }
+        // Status first: a terminal state read before the log guarantees the
+        // page that follows already holds the terminal event.
+        const status = sessionStatus(found.record);
+        const page = eventsPage(
+          found.record.runId,
+          query.data.after ? Number(query.data.after) : 0,
+          query.data.limit ?? AGENT_RUN_EVENTS_DEFAULT_LIMIT,
+        );
+        const data = SessionAgentRunResponseSchema.parse({ ...status, ...page });
+        return reply.header('Cache-Control', 'no-store').send({ success: true, data });
+      },
+    );
+
+    scope.post<{ Params: { runId: string } }>('/trusted-session/agent-runs/:runId/cancel', async (request, reply) => {
+      const found = sessionRun(request, reply);
+      if (!found) {
+        return reply;
+      }
+      const runId = found.record.runId;
+      finalizing.get(runId)?.controller.abort();
+      const outcome = service.cancel(runId);
+      if (outcome.kind === 'not_cancelable') {
+        audit('local-launch', 'agent_run.denied', runId, 'denied', 'run_not_cancelable');
+        return reply
+          .status(409)
+          .send(agentRunError('RUN_NOT_CANCELABLE', 'Run is owned by another host process that cannot be signaled'));
+      }
+      audit('local-launch', 'agent_run.canceled', runId, 'succeeded', outcome.kind === 'canceled' ? null : 'already_terminal');
+      return reply.header('Cache-Control', 'no-store').send({ success: true, data: sessionStatus(found.record) });
+    });
   });
 }
+
+/** NOT-539: a trusted MCP session's live deck and launch-bound workspace. */
+type SessionCaller = { deckId: string; workspace: string; canonical: string };
 
 /** Canonical log line → public event. Unknown line types are skipped (their `seq` stays reserved). */
 function toPublicEvent(seq: number, event: Record<string, unknown>): AgentRunEvent | null {

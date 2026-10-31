@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Feature: MCP run tools (NOT-539)
+
+- Bound MCP sessions get `start_run`, `get_run` and `cancel_run`: start or resume a host-local run (tool profile, finalization preparation, one pinned playbook version), page its ordered events with a cursor, and cancel it — without the CLI or host loopback access. The deck is the session's live deck (a session-only `switch_deck` included) and the cwd is the workspace the launcher bound the session to; neither is a tool argument, and `.agent-deck/use.json` is not consulted. A session launched without a workspace gets `WORKSPACE_REQUIRED`. Reference in `docs/MCP_RUN_TOOLS.md`.
+
 ## 2.3.2 — 2026-10-29
 
 ### Feature: pinned playbook runs (NOT-537)

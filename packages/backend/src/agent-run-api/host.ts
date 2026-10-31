@@ -28,6 +28,15 @@ export function createBackendAgentRunService(
       const manifest = readUseManifest(cwd);
       return manifest ? { deckId: manifest.deckId, deckName: manifest.deckName } : {};
     },
+    // NOT-539: pinned runs started from an MCP session (same lookup as the CLI's).
+    async resolvePlaybookPin(input) {
+      const version = await db.getPlaybookVersion(input.versionId);
+      const onDeck = await db.getDeckPlaybooksForDeck(input.deckId);
+      return {
+        versionPlaybookId: version ? version.playbookId : null,
+        playbookOnDeck: onDeck.some((playbook) => playbook.id === input.playbookId),
+      };
+    },
     ...overrides,
   });
 }

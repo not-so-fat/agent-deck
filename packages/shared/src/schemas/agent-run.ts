@@ -62,6 +62,37 @@ export const CreateAgentRunRequestSchema = z
   .strict();
 
 /**
+ * NOT-539: trusted-session MCP start (`start_run`). The deck is the live
+ * runtime-session deck and the cwd is the session's launch-bound workspace,
+ * so neither is accepted here — an extra `deckId` or `cwd` is rejected.
+ */
+export const StartSessionAgentRunRequestSchema = z
+  .object({
+    client: AgentRunClientSchema,
+    prompt: z
+      .string()
+      .max(AGENT_RUN_PROMPT_MAX_CHARS)
+      .refine((value) => value.trim().length > 0, 'prompt must not be empty'),
+    tools: AgentRunToolsSchema.default('readonly'),
+    resumeSessionId: z.string().min(1).max(512).optional(),
+    prepareFinalization: z.boolean().default(false),
+    /** One pinned playbook version for the run's MCP session (NOT-537). */
+    playbookVersion: z
+      .object({ playbookId: z.string().min(1).max(200), versionId: z.string().min(1).max(200) })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+/**
+ * NOT-539: `WORKSPACE_REQUIRED` remedy. The agent cannot fix this itself, so
+ * it names the launcher — never a CLI command, a port, or a local URL.
+ */
+export const AGENT_RUN_WORKSPACE_REQUIRED_MESSAGE =
+  'This MCP session was launched without a host execution workspace, so start_run has nowhere to run and the agent cannot choose one. ' +
+  'The launcher that started this session (for example Agent Dealer) must provide its workspace when it launches the session.';
+
+/**
  * Lifecycle state. `starting` is the launch acknowledgement (record written,
  * no event yet); `running` has emitted events; `ended`, `error`, `died`, and
  * `canceled` (NOT-481: operator cancellation, never an execution error) are
@@ -161,6 +192,12 @@ export const AgentRunEventsResponseSchema = z
     nextCursor: z.string(),
   })
   .strict();
+
+/** NOT-539: `get_run` — the public status plus one cursor page of ordered events. */
+export const SessionAgentRunResponseSchema = AgentRunStatusSchema.extend({
+  events: z.array(AgentRunEventSchema),
+  nextCursor: z.string(),
+}).strict();
 
 /**
  * `GET /api/agent-runs/capabilities` (NOT-481): only clients whose real host
@@ -263,6 +300,8 @@ export const AgentRunErrorCodeSchema = z.enum([
   'DECK_NOT_FOUND',
   'WORKSPACE_INVALID',
   'WORKSPACE_MISMATCH',
+  // NOT-539: the MCP session carries no launch-bound execution workspace.
+  'WORKSPACE_REQUIRED',
   'CLIENT_UNAVAILABLE',
   'PROFILE_UNSUPPORTED',
   'RESUME_UNVERIFIED',
@@ -287,7 +326,9 @@ export const AgentRunErrorCodeSchema = z.enum([
 export type AgentRunClient = z.infer<typeof AgentRunClientSchema>;
 export type AgentRunTools = z.infer<typeof AgentRunToolsSchema>;
 export type CreateAgentRunRequest = z.infer<typeof CreateAgentRunRequestSchema>;
-export type CreateAgentRunResponse = z.infer<typeof CreateAgentRunResponseSchema>;
+export type StartSessionAgentRunRequest = z.infer<typeof StartSessionAgentRunRequestSchema>;
+export type SessionAgentRunResponse = z.infer<typeof SessionAgentRunResponseSchema>;
+export type CreateAgentRunResponse =z.infer<typeof CreateAgentRunResponseSchema>;
 export type AgentRunState = z.infer<typeof AgentRunStateSchema>;
 export type AgentRunStatus = z.infer<typeof AgentRunStatusSchema>;
 export type AgentRunEvent = z.infer<typeof AgentRunEventSchema>;
