@@ -78,7 +78,7 @@ Verify: the issue appears in the Dealer queue — open it to see it in the timel
 
 Whoever drives the commands below — a cloud orchestrator with local shell access, or the friend's own terminal — must be able to run commands on the machine where Claude Code is signed in. Delegated execution is local-only: an orchestrator that cannot reach that machine's shell is out of scope for this path, and there is no remote runner to fall back to.
 
-Finish steps 1–4 above first (install, `open`, a small deck, `setup` + `use`); Dealer steps 5–6 are not needed here. What follows is the friend-side half: one `agent-deck run` launched detached, checked with `status` and `log`, then resumed once. If you are the orchestrator rather than the friend, the brief–launch–monitor–review–resume loop lives in the orchestrator skill ([NOT-403](https://linear.app/not-so-fat/issue/NOT-403/ship-an-orchestrator-skill-brief-launch-monitor-review-resume-a-deck)) — this section is the commands it drives, not a second copy of that skill.
+Finish steps 1–4 above first (install, `open`, a small deck, `setup` + `use`); Dealer steps 5–6 are not needed here. What follows is the friend-side half: one `agent-deck run` launched detached, checked with `status` and `log`, then resumed once. This is the operator's host-terminal path (installation check, diagnostics, recovery). An orchestrating agent does not drive these commands: it delegates through Agent Deck MCP (`start_run`, `get_run`, `cancel_run`) as described in the `agent-deck-run` skill and [DELEGATION.md](./DELEGATION.md#agent-operated-delegation-is-mcp-the-host-cli-is-exceptional).
 
 `agent-deck run` accepts `--client claude`, `--client codex`, `--client cursor`, or `--client muse`; the worked example below uses `claude`.
 

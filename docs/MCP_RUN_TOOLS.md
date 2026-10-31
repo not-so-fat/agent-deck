@@ -4,6 +4,8 @@ A bound Agent Deck MCP session — for example an agent that Agent Dealer
 launched in a role worktree — can start, observe, resume, and cancel
 coding-agent runs through MCP alone. It never executes the `agent-deck` CLI
 and never needs to reach the host's loopback ports from its own sandbox.
+The agent-facing protocol (brief, start, monitor, review, resume, cancel,
+failure stops) is the [`agent-deck-run` skill](../skills/agent-deck-run/SKILL.md).
 
 Tools: `packages/backend/src/mcp-tools/run-tools.ts`. Backend routes:
 `/api/trusted-session/agent-runs*` in `packages/backend/src/routes/agent-runs.ts`.

@@ -8,7 +8,7 @@
 
 Agent Deck exposes **tools** (MCP). Your agent’s **control plane** (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`) teaches *how* to use them. Setup treats the harness as a **required install step** alongside host MCP configuration where applicable. For Codex, the plugin owns MCP transport and setup only merges the harness. Agent Deck can run without the harness, but the intended workflow always installs it.
 
-To launch a local agent session bound to a deck from the CLI, `agent-deck run` delegates a brief to a signed-in client — see [DELEGATION.md](./DELEGATION.md) for per-client flags, resume, and trust behavior.
+Agents delegate a brief to another session only through Agent Deck MCP (`start_run`, `get_run`, `cancel_run`; see [MCP_RUN_TOOLS.md](./MCP_RUN_TOOLS.md) and the `agent-deck-run` skill). The host CLI `agent-deck run` is for operators on the host (installation, diagnostics, recovery) — see [DELEGATION.md](./DELEGATION.md) for per-client flags, resume, and trust behavior.
 
 ---
 
