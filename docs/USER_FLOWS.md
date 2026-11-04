@@ -27,7 +27,8 @@ This file answers one question: *what do people actually do with this product, s
 | [F6](#f6-connect-a-service-or-key-and-attach-it-to-a-deck) | Connect a service or key and attach it to a deck | Shipped |
 | [F7](#f7-delegate-a-task-to-another-agent) | Delegate a task to another agent | Shipped |
 | [F8](#f8-carry-decks-to-another-machine) | Carry decks to another machine | Shipped |
-| [F9](#f9-check-that-a-playbook-change-helps) | Check that a playbook change helps | Partial |
+| [F9](#f9-create-an-evaluation-scenario-from-feedback) | Create an evaluation scenario from feedback | Shipped (manual) |
+| [F10](#f10-check-that-a-playbook-change-helps) | Check that a playbook change helps | Partial |
 
 Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) lives in its own repo; its entry point from this product is [FRIEND_PATH.md](./FRIEND_PATH.md) steps 5–6. **Personal cloud hosting** is proposed work ([personal-cloud design](./superpowers/specs/2026-10-02-personal-cloud-agent-deck-design.md)), not a shipped flow.
 
@@ -160,19 +161,36 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 - **Success:** equivalent layout, with no secrets ever in the bundle.
 - **Owner docs:** [STORE_FORMAT.md](./STORE_FORMAT.md), [PRD_EXPORT_IMPORT.md](./PRD_EXPORT_IMPORT.md).
 
-## F9. Check that a playbook change helps
+## F9. Create an evaluation scenario from feedback
 
-- **Actor / goal:** User decides whether a playbook edit is an improvement, using past corrections as test cases.
-- **Trigger:** Several corrections cluster around one playbook, or a proposed patch is non-trivial.
-- **Status: partial.** Scenario curation and a deterministic evaluator ship; running candidates live and promotion stay manual by design.
+- **Actor / goal:** User turns past corrections about one playbook into a reusable test case.
+- **Trigger:** Several correction signals (from F4) point at the same playbook, or a patch is worth testing before accepting.
+- **Status:** Shipped for manual curation. Agent-drafted scenarios are not built.
 
 | # | User does | Observable result |
 |---|-----------|-------------------|
-| 1 | Open the Feedback page and curate grouped signals into an evaluation scenario for one playbook | Scenario saved; see [EVALUATION_SCENARIOS_API.md](./EVALUATION_SCENARIOS_API.md) for promotion |
+| 1 | Open the dashboard **Feedback** page and filter to one playbook | Table of correction signals with excerpt, failure summary, source and time |
+| 2 | Select the signals that describe the same failure | **Create scenario** enables only when the selection is eligible, otherwise a reason is shown |
+| 3 | In the scenario editor, fill in the task input, the historical failed output, and deterministic expectations | The source signals sit beside the form so the user's own words stay visible |
+| 4 | Save as draft, or mark ready | Scenario appears in the **Scenarios** view with its playbook, signal count and check count |
+| 5 | In **Scenarios**, edit, mark ready, retire, or copy a ready scenario's case JSON | The copied JSON is what F10 consumes |
+
+- **Success:** a ready scenario that names its playbook, its source signals, and checks that can pass or fail without a model.
+- **Known gap:** feedback rows keep the correction but not the original failed output, so the user must supply that evidence by hand or the scenario stays a draft ([rsi-feedback-smoke README](./examples/experiments/rsi-feedback-smoke/README.md)).
+- **Owner docs:** [EVALUATION_SCENARIOS_API.md](./EVALUATION_SCENARIOS_API.md), [2026-07-22 feedback table](./superpowers/specs/2026-07-22-feedback-signals-table-redesign.md), [no-backend-llm-boundary.md](./decisions/no-backend-llm-boundary.md).
+
+## F10. Check that a playbook change helps
+
+- **Actor / goal:** User decides whether a playbook edit is an improvement, using F9 scenarios as test cases.
+- **Trigger:** A ready scenario exists and a candidate playbook change is on the table.
+- **Status: partial.** A deterministic evaluator ships; producing candidate outputs and promotion stay manual by design.
+
+| # | User does | Observable result |
+|---|-----------|-------------------|
+| 1 | Put the copied case JSON into an experiment definition | Experiment under `docs/examples/experiments/` shape |
 | 2 | Produce candidate outputs outside the evaluator | Output files |
-| 3 | `agent-deck experiment evaluate` on an experiment definition | Pass/fail per deterministic expectation |
+| 3 | `agent-deck experiment evaluate` on the experiment | Pass/fail per deterministic expectation |
 | 4 | Optionally run an agent against a pinned playbook version ([DELEGATION.md](./DELEGATION.md)) | Run uses exactly that version |
 | 5 | Accept or reject the patch in F4 | Human decision; nothing is promoted automatically |
 
-- **Known gap:** feedback rows lack the original failed output, which blocks promotion ([rsi-feedback-smoke README](./examples/experiments/rsi-feedback-smoke/README.md)).
-- **Owner docs:** [EVALUATION_SCENARIOS_API.md](./EVALUATION_SCENARIOS_API.md), [no-backend-llm-boundary.md](./decisions/no-backend-llm-boundary.md).
+- **Owner docs:** [EVALUATION_SCENARIOS_API.md](./EVALUATION_SCENARIOS_API.md), [examples/experiments/](./examples/experiments/), [no-backend-llm-boundary.md](./decisions/no-backend-llm-boundary.md).

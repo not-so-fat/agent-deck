@@ -24,7 +24,7 @@
 |-----|------|
 | [DIRECTION.md](./DIRECTION.md) | Cross-product direction (agent_deck + agent-dealer), locked decisions, roadmap |
 | [MVP.md](./MVP.md) | Shipped product — bound deck, vault, playbooks, MCP tools |
-| [USER_FLOWS.md](./USER_FLOWS.md) | Typical end-to-end user flows (F1–F9) — the sequence; owner docs hold the details |
+| [USER_FLOWS.md](./USER_FLOWS.md) | Typical end-to-end user flows (F1–F10) — the sequence; owner docs hold the details |
 | [SETUP.md](./SETUP.md) | Install, ports, data dirs, **dashboard** tour |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Components, SQLite, secret storage |
 | [STORE_FORMAT.md](./STORE_FORMAT.md) | File-backed store layout, Git sync, reindex |
