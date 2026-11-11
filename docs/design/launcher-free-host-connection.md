@@ -456,7 +456,7 @@ launcher-free connection.
    everything else is config writing.
 3. Launcher removal per host is supported by the live tests in §1-§3:
    both hosts transmit the configured headers and both re-initialize
-   after a 404 (raw Claude lines pending operator paste, A.2), so no
+   after a 404 (raw lines in A.1/A.2), so no
    host needs to keep the bridge. Same-name project-over-global
    precedence is verified in T3.
 4. `doctor` honesty ships separately and never blocks 1-3.
@@ -468,11 +468,10 @@ T4 after T2+T3; T5 after T4. T6 standalone, blocks nothing and is
 blocked by nothing.
 
 - **T1 — Live-test the pure-MCP connection for Codex and Claude.**
-  Substantially complete in this document (§1-§3, Appendix A) except
-  the operator paste of raw stub JSON lines (A.1 Codex, A.2 Claude;
-  A.2 required for AC2/AC3). Only same-name project-over-global
-  precedence remains after that; it is an acceptance criterion of
-  T3. No longer blocks T2 or T3.
+  Complete in this document (§1-§3, Appendix A, with raw stub JSON
+  lines for both hosts in A.1 Codex and A.2 Claude). Only same-name
+  project-over-global precedence remains; it is an acceptance
+  criterion of T3. No longer blocks T2 or T3.
 - **T2 — Server: resolve deck from folder assignment when the deck
   header is absent.** Scope: in `handleInitialize`, when
   `x-agent-deck-deck-id` is absent but `x-agent-deck-workspace` names a
