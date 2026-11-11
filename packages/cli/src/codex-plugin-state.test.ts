@@ -98,6 +98,25 @@ function seedCodexHome(pluginVersion: string, mcp: unknown): void {
   process.env.CODEX_BIN = stub;
 }
 
+function seedEmptyCodexHome(): void {
+  codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-home-'));
+  pluginRoot = path.join(codexHome, 'roots', 'agent-deck');
+  fs.mkdirSync(pluginRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(codexHome, 'plugin-list.json'),
+    `${JSON.stringify({ plugins: [] }, null, 2)}\n`,
+  );
+  fs.writeFileSync(
+    path.join(codexHome, 'marketplace-list.json'),
+    `${JSON.stringify({ marketplaces: [] }, null, 2)}\n`,
+  );
+  const stub = path.join(codexHome, 'codex');
+  fs.writeFileSync(stub, LIST_STUB.replaceAll('$CODEX_HOME', codexHome));
+  fs.chmodSync(stub, 0o755);
+  process.env.CODEX_HOME = codexHome;
+  process.env.CODEX_BIN = stub;
+}
+
 function hashFixtures(): string {
   const hash = crypto.createHash('sha256');
   for (const relative of ['plugin-list.json', 'marketplace-list.json', path.join('roots', 'agent-deck', '.mcp.json')]) {
@@ -185,23 +204,113 @@ describe('doctor codex plugin state (NOT-188)', () => {
     expect(calls).not.toContain('plugin add');
   });
 
-  it('reports one OK line for a current mcp-launch plugin', async () => {
+  it('reports a manifest-only line for a current mcp-launch plugin', async () => {
     seedCodexHome(CLI_VERSION, LAUNCH_MCP);
     const before = hashFixtures();
 
-    const sectionCode = await runCodexPluginDoctor(CLI_VERSION);
+    const sectionCode = await runCodexPluginDoctor(CLI_VERSION, undefined, {
+      probeDaemon: async () => false,
+    });
     expect(sectionCode).toBe(0);
+    expect(output.join('\n')).toContain(
+      `Codex plugin manifest: OK (${CLI_VERSION}, mcp-launch) (manifest-only, connection not verified)`,
+    );
+    expect(output.join('\n')).not.toContain('Codex plugin: OK (');
 
     output.length = 0;
-    await runDoctor();
+    await runDoctor({ codexDaemonProbe: async () => false });
     const lines = output.join('\n').split('\n');
     // NOTE: full `doctor` exit 0 additionally requires host checks (sqlite
     // native, backend entry) that a bare checkout may not satisfy, so the
     // exit code is asserted on the Codex section above; here we assert what
     // doctor prints for a healthy plugin.
-    expect(lines).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(lines).toContain(
+      `Codex plugin manifest: OK (${CLI_VERSION}, mcp-launch) (manifest-only, connection not verified)`,
+    );
+    expect(output.join('\n')).not.toContain('Codex plugin: OK (');
 
     expect(hashFixtures()).toBe(before);
+  });
+});
+
+describe('honest host connection state (NOT-564)', () => {
+  const MANIFEST_LINE =
+    `Codex plugin manifest: OK (${CLI_VERSION}, mcp-launch) (manifest-only, connection not verified)`;
+
+  function readCallsLog(): string {
+    return fs.readFileSync(path.join(codexHome, 'calls.log'), 'utf8');
+  }
+
+  it('reports no entry found when no Agent Deck entry exists for Codex', async () => {
+    seedEmptyCodexHome();
+    expect(process.env.CODEX_HOME).toBe(codexHome);
+
+    expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(0);
+    let text = output.join('\n');
+    expect(text).toContain('no entry found for Codex');
+    expect(text).not.toContain('daemon is not reachable');
+    expect(text).not.toContain('live session is not verified');
+    expect(text).not.toContain('Codex plugin: OK (');
+
+    output.length = 0;
+    await runDoctor();
+    text = output.join('\n');
+    expect(text).toContain('no entry found for Codex');
+    expect(text).not.toContain('Codex plugin: OK (');
+
+    // Read-only: no mutating Codex command ran.
+    const calls = readCallsLog();
+    expect(calls).not.toContain('plugin remove');
+    expect(calls).not.toContain('plugin add');
+  });
+
+  it('reports daemon not reachable with a valid entry and a stopped daemon', async () => {
+    seedCodexHome(CLI_VERSION, LAUNCH_MCP);
+    const daemonDown = async () => false;
+
+    expect(await runCodexPluginDoctor(CLI_VERSION, undefined, { probeDaemon: daemonDown })).toBe(0);
+    let text = output.join('\n');
+    expect(text).toContain(MANIFEST_LINE);
+    expect(text).toContain('daemon is not reachable');
+    expect(text).not.toContain('no entry found for Codex');
+    expect(text).not.toContain('live session is not verified');
+    expect(text).not.toContain('Codex plugin: OK (');
+
+    output.length = 0;
+    await runDoctor({ codexDaemonProbe: daemonDown });
+    text = output.join('\n');
+    expect(text).toContain(MANIFEST_LINE);
+    expect(text).toContain('daemon is not reachable');
+    expect(text).not.toContain('Codex plugin: OK (');
+
+    const calls = readCallsLog();
+    expect(calls).not.toContain('plugin remove');
+    expect(calls).not.toContain('plugin add');
+  });
+
+  it('reports daemon reachable with no live session verified', async () => {
+    seedCodexHome(CLI_VERSION, LAUNCH_MCP);
+    const daemonUp = async () => true;
+
+    expect(await runCodexPluginDoctor(CLI_VERSION, undefined, { probeDaemon: daemonUp })).toBe(0);
+    let text = output.join('\n');
+    expect(text).toContain(MANIFEST_LINE);
+    expect(text).toContain('daemon is reachable');
+    expect(text).toContain('live session is not verified');
+    expect(text).not.toContain('no entry found for Codex');
+    expect(text).not.toContain('not reachable');
+    expect(text).not.toContain('Codex plugin: OK (');
+
+    output.length = 0;
+    await runDoctor({ codexDaemonProbe: daemonUp });
+    text = output.join('\n');
+    expect(text).toContain('daemon is reachable');
+    expect(text).toContain('live session is not verified');
+    expect(text).not.toContain('Codex plugin: OK (');
+
+    const calls = readCallsLog();
+    expect(calls).not.toContain('plugin remove');
+    expect(calls).not.toContain('plugin add');
   });
 });
 

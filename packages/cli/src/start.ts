@@ -48,7 +48,7 @@ import { readLastReindex } from './backend-runtime';
 import { checkPathForStaleCli } from './stale-cli-check';
 import { formatLastReindex } from './store';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
-import { runCodexPluginDoctor } from './codex-plugin';
+import { runCodexPluginDoctor, type CodexDaemonProbe } from './codex-plugin';
 
 export interface StartOptions {
   backendPort?: number;
@@ -837,7 +837,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   return 0;
 }
 
-export async function runDoctor(): Promise<number> {
+export async function runDoctor(options: { codexDaemonProbe?: CodexDaemonProbe } = {}): Promise<number> {
   const { activated } = runManagedCliEntryHooks({ allowActivate: true });
   if (activated) {
     console.log(`[agent-deck] Activated managed version ${activated}`);
@@ -959,8 +959,11 @@ export async function runDoctor(): Promise<number> {
 
   // Read-only Codex plugin compatibility check (NOT-188): never mutates Codex
   // state, only reports it. A stale/disabled/ambiguous plugin fails doctor.
+  // NOT-564: the daemon probe is injectable so tests pin the connection line.
   console.log('');
-  const codexCode = await runCodexPluginDoctor(getAgentDeckVersion());
+  const codexCode = await runCodexPluginDoctor(getAgentDeckVersion(), undefined, {
+    probeDaemon: options.codexDaemonProbe,
+  });
   if (codexCode !== 0) {
     ok = false;
   }
