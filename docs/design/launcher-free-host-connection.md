@@ -154,7 +154,8 @@ received `x-agent-deck-workspace: <folder>` on **every** request,
 including `initialize`, `notifications/initialized`, `tools/list` and
 `tools/call`. The per-folder file form is covered by the `codex mcp get`
 check above; the live run proves that the `http_headers` value reaches the
-server. Log lines are in §3 and Appendix A. Note for `agent-deck use`:
+server. Condensed log is in §3; raw stub JSON lines are in Appendix A.1.
+Note for `agent-deck use`:
 Codex MCP calls need approval in non-interactive mode; the live run used
 `default_tools_approval_mode = "approve"` on the probe server only.
 
@@ -224,7 +225,9 @@ project `.mcp.json` above (approval granted by the setting
 `enableAllProjectMcpServers`), the recording stub received
 `x-agent-deck-workspace: <folder>` on **every** request, including
 `initialize`, `notifications/initialized`, `tools/list` and `tools/call`.
-Log lines are in §3 and Appendix A.
+Raw stub JSON lines are in Appendix A.2 (OPERATOR TODO — paste required
+for AC2/AC3; this sandbox forbids `listen()`, verified EPERM 2026-11-11,
+so the coding agent cannot collect them).
 
 ### 3. Do the native HTTP clients re-initialize after a 404?
 
@@ -259,6 +262,9 @@ Claude Code `2.1.322` behaved the same way: after the 404 it sent
 - After the 404 it opened two `initialize` sessions in parallel and used
   one of them. The server must tolerate the extra session.
 - It sent `x-agent-deck-workspace` on every request, including `server/discover`.
+
+Raw Claude stub JSON lines (404 followed by new `initialize`): see
+Appendix A.2 (OPERATOR TODO — paste required for AC3).
 
 Server side (verified in code and tests): an unknown `Mcp-Session-Id`
 answers HTTP 404, header `mcp-session-status: expired`, JSON-RPC error
@@ -394,9 +400,12 @@ assignment" does not hold in code:
   header (launch path, `authenticateLaunchDeck`, mcp-server.ts:1711-1790,
   re-validated per request), a Bearer grant (NOT-318), or a
   `bind_workspace` session override on an already-assigned session.
-- The backend reads `.agent-deck/use.json` only for **display**
-  (`readUseManifest` for the workspace-default line,
-  mcp-tools/register.ts:336-338) — never for auth or binding.
+- In the MCP path the backend reads `.agent-deck/use.json` only for
+  **display** (`readUseManifest` for the workspace-default line,
+  mcp-tools/register.ts:336-338) — never for MCP auth or binding.
+  (Precedent for option (b): the run API already binds runs from the
+  same file, `resolveDeckBinding` in
+  packages/backend/src/agent-run-api/host.ts:27-29.)
 - A session initializing with workspace header but no deck header is
   `markUnassigned` (mcp-server.ts:2041-2047): 2 explain-only tools, no
   self-bind. So workspace-header-only entries would connect every folder
@@ -449,8 +458,9 @@ launcher-free connection.
    everything else is config writing.
 3. Launcher removal per host is supported by the live tests in §1-§3:
    both hosts transmit the configured headers and both re-initialize
-   after a 404, so no host needs to keep the bridge. Same-name
-   project-over-global precedence is verified in T3.
+   after a 404 (raw Claude lines pending operator paste, A.2), so no
+   host needs to keep the bridge. Same-name project-over-global
+   precedence is verified in T3.
 4. `doctor` honesty ships separately and never blocks 1-3.
 
 ## Proposed tickets
@@ -460,8 +470,10 @@ T4 after T2+T3; T5 after T4. T6 standalone, blocks nothing and is
 blocked by nothing.
 
 - **T1 — Live-test the pure-MCP connection for Codex and Claude.**
-  Completed by this document (§1-§3, Appendix A). Only same-name
-  project-over-global precedence remains; it is an acceptance criterion of
+  Substantially complete in this document (§1-§3, Appendix A) except
+  the operator paste of raw stub JSON lines (A.1 Codex, A.2 Claude;
+  A.2 required for AC2/AC3). Only same-name project-over-global
+  precedence remains after that; it is an acceptance criterion of
   T3. No longer blocks T2 or T3.
 - **T2 — Server: resolve deck from folder assignment when the deck
   header is absent.** Scope: in `handleInitialize`, when
@@ -483,9 +495,12 @@ blocked by nothing.
   writing `use.json` (now the server-read assignment); print the
   approve/trust + reload MCP next steps. Merge-preserving edits of
   existing files. Tests: `use.test.ts`/`mcp-config.test.ts` coverage.
-  Also verify, per host, that a same-name per-folder `agent-deck` entry
-  shadows the global fallback entry (the one live check not done in this
-  document). One-PR boundary: CLI config writing only, no server change.
+  Also verify live, per host, that a same-name per-folder `agent-deck`
+  entry shadows the global fallback entry, and for Codex that the
+  per-folder `.codex/config.toml` file form transmits the header (repair
+  round 1 proved transmission only via `-c` overrides; the file form is
+  so far covered only by `codex mcp get`). One-PR boundary: CLI config
+  writing only, no server change.
   Blocks: T4. Blocked by: nothing.
 - **T4 — Global fallback entry + plugin decoupling.** Scope: setup
   guidance writes the headerless global HTTP entries (§4); plugin
@@ -509,6 +524,11 @@ blocked by nothing.
   tests only. Blocks: nothing. Blocked by: nothing.
 
 ## Appendix A — Live-test record (executed 2026-11-11)
+
+Status 2026-11-11 (repair round 2, sandbox without loopback): the Codex
+condensed log in §3 stands; raw stub JSON lines for both hosts (A.1/A.2
+below) are OPERATOR TODOs — the A.2 Claude paste is required before merge
+for AC2 (Claude header) and AC3 (per-client 404 log).
 
 Executed locally (loopback available) with `codex-cli 0.157.1` and Claude
 Code `2.1.322`. Both used the recording stub below with
@@ -538,6 +558,30 @@ codex exec --skip-git-repo-check \
   -c 'mcp_servers.probe-deck.http_headers={"x-agent-deck-workspace"="<folder>"}' \
   -c 'mcp_servers.probe-deck.default_tools_approval_mode="approve"' \
   "<call ping twice, sequentially>"
+```
+
+### A.1 Codex raw stub log (OPERATOR TODO — paste)
+
+OPERATOR: run the stub + Codex command above with loopback available,
+then paste the logfile's raw JSON lines here (redact only user-agent
+and private path segments; keep `x-agent-deck-workspace`,
+`mcp-session-id`, `rpc`, and `status` fields intact). The condensed
+form in §3 must match these lines.
+
+```
+<TODO: paste stub_mcp.py logfile JSON lines from the Codex run>
+```
+
+### A.2 Claude raw stub log (OPERATOR TODO — paste; required for AC2/AC3)
+
+OPERATOR: run the stub + Claude command above with loopback available,
+then paste the logfile's raw JSON lines here (same redaction rule).
+Must show `x-agent-deck-workspace` on every request (AC2) and the
+404-then-new-`initialize` sequence (AC3), including the
+`server/discover` probe and parallel `initialize` pair described in §3.
+
+```
+<TODO: paste stub_mcp.py logfile JSON lines from the Claude run>
 ```
 
 Not executed here: same-name project-over-global precedence (A.4 of the
