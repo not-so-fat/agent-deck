@@ -69,10 +69,13 @@ function checkReleaseSync() {
     const entry = mcp?.mcpServers?.['agent-deck'];
     const args = Array.isArray(entry?.args) ? entry.args : [];
     const legacyLaunch = entry?.command === 'agent-deck' && args.includes('mcp-launch');
+    const expectedShellScript =
+      'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; command -v agent-deck >/dev/null 2>&1 || { echo "agent-deck launcher not found; install it in $HOME/.local/bin, /opt/homebrew/bin, or /usr/local/bin (searched these directories and PATH)" >&2; exit 127; }; exec agent-deck mcp-launch';
     const shellLaunch =
       entry?.command === '/bin/sh' &&
       args[0] === '-c' &&
-      /(?:^|[;\s])exec\s+agent-deck\s+mcp-launch\s*$/.test(args[1] ?? '');
+      args.length === 2 &&
+      args[1] === expectedShellScript;
     transportOk = !!entry && (legacyLaunch || shellLaunch);
   } catch {
     transportOk = false;

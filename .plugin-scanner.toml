@@ -23,3 +23,10 @@ ignore_paths = [
 [rules]
 # Keep secrets/dynamic-exec rules on for plugin-facing files (skills, manifests, root MCP).
 disabled = []
+
+[rules.severity_overrides]
+# The root MCP manifest intentionally uses POSIX `exec` only to replace /bin/sh
+# with the fixed agent-deck transport. Keep the finding visible, but do not treat
+# that process-replacement builtin as a destructive high-severity command. The
+# pre-publish check pins the complete approved launcher script.
+DANGEROUS_MCP_COMMAND = "medium"
