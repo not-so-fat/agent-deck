@@ -148,9 +148,15 @@ url = "http://127.0.0.1:1110/mcp"
 http_headers = { "x-agent-deck-workspace" = "<absolute folder>" }
 ```
 
-Live header-transmission evidence (stub server recording the header) could
-not be collected in this session: the sandbox forbids `listen()` (EPERM,
-verified once). Repro protocol + stub script: see Appendix A.
+Live header-transmission evidence (Codex `0.157.1`, config supplied
+through `-c` overrides to avoid touching user config): the recording stub
+received `x-agent-deck-workspace: <folder>` on **every** request,
+including `initialize`, `notifications/initialized`, `tools/list` and
+`tools/call`. The per-folder file form is covered by the `codex mcp get`
+check above; the live run proves that the `http_headers` value reaches the
+server. Log lines are in §3 and Appendix A. Note for `agent-deck use`:
+Codex MCP calls need approval in non-interactive mode; the live run used
+`default_tools_approval_mode = "approve"` on the probe server only.
 
 ### 2. Claude Code supports the same per-folder static header entry
 
@@ -213,64 +219,70 @@ Caveats:
   expected to be committed. Anything user-local (deck UUIDs) must stay out
   of it — same constraint as Codex, same answer (§5).
 
-Live header-transmission evidence: pending for the same sandbox reason;
-same Appendix A protocol (replace the Codex config step with the
-`claude mcp add` command above and run `claude -p` or an interactive
-session from the folder).
+Live header-transmission evidence (Claude Code `2.1.322`): with the
+project `.mcp.json` above (approval granted by the setting
+`enableAllProjectMcpServers`), the recording stub received
+`x-agent-deck-workspace: <folder>` on **every** request, including
+`initialize`, `notifications/initialized`, `tools/list` and `tools/call`.
+Log lines are in §3 and Appendix A.
 
 ### 3. Do the native HTTP clients re-initialize after a 404?
 
-**Short answer: unknown for both hosts — live test required (Appendix A).
-What is established statically is on which side the responsibility sits.**
+**Answer: yes, both hosts.** Verified live with the Appendix A stub, which
+forgets all sessions after the first `tools/call` (simulated daemon
+restart). Both hosts then received 404 on their next call, started a new
+session with a fresh `initialize` carrying no session id, and the retried
+call succeeded, so the second `ping` returned `pong` in both runs.
 
-Server side (verified in code + tests): an unknown `Mcp-Session-Id`
-answers the restart signal — HTTP 404, header
-`mcp-session-status: expired`, JSON-RPC error `-32001` with a
-"re-initialize" message (`sendSessionExpired`,
+Codex `0.157.1` (log condensed; the user-agent header is removed):
+
+```
+POST initialize                 hdr x-agent-deck-workspace=<folder>            -> 200 new session d68d...
+POST notifications/initialized  hdr x-agent-deck-workspace, session d68d...    -> 202
+POST tools/list                 hdr x-agent-deck-workspace, session d68d...    -> 200
+POST tools/call                 session d68d...                                -> 200   (pong)
+-- SIMULATED_RESTART: all sessions forgotten --
+POST tools/call                 session d68d...                                -> 404
+POST initialize                 hdr x-agent-deck-workspace, no session id      -> 200 new session 29d6...
+POST notifications/initialized  session 29d6...                                -> 202
+POST tools/call                 session 29d6...                                -> 200   (pong)
+```
+
+Claude Code `2.1.322` behaved the same way: after the 404 it sent
+`initialize` without a session id, got a new session, and its retried
+`tools/call` returned 200 (`pong`). Claude Code differs in three ways:
+
+- It sends a `server/discover` POST with no session before the first
+  `initialize`. The stub answered 404 and Claude fell back to `initialize`.
+  The real server must tolerate this probe without breaking connection
+  setup. T2 adds an acceptance criterion for it.
+- After the 404 it opened two `initialize` sessions in parallel and used
+  one of them. The server must tolerate the extra session.
+- It sent `x-agent-deck-workspace` on every request, including `server/discover`.
+
+Server side (verified in code and tests): an unknown `Mcp-Session-Id`
+answers HTTP 404, header `mcp-session-status: expired`, JSON-RPC error
+`-32001` with a re-initialize message (`sendSessionExpired`,
 packages/backend/src/mcp-server.ts:1484-1489; covered by
 `mcp-server.http.test.ts:276-293`, including the GET/SSE leg). An
 `initialize` carrying a stale id is accepted and issued a fresh session
-(mcp-server.ts:1986-1988). The code comment states the contract as spec
-(mcp-server.ts:1442-1443):
+(mcp-server.ts:1986-1988).
 
-> The streamable-HTTP spec says a server MUST reply 404 to an unknown
-> `Mcp-Session-Id`, and that a client seeing 404 MUST re-initialize.
+MCP specification, revision 2025-06-18, Transports, Streamable HTTP,
+Session Management
+(`https://modelcontextprotocol.io/specification/2025-06-18/basic/transports`),
+rules 3 and 4, quoted verbatim:
 
-Client side, TypeScript SDK v1.29.0
-(`node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js`,
-the stack Claude Code builds on): **`StreamableHTTPClientTransport` does
-not recover by itself.** The POST path handles 401/403 (auth), 202 and 405
-(lines 314, 336, 370, 102); any other non-OK status — including 404 —
-becomes `StreamableHTTPError(404, ...)` thrown to the host (line 364).
-Session recovery is therefore entirely host code. Whether Claude Code 2.1.x
-re-initializes on it could not be determined statically; one bundle string
-("Session expiry is not retried automatically; callers can mcp_reconnect
-and retry") shows at least one MCP path does not auto-retry, and `/mcp
-reconnect` exists as the manual path — but that string may describe the
-subprocess/agent path rather than the interactive HTTP client. Live test
-decides.
+> 3. The server **MAY** terminate the session at any time, after which it **MUST** respond to requests containing that session ID with HTTP 404 Not Found.
+>
+> 4. When a client receives HTTP 404 in response to a request containing an `Mcp-Session-Id`, it **MUST** start a new session by sending a new `InitializeRequest` without a session ID attached.
 
-Codex 0.157.1 embeds Rust `rmcp-3.2.0`
-(`transport/streamable_http_client.rs`) plus its own
-`rmcp-client/src/streamable_http_retry.rs` (source paths from binary
-strings). Its 404 behavior could not be determined statically either —
-`streamable_http_retry.rs` suggests retry logic exists, but retry is not
-re-initialization. Live test decides.
+The fetched page shows no revision date beyond the `2025-06-18` in its URL.
 
-MCP specification quote: **not retrieved — no network in this session.**
-The SDK README points at `https://modelcontextprotocol.io/specification/draft`
-(Streamable HTTP transport, Session Management). From memory (UNVERIFIED,
-do not cite): the server MUST answer 404 to an unknown session id and the
-client MUST start a new session with a fresh `initialize` without a
-session id. The child ticket implementing the live test must paste the
-exact spec paragraph into this document.
-
-Design consequence: if either host does not re-initialize, the pure-MCP
-design needs a per-host answer before the launcher can be removed for that
-host — e.g. keep the bridge for that host, accept manual `/mcp reconnect`
-after daemon restarts (documented limitation), or shorten the exposure
-(e.g. daemon restarts only on explicit user action). Do not assume both
-hosts recover.
+Design consequence: neither host needs the bridge for daemon-restart
+recovery. The `StreamableHTTPClientTransport` in the TypeScript SDK throws
+on 404 (its README points at the spec), but Claude Code's own host code
+recovers, as the live run shows.
 
 ### 4. Unassigned folders
 
@@ -434,26 +446,22 @@ launcher-free connection.
    workspace → deck from `.agent-deck/use.json` at `initialize` when no
    deck header is present. This is the one load-bearing server change;
    everything else is config writing.
-3. Gate launcher removal per host on the Appendix A live test: headers
-   received, 404 → re-initialize (or a documented recovery story), and
-   same-name project-over-global precedence. If a host fails
-   re-initialization, that host keeps the bridge until it passes — the
-   design degrades per host, not wholesale.
+3. Launcher removal per host is supported by the live tests in §1-§3:
+   both hosts transmit the configured headers and both re-initialize
+   after a 404, so no host needs to keep the bridge. Same-name
+   project-over-global precedence is verified in T3.
 4. `doctor` honesty ships separately and never blocks 1-3.
 
 ## Proposed tickets
 
-Ordering: T1 first (evidence gate); T2 and T3 in parallel after T1;
+Ordering: T1 is complete (this document). T2 and T3 run in parallel;
 T4 after T2+T3; T5 after T4. T6 standalone, blocks nothing and is
 blocked by nothing.
 
 - **T1 — Live-test the pure-MCP connection for Codex and Claude.**
-  Scope: run the Appendix A protocol with network sandbox enabled:
-  stub-server header capture per host, mid-session stub restart →
-  404 → re-initialize (or documented failure), same-name
-  project-over-global precedence, and paste the MCP spec paragraph on
-  404/re-initialize into §3. One-PR boundary: this document updated
-  with the logs + spec quote, no product code. Blocks: T2, T3.
+  Completed by this document (§1-§3, Appendix A). Only same-name
+  project-over-global precedence remains; it is an acceptance criterion of
+  T3. No longer blocks T2 or T3.
 - **T2 — Server: resolve deck from folder assignment when the deck
   header is absent.** Scope: in `handleInitialize`, when
   `x-agent-deck-deck-id` is absent but `x-agent-deck-workspace` names a
@@ -462,8 +470,10 @@ blocked by nothing.
   existing unassigned flow. Preserve per-request re-validation
   semantics; loopback trust unchanged. Tests:
   `mcp-server.http.test.ts`-level coverage for bind/no-assignment/
-  corrupt-manifest. One-PR boundary: server + tests only, no CLI
-  changes. Blocks: T4. Blocked by: T1.
+  corrupt-manifest, a session-less `server/discover` POST (sent by Claude
+  Code before `initialize`), and two parallel `initialize` calls from one
+  client; none may break connection setup. One-PR boundary: server +
+  tests only, no CLI changes. Blocks: T4. Blocked by: nothing.
 - **T3 — `agent-deck use`: write per-folder pure-MCP entries for Codex
   and Claude.** Scope: `use.ts`/`mcp-config.ts` write
   `<folder>/.codex/config.toml` (`[mcp_servers.agent-deck]` url +
@@ -472,14 +482,16 @@ blocked by nothing.
   writing `use.json` (now the server-read assignment); print the
   approve/trust + reload MCP next steps. Merge-preserving edits of
   existing files. Tests: `use.test.ts`/`mcp-config.test.ts` coverage.
-  One-PR boundary: CLI config writing only, no server change.
-  Blocks: T4. Blocked by: T1.
+  Also verify, per host, that a same-name per-folder `agent-deck` entry
+  shadows the global fallback entry (the one live check not done in this
+  document). One-PR boundary: CLI config writing only, no server change.
+  Blocks: T4. Blocked by: nothing.
 - **T4 — Global fallback entry + plugin decoupling.** Scope: setup/doctor
   guidance writes the headerless global HTTP entries (§4); plugin
   manifests drop the shared stdio `.mcp.json` connection (skills and
   guidance stay); docs updated (SETUP, CODEX_PLUGIN). Per-host rollout:
-  a host whose T1 re-init result failed keeps the launcher entry until
-  its recovery story lands. One-PR boundary: plugin manifests +
+  both hosts re-initialize after a 404 (§3), so no host keeps the
+  launcher entry for recovery reasons. One-PR boundary: plugin manifests +
   setup/doctor guidance + docs, no behavior change to server or `use`.
   Blocks: nothing (rollout completes here). Blocked by: T2, T3.
 - **T5 — Retire `mcp-launch`/bridge for migrated hosts.** Scope: remove
@@ -493,95 +505,37 @@ blocked by nothing.
   of reporting the plugin manifest as OK. One-PR boundary: doctor +
   tests only. Blocks: nothing. Blocked by: nothing.
 
-## Appendix A — Live-test protocol (pending: needs `listen()`)
+## Appendix A — Live-test record (executed 2026-11-11)
 
-Blocked in this session by the network sandbox (`listen()` → EPERM).
-Run with `--sandbox-network enabled` or `--disable-sandbox`.
+Executed locally (loopback available) with `codex-cli 0.157.1` and Claude
+Code `2.1.322`. Both used the recording stub below with
+`--restart-after-first-call`, which forgets every session after the first
+`tools/call` (a simulated daemon restart), so the next request carrying the
+old `Mcp-Session-Id` gets 404 as in spec rule 3. The prompt asked each host
+to call the stub's `ping` tool twice in sequence.
 
-A.1 Recording stub server (`/tmp/stub-mcp.py`, stdlib only). Run:
-`python3 /tmp/stub-mcp.py 1120` (port unused by the daemon):
+Stub: `python3 docs/design/launcher-free-host-connection/stub_mcp.py <port> <logfile> --restart-after-first-call`. It
+answers `initialize` with a new `Mcp-Session-Id`, `tools/list`, and
+`tools/call` (`pong`); it answers 404 plus `mcp-session-status: expired`
+and JSON-RPC `-32001` for an unknown session id on any non-`initialize`
+request, and logs method, selected headers and status per request. The
+script is `docs/design/launcher-free-host-connection/stub_mcp.py`
+(Python standard library only).
 
-```python
-import json, sys, uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+Commands:
 
-SESSION = None  # reset by restarting the process mid-session (test A.3)
+```
+# Claude (folder with .mcp.json from §2, headers incl. x-agent-deck-workspace)
+cd <folder> && claude -p "<call ping twice, sequentially>" \
+  --settings '{"enableAllProjectMcpServers":true}' --allowedTools "mcp__probe-deck__ping"
 
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a):
-        pass
-
-    def _send(self, code, obj, session=None):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        if session:
-            self.send_header("mcp-session-id", session)
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_POST(self):
-        global SESSION
-        length = int(self.headers.get("Content-Length", 0))
-        msg = json.loads(self.rfile.read(length) or b"{}")
-        print(f"HDR x-agent-deck-workspace={self.headers.get('x-agent-deck-workspace')!r} "
-              f"mcp-session-id={self.headers.get('mcp-session-id')!r} method={msg.get('method')}",
-              flush=True)
-        if msg.get("method") == "initialize":
-            SESSION = uuid.uuid4().hex
-            print(f"NEW session {SESSION}", flush=True)
-            self._send(200, {"jsonrpc": "2.0", "id": msg.get("id"),
-                             "result": {"protocolVersion": "2025-03-26",
-                                        "capabilities": {"tools": {}},
-                                        "serverInfo": {"name": "stub", "version": "0"}}},
-                       session=SESSION)
-            return
-        if self.headers.get("mcp-session-id") != SESSION:
-            print(f"404 for {self.headers.get('mcp-session-id')!r} (ours: {SESSION})", flush=True)
-            self._send(404, {"jsonrpc": "2.0", "id": msg.get("id"),
-                             "error": {"code": -32001,
-                                       "message": "Unknown session; client MUST re-initialize"}})
-            return
-        method = msg.get("method")
-        if method == "tools/list":
-            self._send(200, {"jsonrpc": "2.0", "id": msg.get("id"),
-                             "result": {"tools": []}}, session=SESSION)
-        elif method == "notifications/initialized" or msg.get("id") is None:
-            self.send_response(202)
-            self.end_headers()
-        else:
-            self._send(200, {"jsonrpc": "2.0", "id": msg.get("id"), "result": {}},
-                       session=SESSION)
-
-ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+# Codex (config overrides, sandbox kept on; no user config or credential changed)
+codex exec --skip-git-repo-check \
+  -c 'mcp_servers.probe-deck.url="http://127.0.0.1:18111/mcp"' \
+  -c 'mcp_servers.probe-deck.http_headers={"x-agent-deck-workspace"="<folder>"}' \
+  -c 'mcp_servers.probe-deck.default_tools_approval_mode="approve"' \
+  "<call ping twice, sequentially>"
 ```
 
-A.2 Header capture.
-
-- Codex: `mkdir -p /tmp/codex-live/.codex`, write the §1 example with
-  port `1120` and workspace `/tmp/codex-live`, trust the folder, then
-  from `/tmp/codex-live` run `codex exec --sandbox read-only
-  "list your MCP tools"` (or open the TUI). Expect stub lines showing
-  `HDR x-agent-deck-workspace='/tmp/codex-live'`. Paste the stub log.
-- Claude: `mkdir -p /tmp/claude-live && cd /tmp/claude-live`,
-  `claude mcp add --scope project --transport http live-deck
-  http://127.0.0.1:1120/mcp --header "x-agent-deck-workspace:
-  /tmp/claude-live"`, approve, run `claude -p "list your MCP tools"`.
-  Expect the same header line. Paste the stub log.
-
-A.3 404 → re-initialize. With the host session connected, restart the
-stub process (kills `SESSION`), then trigger another tool call from the
-same host session. Expect stub lines: `404 for '<old>'` followed by a
-fresh `initialize` + `NEW session`. Per host, paste the log and record
-re-initialized yes/no. If no: record the host's actual behavior (error
-surfacing? manual `/mcp reconnect` recovery?) verbatim.
-
-A.4 Precedence. With the §4 global entry plus the per-folder entry under
-the same name, confirm the folder session sends the workspace header
-(global shadowed). Paste the stub line.
-
-A.5 Spec quote. Fetch
-`https://modelcontextprotocol.io/specification/draft` (Streamable HTTP
-transport, Session Management) and paste the 404/re-initialize paragraph
-into §3, replacing the UNVERIFIED note.
+Not executed here: same-name project-over-global precedence (A.4 of the
+original protocol). It moves to T3 as an acceptance criterion.
