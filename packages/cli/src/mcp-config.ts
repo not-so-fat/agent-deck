@@ -8,7 +8,7 @@ import { sanitizeJsonText } from './strip-ansi';
 export const CURSOR_MCP_RECOVERY_HINT =
   "If Agent Deck tools are missing in Cursor, don't use `mcp_auth` — run `agent-deck use <deck> --client cursor` in the project folder, then reload Cursor MCP.";
 
-export type McpClient = 'cursor' | 'claude' | 'claude-desktop' | 'muse';
+export type McpClient = 'cursor' | 'claude' | 'claude-desktop' | 'muse' | 'codex';
 export type SetupScope = 'global' | 'project';
 
 /** Muse user settings require this exact schema version (NOT-387). */
@@ -58,20 +58,61 @@ export function resolveConfigPath(
         return path.join(cwd, '.mcp.json');
       }
       return path.join(resolveMuseGlobalConfigDir(home), 'muse', 'settings.json');
+    case 'codex':
+      return scope === 'project'
+        ? path.join(cwd, '.codex', 'config.toml')
+        : path.join(home, '.codex', 'config.toml');
     default:
       throw new Error(`Unsupported client: ${client satisfies never}`);
   }
 }
 
+/** Pure-HTTP Codex entry: URL plus the workspace header only (NOT-563). */
+export type CodexAgentDeckEntry = {
+  url: string;
+  http_headers: Record<string, string>;
+};
+
 /**
- * MCP client entry for the agent-deck server. Uses the trusted local launcher,
- * which reads the folder assignment at runtime — no deck id in tracked config.
+ * Pure-HTTP entry for a Codex project config (`<folder>/.codex/config.toml`).
+ * The daemon resolves the deck from `.agent-deck/use.json` — no deck id here.
+ */
+export function buildCodexAgentDeckEntry(
+  endpoint: McpEndpoint,
+  options: { workspaceRoot: string },
+): CodexAgentDeckEntry {
+  return {
+    url: buildMcpUrl(endpoint),
+    http_headers: {
+      'x-agent-deck-workspace': path.resolve(options.workspaceRoot),
+    },
+  };
+}
+
+/**
+ * MCP client entry for the agent-deck server. Launcher clients use the
+ * trusted local launcher, which reads the folder assignment at runtime —
+ * no deck id in tracked config. Codex and Claude project entries are
+ * pure HTTP (NOT-563): the workspace header names the folder and the
+ * daemon resolves the deck from `.agent-deck/use.json`.
+ *
+ * A `workspaceRoot` selects the per-folder HTTP form for Claude; without
+ * one Claude keeps the legacy stdio launcher (global setup fallback).
  */
 export function buildAgentDeckEntry(
   client: McpClient,
   endpoint: McpEndpoint,
   options?: { workspaceRoot?: string },
 ): Record<string, unknown> {
+  if (client === 'codex') {
+    if (!options?.workspaceRoot) {
+      throw new Error(
+        'buildAgentDeckEntry(codex) requires options.workspaceRoot for the x-agent-deck-workspace header',
+      );
+    }
+    return buildCodexAgentDeckEntry(endpoint, { workspaceRoot: options.workspaceRoot });
+  }
+
   if (client === 'claude-desktop') {
     return {
       command: 'agent-deck',
@@ -97,6 +138,17 @@ export function buildAgentDeckEntry(
   }
 
   if (client === 'claude') {
+    if (options?.workspaceRoot) {
+      // NOT-563 per-folder pure-MCP entry: the daemon resolves the deck
+      // from `.agent-deck/use.json` — no deck id in the file.
+      return {
+        type: 'http',
+        url: buildMcpUrl(endpoint),
+        headers: {
+          'x-agent-deck-workspace': path.resolve(options.workspaceRoot),
+        },
+      };
+    }
     const env: Record<string, string> = {
       AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
       AGENT_DECK_HOST: endpoint.host,
@@ -416,4 +468,84 @@ export function mergeMcpServerConfig(
 export function writeJsonFile(filePath: string, data: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+}
+
+export function readTextFile(filePath: string): string {
+  if (!fs.existsSync(filePath)) {
+    return '';
+  }
+  return fs.readFileSync(filePath, 'utf8');
+}
+
+export function writeTextFile(filePath: string, text: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, text, 'utf8');
+}
+
+/** Matches our managed Codex section header, bare or quoted, with any comment. */
+const CODEX_AGENT_DECK_SECTION_RE =
+  /^\s*\[mcp_servers\.("agent-deck"|'agent-deck'|agent-deck)\]\s*(?:#.*)?$/;
+
+function isTomlSectionHeader(line: string): boolean {
+  return line.trimStart().startsWith('[');
+}
+
+export function escapeTomlBasicString(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '\\r')
+    .replaceAll('\t', '\\t');
+}
+
+/**
+ * Canonical `[mcp_servers.agent-deck]` TOML block (NOT-563). No trailing
+ * newline — the merge helper owns file framing.
+ */
+export function formatCodexMcpSection(entry: CodexAgentDeckEntry): string {
+  const headers = Object.entries(entry.http_headers)
+    .map(
+      ([name, value]) => `"${escapeTomlBasicString(name)}" = "${escapeTomlBasicString(value)}"`,
+    )
+    .join(', ');
+  return [
+    '[mcp_servers.agent-deck]',
+    `url = "${escapeTomlBasicString(entry.url)}"`,
+    `http_headers = { ${headers} }`,
+  ].join('\n');
+}
+
+/**
+ * Merge our managed section into existing Codex TOML, preserving every
+ * unrelated byte. An existing agent-deck section is replaced in place
+ * (and its header normalized to the bare form); otherwise the section is
+ * appended after a blank separator. Idempotent: merging twice yields
+ * byte-identical text. The result ends with exactly one newline when the
+ * section is the last content.
+ */
+export function mergeCodexTomlConfig(existingText: string, section: string): string {
+  const lines = existingText.split('\n');
+  const headerIdx = lines.findIndex((line) => CODEX_AGENT_DECK_SECTION_RE.test(line));
+  if (headerIdx === -1) {
+    let text = existingText;
+    if (text !== '' && !text.endsWith('\n')) {
+      text += '\n';
+    }
+    if (text !== '' && !text.endsWith('\n\n')) {
+      text += '\n';
+    }
+    return `${text}${section}\n`;
+  }
+  let endIdx = lines.length;
+  for (const [index, line] of lines.entries()) {
+    if (index > headerIdx && isTomlSectionHeader(line)) {
+      endIdx = index;
+      break;
+    }
+  }
+  const merged = [...lines.slice(0, headerIdx), ...section.split('\n'), ...lines.slice(endIdx)].join(
+    '\n',
+  );
+  return merged.endsWith('\n') ? merged : `${merged}\n`;
 }
