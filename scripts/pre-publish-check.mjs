@@ -67,11 +67,13 @@ function checkReleaseSync() {
   try {
     const mcp = readJson('.mcp.json');
     const entry = mcp?.mcpServers?.['agent-deck'];
-    transportOk =
-      !!entry &&
-      entry.command === 'agent-deck' &&
-      Array.isArray(entry.args) &&
-      entry.args.includes('mcp-launch');
+    const args = Array.isArray(entry?.args) ? entry.args : [];
+    const legacyLaunch = entry?.command === 'agent-deck' && args.includes('mcp-launch');
+    const shellLaunch =
+      entry?.command === '/bin/sh' &&
+      args[0] === '-c' &&
+      /(?:^|[;\s])exec\s+agent-deck\s+mcp-launch\s*$/.test(args[1] ?? '');
+    transportOk = !!entry && (legacyLaunch || shellLaunch);
   } catch {
     transportOk = false;
   }

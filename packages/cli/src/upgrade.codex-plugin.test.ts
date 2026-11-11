@@ -214,7 +214,9 @@ describe('upgrade codex plugin reconciliation (NOT-188)', { timeout: 30_000 }, (
     expect(removeIdx).toBeGreaterThanOrEqual(0);
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(calls.some((line) => line.includes('marketplace upgrade'))).toBe(false);
-    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(text).toContain(
+      `Codex plugin: OK (${CLI_VERSION}, mcp-launch; manifest only, host connection not verified)`,
+    );
   });
 
   it('refreshes a git marketplace before remove/add', async () => {
@@ -501,7 +503,9 @@ describe('current-contract reconciliation (NOT-301)', { timeout: 30_000 }, () =>
     const addIdx = calls.findIndex((line) => line === `codex plugin add ${SELECTOR}`);
     expect(removeIdx).toBeGreaterThanOrEqual(0);
     expect(addIdx).toBeGreaterThan(removeIdx);
-    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(text).toContain(
+      `Codex plugin: OK (${CLI_VERSION}, mcp-launch; manifest only, host connection not verified)`,
+    );
   });
 
   it('leaves an installed[] entry with enabled:false without remove/add', async () => {
@@ -696,7 +700,9 @@ exit 1
 
     output.length = 0;
     expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(0);
-    expect(output.join('\n')).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(output.join('\n')).toContain(
+      `Codex plugin: OK (${CLI_VERSION}, mcp-launch; manifest only, host connection not verified)`,
+    );
   });
 });
 
@@ -793,7 +799,9 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     expect(removeIdx).toBeGreaterThanOrEqual(0);
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(text).toContain('Already on the latest version.');
-    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(text).toContain(
+      `Codex plugin: OK (${CLI_VERSION}, mcp-launch; manifest only, host connection not verified)`,
+    );
     expect(text).not.toContain('Upgrade complete');
     expect(text).not.toContain('CLI upgrade complete');
   });
@@ -814,7 +822,9 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     expect(removeIdx).toBeGreaterThanOrEqual(0);
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(text).toContain('Already on the latest version.');
-    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(text).toContain(
+      `Codex plugin: OK (${CLI_VERSION}, mcp-launch; manifest only, host connection not verified)`,
+    );
     expect(text).not.toContain('Upgrade complete');
     expect(text).not.toContain('CLI upgrade complete');
   });
@@ -835,7 +845,9 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     expect(calls.some((line) => line.includes('plugin add'))).toBe(false);
     expect(text).toContain('Already on the latest version.');
     expect(output.filter((line) => line.includes('Codex plugin: OK (')).length).toBe(1);
-    expect(text).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(text).toContain(
+      `Codex plugin: OK (${CLI_VERSION}, mcp-launch; manifest only, host connection not verified)`,
+    );
   });
 
   it('no-op refreshes a git marketplace before remove/add', async () => {

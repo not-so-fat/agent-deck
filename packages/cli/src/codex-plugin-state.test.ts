@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -33,6 +33,112 @@ const LEGACY_MCP = {
 const LAUNCH_MCP = {
   mcpServers: { 'agent-deck': { type: 'stdio', command: 'agent-deck', args: ['mcp-launch'] } },
 };
+
+const SHELL_LAUNCH_MCP = {
+  mcpServers: {
+    'agent-deck': {
+      type: 'stdio',
+      command: '/bin/sh',
+      args: [
+        '-c',
+        'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; command -v agent-deck >/dev/null 2>&1 || { echo "agent-deck launcher not found; install it in $HOME/.local/bin, /opt/homebrew/bin, or /usr/local/bin (searched these directories and PATH)" >&2; exit 127; }; exec agent-deck mcp-launch',
+      ],
+    },
+  },
+};
+
+type SpawnResult = { code: number | null; stdout: string; stderr: string };
+
+function runManifestTransport(
+  manifest: typeof SHELL_LAUNCH_MCP,
+  home: string,
+  requests: unknown[] = [],
+): Promise<SpawnResult> {
+  const entry = manifest.mcpServers['agent-deck'];
+  return new Promise((resolve, reject) => {
+    const child = spawn(entry.command, entry.args, {
+      env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    for (const request of requests) {
+      child.stdin.write(`${JSON.stringify(request)}\n`);
+    }
+    child.stdin.end();
+  });
+}
+
+describe('bundled Codex plugin launcher (NOT-561)', () => {
+  const manifestPath = path.join(__dirname, '..', '..', '..', '.mcp.json');
+
+  it('launches the managed agent-deck from a desktop PATH and speaks only MCP JSON on stdout', async () => {
+    const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-launcher-home-'));
+    try {
+      const binDir = path.join(fixtureHome, '.local', 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      const stub = path.join(binDir, 'agent-deck');
+      fs.writeFileSync(
+        stub,
+        `#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"agent-deck-stub","version":"1.0.0"}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_session_context","description":"fixture"}]}}'
+      ;;
+  esac
+done
+`,
+      );
+      fs.chmodSync(stub, 0o755);
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as typeof SHELL_LAUNCH_MCP;
+
+      const result = await runManifestTransport(manifest, fixtureHome, [
+        { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+        { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+      ]);
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+      const lines = result.stdout.trim().split('\n');
+      expect(lines).toHaveLength(2);
+      const responses = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(responses.map((response) => response.id)).toEqual([1, 2]);
+      expect(result.stdout).toContain('get_session_context');
+      expect(lines.every((line) => JSON.stringify(JSON.parse(line)) === line)).toBe(true);
+    } finally {
+      fs.rmSync(fixtureHome, { recursive: true, force: true });
+    }
+  });
+
+  it('reports an actionable error for a missing launcher without writing to stdout', async () => {
+    const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-missing-launcher-home-'));
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as typeof SHELL_LAUNCH_MCP;
+      const result = await runManifestTransport(manifest, fixtureHome);
+
+      expect(result.code).not.toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain('agent-deck');
+      expect(result.stderr).toContain(`${fixtureHome}/.local/bin`);
+      expect(result.stderr).toContain('/opt/homebrew/bin');
+      expect(result.stderr).toContain('/usr/local/bin');
+    } finally {
+      fs.rmSync(fixtureHome, { recursive: true, force: true });
+    }
+  });
+});
 
 let codexHome: string;
 let pluginRoot: string;
@@ -130,6 +236,27 @@ afterEach(() => {
 });
 
 describe('doctor codex plugin state (NOT-188)', () => {
+  it('recognizes the shell launcher and legacy transport but rejects unrelated shell scripts', async () => {
+    seedCodexHome(CLI_VERSION, SHELL_LAUNCH_MCP);
+    expect((await inspectCodexPlugin(CLI_VERSION)).transport).toBe('mcp-launch');
+
+    fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`);
+    expect((await inspectCodexPlugin(CLI_VERSION)).transport).toBe('mcp-launch');
+
+    const unrelatedShell = {
+      mcpServers: {
+        'agent-deck': { type: 'stdio', command: '/bin/sh', args: ['-c', 'exec other-server'] },
+      },
+    };
+    fs.writeFileSync(
+      path.join(pluginRoot, '.mcp.json'),
+      `${JSON.stringify(unrelatedShell, null, 2)}\n`,
+    );
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.transport).toBe('unknown');
+    expect(state.classification).toBe('unknown-transport');
+  });
+
   it('fails read-only on a legacy direct-HTTP 1.4.4 plugin', async () => {
     seedCodexHome('1.4.4', LEGACY_MCP);
     // Isolated fixture home: never the developer's real ~/.codex.
@@ -199,7 +326,9 @@ describe('doctor codex plugin state (NOT-188)', () => {
     // native, backend entry) that a bare checkout may not satisfy, so the
     // exit code is asserted on the Codex section above; here we assert what
     // doctor prints for a healthy plugin.
-    expect(lines).toContain(`Codex plugin: OK (${CLI_VERSION}, mcp-launch)`);
+    expect(lines).toContain(
+      `Codex plugin: OK (${CLI_VERSION}, mcp-launch; manifest only, host connection not verified)`,
+    );
 
     expect(hashFixtures()).toBe(before);
   });

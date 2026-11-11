@@ -293,6 +293,13 @@ function readTransport(root: string | undefined): CodexTransport {
   if (command === 'agent-deck' && args.includes('mcp-launch')) {
     return 'mcp-launch';
   }
+  if (
+    command === '/bin/sh' &&
+    args[0] === '-c' &&
+    /(?:^|[;\s])exec\s+agent-deck\s+mcp-launch\s*$/.test(args[1] ?? '')
+  ) {
+    return 'mcp-launch';
+  }
   const type = asString(entry.type) ?? '';
   const url = asString(entry.url) ?? '';
   if (type === 'http' || /^https?:/i.test(url)) {
@@ -599,6 +606,10 @@ function printManualSyncBlock(selector: string, marketplaceName?: string): void 
   }
 }
 
+function codexPluginOkLine(version: string, transport: CodexTransport): string {
+  return `Codex plugin: OK (${version}, ${transport}; manifest only, host connection not verified)`;
+}
+
 /**
  * Reconcile the installed Agent Deck plugin after a CLI upgrade.
  * Pass `{ alreadyCurrent: true }` when the CLI was already current so
@@ -634,7 +645,7 @@ export async function reconcileCodexPluginAfterUpgrade(
   }
 
   if (state.classification === 'compatible') {
-    console.log(`Codex plugin: OK (${state.installedVersion ?? expectedVersion}, ${state.transport})`);
+    console.log(codexPluginOkLine(state.installedVersion ?? expectedVersion, state.transport));
     return 0;
   }
 
@@ -717,7 +728,7 @@ export async function reconcileCodexPluginAfterUpgrade(
 
   const reread = await inspectCodexPlugin(expectedVersion, runner);
   if (reread.classification === 'compatible') {
-    console.log(`Codex plugin: OK (${reread.installedVersion ?? expectedVersion}, ${reread.transport})`);
+    console.log(codexPluginOkLine(reread.installedVersion ?? expectedVersion, reread.transport));
     return 0;
   }
 
@@ -759,7 +770,7 @@ export async function runCodexPluginDoctor(
 
   switch (state.classification) {
     case 'compatible': {
-      console.log(`Codex plugin: OK (${state.installedVersion ?? cliVersion}, ${state.transport})`);
+      console.log(codexPluginOkLine(state.installedVersion ?? cliVersion, state.transport));
       return 0;
     }
     case 'missing': {

@@ -2,9 +2,10 @@
   "mcpServers": {
     "agent-deck": {
       "type": "stdio",
-      "command": "agent-deck",
+      "command": "/bin/sh",
       "args": [
-        "mcp-launch"
+        "-c",
+        "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; command -v agent-deck >/dev/null 2>&1 || { echo \"agent-deck launcher not found; install it in $HOME/.local/bin, /opt/homebrew/bin, or /usr/local/bin (searched these directories and PATH)\" >&2; exit 127; }; exec agent-deck mcp-launch"
       ]
     }
   }
