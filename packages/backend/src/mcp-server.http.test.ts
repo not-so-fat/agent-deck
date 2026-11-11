@@ -1,10 +1,14 @@
 import Fastify from 'fastify';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import {
   AGENT_DECK_BRIDGE_LIVENESS_HEADER,
   AGENT_DECK_BRIDGE_LIVENESS_V1,
   AGENT_DECK_DECK_ID_HEADER,
   AGENT_DECK_PLAYBOOK_PIN_HEADER,
+  AGENT_DECK_WORKSPACE_HEADER,
   generateId,
 } from '@agent-deck/shared';
 import {
@@ -1800,5 +1804,333 @@ describe('pinned playbook version over MCP (NOT-537)', () => {
     expect(current.isError).toBe(false);
     expect(current.data).toMatchObject({ body: before });
     expect(current.data).not.toHaveProperty('pinnedVersionId');
+  });
+});
+
+describe('folder-assignment deck binding (NOT-562)', () => {
+  const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
+  const workspaces: string[] = [];
+  let mcpServer: AgentDeckMCPServer | undefined;
+  let previousSkipDeckHeader: string | undefined;
+  let previousSkipAdmin: string | undefined;
+  let previousStubSync: string | undefined;
+
+  beforeEach(() => {
+    previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
+    process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
+    process.env.AGENT_DECK_STUB_SYNC = 'off';
+  });
+
+  afterEach(async () => {
+    if (mcpServer) {
+      await mcpServer.stop();
+      mcpServer = undefined;
+    }
+    while (servers.length) {
+      await servers.pop()?.close();
+    }
+    while (workspaces.length) {
+      fs.rmSync(workspaces.pop()!, { recursive: true, force: true });
+    }
+    if (previousSkipDeckHeader === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipDeckHeader;
+    }
+    if (previousSkipAdmin === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = previousSkipAdmin;
+    }
+    if (previousStubSync === undefined) {
+      delete process.env.AGENT_DECK_STUB_SYNC;
+    } else {
+      process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
+    }
+  });
+
+  async function buildListeningBackend() {
+    const db = new DatabaseManager(':memory:');
+    const deckA = await db.createDeck({ name: 'alpha' });
+    const deckB = await db.createDeck({ name: 'beta' });
+
+    const store = new TrustedSessionStore(db.getSqliteDatabase());
+    const playbookManager = new PlaybookManager(db);
+
+    const fastify = Fastify();
+    fastify.decorate('db', db);
+    fastify.decorate('trustedSessionStore', store);
+    fastify.decorate('credentialManager', {
+      applySecretStatus: async (credentials: unknown[]) => credentials,
+    });
+    fastify.decorate('playbookManager', playbookManager);
+
+    registerHttpPolicyHook(fastify);
+    await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
+    await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+    await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
+    await fastify.listen({ port: 0, host: '127.0.0.1' });
+    servers.push(fastify);
+
+    const address = fastify.server.address();
+    const backendPort =
+      typeof address === 'object' && address && 'port' in address ? address.port : 0;
+
+    return {
+      backendUrl: `http://127.0.0.1:${backendPort}`,
+      db,
+      deckA,
+      deckB,
+    };
+  }
+
+  async function setup() {
+    const backend = await buildListeningBackend();
+    const started = await startMcpServer(backend.backendUrl, 'standard');
+    mcpServer = started.server;
+    return { ...backend, port: started.port };
+  }
+
+  function writeAssignment(dir: string, deckId: string, deckName: string): void {
+    fs.mkdirSync(path.join(dir, '.agent-deck'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.agent-deck', 'use.json'),
+      JSON.stringify({ version: 3, deckId, deckName }),
+    );
+  }
+
+  function makeWorkspace(assignment?: { deckId: string; deckName: string } | 'corrupt'): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'not562-'));
+    workspaces.push(dir);
+    if (assignment === 'corrupt') {
+      fs.mkdirSync(path.join(dir, '.agent-deck'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.agent-deck', 'use.json'), '{not json');
+    } else if (assignment) {
+      writeAssignment(dir, assignment.deckId, assignment.deckName);
+    }
+    return dir;
+  }
+
+  function workspaceHeaders(dir: string, deckId?: string): Record<string, string> {
+    return {
+      [AGENT_DECK_WORKSPACE_HEADER]: dir,
+      ...(deckId ? { [AGENT_DECK_DECK_ID_HEADER]: deckId } : {}),
+    };
+  }
+
+  async function postInitializeWithHeaders(
+    port: number,
+    headers: Record<string, string>,
+    id: number,
+  ): Promise<Response> {
+    return fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        ...headers,
+      },
+      body: JSON.stringify(initializePayload(id)),
+    });
+  }
+
+  async function listToolNames(
+    port: number,
+    sessionId: string,
+    headers: Record<string, string>,
+    id: number,
+  ): Promise<string[]> {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        'mcp-session-id': sessionId,
+        ...headers,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list', params: {} }),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      result?: { tools?: Array<{ name: string }> };
+    };
+    return (body.result?.tools ?? []).map((tool) => tool.name);
+  }
+
+  function runtimeSessionCount(db: DatabaseManager): number {
+    const row = db
+      .getSqliteDatabase()
+      .prepare('SELECT COUNT(*) AS n FROM runtime_sessions')
+      .get() as { n: number };
+    return row.n;
+  }
+
+  it('binds a workspace-header-only session to the use.json deck', async () => {
+    const { deckA, port } = await setup();
+    const dir = makeWorkspace({ deckId: deckA.id, deckName: deckA.name });
+    const headers = workspaceHeaders(dir);
+
+    const sessionId = await openSession(port, 1, headers);
+    const context = await callToolMcpResult(port, sessionId, 'get_session_context', {}, 2, headers);
+    expect(context.isError).toBe(false);
+    expect(context.data.effective_deck_name).toBe('alpha');
+    expect(String(context.data.display_summary)).toContain('alpha');
+
+    const names = await listToolNames(port, sessionId, headers, 3);
+    expect(names).toContain('get_bound_deck');
+    expect(names.length).toBeGreaterThan(2);
+  });
+
+  it('stays unassigned when the folder has no use.json', async () => {
+    const { port } = await setup();
+    const headers = workspaceHeaders(makeWorkspace());
+
+    const init = await postInitializeWithHeaders(port, headers, 1);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+    await init.arrayBuffer();
+
+    const names = await listToolNames(port, sessionId!, headers, 2);
+    expect(names.sort()).toEqual(['get_session_binding', 'get_session_context']);
+    const context = await callToolMcpResult(port, sessionId!, 'get_session_context', {}, 3, headers);
+    expect(context.isError).toBe(true);
+    expect(context.data.error_code).toBe('GRANT_REQUIRED');
+  });
+
+  it('stays unassigned when use.json is corrupt', async () => {
+    const { port } = await setup();
+    const headers = workspaceHeaders(makeWorkspace('corrupt'));
+
+    const init = await postInitializeWithHeaders(port, headers, 1);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+    await init.arrayBuffer();
+
+    const names = await listToolNames(port, sessionId!, headers, 2);
+    expect(names.sort()).toEqual(['get_session_binding', 'get_session_context']);
+    const context = await callToolMcpResult(port, sessionId!, 'get_session_context', {}, 3, headers);
+    expect(context.isError).toBe(true);
+    expect(context.data.error_code).toBe('GRANT_REQUIRED');
+  });
+
+  it('stays unassigned when use.json names a deleted deck', async () => {
+    const { db, port } = await setup();
+    const headers = workspaceHeaders(
+      makeWorkspace({ deckId: '99999999-9999-4999-8999-999999999999', deckName: 'gone' }),
+    );
+
+    const init = await postInitializeWithHeaders(port, headers, 1);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+    await init.arrayBuffer();
+
+    const names = await listToolNames(port, sessionId!, headers, 2);
+    expect(names.sort()).toEqual(['get_session_binding', 'get_session_context']);
+    const context = await callToolMcpResult(port, sessionId!, 'get_session_context', {}, 3, headers);
+    expect(context.isError).toBe(true);
+    expect(context.data.error_code).toBe('GRANT_REQUIRED');
+    // The failed bind leaves no partial runtime session behind.
+    expect(runtimeSessionCount(db)).toBe(0);
+  });
+
+  it('prefers an explicit deck header over use.json', async () => {
+    const { deckA, deckB, port } = await setup();
+    const dir = makeWorkspace({ deckId: deckA.id, deckName: deckA.name });
+    const headers = workspaceHeaders(dir, deckB.id);
+
+    const sessionId = await openSession(port, 1, headers);
+    const context = await callToolMcpResult(port, sessionId, 'get_session_context', {}, 2, headers);
+    expect(context.isError).toBe(false);
+    expect(context.data.effective_deck_name).toBe('beta');
+  });
+
+  it('answers a session-less server/discover without breaking the following initialize', async () => {
+    const { deckA, port } = await setup();
+    const dir = makeWorkspace({ deckId: deckA.id, deckName: deckA.name });
+    const headers = workspaceHeaders(dir);
+
+    const probe = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        ...headers,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} }),
+    });
+    // Non-fatal: the existing no-session JSON-RPC answer, no session issued.
+    expect(probe.status).toBe(400);
+    expect(probe.headers.get('mcp-session-id')).toBeNull();
+    const probeBody = (await probe.json()) as { jsonrpc?: string; error?: unknown };
+    expect(probeBody.jsonrpc).toBe('2.0');
+    expect(probeBody.error).toBeTruthy();
+
+    const sessionId = await openSession(port, 2, headers);
+    const context = await callToolMcpResult(port, sessionId, 'get_session_context', {}, 3, headers);
+    expect(context.isError).toBe(false);
+    expect(context.data.effective_deck_name).toBe('alpha');
+  });
+
+  it('serves two parallel initializes as independent bound sessions', async () => {
+    const { deckA, port } = await setup();
+    const dir = makeWorkspace({ deckId: deckA.id, deckName: deckA.name });
+    const headers = workspaceHeaders(dir);
+
+    const [first, second] = await Promise.all([
+      postInitializeWithHeaders(port, headers, 1),
+      postInitializeWithHeaders(port, headers, 2),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const sessionOne = first.headers.get('mcp-session-id');
+    const sessionTwo = second.headers.get('mcp-session-id');
+    expect(sessionOne).toBeTruthy();
+    expect(sessionTwo).toBeTruthy();
+    expect(sessionTwo).not.toBe(sessionOne);
+    await Promise.all([first.arrayBuffer(), second.arrayBuffer()]);
+
+    for (const [sessionId, id] of [[sessionOne!, 3], [sessionTwo!, 4]] as const) {
+      const context = await callToolMcpResult(
+        port,
+        sessionId,
+        'get_session_context',
+        {},
+        id,
+        headers,
+      );
+      expect(context.isError).toBe(false);
+      expect(context.data.effective_deck_name).toBe('alpha');
+    }
+  });
+
+  it('picks up a use.json edit on the next session, not the current one', async () => {
+    const { deckA, deckB, port } = await setup();
+    const dir = makeWorkspace({ deckId: deckA.id, deckName: deckA.name });
+    const headers = workspaceHeaders(dir);
+
+    const sessionId = await openSession(port, 1, headers);
+    const before = await callToolMcpResult(port, sessionId, 'get_session_context', {}, 2, headers);
+    expect(before.isError).toBe(false);
+    expect(before.data.effective_deck_name).toBe('alpha');
+
+    writeAssignment(dir, deckB.id, deckB.name);
+
+    // Sticky for the session lifetime (NOT-108 mirror): the live session
+    // keeps serving its bound deck after the edit.
+    const sticky = await callToolMcpResult(port, sessionId, 'get_session_context', {}, 3, headers);
+    expect(sticky.isError).toBe(false);
+    expect(sticky.data.effective_deck_name).toBe('alpha');
+
+    // The edit takes effect when the client re-initializes.
+    const fresh = await openSession(port, 10, headers);
+    const after = await callToolMcpResult(port, fresh, 'get_session_context', {}, 11, headers);
+    expect(after.isError).toBe(false);
+    expect(after.data.effective_deck_name).toBe('beta');
   });
 });

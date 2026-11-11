@@ -47,6 +47,7 @@ import {
 import {
   healUseManifest,
   isStubSyncEnabled,
+  readUseManifest,
   stubSyncChanged,
   syncPlaybookStubs,
   type StubBindSyncResult,
@@ -65,6 +66,19 @@ function readLaunchDeckHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_DECK_ID_HEADER];
   const value = typeof raw === 'string' ? raw.trim() : '';
   return value || undefined;
+}
+
+/**
+ * NOT-562: resolve the deck assigned to a folder for workspace-header-only
+ * hosts (pure MCP, no launcher). Reads ONLY `<folder>/.agent-deck/use.json`
+ * — the same file the launcher reads today, on the same loopback — via the
+ * shared `readUseManifest`. Returns undefined when the file is missing,
+ * unreadable, corrupt, or not a v3 manifest, so the caller keeps the
+ * existing unassigned flow.
+ */
+function resolveUseManifestDeckId(workspaceRoot: string): string | undefined {
+  const deckId = readUseManifest(workspaceRoot)?.deckId?.trim();
+  return deckId || undefined;
 }
 
 /**
@@ -1708,8 +1722,17 @@ export class AgentDeckMCPServer {
     return readWorkspaceRootHeader(req) ?? (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
   }
 
-  private async authenticateLaunchDeck(sessionId: string, req: Request): Promise<void> {
-    const deckId = readLaunchDeckHeader(req);
+  /**
+   * NOT-562: `deckIdOverride` carries a deck resolved somewhere other than
+   * the deck header — the folder assignment for workspace-header-only hosts.
+   * Omitted callers behave exactly as before (header or GRANT_REQUIRED).
+   */
+  private async authenticateLaunchDeck(
+    sessionId: string,
+    req: Request,
+    deckIdOverride?: string,
+  ): Promise<void> {
+    const deckId = deckIdOverride ?? readLaunchDeckHeader(req);
     if (!deckId) {
       throw new Error('GRANT_REQUIRED');
     }
@@ -1820,9 +1843,24 @@ export class AgentDeckMCPServer {
     }
 
     const launchDeck = readLaunchDeckHeader(req);
-    if (launchDeck) {
+    // NOT-562: sessions bound from the folder assignment carry no deck
+    // header on follow-ups either, so re-validate through the same launch
+    // follow-up (runtime lease refresh) instead of demanding the header.
+    // The assignment file is authoritative only at initialize: like a
+    // changed deck header (NOT-108), a later use.json edit is sticky for
+    // the session lifetime and takes effect when the client re-initializes
+    // — a live session is never failed on file drift.
+    const useManifestFollowUp =
+      !launchDeck &&
+      this.sessionBinding.isLaunchSession(sessionId) &&
+      this.sessionBinding.isUseManifestSession(sessionId);
+    if (launchDeck || useManifestFollowUp) {
       try {
-        await this.authenticateLaunchDeck(sessionId, req);
+        await this.authenticateLaunchDeck(
+          sessionId,
+          req,
+          launchDeck ?? this.sessionBinding.getBinding(sessionId).deckId,
+        );
         return true;
       } catch (error) {
         console.warn(
@@ -2012,35 +2050,56 @@ export class AgentDeckMCPServer {
     }
 
     const launchDeck = readLaunchDeckHeader(req);
+    // NOT-562: workspace-header-only hosts (pure MCP, no launcher) resolve
+    // the deck from the folder assignment. An explicit deck header still
+    // wins; the manifest is consulted only when it is absent.
+    const workspaceRoot = readWorkspaceRootHeader(req);
+    const manifestDeck =
+      !launchDeck && workspaceRoot ? resolveUseManifestDeckId(workspaceRoot) : undefined;
+    const effectiveDeck = launchDeck ?? manifestDeck;
     const skipDeckHeader = skipDeckHeaderAuth();
-    const unassigned = !launchDeck && !skipDeckHeader;
+    const unassigned = !effectiveDeck && !skipDeckHeader;
 
     // Authenticate before advertising mcp-session-id.
     const sessionId = randomUUID();
-    if (launchDeck) {
+    if (effectiveDeck) {
       try {
-        await this.authenticateLaunchDeck(sessionId, req);
+        await this.authenticateLaunchDeck(sessionId, req, effectiveDeck);
+        if (manifestDeck && !launchDeck) {
+          this.sessionBinding.markUseManifestSession(sessionId);
+        }
       } catch (error) {
-        this.getAuditStore()?.append({
-          actor: 'local-launch',
-          event: 'deck.selection_denied',
-          targetId: auditDeckTarget(launchDeck),
-          outcome: 'denied',
-          reasonCode: 'resource_out_of_scope',
-        });
-        console.warn(
-          '[agent-deck] Launch-deck auth failed before MCP init:',
-          error instanceof Error ? error.message : error,
-        );
-        this.sendLaunchDeckInvalid(
-          res,
-          error instanceof Error ? error.message : 'LAUNCH_DECK_INVALID',
-        );
-        return;
+        // NOT-562: the assignment names a deck the backend cannot bind
+        // (deleted deck) or the bind itself failed — the file is an
+        // opportunistic hint, not a credential, so degrade to the existing
+        // unassigned flow rather than erroring. The header path below keeps
+        // its fail-closed 401.
+        if (manifestDeck && !launchDeck) {
+          this.sessionBinding.markUnassigned(sessionId);
+          if (workspaceRoot) {
+            this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
+          }
+        } else {
+          this.getAuditStore()?.append({
+            actor: 'local-launch',
+            event: 'deck.selection_denied',
+            targetId: auditDeckTarget(launchDeck!),
+            outcome: 'denied',
+            reasonCode: 'resource_out_of_scope',
+          });
+          console.warn(
+            '[agent-deck] Launch-deck auth failed before MCP init:',
+            error instanceof Error ? error.message : error,
+          );
+          this.sendLaunchDeckInvalid(
+            res,
+            error instanceof Error ? error.message : 'LAUNCH_DECK_INVALID',
+          );
+          return;
+        }
       }
     } else if (unassigned) {
       this.sessionBinding.markUnassigned(sessionId);
-      const workspaceRoot = readWorkspaceRootHeader(req);
       if (workspaceRoot) {
         this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
       }

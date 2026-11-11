@@ -86,6 +86,14 @@ export class McpSessionBindingStore {
   private grantByMcp = new Map<string, GrantSessionScope>();
   /** MCP sessions with no deck header — explain-only, no deck access (NOT-50). */
   private unassignedByMcp = new Set<string>();
+  /**
+   * Launch sessions whose deck came from the folder assignment instead of
+   * the deck header (NOT-562). A subset of `launchByMcp`: the only
+   * difference is follow-up auth, which re-validates through the same
+   * launch refresh without requiring a deck header the pure-MCP host
+   * never sends.
+   */
+  private useManifestByMcp = new Set<string>();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -128,6 +136,19 @@ export class McpSessionBindingStore {
 
   isLaunchSession(mcpSessionId: string): boolean {
     return this.launchByMcp.has(mcpSessionId);
+  }
+
+  /**
+   * NOT-562: record that a launch session's deck came from the folder
+   * assignment (`.agent-deck/use.json`) rather than the deck header. Called
+   * only after the bind succeeds, so the marker implies `launchByMcp`.
+   */
+  markUseManifestSession(mcpSessionId: string): void {
+    this.useManifestByMcp.add(mcpSessionId);
+  }
+
+  isUseManifestSession(mcpSessionId: string): boolean {
+    return this.useManifestByMcp.has(mcpSessionId);
   }
 
   /**
@@ -319,6 +340,7 @@ export class McpSessionBindingStore {
     this.launchByMcp.delete(sessionId);
     this.grantByMcp.delete(sessionId);
     this.unassignedByMcp.delete(sessionId);
+    this.useManifestByMcp.delete(sessionId);
   }
 
   getWorkspace(sessionId: string): string | undefined {

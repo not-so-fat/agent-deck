@@ -520,6 +520,36 @@ blocked by nothing.
   of reporting the plugin manifest as OK. One-PR boundary: doctor +
   tests only. Blocks: nothing. Blocked by: nothing.
 
+## T2 implementation note (NOT-562)
+
+Implements §5 option (b) with the "defined invalidation" alternative from
+the child-ticket scope ("re-read the tiny local file per request, or cache
+per session with a defined invalidation"):
+
+- At `initialize`, when `x-agent-deck-deck-id` is absent but
+  `x-agent-deck-workspace` names a folder whose `.agent-deck/use.json`
+  assigns a deck, the daemon binds through the same `connect-deck` launch
+  path the header uses. The only file read is the folder's
+  `.agent-deck/use.json` — the same file the launcher reads today, on the
+  same loopback; the trust boundary does not move.
+- An explicit deck header still wins; the manifest is consulted only when
+  it is absent. The Bearer-grant path is untouched.
+- Missing, unreadable, or corrupt `use.json`, or an assignment naming a
+  deleted deck, keeps the existing unassigned flow (explain-only tools, no
+  error response) — the file is an opportunistic hint, not a credential.
+- Invalidation point: the assignment is authoritative at `initialize`
+  only. A later `use.json` edit takes effect on the next session (the
+  client re-initializes); the live session stays sticky on its bound deck,
+  mirroring how a changed deck header is treated (NOT-108). Per-request
+  re-validation is the same launch follow-up (runtime lease refresh)
+  without requiring a deck header the pure-MCP host never sends, and a
+  live session is never failed on file drift.
+- A session-less `server/discover` probe keeps the existing 400
+  no-session JSON-RPC answer (non-fatal; the following `initialize`
+  succeeds), and two parallel `initialize` calls each receive an
+  independent bound session. All of the above is covered in
+  `mcp-server.http.test.ts` (`folder-assignment deck binding (NOT-562)`).
+
 ## Appendix A — Live-test record (executed 2026-11-11)
 
 Executed locally (loopback available) with `codex-cli 0.157.1` and Claude
