@@ -49,21 +49,21 @@ mapping header name to static value. A second key,
 variable name whose value is sent. (`codex mcp get` also lists a third,
 `http_headers_helper`, unset in all probes; syntax not verified.)
 
-Global entry (`~/.codex/config.toml`) — the pre-existing
-`[mcp_servers.botmancers]` entry on the probe machine already proves the
-key parses:
+Global entry (`~/.codex/config.toml`) — a pre-existing
+`[mcp_servers.existing-entry]` entry on the probe machine (server name
+redacted) already proves the key parses:
 
 ```toml
-[mcp_servers.botmancers]
+[mcp_servers.existing-entry]
 url = "http://127.0.0.1:3332/mcp"
 http_headers = { "Authorization" = "Bearer [REDACTED]" }
 ```
 
-`codex mcp get botmancers` renders it (values redacted, proving the map is
-read as headers):
+`codex mcp get existing-entry` renders it (values redacted, proving the
+map is read as headers):
 
 ```
-botmancers
+existing-entry
   enabled: true
   transport: streamable_http
   url: http://127.0.0.1:3332/mcp
@@ -208,8 +208,8 @@ Scoping: `--scope project` writes `<folder>/.mcp.json` (shared/tracked);
 `local` (default) and `user` are machine-local. The `user` target path is
 confirmed as `~/.claude.json` by the CLI itself — a `--scope user` write
 attempted here failed only on a sandbox file lock with: `MCP server
-"probe-user" was not saved to /Users/not_so_fat/.claude.json.` The flag
-contract comes from `claude mcp add --help`.
+"probe-user" was not saved to ~/.claude.json` (home path redacted). The
+flag contract comes from `claude mcp add --help`.
 
 Caveats:
 
@@ -240,12 +240,12 @@ Codex `0.157.1` (log condensed; the user-agent header is removed):
 POST initialize                 hdr x-agent-deck-workspace=<folder>            -> 200 new session d68d...
 POST notifications/initialized  hdr x-agent-deck-workspace, session d68d...    -> 202
 POST tools/list                 hdr x-agent-deck-workspace, session d68d...    -> 200
-POST tools/call                 session d68d...                                -> 200   (pong)
+POST tools/call                 hdr x-agent-deck-workspace, session d68d...    -> 200   (pong)
 -- SIMULATED_RESTART: all sessions forgotten --
-POST tools/call                 session d68d...                                -> 404
+POST tools/call                 hdr x-agent-deck-workspace, session d68d...    -> 404
 POST initialize                 hdr x-agent-deck-workspace, no session id      -> 200 new session 29d6...
-POST notifications/initialized  session 29d6...                                -> 202
-POST tools/call                 session 29d6...                                -> 200   (pong)
+POST notifications/initialized  hdr x-agent-deck-workspace, session 29d6...    -> 202
+POST tools/call                 hdr x-agent-deck-workspace, session 29d6...    -> 200   (pong)
 ```
 
 Claude Code `2.1.322` behaved the same way: after the 404 it sent
@@ -310,8 +310,9 @@ launcher-independent:
   `~/.cursor/mcp.json` `{"mcpServers": {"agent-deck": {"url":
   "http://127.0.0.1:1110/mcp"}}}` — same `url`-entry shape Cursor already
   parses; the host's real `~/.cursor/mcp.json` shows an HTTP entry with
-  `url` + `headers` for `botmancers`, proving static headers work there
-  too. Project equivalent: `<folder>/.cursor/mcp.json`, cf.
+  `url` + `headers` for an existing server (name redacted), proving
+  static headers work there too. Project equivalent:
+  `<folder>/.cursor/mcp.json`, cf.
   `resolveConfigPath('cursor', 'project')` in
   `packages/cli/src/mcp-config.ts`. No header support probe was run for
   Cursor.)
@@ -319,8 +320,8 @@ launcher-independent:
 Per-folder entries written by `agent-deck use` (§1/§2) use the **same
 server name** (`agent-deck`), so they shadow the global entry where an
 assignment exists (Codex: project layer overrides user layer for the same
-server; Claude: project `.mcp.json` merges over user scope — precedence of
-same-named servers must be confirmed in the live test).
+server, per the binary; Claude: project `.mcp.json` merges over user
+scope — same-name precedence per host is confirmed in T3).
 
 What the server returns (no server change needed for the fallback itself —
 `handleInitialize` → `markUnassigned`, mcp-server.ts:2014-2047):
@@ -486,13 +487,15 @@ blocked by nothing.
   shadows the global fallback entry (the one live check not done in this
   document). One-PR boundary: CLI config writing only, no server change.
   Blocks: T4. Blocked by: nothing.
-- **T4 — Global fallback entry + plugin decoupling.** Scope: setup/doctor
+- **T4 — Global fallback entry + plugin decoupling.** Scope: setup
   guidance writes the headerless global HTTP entries (§4); plugin
   manifests drop the shared stdio `.mcp.json` connection (skills and
   guidance stay); docs updated (SETUP, CODEX_PLUGIN). Per-host rollout:
   both hosts re-initialize after a 404 (§3), so no host keeps the
   launcher entry for recovery reasons. One-PR boundary: plugin manifests +
-  setup/doctor guidance + docs, no behavior change to server or `use`.
+  setup/doctor guidance text + docs, no behavior change to server or `use`.
+  Boundary with T6: T4 only changes guidance text (including any doctor
+  hint strings); live-connection detection in doctor is T6's scope.
   Blocks: nothing (rollout completes here). Blocked by: T2, T3.
 - **T5 — Retire `mcp-launch`/bridge for migrated hosts.** Scope: remove
   the stdio launcher path for hosts fully on pure MCP (or demote to a
