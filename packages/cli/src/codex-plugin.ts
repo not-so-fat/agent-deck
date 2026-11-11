@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { parseCliMcpPort, readCliBackendPort } from './defaults';
+import { probeAgentDeck } from './ports';
+
 export type CodexClassification =
   | 'missing'
   | 'disabled'
@@ -508,6 +511,47 @@ export function manualCodexCommands(selector: string): string[] {
   return [`codex plugin remove ${selector}`, `codex plugin add ${selector}`];
 }
 
+/**
+ * NOT-564: the installed manifest (version + transport) is never a verified
+ * connection. The manifest line stays visible but is labelled manifest-only;
+ * connection state is reported separately via {@link formatCodexNoEntryLine},
+ * {@link formatCodexDaemonDownLine} and {@link formatCodexDaemonUpNoSessionLine}.
+ */
+export function formatCodexManifestLine(version: string, transport: CodexTransport): string {
+  return `Codex plugin manifest: OK (${version}, ${transport}) (manifest-only, connection not verified)`;
+}
+
+export function formatCodexNoEntryLine(): string {
+  return `Codex connection: no entry found for Codex (expected ${DEFAULT_PLUGIN_SELECTOR})`;
+}
+
+export function formatCodexDaemonDownLine(): string {
+  return 'Codex connection: entry present but daemon is not reachable (start the daemon with `agent-deck start`)';
+}
+
+export function formatCodexDaemonUpNoSessionLine(): string {
+  return 'Codex connection: entry present, daemon is reachable, live session is not verified (no live Codex session observed)';
+}
+
+export type CodexDaemonProbe = () => Promise<boolean>;
+
+/**
+ * Daemon reachability for the Codex connection line. Probes the daemon HTTP
+ * health endpoints, so it works for launcher entries and HTTP entries alike.
+ * Injectable in `runCodexPluginDoctor` options for deterministic tests.
+ */
+export async function probeCodexDaemonReachable(): Promise<boolean> {
+  const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
+  const backendPort = readCliBackendPort();
+  const mcpPort = parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT);
+  try {
+    const probe = await probeAgentDeck(host, backendPort, mcpPort);
+    return probe.backendUp && probe.mcpUp;
+  } catch {
+    return false;
+  }
+}
+
 export function remediationLine(selector: string): string {
   return `codex plugin remove ${selector} && codex plugin add ${selector}`;
 }
@@ -634,7 +678,9 @@ export async function reconcileCodexPluginAfterUpgrade(
   }
 
   if (state.classification === 'compatible') {
-    console.log(`Codex plugin: OK (${state.installedVersion ?? expectedVersion}, ${state.transport})`);
+    console.log(
+      formatCodexManifestLine(state.installedVersion ?? expectedVersion, state.transport),
+    );
     return 0;
   }
 
@@ -717,7 +763,9 @@ export async function reconcileCodexPluginAfterUpgrade(
 
   const reread = await inspectCodexPlugin(expectedVersion, runner);
   if (reread.classification === 'compatible') {
-    console.log(`Codex plugin: OK (${reread.installedVersion ?? expectedVersion}, ${reread.transport})`);
+    console.log(
+      formatCodexManifestLine(reread.installedVersion ?? expectedVersion, reread.transport),
+    );
     return 0;
   }
 
@@ -735,17 +783,24 @@ export async function reconcileCodexPluginAfterUpgrade(
 
 /**
  * Read-only `doctor` section for the Codex plugin. Never mutates Codex state:
- * it only runs `codex plugin list` / `codex plugin marketplace list` and reads
- * the installed plugin's bundled `.mcp.json`. Returns 0 when the plugin is
- * compatible (or Codex is entirely absent / no plugin installed — those are
- * warnings for non-Codex users), 1 when the installed plugin is stale,
- * disabled, ambiguous, or unreadable.
+ * it only runs `codex plugin list` / `codex plugin marketplace list`, reads
+ * the installed plugin's bundled `.mcp.json`, and probes daemon health.
+ * Returns 0 when the plugin is compatible (or Codex is entirely absent / no
+ * plugin installed — those are warnings for non-Codex users), 1 when the
+ * installed plugin is stale, disabled, ambiguous, or unreadable.
+ *
+ * NOT-564: a compatible manifest is reported manifest-only; the host
+ * connection is reported separately as exactly one of no entry / entry
+ * present but daemon unreachable / daemon reachable with no live session
+ * verified. Doctor never claims a verified connection from a manifest read.
  */
 export async function runCodexPluginDoctor(
   cliVersion: string,
   runner: CodexRunner = runCodexCommand,
+  options: { probeDaemon?: CodexDaemonProbe } = {},
 ): Promise<number> {
   const state = await inspectCodexPlugin(cliVersion, runner);
+  const probeDaemon = options.probeDaemon ?? probeCodexDaemonReachable;
 
   if (!state.available) {
     console.log('WARN: Codex CLI not found (Codex plugin check skipped)');
@@ -759,11 +814,16 @@ export async function runCodexPluginDoctor(
 
   switch (state.classification) {
     case 'compatible': {
-      console.log(`Codex plugin: OK (${state.installedVersion ?? cliVersion}, ${state.transport})`);
+      console.log(formatCodexManifestLine(state.installedVersion ?? cliVersion, state.transport));
+      const daemonReachable = await probeDaemon();
+      console.log(
+        daemonReachable ? formatCodexDaemonUpNoSessionLine() : formatCodexDaemonDownLine(),
+      );
       return 0;
     }
     case 'missing': {
       console.log('WARN: Codex plugin not installed (expected agent-deck@agent-deck)');
+      console.log(formatCodexNoEntryLine());
       console.log(`Run: codex plugin add ${DEFAULT_PLUGIN_SELECTOR}`);
       return 0;
     }
@@ -797,6 +857,10 @@ export async function runCodexPluginDoctor(
       ) {
         printStickyCacheBlock(installedRoot, selector);
       }
+      const daemonReachable = await probeDaemon();
+      console.log(
+        daemonReachable ? formatCodexDaemonUpNoSessionLine() : formatCodexDaemonDownLine(),
+      );
       console.error(
         `FAIL: Codex plugin ${state.classification} (installed ${state.installedVersion ?? '(unknown)'}, expected ${cliVersion})`,
       );
