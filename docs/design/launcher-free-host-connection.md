@@ -225,9 +225,7 @@ project `.mcp.json` above (approval granted by the setting
 `enableAllProjectMcpServers`), the recording stub received
 `x-agent-deck-workspace: <folder>` on **every** request, including
 `initialize`, `notifications/initialized`, `tools/list` and `tools/call`.
-Raw stub JSON lines are in Appendix A.2 (OPERATOR TODO — paste required
-for AC2/AC3; this sandbox forbids `listen()`, verified EPERM 2026-11-11,
-so the coding agent cannot collect them).
+Raw stub JSON lines are in Appendix A.2.
 
 ### 3. Do the native HTTP clients re-initialize after a 404?
 
@@ -264,7 +262,7 @@ Claude Code `2.1.322` behaved the same way: after the 404 it sent
 - It sent `x-agent-deck-workspace` on every request, including `server/discover`.
 
 Raw Claude stub JSON lines (404 followed by new `initialize`): see
-Appendix A.2 (OPERATOR TODO — paste required for AC3).
+Appendix A.2. The Codex raw lines are in Appendix A.1.
 
 Server side (verified in code and tests): an unknown `Mcp-Session-Id`
 answers HTTP 404, header `mcp-session-status: expired`, JSON-RPC error
@@ -525,11 +523,6 @@ blocked by nothing.
 
 ## Appendix A — Live-test record (executed 2026-11-11)
 
-Status 2026-11-11 (repair round 2, sandbox without loopback): the Codex
-condensed log in §3 stands; raw stub JSON lines for both hosts (A.1/A.2
-below) are OPERATOR TODOs — the A.2 Claude paste is required before merge
-for AC2 (Claude header) and AC3 (per-client 404 log).
-
 Executed locally (loopback available) with `codex-cli 0.157.1` and Claude
 Code `2.1.322`. Both used the recording stub below with
 `--restart-after-first-call`, which forgets every session after the first
@@ -560,28 +553,59 @@ codex exec --skip-git-repo-check \
   "<call ping twice, sequentially>"
 ```
 
-### A.1 Codex raw stub log (OPERATOR TODO — paste)
+### A.1 Codex raw stub log
 
-OPERATOR: run the stub + Codex command above with loopback available,
-then paste the logfile's raw JSON lines here (redact only user-agent
-and private path segments; keep `x-agent-deck-workspace`,
-`mcp-session-id`, `rpc`, and `status` fields intact). The condensed
-form in §3 must match these lines.
+Raw lines from the stub's logfile for the Codex run. Redactions: the
+`user-agent` header is removed and the private folder prefix is replaced
+with `<tmp>`. All other fields are unchanged.
 
 ```
-<TODO: paste stub_mcp.py logfile JSON lines from the Codex run>
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run"}, "status": 200, "issued_session": "d68df5f9225c412492f4d73bb0fcf27a"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run", "mcp-session-id": "d68df5f9225c412492f4d73bb0fcf27a"}, "status": 202}
+{"http": "GET", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run", "mcp-session-id": "d68df5f9225c412492f4d73bb0fcf27a"}, "status": 405}
+{"http": "POST", "rpc": "tools/list", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run", "mcp-session-id": "d68df5f9225c412492f4d73bb0fcf27a"}, "status": 200}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run", "mcp-session-id": "d68df5f9225c412492f4d73bb0fcf27a"}, "status": 200}
+{"event": "SIMULATED_RESTART: all sessions forgotten"}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run", "mcp-session-id": "d68df5f9225c412492f4d73bb0fcf27a"}, "status": 404, "note": "unknown session id"}
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run"}, "status": 200, "issued_session": "29d6c0c4de294ea4b225b5658ebb819f"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run", "mcp-session-id": "29d6c0c4de294ea4b225b5658ebb819f"}, "status": 202}
+{"http": "GET", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run", "mcp-session-id": "29d6c0c4de294ea4b225b5658ebb819f"}, "status": 405}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "<tmp>/codex-run", "mcp-session-id": "29d6c0c4de294ea4b225b5658ebb819f"}, "status": 200}
+{"http": "DELETE", "status": 200}
+{"http": "DELETE", "status": 200}
 ```
 
-### A.2 Claude raw stub log (OPERATOR TODO — paste; required for AC2/AC3)
+### A.2 Claude raw stub log
 
-OPERATOR: run the stub + Claude command above with loopback available,
-then paste the logfile's raw JSON lines here (same redaction rule).
-Must show `x-agent-deck-workspace` on every request (AC2) and the
-404-then-new-`initialize` sequence (AC3), including the
-`server/discover` probe and parallel `initialize` pair described in §3.
+Raw lines from the stub's logfile for the Claude Code run, same
+redaction rule. Every request carries `x-agent-deck-workspace`
+(AC2). The `server/discover` probe, the 404 on the stale session, the new
+`initialize` without a session id, and the parallel `initialize` pair
+described in §3 are all visible (AC3).
 
 ```
-<TODO: paste stub_mcp.py logfile JSON lines from the Claude run>
+{"http": "POST", "rpc": "server/discover", "headers": {"x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 404, "note": "unknown session id"}
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 200, "issued_session": "165b41755ac24c7b99599f7eab672f68"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"mcp-session-id": "165b41755ac24c7b99599f7eab672f68", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 202}
+{"http": "GET", "headers": {"mcp-session-id": "165b41755ac24c7b99599f7eab672f68", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 405}
+{"http": "POST", "rpc": "tools/list", "headers": {"mcp-session-id": "165b41755ac24c7b99599f7eab672f68", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 200}
+{"http": "POST", "rpc": "tools/call", "headers": {"mcp-session-id": "165b41755ac24c7b99599f7eab672f68", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 200}
+{"event": "SIMULATED_RESTART: all sessions forgotten"}
+{"http": "POST", "rpc": "tools/call", "headers": {"mcp-session-id": "165b41755ac24c7b99599f7eab672f68", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 404, "note": "unknown session id"}
+{"http": "POST", "rpc": "server/discover", "headers": {"x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 404, "note": "unknown session id"}
+{"http": "POST", "rpc": "server/discover", "headers": {"x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 404, "note": "unknown session id"}
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 200, "issued_session": "ed49fa77140042a0ad44a62784860c19"}
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 200, "issued_session": "4a11a0badb704db0af15c2da7ad9f452"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"mcp-session-id": "ed49fa77140042a0ad44a62784860c19", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 202}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"mcp-session-id": "4a11a0badb704db0af15c2da7ad9f452", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 202}
+{"http": "GET", "headers": {"mcp-session-id": "ed49fa77140042a0ad44a62784860c19", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 405}
+{"http": "GET", "headers": {"mcp-session-id": "4a11a0badb704db0af15c2da7ad9f452", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 405}
+{"http": "POST", "rpc": "tools/call", "headers": {"mcp-session-id": "4a11a0badb704db0af15c2da7ad9f452", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 200}
+{"http": "POST", "rpc": "server/discover", "headers": {"x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 404, "note": "unknown session id"}
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 200, "issued_session": "f33e3ba65984418183d05c25f1be80f4"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"mcp-session-id": "f33e3ba65984418183d05c25f1be80f4", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 202}
+{"http": "GET", "headers": {"mcp-session-id": "f33e3ba65984418183d05c25f1be80f4", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 405}
+{"http": "POST", "rpc": "tools/list", "headers": {"mcp-session-id": "f33e3ba65984418183d05c25f1be80f4", "x-agent-deck-workspace": "<tmp>/claude-proj"}, "status": 200}
 ```
 
 Not executed here: same-name project-over-global precedence (A.4 of the
