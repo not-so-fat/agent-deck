@@ -2094,7 +2094,10 @@ export class AgentDeckMCPServer {
    * validation passes, and every response header write is translated back
    * so the client keeps seeing the id it sent. Both `setHeader` and
    * `writeHead` are covered — the Hono Node adapter answers JSON
-   * responses through `writeHead`.
+   * responses through `writeHead` — and `rawHeaders` is translated too,
+   * because that same adapter rebuilds the request headers from the raw
+   * pairs without ever reading the parsed `headers` object: without the
+   * raw rewrite the transport validates the stale id and answers 404.
    */
   private async withPresentedSessionId<T>(
     liveSessionId: string,
@@ -2106,6 +2109,20 @@ export class AgentDeckMCPServer {
     const headerKey = 'mcp-session-id';
     const previousHeader = req.headers[headerKey];
     req.headers[headerKey] = liveSessionId;
+    // The Hono Node adapter (@hono/node-server, inside the SDK Express
+    // wrapper) rebuilds the request headers from `rawHeaders`, never
+    // reading the parsed `headers` object — translate the raw pairs too,
+    // or the transport validates the stale id and answers its own 404.
+    const previousRawHeaders = req.rawHeaders;
+    if (Array.isArray(previousRawHeaders)) {
+      const translated = previousRawHeaders.slice();
+      for (let index = 0; index + 1 < translated.length; index += 2) {
+        if (translated[index].toLowerCase() === headerKey) {
+          translated[index + 1] = liveSessionId;
+        }
+      }
+      req.rawHeaders = translated;
+    }
     const resRecord = res as unknown as {
       setHeader: Response['setHeader'];
       writeHead: Response['writeHead'];
@@ -2144,6 +2161,9 @@ export class AgentDeckMCPServer {
         delete req.headers[headerKey];
       } else {
         req.headers[headerKey] = previousHeader;
+      }
+      if (Array.isArray(previousRawHeaders)) {
+        req.rawHeaders = previousRawHeaders;
       }
       resRecord.setHeader = pristineSetHeader;
       resRecord.writeHead = pristineWriteHead;
