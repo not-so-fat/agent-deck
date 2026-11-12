@@ -21,6 +21,11 @@ const LAUNCH_MCP = {
   mcpServers: { 'agent-deck': { type: 'stdio', command: 'agent-deck', args: ['mcp-launch'] } },
 };
 
+// The current skills-only shape: the plugin declares no MCP server.
+const NO_SERVER_MCP = {
+  mcpServers: {},
+};
+
 let codexHome: string;
 let pluginRoot: string;
 let savedCodexBin: string | undefined;
@@ -77,8 +82,8 @@ exit 1
 
 /**
  * One installed plugin at 1.4.4 with direct-HTTP transport; the stub
- * promotes it to the post-upgrade state (current version, headerless HTTP
- * fallback) on `plugin add`. Each test writes its own
+ * promotes it to the post-upgrade state (current version, no
+ * plugin-declared server) on `plugin add`. Each test writes its own
  * marketplace-list.json via writeMarketplaces().
  */
 function seedUpgradeHome(): void {
@@ -130,7 +135,7 @@ function seedUpgradeHome(): void {
       2,
     )}\n`,
   );
-  fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(HTTP_MCP, null, 2)}\n`);
+  fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(NO_SERVER_MCP, null, 2)}\n`);
   writeStub();
 }
 
@@ -218,7 +223,7 @@ describe('upgrade codex plugin reconciliation (NOT-188)', { timeout: 30_000 }, (
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(calls.some((line) => line.includes('marketplace upgrade'))).toBe(false);
     expect(text).toContain(
-      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
+      `Codex plugin manifest: OK (${CLI_VERSION}, none) (manifest-only, connection not verified)`,
     );
     expect(text).not.toContain('Codex plugin: OK (');
   });
@@ -401,11 +406,11 @@ describe('upgrade codex plugin reconciliation (NOT-188)', { timeout: 30_000 }, (
   it('fails the re-read when the reinstalled plugin has an unverifiable transport', async () => {
     seedUpgradeHome();
     writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
-    // The reinstall "succeeds" but leaves an unrecognised transport: the
-    // headerless HTTP fallback would verify, an empty entry does not.
+    // The reinstall "succeeds" but leaves an unrecognised entry shape: no
+    // declared server would verify, a custom wrapper does not.
     fs.writeFileSync(
       path.join(codexHome, 'after', 'mcp.json'),
-      `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`,
+      `${JSON.stringify({ mcpServers: { 'agent-deck': { command: 'custom-wrapper', args: [] } } }, null, 2)}\n`,
     );
 
     const code = await runUpgrade(['--to', CLI_VERSION], {
@@ -490,11 +495,11 @@ describe('current-contract reconciliation (NOT-301)', { timeout: 30_000 }, () =>
         2,
       )}\n`,
     );
-    fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(HTTP_MCP, null, 2)}\n`);
+    fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(NO_SERVER_MCP, null, 2)}\n`);
     writeStub();
   }
 
-  it('reconciles installed[] 1.11.7 through remove/add and verifies current plus direct-http', async () => {
+  it('reconciles installed[] 1.11.7 through remove/add and verifies current plus no-server', async () => {
     seedCurrentShapeUpgradeHome();
     // One unambiguous local marketplace; the stale available[] dev row
     // must not create source ambiguity.
@@ -513,7 +518,7 @@ describe('current-contract reconciliation (NOT-301)', { timeout: 30_000 }, () =>
     expect(removeIdx).toBeGreaterThanOrEqual(0);
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(text).toContain(
-      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
+      `Codex plugin manifest: OK (${CLI_VERSION}, none) (manifest-only, connection not verified)`,
     );
     expect(text).not.toContain('Codex plugin: OK (');
   });
@@ -818,7 +823,7 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(text).toContain('Already on the latest version.');
     expect(text).toContain(
-      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
+      `Codex plugin manifest: OK (${CLI_VERSION}, none) (manifest-only, connection not verified)`,
     );
     expect(text).not.toContain('Codex plugin: OK (');
     expect(text).not.toContain('Upgrade complete');
@@ -842,7 +847,7 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(text).toContain('Already on the latest version.');
     expect(text).toContain(
-      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
+      `Codex plugin manifest: OK (${CLI_VERSION}, none) (manifest-only, connection not verified)`,
     );
     expect(text).not.toContain('Codex plugin: OK (');
     expect(text).not.toContain('Upgrade complete');

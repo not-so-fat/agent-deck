@@ -224,25 +224,19 @@ describe('bridge selection (NOT-101)', () => {
 });
 
 describe('supported production host transport', () => {
-  it('NOT-565: serves the Codex and Claude plugins from the shared headerless HTTP fallback', () => {
+  it('NOT-565: Codex and Claude plugins declare no MCP server (skills and guidance only)', () => {
     const repositoryRoot = path.resolve(__dirname, '../../..');
-    const transport = JSON.parse(
-      fs.readFileSync(path.join(repositoryRoot, '.mcp.json'), 'utf8'),
-    ) as { mcpServers?: Record<string, Record<string, unknown>> };
-    const codexPlugin = JSON.parse(
-      fs.readFileSync(path.join(repositoryRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
-    ) as { mcpServers?: string };
-    const claudePlugin = JSON.parse(
-      fs.readFileSync(path.join(repositoryRoot, '.claude-plugin', 'plugin.json'), 'utf8'),
-    ) as { mcpServers?: string };
-
-    expect(codexPlugin.mcpServers).toBe('./.mcp.json');
-    expect(claudePlugin.mcpServers).toBe('./.mcp.json');
-    // toEqual fails on any extra field: no headers, no launcher keys.
-    expect(transport.mcpServers?.['agent-deck']).toEqual({
-      type: 'http',
-      url: 'http://127.0.0.1:1110/mcp',
-    });
+    for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']) {
+      const raw = fs.readFileSync(path.join(repositoryRoot, manifest), 'utf8');
+      expect(raw).not.toContain('mcp-launch');
+      expect(raw).not.toContain('"command"');
+      expect(raw).not.toContain('mcpServers');
+      const plugin = JSON.parse(raw) as { mcpServers?: unknown };
+      expect(plugin.mcpServers).toBeUndefined();
+    }
+    // The connection is plain host MCP config (global fallback + per-folder
+    // entry); no plugin-shipped connection file remains for these hosts.
+    expect(fs.existsSync(path.join(repositoryRoot, '.mcp.json'))).toBe(false);
   });
 
   it('NOT-565 repair: Cursor plugin keeps its own mcp-launch manifest (out of scope)', () => {
