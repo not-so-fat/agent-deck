@@ -3,12 +3,25 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { cursorProjectSlug } from './host-connection';
+import { cursorProjectSlug, type HostId, type HostLiveSession } from './host-connection';
 import { runDoctor } from './start';
 
 function writeJson(filePath: string, data: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+const CLIENT_NAMES: Record<HostId, string> = {
+  codex: 'codex',
+  claude: 'claude-code',
+  cursor: 'cursor',
+  muse: 'muse',
+};
+
+function session(host: HostId, workspaceRoot?: string): HostLiveSession {
+  return workspaceRoot === undefined
+    ? { clientName: CLIENT_NAMES[host] }
+    : { workspaceRoot, clientName: CLIENT_NAMES[host] };
 }
 
 describe('doctor host connections (NOT-574)', () => {
@@ -91,7 +104,7 @@ describe('doctor host connections (NOT-574)', () => {
 
   it('prints the state and remedy for every host, never OK for install state', async () => {
     makeRoots();
-    await runDoctor({ daemonHealth: { up: false, liveSessions: 0 } });
+    await runDoctor({ daemonHealth: { up: false, sessions: [] } });
     const lines = connectionLines();
     expect(lines).toHaveLength(4);
     expect(lines.join('\n')).toContain('Codex connection: no-entry');
@@ -168,7 +181,7 @@ describe('doctor host connections (NOT-574)', () => {
       projects: { [canonical(workspace)]: { decision: 'trusted' } },
     });
 
-    await runDoctor({ daemonHealth: { up: false, liveSessions: 0 } });
+    await runDoctor({ daemonHealth: { up: false, sessions: [] } });
     const text = connectionLines().join('\n');
     expect(text).toContain('Codex connection: entry-daemon-down');
     expect(text).toContain('Claude Code connection: entry-daemon-down');
@@ -206,7 +219,11 @@ describe('doctor host connections (NOT-574)', () => {
     });
     fs.mkdirSync(path.join(workspace, '.git'));
 
-    await runDoctor({ daemonHealth: { up: true, liveSessions: 3 } });
+    // Matching live sessions for every host: the trust gates still win.
+    const matching = (['codex', 'claude', 'cursor', 'muse'] as const).map((host) =>
+      session(host, workspace),
+    );
+    await runDoctor({ daemonHealth: { up: true, sessions: matching } });
     const text = connectionLines().join('\n');
     expect(text).toContain('Codex connection: folder-not-trusted');
     expect(text).toContain('Claude Code connection: folder-not-trusted');
@@ -236,7 +253,9 @@ describe('doctor host connections (NOT-574)', () => {
       projects: { [canonical(workspace)]: { decision: 'trusted' } },
     });
 
-    await runDoctor({ daemonHealth: { up: true, liveSessions: 3 } });
+    await runDoctor({
+      daemonHealth: { up: true, sessions: [session('muse', workspace)] },
+    });
     expect(connectionLines().join('\n')).toContain('Muse connection: folder-not-repository');
 
     // Now a stale stdio user entry against the HTTP project entry.
@@ -246,29 +265,47 @@ describe('doctor host connections (NOT-574)', () => {
       mcpServers: { 'agent-deck': { command: 'agent-deck', args: ['mcp-launch'] } },
       schema_version: 1,
     });
-    await runDoctor({ daemonHealth: { up: true, liveSessions: 3 } });
+    await runDoctor({
+      daemonHealth: { up: true, sessions: [session('muse', workspace)] },
+    });
     const text = connectionLines().join('\n');
     expect(text).toContain('Muse connection: stale-conflicting-entry');
     expect(text).toContain('rewrite both entries to HTTP');
   });
 
-  it('reports connected for a healthy host and up-no-session without one', async () => {
-    const { codexHome } = makeRoots();
+  it('reports connected only for a session attributed to the host and folder', async () => {
+    const { workspace, codexHome } = makeRoots();
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-doc-else-'));
+    tmpDirs.push(elsewhere);
     // Codex: global-only entry (no trust gate). Others: no entries.
     fs.writeFileSync(
       path.join(codexHome, 'config.toml'),
       ['[mcp_servers.agent-deck]', 'url = "http://127.0.0.1:1110/mcp"', ''].join('\n'),
     );
 
-    await runDoctor({ daemonHealth: { up: true, liveSessions: 0 } });
+    await runDoctor({ daemonHealth: { up: true, sessions: [] } });
     let text = connectionLines().join('\n');
     expect(text).toContain('Codex connection: entry-daemon-up-no-session');
     expect(text).not.toContain('Codex connection: connected');
 
+    // Sessions from another folder or another host must not connect Codex.
     output.length = 0;
-    await runDoctor({ daemonHealth: { up: true, liveSessions: 2 } });
+    await runDoctor({
+      daemonHealth: {
+        up: true,
+        sessions: [session('codex', elsewhere), session('cursor', workspace)],
+      },
+    });
     text = connectionLines().join('\n');
-    expect(text).toContain('Codex connection: connected');
+    expect(text).toContain('Codex connection: entry-daemon-up-no-session');
+    expect(text).not.toContain('Codex connection: connected');
+
+    output.length = 0;
+    await runDoctor({
+      daemonHealth: { up: true, sessions: [session('codex', workspace)] },
+    });
+    text = connectionLines().join('\n');
+    expect(text).toContain('Codex connection: connected (global entry, 1 live session)');
     expect(text).toContain('No action needed');
   });
 });

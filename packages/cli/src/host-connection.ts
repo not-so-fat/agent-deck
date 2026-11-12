@@ -9,16 +9,20 @@ import { codexTomlHasAgentDeckEntry, isHttpAgentDeckEntry } from './mcp-config';
  *
  * Per host and folder, reports the real connection state instead of
  * install state: whether an Agent Deck entry exists, whether the daemon
- * is up, whether a live session was observed, and — for the hosts that
- * gate project config — whether the folder is trusted (and, for Muse,
- * whether the folder is inside a git repository and whether a stale
- * same-name stdio entry conflicts with the HTTP entry).
+ * is up, whether a live session for this host and folder was observed,
+ * and — for the hosts that gate project config — whether the folder is
+ * trusted (and, for Muse, whether the folder is inside a git repository
+ * and whether a stale same-name stdio entry conflicts with the HTTP
+ * entry).
  *
- * Daemon health comes from `/health` (see `probeAgentDeck`): `up` is
- * `backendUp && mcpUp`, and `liveSessions` is the MCP `liveSessions`
- * tally. A count above zero is read as connected; the tally is not
- * per-folder, so a live session from another folder also reads as
- * connected — the honest reading of what `/health` reports.
+ * Daemon health is `up` (`backendUp && mcpUp` from `probeAgentDeck`)
+ * plus the live-session list from the read-only
+ * `GET /api/scope/bindings` (same source as the menu bar). A session
+ * counts toward a host and folder only when its MCP `clientName`
+ * identifies that host and its `workspaceRoot` is this folder or
+ * absent (folder-less sessions come from global headerless entries and
+ * cannot contradict any folder). A session from another folder or
+ * another host never reads as connected.
  */
 
 export type HostId = 'codex' | 'claude' | 'cursor' | 'muse';
@@ -32,13 +36,27 @@ export type HostConnectionState =
   | 'folder-not-repository'
   | 'stale-conflicting-entry';
 
+/**
+ * Live MCP session as `GET /api/scope/bindings` reports it — the subset
+ * the classifier attributes. Both fields are optional on the wire:
+ * `clientName` is the MCP `clientInfo.name` the host sent at
+ * initialize, and `workspaceRoot` is absent for folder-less sessions
+ * (global headerless entries that never bound a folder).
+ */
+export interface HostLiveSession {
+  workspaceRoot?: string;
+  clientName?: string;
+}
+
 export interface DaemonHealth {
   up: boolean;
-  liveSessions: number;
+  sessions: HostLiveSession[];
 }
 
 export interface HostConnectionInput {
   host: HostId;
+  /** Folder the connection state is reported for (session attribution). */
+  folder: string;
   hasProjectEntry: boolean;
   hasGlobalEntry: boolean;
   /** Meaningful only when a project entry exists; otherwise ignored. */
@@ -48,7 +66,8 @@ export interface HostConnectionInput {
   /** Muse only; other hosts pass false. */
   hasStaleConflict: boolean;
   daemonUp: boolean;
-  liveSessions: number;
+  /** Live sessions from `/api/scope/bindings`, attributed per host and folder. */
+  sessions: HostLiveSession[];
 }
 
 export interface HostConnectionResult {
@@ -76,10 +95,71 @@ function entryDetail(input: HostConnectionInput): string {
 }
 
 /**
+ * MCP `clientInfo.name` keywords per host, matched case-insensitively
+ * as substrings (`claude-code` → claude, `codex`/`codex-cli` → codex).
+ * An unknown or absent name attributes to no host — a session from a
+ * client doctor does not know (another tool, an inspector) must never
+ * light up a host it did not come from.
+ */
+const CLIENT_NAME_KEYWORDS: Record<HostId, string[]> = {
+  claude: ['claude'],
+  codex: ['codex'],
+  cursor: ['cursor'],
+  muse: ['muse'],
+};
+
+const CLIENT_NAME_CHECK_ORDER: HostId[] = ['claude', 'codex', 'cursor', 'muse'];
+
+/** Host a live session's `clientName` identifies, or undefined when unknown. */
+export function hostIdForClientName(clientName: string | undefined): HostId | undefined {
+  const name = clientName?.trim().toLowerCase();
+  if (!name) {
+    return undefined;
+  }
+  for (const host of CLIENT_NAME_CHECK_ORDER) {
+    if (CLIENT_NAME_KEYWORDS[host].some((keyword) => name.includes(keyword))) {
+      return host;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * True when a live session belongs to this host and folder: the
+ * `clientName` must identify the host, and the `workspaceRoot` must be
+ * this folder (canonically compared, so `/tmp/x` matches
+ * `/private/tmp/x`) or absent — a folder-less session comes from a
+ * global headerless entry and cannot contradict any folder.
+ */
+export function sessionMatchesHostFolder(
+  session: HostLiveSession,
+  host: HostId,
+  folder: string,
+): boolean {
+  if (hostIdForClientName(session.clientName) !== host) {
+    return false;
+  }
+  const root = session.workspaceRoot?.trim();
+  if (!root) {
+    return true;
+  }
+  return canonicalFolder(root) === canonicalFolder(folder);
+}
+
+/** Live sessions attributed to this host and folder. */
+export function countMatchingSessions(
+  sessions: HostLiveSession[],
+  host: HostId,
+  folder: string,
+): number {
+  return sessions.filter((session) => sessionMatchesHostFolder(session, host, folder)).length;
+}
+
+/**
  * Pure classifier: config gates first (they block even with the daemon
- * up), then daemon reachability, then the live-session tally. Trust and
- * repository gates apply only when a project entry exists — the global
- * headerless fallback needs neither.
+ * up), then daemon reachability, then the attributed live-session
+ * count. Trust and repository gates apply only when a project entry
+ * exists — the global headerless fallback needs neither.
  */
 export function classifyHostConnection(input: HostConnectionInput): HostConnectionResult {
   const { host } = input;
@@ -123,12 +203,13 @@ export function classifyHostConnection(input: HostConnectionInput): HostConnecti
       detail: entryDetail(input),
     };
   }
-  if (input.liveSessions > 0) {
+  const matchingSessions = countMatchingSessions(input.sessions, host, input.folder);
+  if (matchingSessions > 0) {
     return {
       host,
       state: 'connected',
       remedy: remedyFor(host, 'connected'),
-      detail: `${entryDetail(input)}, ${input.liveSessions} live session${input.liveSessions === 1 ? '' : 's'}`,
+      detail: `${entryDetail(input)}, ${matchingSessions} live session${matchingSessions === 1 ? '' : 's'}`,
     };
   }
   return {
@@ -337,7 +418,7 @@ export function parseCodexTrustedProjects(userToml: string): string[] {
  * a `-c` override is not enough. A trusted ancestor covers its children.
  */
 export function isCodexFolderTrusted(userToml: string, folder: string): boolean {
-  const trusted = new Set(parseCodexTrustedProjects(userToml).map((p) => path.resolve(p)));
+  const trusted = new Set(parseCodexTrustedProjects(userToml).map((p) => canonicalFolder(p)));
   return folderAndAncestors(canonicalFolder(folder)).some((candidate) => trusted.has(candidate));
 }
 
@@ -518,13 +599,14 @@ export function inspectHostConnection(
     const hasGlobalEntry = codexTomlHasAgentDeckEntry(userText);
     return classifyHostConnection({
       host,
+      folder: resolvedFolder,
       hasProjectEntry,
       hasGlobalEntry,
       folderTrusted: hasProjectEntry ? isCodexFolderTrusted(userText, resolvedFolder) : true,
       folderInRepository: true,
       hasStaleConflict: false,
       daemonUp: daemon.up,
-      liveSessions: daemon.liveSessions,
+      sessions: daemon.sessions,
     });
   }
 
@@ -534,13 +616,14 @@ export function inspectHostConnection(
     const hasProjectEntry = projectEntry !== undefined;
     return classifyHostConnection({
       host,
+      folder: resolvedFolder,
       hasProjectEntry,
       hasGlobalEntry: globalEntry !== undefined,
       folderTrusted: hasProjectEntry ? isClaudeProjectApproved(home, resolvedFolder) : true,
       folderInRepository: true,
       hasStaleConflict: false,
       daemonUp: daemon.up,
-      liveSessions: daemon.liveSessions,
+      sessions: daemon.sessions,
     });
   }
 
@@ -550,13 +633,14 @@ export function inspectHostConnection(
     const hasProjectEntry = projectEntry !== undefined;
     return classifyHostConnection({
       host,
+      folder: resolvedFolder,
       hasProjectEntry,
       hasGlobalEntry: globalEntry !== undefined,
       folderTrusted: hasProjectEntry ? isCursorProjectApproved(home, resolvedFolder) : true,
       folderInRepository: true,
       hasStaleConflict: false,
       daemonUp: daemon.up,
-      liveSessions: daemon.liveSessions,
+      sessions: daemon.sessions,
     });
   }
 
@@ -565,6 +649,7 @@ export function inspectHostConnection(
   const hasProjectEntry = projectEntry !== undefined;
   return classifyHostConnection({
     host,
+    folder: resolvedFolder,
     hasProjectEntry,
     hasGlobalEntry: globalEntry !== undefined,
     folderTrusted: hasProjectEntry
@@ -573,7 +658,7 @@ export function inspectHostConnection(
     folderInRepository: hasProjectEntry ? isInsideGitRepository(resolvedFolder) : true,
     hasStaleConflict: hasMuseStaleConflict(projectEntry, globalEntry),
     daemonUp: daemon.up,
-    liveSessions: daemon.liveSessions,
+    sessions: daemon.sessions,
   });
 }
 

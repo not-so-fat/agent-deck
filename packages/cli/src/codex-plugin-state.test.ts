@@ -226,7 +226,7 @@ describe('doctor codex plugin state (NOT-188)', () => {
     expect(output.join('\n')).not.toContain('Codex plugin: OK (');
 
     output.length = 0;
-    await runDoctor({ daemonHealth: { up: false, liveSessions: 0 } });
+    await runDoctor({ daemonHealth: { up: false, sessions: [] } });
     const lines = output.join('\n').split('\n');
     // NOTE: full `doctor` exit 0 additionally requires host checks (sqlite
     // native, backend entry) that a bare checkout may not satisfy, so the
@@ -271,7 +271,7 @@ describe('honest host connection state (NOT-564, classifier NOT-574)', () => {
     expect(output.join('\n')).not.toContain('connection:');
 
     output.length = 0;
-    await runDoctor({ daemonHealth: { up: true, liveSessions: 2 } });
+    await runDoctor({ daemonHealth: { up: true, sessions: [{ workspaceRoot: process.cwd(), clientName: 'codex' }] } });
     const text = output.join('\n');
     expect(text).toContain('Host connections (pure MCP, read-only):');
     expect(text).toContain('Codex connection: no-entry');
@@ -290,7 +290,7 @@ describe('honest host connection state (NOT-564, classifier NOT-574)', () => {
       ['[mcp_servers.agent-deck]', 'url = "http://127.0.0.1:1110/mcp"', ''].join('\n'),
     );
 
-    await runDoctor({ daemonHealth: { up: false, liveSessions: 0 } });
+    await runDoctor({ daemonHealth: { up: false, sessions: [] } });
     const text = output.join('\n');
     expect(text).toContain(MANIFEST_LINE);
     expect(text).toContain('Codex connection: entry-daemon-down');
@@ -309,7 +309,7 @@ describe('honest host connection state (NOT-564, classifier NOT-574)', () => {
       ['[mcp_servers.agent-deck]', 'url = "http://127.0.0.1:1110/mcp"', ''].join('\n'),
     );
 
-    await runDoctor({ daemonHealth: { up: true, liveSessions: 1 } });
+    await runDoctor({ daemonHealth: { up: true, sessions: [{ workspaceRoot: process.cwd(), clientName: 'codex' }] } });
     const text = output.join('\n');
     expect(text).toContain('Codex connection: connected');
     expect(text).toContain('No action needed');

@@ -54,6 +54,7 @@ import {
   inspectAllHostConnections,
   type DaemonHealth,
 } from './host-connection';
+import { fetchLiveBindings } from './menubar';
 
 export interface StartOptions {
   backendPort?: number;
@@ -966,10 +967,16 @@ export async function runDoctor(options: { daemonHealth?: DaemonHealth } = {}): 
   // live session, trust, repository) from the shared classifier. The
   // daemon health is injectable so tests pin every host's line. Never
   // prints OK for install state alone — only `connected` means live.
-  const daemonHealth: DaemonHealth = options.daemonHealth ?? {
-    up: probe.backendUp && probe.mcpUp,
-    liveSessions: probe.mcpSessions?.liveSessions ?? 0,
-  };
+  // Sessions come from GET /api/scope/bindings so the classifier can
+  // attribute each one to its host and folder; an unreachable backend
+  // answers no sessions, which degrades to entry-daemon-up-no-session
+  // rather than a false connected.
+  let daemonHealth = options.daemonHealth;
+  if (!daemonHealth) {
+    const up = probe.backendUp && probe.mcpUp;
+    const sessions = probe.backendUp ? ((await fetchLiveBindings(probe.backendUrl)) ?? []) : [];
+    daemonHealth = { up, sessions };
+  }
   console.log('');
   console.log('Host connections (pure MCP, read-only):');
   for (const result of inspectAllHostConnections(process.cwd(), { daemon: daemonHealth })) {
