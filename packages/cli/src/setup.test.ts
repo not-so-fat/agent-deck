@@ -34,35 +34,27 @@ describe('setup statusline defaults', () => {
     expect(resolveSetupStatusline('claude-desktop', true)).toBe(true);
   });
 
-  it('registers Claude Code with the trusted stdio launcher in the requested scope', () => {
+  it('NOT-565: registers Claude Code with the headerless HTTP fallback in the requested scope', () => {
     const endpoint = { host: '127.0.0.2', mcpPort: 2110 };
     expect(buildClaudeCliAddArgs('global', endpoint)).toEqual([
       'mcp',
       'add',
       '--scope',
       'user',
+      '--transport',
+      'http',
       'agent-deck',
-      '-e',
-      'AGENT_DECK_MCP_PORT=2110',
-      '-e',
-      'AGENT_DECK_HOST=127.0.0.2',
-      '--',
-      'agent-deck',
-      'mcp-launch',
+      'http://127.0.0.2:2110/mcp',
     ]);
     expect(buildClaudeCliAddArgs('project', endpoint)).toEqual([
       'mcp',
       'add',
       '--scope',
       'project',
+      '--transport',
+      'http',
       'agent-deck',
-      '-e',
-      'AGENT_DECK_MCP_PORT=2110',
-      '-e',
-      'AGENT_DECK_HOST=127.0.0.2',
-      '--',
-      'agent-deck',
-      'mcp-launch',
+      'http://127.0.0.2:2110/mcp',
     ]);
   });
 
@@ -178,11 +170,148 @@ describe('setup statusline defaults', () => {
       expect(written).toContain('# Personal instructions');
       expect(written).toContain('Keep this section.');
       expect(written).toContain('<!-- agent-deck:harness:start -->');
-      expect(written).toContain('agent-deck mcp-launch');
+      expect(written).toContain('pure MCP (streamable HTTP)');
+      expect(written).toContain('trust the folder, approve the project agent-deck entry');
+      expect(written).not.toContain('mcp-launch');
       expect(written).toContain('<!-- agent-deck:harness:end -->');
     } finally {
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-565: codex global setup writes the headerless HTTP fallback once, preserving other entries', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-codex-fallback-'));
+    const configPath = path.join(tmpHome, '.codex', 'config.toml');
+    const previousCodexHome = process.env.CODEX_HOME;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    delete process.env.CODEX_HOME;
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, '[mcp_servers.other]\nurl = "http://127.0.0.1:9999/mcp"\n');
+    const args = [
+      '--client',
+      'codex',
+      '--scope',
+      'global',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      expect(await runSetup(args)).toBe(0);
+      const written = fs.readFileSync(configPath, 'utf8');
+      // Exactly one managed section, headerless, pointing at the daemon.
+      expect(written.match(/\[mcp_servers\.agent-deck\]/g)).toHaveLength(1);
+      expect(written).toContain('url = "http://127.0.0.1:1110/mcp"');
+      expect(written).not.toContain('http_headers');
+      expect(written).not.toContain('mcp-launch');
+      // Unrelated entries survive byte-equivalent.
+      expect(written).toContain('[mcp_servers.other]\nurl = "http://127.0.0.1:9999/mcp"');
+      expect(log.mock.calls.flat().join('\n')).toContain('headerless HTTP');
+
+      const beforeSecond = fs.readFileSync(configPath, 'utf8');
+      expect(await runSetup(args)).toBe(0);
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(beforeSecond);
+    } finally {
+      log.mockRestore();
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-565: codex project setup writes no host config entry', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-codex-proj-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-codex-projw-'));
+    const previousCodexHome = process.env.CODEX_HOME;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    delete process.env.CODEX_HOME;
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      expect(
+        await runSetup([
+          '--client',
+          'codex',
+          '--scope',
+          'project',
+          '--no-statusline',
+          '--no-menubar',
+        ]),
+      ).toBe(0);
+      // Per-folder entries come from `agent-deck use`; setup merges guidance only.
+      expect(fs.existsSync(path.join(workspace, '.codex', 'config.toml'))).toBe(false);
+      expect(fs.existsSync(path.join(tmpHome, '.codex', 'config.toml'))).toBe(false);
+      expect(fs.readFileSync(path.join(workspace, 'AGENTS.md'), 'utf8')).toContain(
+        '<!-- agent-deck:harness:start -->',
+      );
+    } finally {
+      cwd.mockRestore();
+      log.mockRestore();
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-565: claude global setup writes the headerless HTTP fallback once, preserving other entries', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-claude-fallback-'));
+    const claudeJson = path.join(tmpHome, '.claude.json');
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    fs.writeFileSync(
+      claudeJson,
+      `${JSON.stringify({ mcpServers: { memory: { command: 'npx', args: ['-y', 'memory'] } } }, null, 2)}\n`,
+    );
+    // Force the `claude` CLI miss so setup takes the deterministic file fallback.
+    const previousPath = process.env.PATH;
+    process.env.PATH = path.join(tmpHome, 'empty-bin');
+    const args = [
+      '--client',
+      'claude',
+      '--scope',
+      'global',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      expect(await runSetup(args)).toBe(0);
+      const written = JSON.parse(fs.readFileSync(claudeJson, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      // Exact fallback fields only — toEqual fails on any extra field.
+      expect(written.mcpServers['agent-deck']).toEqual({
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
+      });
+      expect(written.mcpServers.memory).toEqual({ command: 'npx', args: ['-y', 'memory'] });
+      expect(fs.readFileSync(claudeJson, 'utf8')).not.toContain('mcp-launch');
+
+      const beforeSecond = fs.readFileSync(claudeJson, 'utf8');
+      expect(await runSetup(args)).toBe(0);
+      expect(fs.readFileSync(claudeJson, 'utf8')).toBe(beforeSecond);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
       vi.restoreAllMocks();
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }

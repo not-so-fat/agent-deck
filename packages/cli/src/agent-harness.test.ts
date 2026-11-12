@@ -48,7 +48,9 @@ describe('agent-harness templates', () => {
     expect(file).toContain('do not improvise without the deck');
     expect(file).toContain('for every match before taking task action');
     expect(file).toContain('host transport, folder assignment, then session bootstrap');
-    expect(file).toContain('agent-deck mcp-launch');
+    expect(file).toContain('pure MCP (streamable HTTP)');
+    expect(file).toContain('trust the folder, approve the project agent-deck entry');
+    expect(file).not.toContain('mcp-launch');
     expect(file).toContain('agent-deck setup --client codex');
     expect(file).toContain('does not install the plugin');
     expect(file).toContain('This call verifies an existing connection; it does not create it');
@@ -176,7 +178,9 @@ describe('agent-harness templates', () => {
     expect(block).toContain('get_bound_deck');
     expect(block).toContain('Checking for the optional assignment signal');
     expect(block).toContain('do not improvise without the deck');
-    expect(block).toContain('agent-deck mcp-launch');
+    expect(block).toContain('pure MCP (streamable HTTP)');
+    expect(block).toContain('trust the folder, approve the project agent-deck entry');
+    expect(block).not.toContain('mcp-launch');
     expect(block).toContain('agent-deck setup --client codex');
     expect(block).toContain('does not install the plugin');
   });
