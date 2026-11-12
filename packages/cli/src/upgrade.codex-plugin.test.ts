@@ -9,7 +9,7 @@ import {
   formatLauncherMigrationResults,
   rewriteLegacyLauncherEntries,
 } from './launcher-migration';
-import { buildMuseLegacyLauncherEntry, isMcpLaunchEntry } from './mcp-config';
+import { isLegacyMuseLaunchEntry, isMcpLaunchEntry } from './mcp-config';
 import { runUpgrade } from './upgrade';
 import { getAgentDeckVersion } from './version';
 
@@ -1002,6 +1002,7 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
   let savedFetch: typeof globalThis.fetch | undefined;
   let savedMcpPort: string | undefined;
   let savedHost: string | undefined;
+  let savedXdg: string | undefined;
 
   const LAUNCHER_JSON = {
     type: 'stdio',
@@ -1009,7 +1010,18 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
     args: ['mcp-launch'],
     env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
   };
+  // The retired NOT-387 Muse launcher shape: no type, no workspace pin.
+  const MUSE_LAUNCHER_JSON = {
+    command: 'agent-deck',
+    args: ['mcp-launch'],
+    env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+  };
   const MEMORY_SERVER = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] };
+
+  /** Muse user settings path under the mocked home (XDG unset in these tests). */
+  function museGlobalPath(): string {
+    return path.join(fakeHome, '.config', 'muse', 'settings.json');
+  }
 
   beforeEach(() => {
     fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-migrate-home-'));
@@ -1018,7 +1030,9 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
     savedFetch = globalThis.fetch;
     savedMcpPort = process.env.AGENT_DECK_MCP_PORT;
     savedHost = process.env.AGENT_DECK_HOST;
+    savedXdg = process.env.XDG_CONFIG_HOME;
     delete process.env.AGENT_DECK_MCP_PORT;
+    delete process.env.XDG_CONFIG_HOME;
     process.env.AGENT_DECK_HOST = '127.0.0.1';
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
     vi.spyOn(process, 'cwd').mockReturnValue(workspace);
@@ -1041,6 +1055,11 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
       delete process.env.AGENT_DECK_HOST;
     } else {
       process.env.AGENT_DECK_HOST = savedHost;
+    }
+    if (savedXdg === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = savedXdg;
     }
     fs.rmSync(fakeHome, { recursive: true, force: true });
     fs.rmSync(workspace, { recursive: true, force: true });
@@ -1087,6 +1106,8 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
       { path: path.join(workspace, '.codex', 'config.toml'), action: 'rewritten' },
       { path: path.join(fakeHome, '.claude.json'), action: 'rewritten' },
       { path: path.join(fakeHome, '.codex', 'config.toml'), action: 'rewritten' },
+      // No Muse settings file in this fixture: nothing to rewrite.
+      { path: museGlobalPath(), action: 'unchanged' },
     ]);
 
     const projectMcp = JSON.parse(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8'));
@@ -1125,7 +1146,8 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
     seedLegacyInstall();
 
     const first = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
-    expect(first.every((result) => result.action === 'rewritten')).toBe(true);
+    expect(first.slice(0, 4).every((result) => result.action === 'rewritten')).toBe(true);
+    expect(first[4].action).toBe('unchanged');
     const bytes = [
       fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8'),
       fs.readFileSync(path.join(workspace, '.codex', 'config.toml'), 'utf8'),
@@ -1161,6 +1183,7 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
     expect(results[2].action).toBe('skipped');
     expect(results[2].reason).toBeTruthy();
     expect(results[3].action).toBe('unchanged');
+    expect(results[4].action).toBe('unchanged');
     // Custom entry byte-identical.
     expect(JSON.parse(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8'))).toEqual({
       mcpServers: { 'agent-deck': { command: 'npx', args: ['-y', 'custom'] } },
@@ -1231,26 +1254,145 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
     expect(output.join('\n')).not.toContain('rewrote legacy launcher entry');
   });
 
-  it('leaves a current Muse launcher entry in the shared project .mcp.json byte-identical', () => {
-    // Exactly what `setup --client muse --scope project` still writes
-    // (and older `use --client muse` wrote): mcp-launch with neither a
-    // Claude marker (no type, no workspace pin).
-    const museEntry = buildMuseLegacyLauncherEntry(ENDPOINT);
-    expect(isMcpLaunchEntry(museEntry)).toBe(true);
+  it('NOT-572: rewrites a Muse launcher project entry to the per-folder HTTP entry when assigned', () => {
+    expect(isMcpLaunchEntry(MUSE_LAUNCHER_JSON)).toBe(true);
+    expect(isLegacyMuseLaunchEntry(MUSE_LAUNCHER_JSON)).toBe(true);
     const configPath = path.join(workspace, '.mcp.json');
     fs.writeFileSync(
       configPath,
-      `${JSON.stringify({ mcpServers: { memory: MEMORY_SERVER, 'agent-deck': museEntry } }, null, 2)}\n`,
+      `${JSON.stringify({ mcpServers: { memory: MEMORY_SERVER, 'agent-deck': MUSE_LAUNCHER_JSON } }, null, 2)}\n`,
     );
-    const before = fs.readFileSync(configPath, 'utf8');
+    // The folder has a deck assignment, so the per-folder HTTP entry applies.
+    fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.agent-deck', 'use.json'),
+      `${JSON.stringify({ version: 3, deckId: 'deck-1', deckName: 'dev' }, null, 2)}\n`,
+    );
 
     const results = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
 
-    expect(results[0]).toEqual({ path: configPath, action: 'unchanged' });
-    expect(fs.readFileSync(configPath, 'utf8')).toBe(before);
-    // The upgrade never converts the entry to the HTTP shape — repairing
-    // it is `use --client muse`'s job now (NOT-571 rewrites the file).
-    expect(JSON.parse(before).mcpServers['agent-deck']).toEqual(museEntry);
+    expect(results[0]).toEqual({ path: configPath, action: 'rewritten' });
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({
+      mcpServers: {
+        memory: MEMORY_SERVER,
+        'agent-deck': {
+          type: 'http',
+          url: MCP_URL,
+          headers: { 'x-agent-deck-workspace': workspace },
+        },
+      },
+    });
+    expect(fs.readFileSync(configPath, 'utf8')).not.toContain('mcp-launch');
+    // Second run is byte-identical.
+    const beforeSecond = fs.readFileSync(configPath, 'utf8');
+    const second = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+    expect(second[0].action).toBe('unchanged');
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(beforeSecond);
+  });
+
+  it('NOT-572: removes a Muse launcher project entry with a notice when the folder has no assignment', () => {
+    const configPath = path.join(workspace, '.mcp.json');
+    fs.writeFileSync(
+      configPath,
+      `${JSON.stringify({ mcpServers: { memory: MEMORY_SERVER, 'agent-deck': MUSE_LAUNCHER_JSON } }, null, 2)}\n`,
+    );
+    // No .agent-deck/use.json: the global fallback applies instead.
+
+    const results = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+
+    expect(results[0]).toEqual({ path: configPath, action: 'removed' });
+    // The launcher entry is gone; the unrelated server survives.
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({
+      mcpServers: { memory: MEMORY_SERVER },
+    });
+    expect(fs.readFileSync(configPath, 'utf8')).not.toContain('mcp-launch');
+    const lines = formatLauncherMigrationResults(results);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('removed legacy launcher entry with no folder assignment');
+    expect(lines[0]).toContain(configPath);
+    expect(lines[0]).toContain('agent-deck use <deck>');
+    // Second run changes nothing.
+    const second = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+    expect(second[0].action).toBe('unchanged');
+    expect(formatLauncherMigrationResults(second)).toEqual([]);
+  });
+
+  it('NOT-572: rewrites a Muse launcher user-settings entry to the headerless global entry', () => {
+    const settingsPath = museGlobalPath();
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      `${JSON.stringify(
+        {
+          theme: 'dark',
+          schema_version: 1,
+          mcpServers: { memory: MEMORY_SERVER, 'agent-deck': MUSE_LAUNCHER_JSON },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const results = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+
+    expect(results[4]).toEqual({ path: settingsPath, action: 'rewritten' });
+    const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    // Exact fallback fields only — toEqual fails on any leftover field.
+    expect(written).toEqual({
+      theme: 'dark',
+      schema_version: 1,
+      mcpServers: { memory: MEMORY_SERVER, 'agent-deck': { type: 'http', url: MCP_URL } },
+    });
+    expect(fs.readFileSync(settingsPath, 'utf8')).not.toContain('mcp-launch');
+    const lines = formatLauncherMigrationResults(results);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('rewrote legacy launcher entry to pure MCP');
+    // Second run is byte-identical.
+    const beforeSecond = fs.readFileSync(settingsPath, 'utf8');
+    const second = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+    expect(second[4].action).toBe('unchanged');
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(beforeSecond);
+  });
+
+  it('NOT-572: leaves custom Muse entries alone and skips an incompatible schema_version with a reason', () => {
+    // Custom project entry: byte-identical.
+    const configPath = path.join(workspace, '.mcp.json');
+    const custom = {
+      mcpServers: { 'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] } },
+    };
+    const customOriginal = `${JSON.stringify(custom, null, 2)}\n`;
+    fs.writeFileSync(configPath, customOriginal);
+    // Custom user-settings entry: byte-identical.
+    const customSettingsPath = museGlobalPath();
+    fs.mkdirSync(path.dirname(customSettingsPath), { recursive: true });
+    const customSettings = {
+      schema_version: 1,
+      mcpServers: { 'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] } },
+    };
+    const customSettingsOriginal = `${JSON.stringify(customSettings, null, 2)}\n`;
+    fs.writeFileSync(customSettingsPath, customSettingsOriginal);
+
+    const results = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+
+    expect(results[0].action).toBe('unchanged');
+    expect(results[4].action).toBe('unchanged');
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(customOriginal);
+    expect(fs.readFileSync(customSettingsPath, 'utf8')).toBe(customSettingsOriginal);
+
+    // Incompatible schema_version with a launcher entry: skipped, untouched.
+    const badSettings = {
+      schema_version: 2,
+      mcpServers: { 'agent-deck': MUSE_LAUNCHER_JSON },
+    };
+    const badOriginal = `${JSON.stringify(badSettings, null, 2)}\n`;
+    fs.writeFileSync(customSettingsPath, badOriginal);
+    const skipped = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+    expect(skipped[4].action).toBe('skipped');
+    expect(skipped[4].reason).toContain('schema_version');
+    expect(fs.readFileSync(customSettingsPath, 'utf8')).toBe(badOriginal);
+    const lines = formatLauncherMigrationResults(skipped);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(customSettingsPath);
   });
 
   it('rewrites a legacy Claude project entry pinned by workspace env without the stdio type', () => {

@@ -1116,7 +1116,7 @@ describe('NOT-387 muse setup', () => {
     }
   });
 
-  it('merges project .mcp.json and leaves other project servers unchanged', async () => {
+  it('NOT-572: project muse setup writes the headed HTTP entry, not the launcher', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-project-'));
     const mcpPath = path.join(workspace, '.mcp.json');
     fs.writeFileSync(
@@ -1140,22 +1140,23 @@ describe('NOT-387 muse setup', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       expect(await runSetup(args)).toBe(0);
-      // NOT-570: the launcher write stays (later ticket), but setup warns
-      // it is rejected against the HTTP user entry and points at plain use.
-      const warned = warn.mock.calls.flat().join('\n');
-      expect(warned).toContain('invalid_transport_combination');
-      expect(warned).toContain('agent-deck use <deck>');
+      // The retired launcher write and its invalid_transport_combination
+      // warning are gone: the project entry is the same headed HTTP shape
+      // `use` writes, so nothing warns.
+      expect(warn).not.toHaveBeenCalled();
       const written = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>;
+      // Exact per-folder HTTP shape — toEqual fails on any extra field.
       expect(written).toEqual({
         mcpServers: {
           memory: { command: 'npx', args: ['-y', 'memory'] },
           'agent-deck': {
-            command: 'agent-deck',
-            args: ['mcp-launch'],
-            env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+            type: 'http',
+            url: 'http://127.0.0.1:1110/mcp',
+            headers: { 'x-agent-deck-workspace': workspace },
           },
         },
       });
+      expect(fs.readFileSync(mcpPath, 'utf8')).not.toContain('mcp-launch');
       // Project harness merges root AGENTS.md; no Cursor/Claude-only files.
       expect(fs.existsSync(path.join(workspace, '.cursor'))).toBe(false);
       expect(fs.existsSync(path.join(workspace, 'CLAUDE.md'))).toBe(false);
@@ -1171,6 +1172,65 @@ describe('NOT-387 muse setup', () => {
       expect(await runSetup(args)).toBe(0);
       expect(fs.readFileSync(mcpPath, 'utf8')).toBe(beforeSecond);
       expect(fs.readFileSync(agentsPath, 'utf8')).toBe(agentsBefore);
+    } finally {
+      cwd.mockRestore();
+      log.mockRestore();
+      warn.mockRestore();
+      vi.restoreAllMocks();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-572: project muse setup replaces a legacy launcher shape with the headed HTTP entry', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-projleg-'));
+    const mcpPath = path.join(workspace, '.mcp.json');
+    // What an older project-scope setup wrote: the retired Muse launcher shape.
+    fs.writeFileSync(
+      mcpPath,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            memory: { command: 'npx', args: ['-y', 'memory'] },
+            'agent-deck': {
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: { AGENT_DECK_MCP_PORT: '9999', AGENT_DECK_HOST: '127.0.0.1' },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const args = [
+      '--client',
+      'muse',
+      '--scope',
+      'project',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await runSetup(args)).toBe(0);
+      expect(warn).not.toHaveBeenCalled();
+      const written = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>;
+      const servers = written.mcpServers as Record<string, unknown>;
+      // No leftover stdio fields — the launcher shape is gone outright.
+      expect(servers['agent-deck']).toEqual({
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
+        headers: { 'x-agent-deck-workspace': workspace },
+      });
+      expect(servers['agent-deck']).not.toHaveProperty('command');
+      expect(servers.memory).toEqual({ command: 'npx', args: ['-y', 'memory'] });
+      expect(fs.readFileSync(mcpPath, 'utf8')).not.toContain('mcp-launch');
     } finally {
       cwd.mockRestore();
       log.mockRestore();

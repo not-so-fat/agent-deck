@@ -436,7 +436,7 @@ export async function runCli(argv: string[]): Promise<number> {
       return runUseCommand(rest);
     case 'run':
       return runRunCommand(rest);
-    // NOT-566/567: retained stdio launcher for Muse and Claude Desktop
+    // NOT-566/567/572: retained stdio launcher for Claude Desktop
     // (plus legacy entries until `agent-deck upgrade` or `setup`/`use`
     // rewrites them). Hidden from usage — hosts invoke it, humans need not.
     case 'mcp-launch':

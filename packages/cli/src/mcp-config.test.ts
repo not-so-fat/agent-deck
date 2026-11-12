@@ -8,13 +8,13 @@ import {
   buildAgentDeckEntry,
   buildCodexAgentDeckEntry,
   buildGlobalFallbackHttpEntry,
-  buildMuseLegacyLauncherEntry,
   codexTomlHasLauncherEntry,
   formatCodexGlobalFallbackSection,
   formatCodexMcpSection,
   isHttpAgentDeckEntry,
   isLegacyBareHttpAgentDeckEntry,
   isLegacyClaudeLaunchEntry,
+  isLegacyMuseLaunchEntry,
   isMcpLaunchEntry,
   mergeCodexTomlConfig,
   mergeMcpServerConfig,
@@ -192,22 +192,23 @@ describe('buildAgentDeckEntry', () => {
     });
   });
 
-  it('NOT-387/NOT-571: the legacy muse launcher helper keeps the exact supported fields', () => {
-    // toEqual fails on any extra field: no AGENT_DECK_WORKSPACE, cwd,
-    // required, timeout, or redundant type — Muse preserves command/args/env.
-    // Only `setup --scope project` still writes this, until the
-    // launcher-retirement ticket removes the helper.
-    expect(buildMuseLegacyLauncherEntry({ host: '127.0.0.1', mcpPort: 1110 })).toEqual({
-      command: 'agent-deck',
-      args: ['mcp-launch'],
-      env: {
-        AGENT_DECK_MCP_PORT: '1110',
-        AGENT_DECK_HOST: '127.0.0.1',
-      },
-    });
-    expect(
-      isMcpLaunchEntry(buildMuseLegacyLauncherEntry({ host: '127.0.0.1', mcpPort: 1110 })),
-    ).toBe(true);
+  it('NOT-572: no Muse entry builder writes the launcher — only HTTP forms remain', () => {
+    // Both Muse forms are HTTP: the per-folder entry with a workspace
+    // root, the headerless fallback without one. Nothing builds the
+    // retired NOT-387 launcher shape; legacy entries are only detected
+    // (isLegacyMuseLaunchEntry) and converted by the upgrade path.
+    for (const entry of [
+      buildAgentDeckEntry('muse', { host: '127.0.0.1', mcpPort: 1110 }),
+      buildAgentDeckEntry(
+        'muse',
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: '/tmp/ws' },
+      ),
+    ]) {
+      expect(isMcpLaunchEntry(entry)).toBe(false);
+      expect(isHttpAgentDeckEntry(entry)).toBe(true);
+      expect(entry).not.toHaveProperty('command');
+    }
   });
 
   it('every launcher client entry uses the mcp-launch launcher (claude-desktop/global)', () => {
@@ -582,10 +583,11 @@ describe('NOT-387 resolveConfigPath', () => {
 
 describe('NOT-387 mergeMuseServerConfig', () => {
   const configPath = path.join('/tmp', 'xdg', 'muse', 'settings.json');
+  // NOT-572: setup only merges HTTP entries now — the launcher shape is
+  // never written, only detected as legacy and replaced.
   const entry = {
-    command: 'agent-deck',
-    args: ['mcp-launch'],
-    env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+    type: 'http',
+    url: 'http://127.0.0.1:1110/mcp',
   };
 
   it('sets schema_version when absent', () => {
@@ -737,8 +739,6 @@ describe('legacy bare HTTP detection', () => {
 });
 
 describe('NOT-566 isLegacyClaudeLaunchEntry', () => {
-  const ENDPOINT = { host: '127.0.0.1', mcpPort: 1110 };
-
   it('matches legacy Claude launcher entries by the stdio type or the workspace pin', () => {
     // Global shape: stdio type, no workspace pin.
     expect(
@@ -764,12 +764,17 @@ describe('NOT-566 isLegacyClaudeLaunchEntry', () => {
   });
 
   it('never matches the Muse-shaped launcher entry', () => {
-    // NOT-571: `use --client muse` writes HTTP now, but the Muse-shaped
-    // launcher (older `use`, still `setup --scope project`) carries
-    // neither Claude marker and must stay out of the Claude rewrite.
-    const museEntry = buildMuseLegacyLauncherEntry(ENDPOINT);
+    // The retired NOT-387 Muse shape (command/args/env only) carries
+    // neither Claude marker and must stay out of the Claude rewrite —
+    // it matches isLegacyMuseLaunchEntry instead (NOT-572).
+    const museEntry = {
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+      env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+    };
     expect(isMcpLaunchEntry(museEntry)).toBe(true);
     expect(isLegacyClaudeLaunchEntry(museEntry)).toBe(false);
+    expect(isLegacyMuseLaunchEntry(museEntry)).toBe(true);
   });
 
   it('rejects non-launcher entries and empty workspace pins', () => {
@@ -784,6 +789,56 @@ describe('NOT-566 isLegacyClaudeLaunchEntry', () => {
         env: { AGENT_DECK_WORKSPACE: '' },
       }),
     ).toBe(false);
+  });
+});
+
+describe('NOT-572 isLegacyMuseLaunchEntry', () => {
+  const MUSE_ENTRY = {
+    command: 'agent-deck',
+    args: ['mcp-launch'],
+    env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+  };
+
+  it('matches the retired Muse launcher shape (no type, no workspace pin)', () => {
+    expect(isMcpLaunchEntry(MUSE_ENTRY)).toBe(true);
+    expect(isLegacyMuseLaunchEntry(MUSE_ENTRY)).toBe(true);
+    // A bare launcher with no env at all is still Muse-shaped: neither
+    // Claude marker is present.
+    expect(
+      isLegacyMuseLaunchEntry({ command: 'agent-deck', args: ['mcp-launch'] }),
+    ).toBe(true);
+  });
+
+  it('never matches Claude-marked launcher entries', () => {
+    expect(
+      isLegacyMuseLaunchEntry({
+        type: 'stdio',
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+      }),
+    ).toBe(false);
+    expect(
+      isLegacyMuseLaunchEntry({
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: {
+          AGENT_DECK_MCP_PORT: '1110',
+          AGENT_DECK_HOST: '127.0.0.1',
+          AGENT_DECK_WORKSPACE: '/tmp/ws',
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects HTTP entries and custom wrappers', () => {
+    expect(
+      isLegacyMuseLaunchEntry({ type: 'http', url: 'http://127.0.0.1:1110/mcp' }),
+    ).toBe(false);
+    expect(
+      isLegacyMuseLaunchEntry({ command: 'npx', args: ['-y', 'custom-wrapper'] }),
+    ).toBe(false);
+    expect(isLegacyMuseLaunchEntry(undefined)).toBe(false);
   });
 });
 
