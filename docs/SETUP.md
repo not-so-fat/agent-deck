@@ -137,11 +137,11 @@ MCP alone does **not** show the bound deck in Cursor IDE Agent chat. Terminal st
 
 ```bash
 agent-deck setup --client muse                 # once: global headerless HTTP fallback + native bootstrap skills
-agent-deck setup --client muse --scope project # optional: merge root AGENTS.md in this repo
-agent-deck use my-deck                         # optional per repo: folder assignment in .agent-deck/use.json
+agent-deck setup --client muse --scope project # optional: merge root AGENTS.md only — its .mcp.json write is still the legacy launcher entry, not the folder connection
+agent-deck use my-deck                         # per repo: folder assignment in .agent-deck/use.json plus the headered HTTP .mcp.json entry Muse accepts
 ```
 
-Muse connects over pure MCP (streamable HTTP) with no `agent-deck` executable lookup: global `setup` writes one **global headerless fallback** entry (`http://127.0.0.1:1110/mcp`, no headers) into the user settings (`$XDG_CONFIG_HOME/muse/settings.json`, fallback `~/.config/muse/settings.json`), so folders with no assignment still connect and land in the explain-only unassigned session. If your user settings still carry Agent Deck's own legacy `mcp-launch` entry, setup replaces it with the fallback automatically; a custom entry is left untouched.
+Muse connects over pure MCP (streamable HTTP) with no `agent-deck` executable lookup: global `setup` writes one **global headerless fallback** entry (`http://127.0.0.1:1110/mcp`, no headers) into the user settings (`$XDG_CONFIG_HOME/muse/settings.json`, fallback `~/.config/muse/settings.json`), so folders with no assignment still connect and land in the explain-only unassigned session. If your user settings still carry Agent Deck's own legacy `mcp-launch` entry, setup replaces it with the fallback automatically; a custom entry is left untouched. If a folder was previously assigned with `use --client muse` (or project-scope setup), its `.mcp.json` still holds that legacy `mcp-launch` project entry, which Muse rejects against the new HTTP user entry (`invalid_transport_combination`) — re-run plain `agent-deck use <deck>` there to rewrite `.mcp.json` with the headered HTTP entry Muse accepts, then reload MCP.
 
 Global skills live under `$XDG_CONFIG_HOME/muse/skills/agent-deck-*/SKILL.md` (fallback `~/.config/muse/skills/`). After setup, trust the folder and **start a new Muse process** (restart Muse) so the entry loads; project `AGENTS.md` loads only after workspace trust. Verify with `/mcp` (`agent-deck` should appear). First turn: the agent calls `get_session_context` once and shows exactly one verbatim `display_summary` line. There is no Muse status line or plugin install — do not expect a terminal footer.
 
@@ -279,7 +279,7 @@ Codex, Claude Code, Cursor, and Muse connect over pure MCP (streamable HTTP) wit
 
 If the host shows no Agent Deck tools, first run `agent-deck start --daemon` and `agent-deck setup --client codex|claude|cursor|muse` (with the host plugin installed where one exists), then work the three recovery steps in order:
 
-1. **Trust the folder** so the host loads the project entry (Codex needs the canonical path trusted; Claude Code loads `.mcp.json` after trust; Cursor loads `.cursor/mcp.json` after trust; Muse loads its user entry after trust — restart Muse so it reloads).
+1. **Trust the folder** so the host loads the project entry (Codex needs the canonical path trusted; Claude Code loads `.mcp.json` after trust; Cursor loads `.cursor/mcp.json` after trust; Muse loads the project entry and `AGENTS.md` after trust — restart Muse so the user entry reloads).
 2. **Approve the project agent-deck entry** when the host prompts (Claude Code project entries start as Pending approval; Cursor likewise asks to approve the project server).
 3. **Run `agent-deck use <deck>`** in the folder when its assignment is missing or legacy, then reload MCP (start a new task / restart the session).
 

@@ -444,6 +444,35 @@ export async function runSetup(args: string[]): Promise<number> {
     console.log(
       'Unassigned folders land in the explain-only session; run `agent-deck use <deck>` in each folder that needs a persistent assignment, then reload MCP.',
     );
+    // A same-name launcher project entry in this folder would now break
+    // Muse here: Muse merges it with the HTTP user entry field by field
+    // (url plus command → invalid_transport_combination) and omits the
+    // server. Folders assigned with `use --client muse` or project-scope
+    // setup still hold that entry — plain `use` rewrites .mcp.json with
+    // the headered HTTP entry Muse accepts (the Muse-native per-folder
+    // entry is the next ticket). A missing or unparsable file simply
+    // skips the warning; global setup must not fail on it.
+    const museProjectPath = resolveConfigPath('muse', 'project');
+    let museProjectEntry: unknown;
+    try {
+      const museProjectServers = readJsonFile(museProjectPath).mcpServers;
+      museProjectEntry =
+        museProjectServers &&
+        typeof museProjectServers === 'object' &&
+        !Array.isArray(museProjectServers)
+          ? (museProjectServers as Record<string, unknown>)['agent-deck']
+          : undefined;
+    } catch {
+      museProjectEntry = undefined;
+    }
+    if (isMcpLaunchEntry(museProjectEntry)) {
+      console.warn(
+        `Muse MCP: ${museProjectPath} still holds a legacy agent-deck launcher entry, which Muse rejects against the new HTTP user entry (invalid_transport_combination) — agent-deck is omitted in this folder.`,
+      );
+      console.warn(
+        '  Re-run plain `agent-deck use <deck>` here to rewrite .mcp.json with the headered HTTP entry Muse accepts, then reload MCP.',
+      );
+    }
     return await finishSetup(client, scope, endpoint, parsed.start === true, parsed.statusline, parsed.menubar);
   }
 
@@ -462,6 +491,20 @@ export async function runSetup(args: string[]): Promise<number> {
   if (client === 'claude-desktop') {
     console.log("Claude Desktop uses Agent Deck's stdio bridge because JSON config is stdio-only.");
     console.log('Start Agent Deck before opening Claude Desktop.');
+  }
+  if (client === 'muse' && scope === 'project') {
+    // NOT-570: project scope still writes the legacy launcher entry
+    // (the per-folder HTTP entry is the next ticket; the write itself
+    // stays until the ticket after that). Against the new HTTP user
+    // entry Muse rejects it (invalid_transport_combination) and omits
+    // the server in this folder — the durable part of project setup is
+    // the root AGENTS.md merge.
+    console.warn(
+      'Muse MCP: .mcp.json now holds the legacy launcher entry, which Muse rejects against the HTTP user entry (invalid_transport_combination) — agent-deck is omitted in this folder.',
+    );
+    console.warn(
+      '  For the folder connection, re-run plain `agent-deck use <deck>` here instead (it writes the headered HTTP entry Muse accepts), then reload MCP.',
+    );
   }
 
   return await finishSetup(client, scope, endpoint, parsed.start === true, parsed.statusline, parsed.menubar);

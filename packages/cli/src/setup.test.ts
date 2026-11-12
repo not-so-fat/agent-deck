@@ -933,6 +933,105 @@ describe('NOT-387 muse setup', () => {
     }
   });
 
+  it('NOT-570: global muse setup warns on a legacy launcher .mcp.json in cwd and leaves it untouched', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-projwarn-home-'));
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-projwarn-xdg-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-projwarn-ws-'));
+    const settingsPath = path.join(tmpXdg, 'muse', 'settings.json');
+    const mcpPath = path.join(workspace, '.mcp.json');
+    const original = `${JSON.stringify(
+      {
+        mcpServers: {
+          'agent-deck': {
+            command: 'agent-deck',
+            args: ['mcp-launch'],
+            env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`;
+    fs.writeFileSync(mcpPath, original);
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await runSetup(MUSE_ARGS)).toBe(0);
+      const warned = warn.mock.calls.flat().join('\n');
+      expect(warned).toContain(mcpPath);
+      expect(warned).toContain('invalid_transport_combination');
+      expect(warned).toContain('agent-deck use <deck>');
+      // The project file is only reported, never rewritten by global setup.
+      expect(fs.readFileSync(mcpPath, 'utf8')).toBe(original);
+      const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+      expect((written.mcpServers as Record<string, unknown>)['agent-deck']).toEqual({
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
+      });
+    } finally {
+      cwd.mockRestore();
+      log.mockRestore();
+      warn.mockRestore();
+      vi.restoreAllMocks();
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-570: global muse setup stays silent when cwd .mcp.json holds the HTTP entry or is absent', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-projok-home-'));
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-projok-xdg-'));
+    const httpWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-projok-http-'));
+    const emptyWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-projok-empty-'));
+    fs.writeFileSync(
+      path.join(httpWorkspace, '.mcp.json'),
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            'agent-deck': {
+              type: 'http',
+              url: 'http://127.0.0.1:1110/mcp',
+              headers: { 'x-agent-deck-workspace': httpWorkspace },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(httpWorkspace);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await runSetup(MUSE_ARGS)).toBe(0);
+      expect(warn).not.toHaveBeenCalled();
+      cwd.mockReturnValue(emptyWorkspace);
+      expect(await runSetup(MUSE_ARGS)).toBe(0);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      cwd.mockRestore();
+      log.mockRestore();
+      warn.mockRestore();
+      vi.restoreAllMocks();
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+      fs.rmSync(httpWorkspace, { recursive: true, force: true });
+      fs.rmSync(emptyWorkspace, { recursive: true, force: true });
+    }
+  });
+
   it('NOT-388/NOT-425: clean global muse setup installs four skills, second run changes nothing', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-skills-home-'));
     const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-skills-xdg-'));
@@ -1038,8 +1137,14 @@ describe('NOT-387 muse setup', () => {
     ];
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       expect(await runSetup(args)).toBe(0);
+      // NOT-570: the launcher write stays (later ticket), but setup warns
+      // it is rejected against the HTTP user entry and points at plain use.
+      const warned = warn.mock.calls.flat().join('\n');
+      expect(warned).toContain('invalid_transport_combination');
+      expect(warned).toContain('agent-deck use <deck>');
       const written = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as Record<string, unknown>;
       expect(written).toEqual({
         mcpServers: {
@@ -1069,6 +1174,7 @@ describe('NOT-387 muse setup', () => {
     } finally {
       cwd.mockRestore();
       log.mockRestore();
+      warn.mockRestore();
       vi.restoreAllMocks();
       fs.rmSync(workspace, { recursive: true, force: true });
     }
