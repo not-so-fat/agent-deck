@@ -51,10 +51,15 @@ function codexTimeoutResult(args: string[], timeoutMs: number, stdout = '', stde
 /**
  * NOT-576: race an injected runner against the same timeout so a runner
  * that never settles still yields a reportable failure. The real
- * `runCodexCommand` kills its subprocess on its own timeout just after;
- * this wrapper only bounds the wait.
+ * `runCodexCommand` already bounds and kills its own subprocess, so it
+ * runs directly: wrapping it would resolve first (same duration, earlier
+ * timer) and let the CLI exit before its SIGKILL timer fires, orphaning
+ * the hung child.
  */
 async function runRunnerWithTimeout(runner: CodexRunner, args: string[]): Promise<CodexRunResult> {
+  if (runner === runCodexCommand) {
+    return runner(args);
+  }
   const timeoutMs = codexTimeoutMs();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

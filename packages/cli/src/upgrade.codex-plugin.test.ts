@@ -1,3 +1,4 @@
+import { ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1652,5 +1653,58 @@ describe('upgrade migration-first, codex timeout, add-failure recovery (NOT-576)
     expect(rewrittenIdx).toBeGreaterThanOrEqual(0);
     expect(pluginIdx).toBeGreaterThanOrEqual(0);
     expect(rewrittenIdx).toBeLessThan(pluginIdx);
+  });
+
+  it('kills a hung real codex subprocess on timeout instead of orphaning it', async () => {
+    process.env.AGENT_DECK_CODEX_TIMEOUT_MS = '200';
+    const hangDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-576-hang-'));
+    try {
+      const pidFile = path.join(hangDir, 'codex.pid');
+      const stub = path.join(hangDir, 'codex');
+      // `exec` so $$ is the sleeping process itself: SIGKILL on the child
+      // leaves nothing orphaned behind.
+      fs.writeFileSync(stub, `#!/bin/bash\necho $$ > "${pidFile}"\nexec sleep 30\n`);
+      fs.chmodSync(stub, 0o755);
+      process.env.CODEX_BIN = stub;
+      process.env.CODEX_HOME = hangDir;
+      const killSpy = vi.spyOn(ChildProcess.prototype, 'kill');
+
+      const startedAt = Date.now();
+      // Default runner: the real `runCodexCommand` through the reconcile path.
+      const code = await reconcileCodexPluginAfterUpgrade(CLI_VERSION);
+      const elapsed = Date.now() - startedAt;
+
+      expect(code).toBe(1);
+      expect(elapsed).toBeLessThan(10_000);
+      expect(output.join('\n')).toContain('timed out after 200ms');
+      // The kill must already have been issued when the step resolves —
+      // otherwise the CLI can exit first and orphan the hung child.
+      expect(killSpy).toHaveBeenCalledWith('SIGKILL');
+
+      expect(fs.existsSync(pidFile)).toBe(true);
+      const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+      const deadline = Date.now() + 5_000;
+      let alive = true;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          alive = false;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (alive) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already gone.
+        }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      fs.rmSync(hangDir, { recursive: true, force: true });
+    }
   });
 });
