@@ -1,4 +1,4 @@
-# `mcp-launch` retirement for hosts on pure MCP (NOT-566/567/572)
+# `mcp-launch` retirement for hosts on pure MCP (NOT-566/567/572/577)
 
 Codex, Claude Code, Cursor, and Muse connect to Agent Deck over **pure
 MCP** (plain HTTP entries in host config — no CLI lookup, no stdio
@@ -8,8 +8,9 @@ and **retained** for the host that still needs stdio.
 Update (NOT-567): Cursor connects over pure MCP too — the per-folder
 `.cursor/mcp.json` HTTP entry (`use`) plus the global headerless HTTP
 fallback (`setup`), with the plugin declaring no MCP server. Cursor
-entries migrate when `setup`/`use` re-runs; `agent-deck upgrade` does not
-rewrite them.
+entries migrate when `setup`/`use` re-runs; plain `agent-deck upgrade`
+does not rewrite them, but `agent-deck upgrade --scan <dir>` (NOT-577,
+below) migrates Cursor project entries too.
 
 Update (NOT-572): Muse connects over pure MCP too — the per-folder
 `.mcp.json` HTTP entry (the same headed shape Claude uses, written by
@@ -24,7 +25,7 @@ launcher entry; legacy Muse launcher entries are converted by
 |------|------------|--------------------------|
 | Codex | Per-folder `.codex/config.toml` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until rewritten |
 | Claude Code | Per-folder `.mcp.json` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until rewritten |
-| Cursor | Per-folder `.cursor/mcp.json` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until `setup`/`use` re-runs |
+| Cursor | Per-folder `.cursor/mcp.json` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until `upgrade --scan` or `setup`/`use` re-runs |
 | Muse | Per-folder `.mcp.json` HTTP entry (`use` or `setup --scope project`) + global headerless HTTP fallback in the user settings (`setup`) | No — legacy entries keep working until rewritten |
 | Claude Desktop | `mcp-launch` stdio entry (its JSON config is stdio-only) | **Yes** |
 
@@ -48,9 +49,10 @@ automatically (best-effort, silent when there is nothing to do):
 
 Only entries that point at `agent-deck mcp-launch` are rewritten;
 unrelated servers, custom wrappers, and Desktop entries are
-left untouched, as are Cursor entries (those migrate via `setup`/`use`
-re-runs) and files that fail to parse. The rewrite is
-idempotent — running `agent-deck upgrade` again changes nothing.
+left untouched, as are Cursor entries on the plain path (those migrate
+via `upgrade --scan` or `setup`/`use` re-runs) and files that fail to
+parse. The rewrite is idempotent — running `agent-deck upgrade` again
+changes nothing.
 
 `<folder>/.mcp.json` is shared between Claude Code and Muse, so the
 rewrite discriminates there: a launcher entry with a Claude marker
@@ -65,7 +67,36 @@ conversion serves both hosts.
 
 Project entries are rewritten for the folder `agent-deck upgrade` runs
 in; run it (or `agent-deck use <deck>`) in each project folder to
-migrate that folder.
+migrate that folder — or migrate every assigned folder at once with
+`agent-deck upgrade --scan <dir>` (next section).
+
+## Migrating every assigned folder: `upgrade --scan` (NOT-577)
+
+`agent-deck upgrade --scan <dir>` (repeatable) walks each `<dir>` to a
+depth of 6, skipping `node_modules`, `.git`, `.next`, `.temporal`, and
+any directory it cannot read, collects every folder holding
+`.agent-deck/use.json`, and runs the migration above with
+`workspaceRoot` set to each folder — including the Cursor project entry:
+
+- `<folder>/.cursor/mcp.json` launcher entry → per-folder HTTP entry
+  (`url` plus the `x-agent-deck-workspace` header). Non-launcher and
+  custom entries stay byte-identical, and the folder assignment
+  (`.agent-deck/use.json`) is never changed.
+
+Cursor project entries are migrated by `upgrade --scan` (and by
+`setup`/`use` re-runs); plain `upgrade` without `--scan` still leaves
+them alone, and the Cursor global fallback is still `setup`'s job.
+
+- `agent-deck upgrade --scan <dir> --check` prints the planned changes
+  (one `would rewrite` line per legacy file) and writes nothing.
+- Output is one line per rewritten, removed, or skipped file, then a
+  count summary (`Scan complete: N folders, …`); a second run reports
+  nothing to change.
+- Without `--scan`, behaviour is unchanged. The Codex plugin step runs
+  once per invocation, not once per folder.
+- Deck assignments are never changed, `use.json` is never written, and
+  global user configs are touched no more than the existing migration
+  already does.
 
 Manual equivalent (same result, per host):
 
@@ -74,7 +105,8 @@ Manual equivalent (same result, per host):
   rewrites the global fallbacks (Muse project scope also rewrites the
   per-folder `.mcp.json` entry).
 - `agent-deck setup --client cursor` rewrites the Cursor global fallback
-  (Cursor migrates through `setup`/`use`, never `upgrade`).
+  (Cursor project entries migrate through `upgrade --scan` or
+  `setup`/`use`, never plain `upgrade`).
 - `agent-deck upgrade --check` never rewrites anything.
 
 ## Verifying
