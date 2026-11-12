@@ -74,50 +74,217 @@ describe('setup statusline defaults', () => {
     expect(resolveSetupMenubar('cursor', false)).toBe(false);
   });
 
-  it('preserves a global Cursor workspace pin written by use', async () => {
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cursor-'));
-    const workspace = path.join(tmpHome, 'workspace');
+  it('NOT-567: cursor global setup writes the headerless HTTP fallback once, preserving other entries', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cursor-fallback-'));
+    const cursorMcp = path.join(tmpHome, '.cursor', 'mcp.json');
     vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
-    fs.mkdirSync(path.join(tmpHome, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.dirname(cursorMcp), { recursive: true });
     fs.writeFileSync(
-      path.join(tmpHome, '.cursor', 'mcp.json'),
-      `${JSON.stringify({
-        mcpServers: {
-          'agent-deck': {
-            command: 'agent-deck',
-            args: ['mcp-launch'],
-            env: {
-              AGENT_DECK_HOST: '127.0.0.1',
-              AGENT_DECK_MCP_PORT: '1110',
-              AGENT_DECK_WORKSPACE: workspace,
+      cursorMcp,
+      `${JSON.stringify({ mcpServers: { memory: { command: 'npx', args: ['-y', 'memory'] } } }, null, 2)}\n`,
+    );
+    const args = [
+      '--client',
+      'cursor',
+      '--scope',
+      'global',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      expect(await runSetup(args)).toBe(0);
+      const written = JSON.parse(fs.readFileSync(cursorMcp, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      // Exact fallback fields only — toEqual fails on any extra field.
+      expect(written.mcpServers['agent-deck']).toEqual({
+        url: 'http://127.0.0.1:1110/mcp',
+      });
+      expect(written.mcpServers.memory).toEqual({ command: 'npx', args: ['-y', 'memory'] });
+      expect(fs.readFileSync(cursorMcp, 'utf8')).not.toContain('mcp-launch');
+      expect(log.mock.calls.flat().join('\n')).toContain('headerless HTTP');
+
+      const beforeSecond = fs.readFileSync(cursorMcp, 'utf8');
+      expect(await runSetup(args)).toBe(0);
+      expect(fs.readFileSync(cursorMcp, 'utf8')).toBe(beforeSecond);
+    } finally {
+      log.mockRestore();
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-567: cursor global setup upgrades Agent Deck legacy launcher entries', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cursor-upgrade-'));
+    const workspace = path.join(tmpHome, 'workspace');
+    const cursorMcp = path.join(tmpHome, '.cursor', 'mcp.json');
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    fs.mkdirSync(path.dirname(cursorMcp), { recursive: true });
+    fs.writeFileSync(
+      cursorMcp,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            memory: { command: 'npx', args: ['-y', 'memory'] },
+            'agent-deck': {
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: {
+                AGENT_DECK_HOST: '127.0.0.1',
+                AGENT_DECK_MCP_PORT: '9999',
+                AGENT_DECK_WORKSPACE: workspace,
+              },
             },
           },
         },
-      }, null, 2)}\n`,
+        null,
+        2,
+      )}\n`,
     );
+    const args = [
+      '--client',
+      'cursor',
+      '--scope',
+      'global',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
-      const code = await runSetup([
-        '--client',
-        'cursor',
-        '--scope',
-        'global',
-        '--mcp-port',
-        '2220',
-        '--no-statusline',
-        '--no-menubar',
-      ]);
-      expect(code).toBe(0);
-      const written = JSON.parse(
-        fs.readFileSync(path.join(tmpHome, '.cursor', 'mcp.json'), 'utf8'),
-      ) as { mcpServers: Record<string, { env?: Record<string, string> }> };
-      expect(written.mcpServers['agent-deck']?.env).toMatchObject({
-        AGENT_DECK_MCP_PORT: '2220',
-        AGENT_DECK_WORKSPACE: workspace,
+      expect(await runSetup(args)).toBe(0);
+      const written = JSON.parse(fs.readFileSync(cursorMcp, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      // The workspace pin and stale endpoint are gone — the fallback carries neither.
+      expect(written.mcpServers['agent-deck']).toEqual({
+        url: 'http://127.0.0.1:1110/mcp',
       });
+      expect(written.mcpServers.memory).toEqual({ command: 'npx', args: ['-y', 'memory'] });
+      expect(fs.readFileSync(cursorMcp, 'utf8')).not.toContain('mcp-launch');
+      expect(fs.readFileSync(cursorMcp, 'utf8')).not.toContain('AGENT_DECK_WORKSPACE');
+      expect(log.mock.calls.flat().join('\n')).toContain('headerless HTTP');
     } finally {
+      log.mockRestore();
       vi.restoreAllMocks();
       fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-567: cursor global setup leaves a custom entry untouched', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cursor-custom-'));
+    const cursorMcp = path.join(tmpHome, '.cursor', 'mcp.json');
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    fs.mkdirSync(path.dirname(cursorMcp), { recursive: true });
+    const custom = {
+      mcpServers: {
+        memory: { command: 'npx', args: ['-y', 'memory'] },
+        'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] },
+      },
+    };
+    const original = `${JSON.stringify(custom, null, 2)}\n`;
+    fs.writeFileSync(cursorMcp, original);
+    const args = [
+      '--client',
+      'cursor',
+      '--scope',
+      'global',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      expect(await runSetup(args)).toBe(0);
+      expect(warn.mock.calls.flat().join('\n')).toContain('left custom agent-deck entry unchanged');
+      expect(fs.readFileSync(cursorMcp, 'utf8')).toBe(original);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-567: cursor project setup writes the per-folder header entry, preserving other entries', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cursor-proj-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-cursor-projw-'));
+    const projectMcp = path.join(workspace, '.cursor', 'mcp.json');
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    fs.mkdirSync(path.dirname(projectMcp), { recursive: true });
+    fs.writeFileSync(
+      projectMcp,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            memory: { command: 'npx', args: ['-y', 'memory'] },
+            'agent-deck': {
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: {
+                AGENT_DECK_HOST: '127.0.0.1',
+                AGENT_DECK_MCP_PORT: '9999',
+                AGENT_DECK_WORKSPACE: '/stale/ws',
+              },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const args = [
+      '--client',
+      'cursor',
+      '--scope',
+      'project',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      expect(await runSetup(args)).toBe(0);
+      const written = JSON.parse(fs.readFileSync(projectMcp, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      // Same NOT-567 shape `agent-deck use` writes — workspace header kept,
+      // so the folder does not fall into the unassigned session.
+      expect(written.mcpServers['agent-deck']).toEqual({
+        url: 'http://127.0.0.1:1110/mcp',
+        headers: { 'x-agent-deck-workspace': workspace },
+      });
+      expect(written.mcpServers.memory).toEqual({ command: 'npx', args: ['-y', 'memory'] });
+
+      const beforeSecond = fs.readFileSync(projectMcp, 'utf8');
+      expect(await runSetup(args)).toBe(0);
+      expect(fs.readFileSync(projectMcp, 'utf8')).toBe(beforeSecond);
+    } finally {
+      cwd.mockRestore();
+      log.mockRestore();
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
     }
   });
 
