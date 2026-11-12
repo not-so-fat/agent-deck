@@ -111,8 +111,11 @@ export function buildGlobalFallbackHttpEntry(endpoint: McpEndpoint): Record<stri
  *
  * A `workspaceRoot` selects the per-folder HTTP form; without one the
  * client gets the global headerless HTTP fallback (NOT-565/567).
- * Muse and Claude Desktop still use the trusted local launcher, which
- * reads the folder assignment at runtime.
+ * Claude Desktop still uses the trusted local launcher, which reads the
+ * folder assignment at runtime. Muse global setup writes the headerless
+ * HTTP fallback directly (NOT-570); the Muse branch below still returns
+ * the launcher for project scope (`setup --scope project`,
+ * `agent-deck use`) until the per-folder ticket lands.
  */
 export function buildAgentDeckEntry(
   client: McpClient,
@@ -136,12 +139,13 @@ export function buildAgentDeckEntry(
   }
 
   if (client === 'muse') {
-    // Muse may rewrite its settings file, so rely only on the preserved
-    // command/args/env fields: no cwd, type, required, or timeout fields.
-    // No AGENT_DECK_WORKSPACE pin either — an omitted cwd means the Muse
-    // session working directory, so mcp-launch resolves the active
-    // workspace's .agent-deck/use.json dynamically. options.workspaceRoot
-    // is deliberately ignored for both scopes.
+    // Project scope only: NOT-570 global setup bypasses this branch with
+    // buildGlobalFallbackHttpEntry. Muse may rewrite its settings file, so
+    // rely only on the preserved command/args/env fields: no cwd, type,
+    // required, or timeout fields. No AGENT_DECK_WORKSPACE pin either — an
+    // omitted cwd means the Muse session working directory, so mcp-launch
+    // resolves the active workspace's .agent-deck/use.json dynamically.
+    // options.workspaceRoot is deliberately ignored.
     return {
       command: 'agent-deck',
       args: ['mcp-launch'],
@@ -261,8 +265,8 @@ export function isMcpLaunchEntry(entry: unknown): boolean {
  * never writes `type` or the workspace pin (see `buildAgentDeckEntry`),
  * so a Muse-shaped entry never matches. The upgrade rewrite uses this
  * predicate for the shared project file so it cannot convert a current
- * Muse entry — a host that still depends on the launcher — to the
- * Claude HTTP shape.
+ * Muse entry — whose project scope still depends on the launcher — to
+ * the Claude HTTP shape.
  */
 export function isLegacyClaudeLaunchEntry(entry: unknown): boolean {
   if (!isMcpLaunchEntry(entry)) {

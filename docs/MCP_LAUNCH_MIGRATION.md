@@ -46,8 +46,12 @@ rewrite discriminates there: only a launcher entry with a Claude marker
 (`type: 'stdio'` or an `AGENT_DECK_WORKSPACE` pin — every launcher
 entry `use`/`setup --client claude` ever wrote carries at least one) is
 converted to the HTTP shape. A current Muse launcher entry carries
-neither marker and is left byte-identical, so Muse keeps working across
-upgrades with no re-run needed. A folder that serves both hosts keeps
+neither marker and is left byte-identical. Note (NOT-570): once
+`setup --client muse` has written the HTTP user entry, that kept
+launcher project entry is rejected by Muse in that folder
+(`invalid_transport_combination`) — re-run plain
+`agent-deck use <deck>` in Muse folders to rewrite `.mcp.json` with the
+headered HTTP entry Muse accepts. A folder that serves both hosts keeps
 the shared launcher entry, which still connects for Claude Code too.
 
 Project entries are rewritten for the folder `agent-deck upgrade` runs

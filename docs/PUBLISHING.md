@@ -190,9 +190,9 @@ claude mcp add --scope user --transport http agent-deck http://127.0.0.1:1110/mc
 | Claude Code (project) | `agent-deck setup --client claude --scope project` → `.mcp.json` |
 | Claude Desktop | `agent-deck setup --client claude-desktop` (Agent Deck's built-in stdio bridge) |
 | Muse (global) | `agent-deck setup --client muse` → MCP settings + three native bootstrap skills (no status line, no plugin) |
-| Muse (project) | `agent-deck setup --client muse --scope project` → `.mcp.json` + root `AGENTS.md` merge (trust the workspace) |
+| Muse (project) | `agent-deck setup --client muse --scope project` → root `AGENTS.md` merge (trust the workspace); its `.mcp.json` write is still the legacy launcher entry, so the folder connection comes from plain `agent-deck use <deck>` |
 
-Add `--start` to launch Agent Deck after writing config. Per-repo assignment: `agent-deck use <deck> --client muse`. After Muse setup, start a new Muse process and check `/mcp`; the first turn calls `get_session_context` once and shows exactly one verbatim `display_summary` line.
+Add `--start` to launch Agent Deck after writing config. Per-repo assignment: plain `agent-deck use <deck>` (it also rewrites `.mcp.json` with the headered HTTP entry Muse accepts — `use --client muse` still writes the legacy launcher entry, which Muse rejects against the HTTP user entry). After Muse setup, start a new Muse process and check `/mcp`; the first turn calls `get_session_context` once and shows exactly one verbatim `display_summary` line.
 
 ### Managed install + auto-upgrade
 
