@@ -129,17 +129,17 @@ function parseToVersion(args: string[]): string | undefined {
 }
 
 /**
- * NOT-566/572: after the plugin reconcile, rewrite any legacy launcher
- * entries in this folder's and the global Codex/Claude/Muse configs to
- * pure MCP. Best-effort and silent when clean — it never changes the
- * upgrade result.
+ * NOT-566/572/576: rewrite any legacy launcher entries in this folder's
+ * and the global Codex/Claude/Muse configs to pure MCP before the plugin
+ * reconcile, so a hung or failing `codex` step can never block or undo
+ * the migration. Best-effort and silent when clean — it never changes
+ * the upgrade result, which is still the plugin step's exit code.
  */
 async function reconcilePluginAndMigrateLauncherEntries(
   expectedVersion: string,
   codexRunner: CodexRunner | undefined,
   options: { alreadyCurrent?: boolean } = {},
 ): Promise<number> {
-  const code = await reconcileCodexPluginAfterUpgrade(expectedVersion, codexRunner, options);
   try {
     const results = rewriteLegacyLauncherEntries({
       workspaceRoot: process.cwd(),
@@ -157,7 +157,7 @@ async function reconcilePluginAndMigrateLauncherEntries(
         'Re-run `agent-deck use <deck>` or `agent-deck setup --client codex|claude` to migrate by hand.',
     );
   }
-  return code;
+  return reconcileCodexPluginAfterUpgrade(expectedVersion, codexRunner, options);
 }
 
 export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promise<number> {
