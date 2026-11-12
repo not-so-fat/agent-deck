@@ -244,6 +244,22 @@ describe('supported production host transport', () => {
       url: 'http://127.0.0.1:1110/mcp',
     });
   });
+
+  it('NOT-565 repair: Cursor plugin keeps its own mcp-launch manifest (out of scope)', () => {
+    const repositoryRoot = path.resolve(__dirname, '../../..');
+    const cursorPlugin = JSON.parse(
+      fs.readFileSync(path.join(repositoryRoot, '.cursor-plugin', 'plugin.json'), 'utf8'),
+    ) as { mcpServers?: string };
+    expect(cursorPlugin.mcpServers).toBe('./.cursor-plugin/.mcp.json');
+    const cursorTransport = JSON.parse(
+      fs.readFileSync(path.join(repositoryRoot, '.cursor-plugin', '.mcp.json'), 'utf8'),
+    ) as { mcpServers?: Record<string, Record<string, unknown>> };
+    expect(cursorTransport.mcpServers?.['agent-deck']).toEqual({
+      type: 'stdio',
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+    });
+  });
 });
 
 describe('parseLaunchHeaders', () => {
