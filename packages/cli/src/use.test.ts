@@ -643,6 +643,50 @@ describe('agent-deck use', () => {
     expect(fs.readFileSync(codexPath, 'utf8')).toBe(codexBefore);
   });
 
+  it('NOT-563: use removes a stale codex env sub-table left by codex mcp add', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    fs.mkdirSync(path.join(workspace, '.codex'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.codex', 'config.toml'),
+      [
+        '[mcp_servers.agent-deck]',
+        'command = "agent-deck"',
+        '',
+        '[mcp_servers.agent-deck.env]',
+        'AGENT_DECK_WORKSPACE = "/stale/ws"',
+        '',
+      ].join('\n'),
+    );
+
+    const parsed = parseUseArgs(['dev', '--client', 'codex']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(false);
+    if ('error' in result) {
+      return;
+    }
+
+    const mcpUrl = `http://${parsed.host}:${parsed.mcpPort}/mcp`;
+    const codexPath = path.join(workspace, '.codex', 'config.toml');
+    const codexText = fs.readFileSync(codexPath, 'utf8');
+    expect(codexText).toBe(
+      `[mcp_servers.agent-deck]\nurl = "${mcpUrl}"\nhttp_headers = { "x-agent-deck-workspace" = "${workspace}" }\n`,
+    );
+    expect(codexText).not.toContain('AGENT_DECK_WORKSPACE');
+
+    const second = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in second).toBe(false);
+    expect(fs.readFileSync(codexPath, 'utf8')).toBe(codexText);
+  });
+
   it('NOT-563: summary names the Claude approval, Codex trust, and reload-MCP steps', async () => {
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();

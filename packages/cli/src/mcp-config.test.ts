@@ -249,7 +249,7 @@ describe('NOT-563 codex TOML section', () => {
     );
   });
 
-  it('replaces a stale agent-deck section in place', () => {
+  it('replaces a stale agent-deck section in place, keeping the blank separator', () => {
     const existing = [
       '[model]',
       'name = "gpt-5"',
@@ -268,12 +268,164 @@ describe('NOT-563 codex TOML section', () => {
         'name = "gpt-5"',
         '',
         section,
+        '',
         '[mcp_servers.other]',
         'url = "http://example.com/mcp"',
         '',
       ].join('\n'),
     );
     expect(merged).not.toContain('9999');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('removes a stale env sub-table adjoining the parent section', () => {
+    // The layout `codex mcp add --env` writes: a stale launcher parent plus
+    // an env sub-table that must not survive next to the pure-HTTP entry.
+    const existing = [
+      '[mcp_servers.agent-deck]',
+      'command = "agent-deck"',
+      '',
+      '[mcp_servers.agent-deck.env]',
+      'AGENT_DECK_WORKSPACE = "/stale/ws"',
+      '',
+      '[mcp_servers.other]',
+      'url = "http://example.com/mcp"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      [section, '', '[mcp_servers.other]', 'url = "http://example.com/mcp"', ''].join('\n'),
+    );
+    expect(merged).not.toContain('AGENT_DECK_WORKSPACE');
+    expect(merged).not.toContain('command = ');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('removes a non-adjacent sub-table elsewhere in the file', () => {
+    const existing = [
+      '[mcp_servers.agent-deck]',
+      'url = "http://127.0.0.1:9999/mcp"',
+      '',
+      '[mcp_servers.other]',
+      'url = "http://example.com/mcp"',
+      '',
+      '[mcp_servers.agent-deck.env]',
+      'FOO = "bar"',
+      '',
+      '[model]',
+      'name = "gpt-5"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      [
+        section,
+        '',
+        '[mcp_servers.other]',
+        'url = "http://example.com/mcp"',
+        '',
+        '[model]',
+        'name = "gpt-5"',
+        '',
+      ].join('\n'),
+    );
+    expect(merged).not.toContain('FOO');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('removes an http_headers sub-table that would redefine the inline headers', () => {
+    const merged = mergeCodexTomlConfig(
+      [
+        '[mcp_servers.agent-deck]',
+        'url = "http://127.0.0.1:9999/mcp"',
+        '[mcp_servers.agent-deck.http_headers]',
+        'x-agent-deck-workspace = "/stale/ws"',
+        '',
+      ].join('\n'),
+      section,
+    );
+    expect(merged).toBe(`${section}\n`);
+    expect(merged).not.toContain('/stale/ws');
+  });
+
+  it('removes quoted and whitespace-padded sub-table headers', () => {
+    const merged = mergeCodexTomlConfig(
+      '[mcp_servers."agent-deck"]\nurl = "http://127.0.0.1:9999/mcp"\n\n[mcp_servers."agent-deck".env]\nFOO = "bar"\n',
+      section,
+    );
+    expect(merged).toBe(`${section}\n`);
+    const padded = mergeCodexTomlConfig(
+      '[ mcp_servers . agent-deck ]\nurl = "http://127.0.0.1:9999/mcp"\n',
+      section,
+    );
+    expect(padded).toBe(`${section}\n`);
+  });
+
+  it('leaves a merely prefixed sibling section alone', () => {
+    const existing = '[mcp_servers.agent-deck-env]\nurl = "http://example.com/mcp"\n';
+    expect(mergeCodexTomlConfig(existing, section)).toBe(`${existing}\n${section}\n`);
+  });
+
+  it('replaces a single-line inline table under [mcp_servers]', () => {
+    const existing = [
+      '[mcp_servers]',
+      'agent-deck = { url = "http://127.0.0.1:9999/mcp" }',
+      'other = { url = "http://example.com/mcp" }',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      ['[mcp_servers]', 'other = { url = "http://example.com/mcp" }', '', section, ''].join('\n'),
+    );
+    expect(merged).not.toContain('9999');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('replaces dotted keys under [mcp_servers]', () => {
+    const existing = [
+      '[mcp_servers]',
+      'other = { url = "http://example.com/mcp" }',
+      'agent-deck.url = "http://127.0.0.1:9999/mcp"',
+      'agent-deck.token = "stale"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      ['[mcp_servers]', 'other = { url = "http://example.com/mcp" }', '', section, ''].join('\n'),
+    );
+    expect(merged).not.toContain('9999');
+    expect(merged).not.toContain('stale');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('replaces a multi-line inline table under [mcp_servers]', () => {
+    const existing = [
+      '[mcp_servers]',
+      'agent-deck = {',
+      '  url = "http://127.0.0.1:9999/mcp", # a { brace in a comment',
+      '  note = "a } brace { in a string",',
+      '}',
+      '',
+      '[model]',
+      'name = "gpt-5"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      ['[mcp_servers]', '[model]', 'name = "gpt-5"', '', section, ''].join('\n'),
+    );
+    expect(merged).not.toContain('9999');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('ignores a nested agent-deck key inside another server table', () => {
+    const existing = ['[mcp_servers]', 'other = {', '  agent-deck = "nested",', '}', ''].join(
+      '\n',
+    );
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(`${existing}\n${section}\n`);
+    expect(merged).toContain('agent-deck = "nested"');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
   });
 
   it('normalizes a quoted section header', () => {
@@ -289,6 +441,9 @@ describe('NOT-563 codex TOML section', () => {
       '',
       '[model]\nname = "gpt-5"\n',
       '[mcp_servers."agent-deck"]\nurl = "http://127.0.0.1:9999/mcp"\n',
+      '[mcp_servers.agent-deck]\nurl = "http://127.0.0.1:9999/mcp"\n\n[mcp_servers.agent-deck.env]\nFOO = "bar"\n',
+      '[mcp_servers]\nagent-deck = { url = "http://127.0.0.1:9999/mcp" }\n',
+      '[mcp_servers]\nagent-deck.url = "http://127.0.0.1:9999/mcp"\n',
       `${section}\n`,
     ];
     for (const existing of cases) {

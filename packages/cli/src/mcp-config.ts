@@ -482,12 +482,66 @@ export function writeTextFile(filePath: string, text: string): void {
   fs.writeFileSync(filePath, text, 'utf8');
 }
 
-/** Matches our managed Codex section header, bare or quoted, with any comment. */
+/**
+ * Matches our managed Codex section headers: the `[mcp_servers.agent-deck]`
+ * parent plus any `[mcp_servers.agent-deck.<sub>]` sub-table (the layout
+ * `codex mcp add --env` writes). Bare or quoted key, whitespace-tolerant,
+ * with any trailing comment. Never matches a merely prefixed sibling such
+ * as `[mcp_servers.agent-deck-env]`.
+ */
 const CODEX_AGENT_DECK_SECTION_RE =
-  /^\s*\[mcp_servers\.("agent-deck"|'agent-deck'|agent-deck)\]\s*(?:#.*)?$/;
+  /^\s*\[\s*mcp_servers\s*\.\s*("agent-deck"|'agent-deck'|agent-deck)\s*(\.\s*[^\]#]+)?\]\s*(?:#.*)?$/;
+
+/** Matches a bare `[mcp_servers]` section header holding dotted/inline keys. */
+const CODEX_MCP_SERVERS_SECTION_RE =
+  /^\s*\[\s*("mcp_servers"|'mcp_servers'|mcp_servers)\s*\]\s*(?:#.*)?$/;
+
+/** Matches an `agent-deck` key definition start inside `[mcp_servers]`. */
+const CODEX_MCP_SERVERS_AGENT_DECK_KEY_RE =
+  /^\s*("agent-deck"|'agent-deck'|agent-deck)\s*(?=[.=])/;
 
 function isTomlSectionHeader(line: string): boolean {
   return line.trimStart().startsWith('[');
+}
+
+/**
+ * Net `{`/`[` minus `}`/`]` depth change of one TOML line, ignoring string
+ * literals and `#` comments so braces inside values never unbalance the
+ * scan. Used to skip multi-line inline tables when removing stale keys.
+ */
+function tomlBracketDelta(line: string): number {
+  let code = '';
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === '"') {
+      i += 1;
+      while (i < line.length && line[i] !== '"') {
+        i += line[i] === '\\' ? 2 : 1;
+      }
+      i += 1;
+    } else if (ch === "'") {
+      i += 1;
+      while (i < line.length && line[i] !== "'") {
+        i += 1;
+      }
+      i += 1;
+    } else if (ch === '#') {
+      break;
+    } else {
+      code += ch;
+      i += 1;
+    }
+  }
+  let delta = 0;
+  for (const c of code) {
+    if (c === '{' || c === '[') {
+      delta += 1;
+    } else if (c === '}' || c === ']') {
+      delta -= 1;
+    }
+  }
+  return delta;
 }
 
 export function escapeTomlBasicString(value: string): string {
@@ -518,34 +572,160 @@ export function formatCodexMcpSection(entry: CodexAgentDeckEntry): string {
 
 /**
  * Merge our managed section into existing Codex TOML, preserving every
- * unrelated byte. An existing agent-deck section is replaced in place
- * (and its header normalized to the bare form); otherwise the section is
- * appended after a blank separator. Idempotent: merging twice yields
- * byte-identical text. The result ends with exactly one newline when the
- * section is the last content.
+ * unrelated byte. Stale agent-deck content in any form is removed first:
+ * the parent section, every `[mcp_servers.agent-deck.<sub>]` sub-table
+ * wherever it sits, and dotted/inline `agent-deck` keys under a bare
+ * `[mcp_servers]` section (multi-line inline tables included). The first
+ * managed section is replaced in place with its header normalized to the
+ * bare form; otherwise the section is appended after a blank separator.
+ * Idempotent: merging twice yields byte-identical text. The result ends
+ * with exactly one newline when the section is the last content.
  */
 export function mergeCodexTomlConfig(existingText: string, section: string): string {
   const lines = existingText.split('\n');
-  const headerIdx = lines.findIndex((line) => CODEX_AGENT_DECK_SECTION_RE.test(line));
-  if (headerIdx === -1) {
-    let text = existingText;
-    if (text !== '' && !text.endsWith('\n')) {
-      text += '\n';
-    }
-    if (text !== '' && !text.endsWith('\n\n')) {
-      text += '\n';
-    }
-    return `${text}${section}\n`;
-  }
-  let endIdx = lines.length;
+  const headerKind = new Map<number, 'managed' | 'servers' | 'other'>();
   for (const [index, line] of lines.entries()) {
-    if (index > headerIdx && isTomlSectionHeader(line)) {
-      endIdx = index;
+    if (!isTomlSectionHeader(line)) {
+      continue;
+    }
+    if (CODEX_AGENT_DECK_SECTION_RE.test(line)) {
+      headerKind.set(index, 'managed');
+    } else if (CODEX_MCP_SERVERS_SECTION_RE.test(line)) {
+      headerKind.set(index, 'servers');
+    } else {
+      headerKind.set(index, 'other');
+    }
+  }
+  const headerIdxs = [...headerKind.keys()];
+  const rangeEnd = (headerIdx: number): number => {
+    for (const candidate of headerIdxs) {
+      if (candidate > headerIdx) {
+        return candidate;
+      }
+    }
+    return lines.length;
+  };
+
+  // Dotted/inline agent-deck definitions inside bare [mcp_servers] bodies.
+  // Only top-level keys count, so a nested `agent-deck` key inside another
+  // server's inline table is left alone.
+  const removed = new Set<number>();
+  for (const [headerIdx, kind] of headerKind) {
+    if (kind !== 'servers') {
+      continue;
+    }
+    const end = rangeEnd(headerIdx);
+    let depth = 0;
+    let index = headerIdx + 1;
+    while (index < end) {
+      const line = lines[index];
+      if (depth === 0 && CODEX_MCP_SERVERS_AGENT_DECK_KEY_RE.test(line)) {
+        depth += tomlBracketDelta(line);
+        removed.add(index);
+        index += 1;
+        while (depth > 0 && index < end) {
+          depth += tomlBracketDelta(lines[index]);
+          removed.add(index);
+          index += 1;
+        }
+        depth = 0;
+        continue;
+      }
+      depth += tomlBracketDelta(line);
+      if (depth < 0) {
+        depth = 0;
+      }
+      index += 1;
+    }
+    // A removed key block takes one following blank separator with it when
+    // it sits right after the header or between blank lines, so no doubled
+    // blank line is left behind.
+    for (let i = headerIdx + 1; i < end; i += 1) {
+      if (!removed.has(i) || (i > headerIdx + 1 && removed.has(i - 1))) {
+        continue;
+      }
+      let blockEnd = i;
+      while (blockEnd + 1 < end && removed.has(blockEnd + 1)) {
+        blockEnd += 1;
+      }
+      const after = blockEnd + 1;
+      const beforeIsSeparator = i === headerIdx + 1 || lines[i - 1].trim() === '';
+      if (after < end && !removed.has(after) && lines[after].trim() === '' && beforeIsSeparator) {
+        removed.add(after);
+      }
+      i = blockEnd;
+    }
+  }
+
+  const managedHeaders = headerIdxs.filter((index) => headerKind.get(index) === 'managed');
+  const appendSection = (text: string): string => {
+    let framed = text;
+    if (framed !== '' && !framed.endsWith('\n')) {
+      framed += '\n';
+    }
+    if (framed !== '' && !framed.endsWith('\n\n')) {
+      framed += '\n';
+    }
+    return `${framed}${section}\n`;
+  };
+  if (managedHeaders.length === 0) {
+    if (removed.size === 0) {
+      return appendSection(existingText);
+    }
+    // Only dotted/inline definitions: drop them, then append. Inserting a
+    // section header mid-body would reparent the remaining [mcp_servers]
+    // keys under agent-deck.
+    return appendSection(lines.filter((_, index) => !removed.has(index)).join('\n'));
+  }
+
+  for (const headerIdx of managedHeaders) {
+    const end = rangeEnd(headerIdx);
+    for (let index = headerIdx; index < end; index += 1) {
+      removed.add(index);
+    }
+  }
+  const first = managedHeaders[0];
+  const firstEnd = rangeEnd(first);
+  let nextKept = firstEnd;
+  while (nextKept < lines.length && removed.has(nextKept)) {
+    nextKept += 1;
+  }
+  // Keep one blank separator before the next surviving content when the
+  // removed block had any: trailing blanks of the replaced range or blanks
+  // in the gap up to the next kept line.
+  let hadSeparator = false;
+  for (let index = firstEnd - 1; index > first; index -= 1) {
+    if (lines[index].trim() === '') {
+      hadSeparator = true;
+    } else {
       break;
     }
   }
-  const merged = [...lines.slice(0, headerIdx), ...section.split('\n'), ...lines.slice(endIdx)].join(
-    '\n',
-  );
+  if (!hadSeparator) {
+    for (let index = firstEnd; index < nextKept; index += 1) {
+      if (lines[index].trim() === '') {
+        hadSeparator = true;
+        break;
+      }
+    }
+  }
+  const out: string[] = [];
+  for (let index = 0; index < first; index += 1) {
+    if (!removed.has(index)) {
+      out.push(lines[index]);
+    }
+  }
+  out.push(...section.split('\n'));
+  const rest: string[] = [];
+  for (let index = nextKept; index < lines.length; index += 1) {
+    if (!removed.has(index)) {
+      rest.push(lines[index]);
+    }
+  }
+  if (hadSeparator && rest.some((line) => line.trim() !== '')) {
+    out.push('');
+  }
+  out.push(...rest);
+  const merged = out.join('\n');
   return merged.endsWith('\n') ? merged : `${merged}\n`;
 }
