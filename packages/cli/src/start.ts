@@ -942,8 +942,8 @@ export async function runDoctor(options: { codexDaemonProbe?: CodexDaemonProbe }
     }
   }
 
-  // Same Cursor MCP recovery text as `status` — distinguish sandbox-safe pin
-  // repair from missing assignment (home-store write).
+  // Same Cursor MCP recovery text as `status` — distinguish sandbox-safe
+  // per-folder repair from missing assignment (home-store write).
   const inspection = inspectCursorMcpConfig({
     endpoint: { host, mcpPort },
   });

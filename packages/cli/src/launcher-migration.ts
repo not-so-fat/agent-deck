@@ -4,8 +4,9 @@
  * Codex and Claude Code connect over pure MCP now (per-folder entry plus a
  * global headerless fallback); installs that still carry a pre-migration
  * `agent-deck mcp-launch` entry keep working — the launcher is retained for
- * Cursor, Muse, and Claude Desktop — but `agent-deck upgrade` rewrites
+ * Muse and Claude Desktop — but `agent-deck upgrade` rewrites
  * those entries to the pure-MCP shape so the retired path stops spreading.
+ * (Cursor entries migrate when `setup`/`use` re-runs — see NOT-567.)
  *
  * Owned files (launcher entries only; anything else is left byte-identical):
  * - `<folder>/.mcp.json` → per-folder HTTP entry (workspace header), but

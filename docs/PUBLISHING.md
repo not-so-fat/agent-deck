@@ -184,8 +184,8 @@ claude mcp add --scope user --transport http agent-deck http://127.0.0.1:1110/mc
 |--------|---------|
 | Codex (global instructions) | `agent-deck setup --client codex` → global HTTP fallback in `~/.codex/config.toml` + `~/.codex/AGENTS.md`; plugin supplies skills |
 | Codex (project instructions) | `agent-deck setup --client codex --scope project` → `./AGENTS.md` |
-| Cursor (global) | `agent-deck setup --client cursor` |
-| Cursor (project) | `agent-deck setup --client cursor --scope project` |
+| Cursor (global) | `agent-deck setup --client cursor` → global HTTP fallback in `~/.cursor/mcp.json`; plugin supplies skills |
+| Cursor (project) | `agent-deck setup --client cursor --scope project` → `.cursor/mcp.json` |
 | Claude Code | `agent-deck setup --client claude` (uses `claude mcp add` with the headerless HTTP fallback → `~/.claude.json`; fallback writes the same entry — **not** `settings.json`) |
 | Claude Code (project) | `agent-deck setup --client claude --scope project` → `.mcp.json` |
 | Claude Desktop | `agent-deck setup --client claude-desktop` (Agent Deck's built-in stdio bridge) |

@@ -131,12 +131,12 @@ recoverable:
 1. The server answers an unknown `Mcp-Session-Id` with **404** and
    `mcp-session-status: expired`, the signal the streamable-HTTP spec tells clients
    to re-initialize on. An `initialize` carrying a stale id is accepted and issued a
-   fresh session. Native HTTP hosts (Codex, Claude Code) re-initialize themselves
-   on 404 (NOT-566) and need no bridge.
+   fresh session. Native HTTP hosts (Codex, Claude Code, Cursor) re-initialize
+   themselves on 404 (NOT-566/567) and need no bridge.
 2. `agent-deck mcp-launch` runs a first-party stdio↔HTTP bridge
    (`packages/cli/src/mcp-bridge.ts`) that caches the client handshake, replays it on
    404, and retries the failed call. The stdio client above it never sees the gap.
-   Retained for the stdio hosts (Cursor, Muse, Claude Desktop).
+   Retained for the stdio hosts (Muse, Claude Desktop).
    `AGENT_DECK_MCP_BRIDGE=supergateway` restores the old external bridge, which does
    **not** implement the reconnect half and stays wedged until its host restarts.
 3. MCP `/health` exposes `instanceId`, `startedAt`, `liveSessions`, and a

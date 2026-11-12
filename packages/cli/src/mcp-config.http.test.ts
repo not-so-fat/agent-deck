@@ -10,14 +10,22 @@ describe('MCP client config', () => {
     });
   });
 
-  it('uses command launcher for Cursor', () => {
+  it('NOT-567: uses the headerless HTTP fallback for Cursor', () => {
     expect(buildAgentDeckEntry('cursor', { host: '127.0.0.1', mcpPort: 3001 })).toEqual({
-      command: 'agent-deck',
-      args: ['mcp-launch'],
-      env: {
-        AGENT_DECK_MCP_PORT: '3001',
-        AGENT_DECK_HOST: '127.0.0.1',
-      },
+      url: 'http://127.0.0.1:3001/mcp',
+    });
+  });
+
+  it('NOT-567: writes the workspace header for Cursor project folders', () => {
+    expect(
+      buildAgentDeckEntry(
+        'cursor',
+        { host: '127.0.0.1', mcpPort: 3001 },
+        { workspaceRoot: '/tmp/ws' },
+      ),
+    ).toEqual({
+      url: 'http://127.0.0.1:3001/mcp',
+      headers: { 'x-agent-deck-workspace': '/tmp/ws' },
     });
   });
 

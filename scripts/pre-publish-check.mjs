@@ -24,6 +24,7 @@ function readJson(relativePath) {
  * must stay synchronized with the release. NOT-565: the Codex/Claude plugins
  * declare no MCP server (skills and guidance only; the connection is plain
  * host MCP config), so no shipped `.mcp.json` may carry an agent-deck server.
+ * NOT-567: the Cursor plugin joins them — no declared server either.
  * Fails fast with an actionable message before the slow rebuild/test gates.
  */
 function checkReleaseSync() {
@@ -65,7 +66,7 @@ function checkReleaseSync() {
     }
   }
 
-  for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']) {
+  for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json']) {
     let declared = null;
     try {
       declared = readJson(manifest).mcpServers;
@@ -74,23 +75,25 @@ function checkReleaseSync() {
     }
     if (declared !== undefined) {
       failures.push(
-        `${manifest} declares an MCP server: the Codex/Claude plugins ship skills and guidance only (remove mcpServers; the connection is host MCP config)`,
+        `${manifest} declares an MCP server: the Codex/Claude/Cursor plugins ship skills and guidance only (remove mcpServers; the connection is host MCP config)`,
       );
     }
   }
 
-  // A shipped root .mcp.json must not carry an agent-deck server either
+  // A shipped .mcp.json must not carry an agent-deck server either
   // (absent is the expected state; per-folder .mcp.json files are written
   // locally by `agent-deck use` and never ship in the release).
-  try {
-    const mcp = readJson('.mcp.json');
-    if (mcp?.mcpServers?.['agent-deck'] !== undefined) {
-      failures.push(
-        'shipped .mcp.json carries an agent-deck server: the Codex/Claude plugins declare no MCP server (remove the file or the agent-deck entry)',
-      );
+  for (const mcpPath of ['.mcp.json', '.cursor-plugin/.mcp.json']) {
+    try {
+      const mcp = readJson(mcpPath);
+      if (mcp?.mcpServers?.['agent-deck'] !== undefined) {
+        failures.push(
+          `shipped ${mcpPath} carries an agent-deck server: the Codex/Claude/Cursor plugins declare no MCP server (remove the file or the agent-deck entry)`,
+        );
+      }
+    } catch {
+      // Absent or unreadable here means no shipped server — the expected state.
     }
-  } catch {
-    // Absent or unreadable here means no shipped server — the expected state.
   }
 
   if (failures.length > 0) {

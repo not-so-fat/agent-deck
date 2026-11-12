@@ -5,10 +5,11 @@ import {
   buildAgentDeckEntry,
   buildMcpUrl,
   formatCodexGlobalFallbackSection,
+  isHttpAgentDeckEntry,
+  isMcpLaunchEntry,
   mergeCodexTomlConfig,
   mergeMcpServerConfig,
   mergeMuseServerConfig,
-  readCursorWorkspaceRoot,
   readJsonFile,
   readTextFile,
   resolveConfigPath,
@@ -229,6 +230,7 @@ Options:
 Setup installs host guidance, MCP config where the host owns it, and on macOS: SwiftBar plugin.
 Terminal status line only for Cursor CLI and Claude Code (--statusline/--no-statusline).
 Codex connects over pure MCP: setup writes the global headerless HTTP fallback and merges AGENTS.md (the plugin supplies skills, not transport).
+Cursor connects over pure MCP: setup writes the global headerless HTTP fallback and agent-deck use writes the per-folder entry (the plugin supplies skills, not transport).
 Muse global setup installs native bootstrap skills; --scope project merges root AGENTS.md (trust the workspace so Muse loads it). No Muse status line or plugin install.
 (+ Homebrew SwiftBar install when run interactively in a terminal).`);
 }
@@ -356,25 +358,51 @@ export async function runSetup(args: string[]): Promise<number> {
     console.warn(`Claude CLI failed (${added.error ?? 'unknown error'}) — writing ${resolveConfigPath('claude', scope)} instead`);
   }
 
+  if (client === 'cursor' && scope === 'global') {
+    // NOT-567: the global entry is the headerless HTTP fallback — no
+    // launcher, no workspace pin, no executable lookup. Agent Deck's own
+    // legacy launcher entry is upgraded; a custom or wrapped entry is
+    // never changed.
+    const cursorGlobalPath = resolveConfigPath('cursor', 'global');
+    const cursorGlobalConfig = readJsonFile(cursorGlobalPath);
+    const cursorGlobalServers = cursorGlobalConfig.mcpServers;
+    const cursorGlobalEntry =
+      cursorGlobalServers &&
+      typeof cursorGlobalServers === 'object' &&
+      !Array.isArray(cursorGlobalServers)
+        ? (cursorGlobalServers as Record<string, unknown>)['agent-deck']
+        : undefined;
+    if (
+      cursorGlobalEntry !== undefined &&
+      !isMcpLaunchEntry(cursorGlobalEntry) &&
+      !isHttpAgentDeckEntry(cursorGlobalEntry)
+    ) {
+      console.warn(`Cursor MCP: left custom agent-deck entry unchanged in ${cursorGlobalPath}.`);
+      console.warn(
+        `  Point that wrapper at ${buildMcpUrl(endpoint)} (per-folder entries add the x-agent-deck-workspace header).`,
+      );
+      return await finishSetup(client, scope, endpoint, parsed.start === true, parsed.statusline, parsed.menubar);
+    }
+    writeJsonFile(
+      cursorGlobalPath,
+      mergeMcpServerConfig(cursorGlobalConfig, buildAgentDeckEntry('cursor', endpoint)),
+    );
+    console.log(
+      `Wrote global agent-deck fallback (headerless HTTP, no executable lookup) → ${cursorGlobalPath}`,
+    );
+    console.log(
+      'Unassigned folders land in the explain-only session; `agent-deck use <deck>` writes the per-folder entry.',
+    );
+    return await finishSetup(client, scope, endpoint, parsed.start === true, parsed.statusline, parsed.menubar);
+  }
+
   const configPath = resolveConfigPath(client, scope);
   const existingConfig = readJsonFile(configPath);
-  const existingServers = existingConfig.mcpServers;
-  const existingEntry =
-    existingServers && typeof existingServers === 'object' && !Array.isArray(existingServers)
-      ? (existingServers as Record<string, unknown>)['agent-deck']
-      : undefined;
-  // Project launchers always know their workspace. Global setup preserves a pin
-  // written by `agent-deck use` so re-running setup cannot drop the deck header.
-  // Claude project scope writes the per-folder HTTP entry (workspace header);
-  // only Claude global gets the headerless fallback.
+  // Project scope writes the per-folder HTTP entry (workspace header);
+  // only global setup writes the headerless fallback. (Cursor global is
+  // handled above; Claude global prefers `claude mcp add`.)
   const workspaceRoot =
-    client === 'cursor'
-      ? scope === 'project'
-        ? process.cwd()
-        : readCursorWorkspaceRoot(existingEntry)
-      : client === 'claude' && scope === 'project'
-        ? process.cwd()
-        : undefined;
+    (client === 'cursor' || client === 'claude') && scope === 'project' ? process.cwd() : undefined;
   const entry = buildAgentDeckEntry(client, endpoint, { workspaceRoot });
   let merged: Record<string, unknown>;
   if (client === 'muse' && scope === 'global') {
@@ -435,10 +463,18 @@ function printNextSteps(
     console.log(`  ${step}. Run \`agent-deck use <deck> --client muse\` in each folder that needs a persistent assignment`);
     step += 1;
     console.log(`  ${step}. In Muse, \`/mcp\` should show agent-deck; accept workspace trust when prompted (no Agent Deck status line for Muse)`);
+  } else if (client === 'cursor') {
+    console.log(`  ${step}. MCP endpoint → ${buildMcpUrl(endpoint)} (global headerless HTTP fallback; no executable lookup)`);
+    step += 1;
+    console.log(`  ${step}. Verify the Agent Deck Cursor plugin (skills) is installed, enabled, and current`);
+    step += 1;
+    console.log(`  ${step}. Run \`agent-deck use <deck>\` in each IDE folder that needs a persistent assignment`);
+    step += 1;
+    console.log(`  ${step}. Approve the project agent-deck server, then reload MCP so the new entry loads`);
   } else {
     console.log(`  ${step}. MCP endpoint → ${buildMcpUrl(endpoint)}`);
     step += 1;
-    console.log(`  ${step}. Restart Claude Code / Cursor so MCP + harness rules load`);
+    console.log(`  ${step}. Restart Claude Code so MCP + harness rules load`);
   }
   step += 1;
   if (client === 'claude') {

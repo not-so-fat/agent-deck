@@ -239,20 +239,20 @@ describe('supported production host transport', () => {
     expect(fs.existsSync(path.join(repositoryRoot, '.mcp.json'))).toBe(false);
   });
 
-  it('NOT-565 repair: Cursor plugin keeps its own mcp-launch manifest (out of scope)', () => {
+  it('NOT-567: Cursor plugin declares no MCP server (skills and guidance only)', () => {
     const repositoryRoot = path.resolve(__dirname, '../../..');
-    const cursorPlugin = JSON.parse(
-      fs.readFileSync(path.join(repositoryRoot, '.cursor-plugin', 'plugin.json'), 'utf8'),
-    ) as { mcpServers?: string };
-    expect(cursorPlugin.mcpServers).toBe('./.cursor-plugin/.mcp.json');
-    const cursorTransport = JSON.parse(
-      fs.readFileSync(path.join(repositoryRoot, '.cursor-plugin', '.mcp.json'), 'utf8'),
-    ) as { mcpServers?: Record<string, Record<string, unknown>> };
-    expect(cursorTransport.mcpServers?.['agent-deck']).toEqual({
-      type: 'stdio',
-      command: 'agent-deck',
-      args: ['mcp-launch'],
-    });
+    const raw = fs.readFileSync(
+      path.join(repositoryRoot, '.cursor-plugin', 'plugin.json'),
+      'utf8',
+    );
+    expect(raw).not.toContain('mcp-launch');
+    expect(raw).not.toContain('"command"');
+    expect(raw).not.toContain('mcpServers');
+    const plugin = JSON.parse(raw) as { mcpServers?: unknown };
+    expect(plugin.mcpServers).toBeUndefined();
+    // The connection is plain host MCP config (global fallback + per-folder
+    // entry); no plugin-shipped connection file remains.
+    expect(fs.existsSync(path.join(repositoryRoot, '.cursor-plugin', '.mcp.json'))).toBe(false);
   });
 });
 

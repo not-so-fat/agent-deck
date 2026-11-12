@@ -66,6 +66,22 @@ describe('agent-harness templates', () => {
     expect(file).not.toContain('weekly priority');
   });
 
+  it('NOT-567: harness teaches the pure-MCP Cursor connection with the three recovery steps', () => {
+    const texts = [
+      buildCursorHarnessFile('global'),
+      buildCursorHarnessFile('project'),
+      buildClaudeHarnessBlock('global'),
+    ];
+    for (const text of texts) {
+      expect(text).toContain('Codex, Claude Code, and Cursor connect over pure MCP');
+      expect(text).toContain('agent-deck setup --client codex|claude|cursor');
+      expect(text).toContain('approve the project agent-deck entry');
+      expect(text).toContain('agent-deck use <deck>');
+      expect(text).not.toContain('Cursor users configure transport');
+      expect(text).not.toContain('mcp-launch');
+    }
+  });
+
   it('harness teaches the request-only switch flow, not the retired direct switch (NOT-214)', () => {
     const texts = [
       buildCursorHarnessFile('global'),

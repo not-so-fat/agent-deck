@@ -3,10 +3,11 @@
  * Trusted MCP launcher — reads the folder assignment and connects with launch headers.
  * Referenced from project MCP config instead of embedding deck ids in tracked files.
  *
- * Retained transport (NOT-566): Codex and Claude Code connect over pure MCP
- * now, but Cursor, Muse, and Claude Desktop still need this stdio launcher,
- * so `agent-deck mcp-launch` stays supported. Legacy Codex/Claude launcher
- * entries keep working and are rewritten to pure MCP by `agent-deck upgrade`.
+ * Retained transport (NOT-566/567): Codex, Claude Code, and Cursor connect
+ * over pure MCP now, but Muse and Claude Desktop still need this stdio
+ * launcher, so `agent-deck mcp-launch` stays supported. Legacy launcher
+ * entries keep working and are rewritten to pure MCP by `agent-deck upgrade`
+ * (Codex/Claude) or `setup`/`use` re-runs (Cursor).
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';

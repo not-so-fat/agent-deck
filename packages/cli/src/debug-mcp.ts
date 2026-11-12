@@ -157,8 +157,8 @@ export function assessClaudeMcpConfig(
       return true;
     }
 
-    // The launcher still works (Cursor/Muse/Desktop keep it), so a legacy
-    // launcher entry is a migration note, not a failure.
+    // The launcher still works (Muse/Desktop keep it; legacy entries still
+    // connect), so a legacy launcher entry is a migration note, not a failure.
     if (isMcpLaunchEntry(result.entry)) {
       lines.push(`OK  Claude ${label} config (${displayPath}): ${serialized}`);
       lines.push(

@@ -111,27 +111,23 @@ describe('agent-deck use', () => {
       false,
     );
     const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')) as {
-      mcpServers: Record<
-        string,
-        { command?: string; args?: string[]; env?: Record<string, string>; headers?: Record<string, string> }
-      >;
+      mcpServers: Record<string, unknown>;
     };
-    expect(mcp.mcpServers['agent-deck']?.command).toBe('agent-deck');
-    expect(mcp.mcpServers['agent-deck']?.args).toEqual(['mcp-launch']);
-    expect(mcp.mcpServers['agent-deck']?.env?.AGENT_DECK_WORKSPACE).toBe(workspace);
-    expect(mcp.mcpServers['agent-deck']?.headers?.['x-agent-deck-deck-id']).toBeUndefined();
+    // NOT-567 per-folder pure-MCP entry — toEqual fails on any extra field.
+    expect(mcp.mcpServers['agent-deck']).toEqual({
+      url: `http://${parsed.host}:${parsed.mcpPort}/mcp`,
+      headers: { 'x-agent-deck-workspace': workspace },
+    });
+    expect(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')).not.toContain(
+      'deck-1',
+    );
 
+    // NOT-567: `use` never touches the global entry — the legacy file is byte-identical.
     const globalMcp = JSON.parse(fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8')) as {
-      mcpServers: Record<
-        string,
-        { command?: string; args?: string[]; url?: string; env?: Record<string, string> }
-      >;
+      mcpServers: Record<string, unknown>;
     };
-    expect(globalMcp.mcpServers['agent-deck']?.url).toBeUndefined();
-    expect(globalMcp.mcpServers['agent-deck']?.command).toBe('agent-deck');
-    expect(globalMcp.mcpServers['agent-deck']?.args).toEqual(['mcp-launch']);
-    expect(globalMcp.mcpServers['agent-deck']?.env?.AGENT_DECK_WORKSPACE).toBe(workspace);
-    expect(log.mock.calls.flat().join('\n')).toContain('upgraded the legacy bare URL');
+    expect(globalMcp.mcpServers['agent-deck']).toEqual({ url: 'http://127.0.0.1:1110/mcp' });
+    expect(log.mock.calls.flat().join('\n')).not.toContain('upgraded the legacy bare URL');
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),
@@ -345,22 +341,23 @@ describe('agent-deck use', () => {
     expect(log.mock.calls.flat().join('\n')).toContain('Bound deck: dev');
   });
 
-  it('prints a repair message for an existing unpinned launcher', async () => {
+  it('NOT-567: leaves a legacy global launcher untouched and writes the per-folder HTTP entry', async () => {
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
     fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    const legacyGlobal = {
+      mcpServers: {
+        'agent-deck': {
+          command: 'agent-deck',
+          args: ['mcp-launch'],
+          env: { AGENT_DECK_HOST: '127.0.0.1', AGENT_DECK_MCP_PORT: '1110' },
+        },
+      },
+    };
     fs.writeFileSync(
       path.join(fakeHome, '.cursor', 'mcp.json'),
-      `${JSON.stringify({
-        mcpServers: {
-          'agent-deck': {
-            command: 'agent-deck',
-            args: ['mcp-launch'],
-            env: { AGENT_DECK_HOST: '127.0.0.1', AGENT_DECK_MCP_PORT: '1110' },
-          },
-        },
-      }, null, 2)}\n`,
+      `${JSON.stringify(legacyGlobal, null, 2)}\n`,
     );
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -371,21 +368,33 @@ describe('agent-deck use', () => {
     }
     const result = await runUse({ ...parsed, workspaceRoot: workspace });
     expect('error' in result).toBe(false);
-    expect(log.mock.calls.flat().join('\n')).toContain('added the missing workspace pin');
+    // The global fallback is `setup`'s job — `use` never touches it.
+    expect(JSON.parse(fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8'))).toEqual(
+      legacyGlobal,
+    );
+    expect(log.mock.calls.flat().join('\n')).not.toContain('workspace pin');
+    const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(mcp.mcpServers['agent-deck']).toEqual({
+      url: `http://${parsed.host}:${parsed.mcpPort}/mcp`,
+      headers: { 'x-agent-deck-workspace': workspace },
+    });
   });
 
-  it('prints a warning when a custom global wrapper is skipped', async () => {
+  it('NOT-567: stays silent about a custom global wrapper it never touches', async () => {
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
     fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    const custom = {
+      mcpServers: {
+        'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] },
+      },
+    };
     fs.writeFileSync(
       path.join(fakeHome, '.cursor', 'mcp.json'),
-      `${JSON.stringify({
-        mcpServers: {
-          'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] },
-        },
-      }, null, 2)}\n`,
+      `${JSON.stringify(custom, null, 2)}\n`,
     );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -396,15 +405,18 @@ describe('agent-deck use', () => {
     }
     const result = await runUse({ ...parsed, workspaceRoot: workspace });
     expect('error' in result).toBe(false);
-    expect(warn.mock.calls.flat().join('\n')).toContain('left custom agent-deck entry unchanged');
+    expect(warn.mock.calls.flat().join('\n')).not.toContain('left custom agent-deck entry unchanged');
+    expect(JSON.parse(fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8'))).toEqual(
+      custom,
+    );
   });
 
-  it('repairs the project workspace pin without the home store when assignment already matches', async () => {
+  it('NOT-567: rewrites the per-folder HTTP entry without the home store when assignment already matches', async () => {
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
-    // No ~/.cursor — global ensure would create it; sandbox path must still succeed
-    // when only the project pin is needed.
+    // No ~/.cursor — the sandbox path must still succeed when only the
+    // per-folder entry is needed (`use` never touches the global file).
     writeUseManifest(workspace, {
       version: 3,
       deckId: 'deck-1',
@@ -431,9 +443,13 @@ describe('agent-deck use', () => {
 
     expect(result.deck).toEqual({ id: 'deck-1', name: 'dev' });
     const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')) as {
-      mcpServers: Record<string, { env?: Record<string, string> }>;
+      mcpServers: Record<string, unknown>;
     };
-    expect(mcp.mcpServers['agent-deck']?.env?.AGENT_DECK_WORKSPACE).toBe(workspace);
+    expect(mcp.mcpServers['agent-deck']).toEqual({
+      url: `http://${parsed.host}:${parsed.mcpPort}/mcp`,
+      headers: { 'x-agent-deck-workspace': workspace },
+    });
+    expect(fs.existsSync(path.join(fakeHome, '.cursor', 'mcp.json'))).toBe(false);
     expect(createCollectionAdminMock).toHaveBeenCalled();
   });
 
@@ -705,6 +721,7 @@ describe('agent-deck use', () => {
     }
     const summary = formatUseSummary(result);
     expect(summary).toContain('approve the project agent-deck entry');
+    expect(summary).toContain('Cursor: approve the project agent-deck server');
     expect(summary).toContain('trust this folder');
     expect(summary).toContain('reload MCP');
 
@@ -718,39 +735,66 @@ describe('agent-deck use', () => {
       return;
     }
     const cursorSummary = formatUseSummary(cursorOnly);
-    expect(cursorSummary).not.toContain('approve the project agent-deck entry');
+    // NOT-567: the Cursor steps show only when Cursor was written.
+    expect(cursorSummary).toContain('Cursor: approve the project agent-deck server');
+    expect(cursorSummary).not.toContain('Claude Code: approve the project agent-deck entry');
     expect(cursorSummary).not.toContain('trust this folder');
   });
 
-  it('NOT-563: the Cursor entry written by use is unchanged', async () => {
+  it('NOT-567: use writes the per-folder cursor HTTP entry, preserving others and byte-identical on re-run', async () => {
     const workspace = makeWorkspace();
     const fakeHome = makeWorkspace();
     vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
     vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    const parsed = parseUseArgs(['dev']);
+    const memoryServer = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] };
+    fs.mkdirSync(path.join(workspace, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.cursor', 'mcp.json'),
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            memory: memoryServer,
+            'agent-deck': {
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: { AGENT_DECK_MCP_PORT: '9999', AGENT_DECK_HOST: '127.0.0.1' },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const parsed = parseUseArgs(['dev', '--client', 'cursor']);
     expect('error' in parsed).toBe(false);
     if ('error' in parsed) {
       return;
     }
-    const result = await runUse({ ...parsed, workspaceRoot: workspace });
-    expect('error' in result).toBe(false);
-    if ('error' in result) {
+
+    const first = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in first).toBe(false);
+    if ('error' in first) {
       return;
     }
 
-    const mcp = JSON.parse(
-      fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8'),
-    ) as { mcpServers: Record<string, unknown> };
-    // Exact pre-change launcher fixture — toEqual fails on any extra field.
-    expect(mcp.mcpServers['agent-deck']).toEqual({
-      command: 'agent-deck',
-      args: ['mcp-launch'],
-      env: {
-        AGENT_DECK_MCP_PORT: String(parsed.mcpPort),
-        AGENT_DECK_HOST: parsed.host,
-        AGENT_DECK_WORKSPACE: workspace,
-      },
+    const cursorPath = path.join(workspace, '.cursor', 'mcp.json');
+    const cursor = JSON.parse(fs.readFileSync(cursorPath, 'utf8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(cursor.mcpServers.memory).toEqual(memoryServer);
+    // Exact per-folder shape — toEqual fails on any extra field.
+    expect(cursor.mcpServers['agent-deck']).toEqual({
+      url: `http://${parsed.host}:${parsed.mcpPort}/mcp`,
+      headers: { 'x-agent-deck-workspace': workspace },
     });
+    expect(fs.readFileSync(cursorPath, 'utf8')).not.toContain('deck-1');
+    expect(first.mcp).toContainEqual({ client: 'cursor', path: cursorPath });
+
+    const before = fs.readFileSync(cursorPath, 'utf8');
+    const second = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in second).toBe(false);
+    expect(fs.readFileSync(cursorPath, 'utf8')).toBe(before);
   });
 });

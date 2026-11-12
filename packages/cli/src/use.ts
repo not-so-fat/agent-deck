@@ -7,9 +7,7 @@ import {
   buildAgentDeckEntry,
   buildCodexAgentDeckEntry,
   buildMcpUrl,
-  ensureGlobalCursorMcpLaunch,
   formatCodexMcpSection,
-  formatCursorGlobalMcpEnsureMessage,
   mergeCodexTomlConfig,
   mergeMcpServerConfig,
   readJsonFile,
@@ -211,32 +209,6 @@ function writeProjectMcpConfigs(
   return mcpWritten;
 }
 
-function tryEnsureGlobalCursorLaunch(endpoint: McpEndpoint, workspaceRoot: string): void {
-  try {
-    const globalResult = ensureGlobalCursorMcpLaunch(endpoint, { workspaceRoot });
-    const message = formatCursorGlobalMcpEnsureMessage(globalResult);
-    if (message) {
-      if (globalResult.action === 'skipped') {
-        console.warn(message);
-      } else {
-        console.log(message);
-      }
-    }
-  } catch (error) {
-    if (isHomeStoreWriteError(error)) {
-      console.warn(
-        [
-          'Cursor user-level MCP (~/.cursor/mcp.json) could not be updated from this shell.',
-          '  Project MCP pin was still written; reload Cursor MCP if the project entry is enough.',
-          `  ${formatHomeStoreWriteBlockedMessage(error instanceof Error ? error.message : String(error)).split('\n').slice(1).join('\n  ')}`,
-        ].join('\n'),
-      );
-      return;
-    }
-    throw error;
-  }
-}
-
 /**
  * Workspace-only repair when the home store is unwritable but `.agent-deck/use.json`
  * already assigns the requested deck (typical Cursor agent sandbox).
@@ -253,10 +225,9 @@ async function runUseWorkspaceOnlyRepair(
     deckName: deck.name,
     mcpUrl,
   });
+  // NOT-567: `use` writes per-folder entries only. The global headerless
+  // fallback is `setup`'s job and is never touched here.
   const mcpWritten = writeProjectMcpConfigs(parsed, endpoint);
-  if (!parsed.skipMcp && clientsToWrite(parsed.clients).includes('cursor')) {
-    tryEnsureGlobalCursorLaunch(endpoint, parsed.workspaceRoot);
-  }
   ensureGitExcluded(parsed.workspaceRoot);
   const stubs = emptyStubSync(parsed.workspaceRoot);
   const cleanup = cleanupLegacyStubs(parsed.workspaceRoot, stubTargets(parsed.clients));
@@ -302,22 +273,6 @@ async function runUseFullPath(
   });
 
   const mcpWritten = writeProjectMcpConfigs(parsed, endpoint);
-  if (!parsed.skipMcp && clientsToWrite(parsed.clients).includes('cursor')) {
-    const globalResult = ensureGlobalCursorMcpLaunch(endpoint, {
-      workspaceRoot: parsed.workspaceRoot,
-    });
-    const message = formatCursorGlobalMcpEnsureMessage(globalResult);
-    if (message) {
-      if (globalResult.action === 'skipped') {
-        console.warn(message);
-      } else {
-        console.log(message);
-      }
-    }
-    if (globalResult.action !== 'ok' && globalResult.action !== 'skipped') {
-      mcpWritten.push({ client: 'cursor', path: globalResult.path });
-    }
-  }
 
   const stubs = syncPlaybookStubs(parsed.workspaceRoot, playbooks, stubTargets(parsed.clients));
   const cleanup = cleanupLegacyStubs(parsed.workspaceRoot, stubTargets(parsed.clients));
@@ -408,6 +363,11 @@ export function formatUseSummary(result: UseResult): string {
   lines.push(`Cursor stubs → ${path.join('.cursor', 'rules', 'agent-deck-stubs')}`);
   lines.push(`Claude stubs → ${path.join('.claude', 'skills', 'agent-deck-<slug>')}`);
   const written = new Set(result.mcp.map((entry) => entry.client));
+  if (written.has('cursor')) {
+    lines.push(
+      'Cursor: approve the project agent-deck server (.cursor/mcp.json) when prompted, then reload MCP.',
+    );
+  }
   if (written.has('claude')) {
     lines.push(
       'Claude Code: approve the project agent-deck entry (.mcp.json) when prompted, then reload MCP.',
