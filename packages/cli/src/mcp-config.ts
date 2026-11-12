@@ -209,6 +209,36 @@ export function isMcpLaunchEntry(entry: unknown): boolean {
   return Array.isArray(args) && args.length === 1 && args[0] === 'mcp-launch';
 }
 
+/**
+ * True when a JSON `agent-deck` entry is a legacy Claude Code launcher
+ * entry (NOT-566): an `agent-deck mcp-launch` entry carrying
+ * `type: 'stdio'` or an `AGENT_DECK_WORKSPACE` env pin. Every launcher
+ * entry `use`/`setup --client claude` ever wrote carries at least one of
+ * those markers — project entries carry both, global entries the type.
+ *
+ * Muse writes the same command/args to the same project `.mcp.json` but
+ * never writes `type` or the workspace pin (see `buildAgentDeckEntry`),
+ * so a Muse-shaped entry never matches. The upgrade rewrite uses this
+ * predicate for the shared project file so it cannot convert a current
+ * Muse entry — a host that still depends on the launcher — to the
+ * Claude HTTP shape.
+ */
+export function isLegacyClaudeLaunchEntry(entry: unknown): boolean {
+  if (!isMcpLaunchEntry(entry)) {
+    return false;
+  }
+  const record = entry as Record<string, unknown>;
+  if (record.type === 'stdio') {
+    return true;
+  }
+  const env = record.env;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) {
+    return false;
+  }
+  const workspaceRoot = (env as Record<string, unknown>).AGENT_DECK_WORKSPACE;
+  return typeof workspaceRoot === 'string' && workspaceRoot.length > 0;
+}
+
 export function readCursorWorkspaceRoot(entry: unknown): string | undefined {
   if (!isMcpLaunchEntry(entry)) {
     return undefined;

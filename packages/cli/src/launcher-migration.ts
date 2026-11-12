@@ -8,7 +8,10 @@
  * those entries to the pure-MCP shape so the retired path stops spreading.
  *
  * Owned files (launcher entries only; anything else is left byte-identical):
- * - `<folder>/.mcp.json` → per-folder HTTP entry (workspace header)
+ * - `<folder>/.mcp.json` → per-folder HTTP entry (workspace header), but
+ *   only when the entry carries a Claude marker (`type: 'stdio'` or an
+ *   `AGENT_DECK_WORKSPACE` pin): the file is shared with Muse, whose
+ *   current launcher entry carries neither and must survive upgrades.
  * - `<folder>/.codex/config.toml` → per-folder HTTP section (workspace header)
  * - `~/.claude.json` → headerless global HTTP fallback
  * - `~/.codex/config.toml` → headerless global HTTP fallback section
@@ -25,6 +28,7 @@ import {
   codexTomlHasLauncherEntry,
   formatCodexGlobalFallbackSection,
   formatCodexMcpSection,
+  isLegacyClaudeLaunchEntry,
   isMcpLaunchEntry,
   mergeCodexTomlConfig,
   mergeMcpServerConfig,
@@ -53,6 +57,7 @@ export interface LauncherMigrationOptions {
 function rewriteJsonEntry(
   configPath: string,
   replacement: Record<string, unknown>,
+  matches: (entry: unknown) => boolean = isMcpLaunchEntry,
 ): LauncherMigrationResult {
   let existing: Record<string, unknown>;
   try {
@@ -69,7 +74,7 @@ function rewriteJsonEntry(
     servers && typeof servers === 'object' && !Array.isArray(servers)
       ? (servers as Record<string, unknown>)['agent-deck']
       : undefined;
-  if (current === undefined || !isMcpLaunchEntry(current)) {
+  if (current === undefined || !matches(current)) {
     return { path: configPath, action: 'unchanged' };
   }
   try {
@@ -121,9 +126,14 @@ export function rewriteLegacyLauncherEntries(
 ): LauncherMigrationResult[] {
   const { workspaceRoot, endpoint } = options;
   return [
+    // Project .mcp.json is shared with Muse: only entries with a Claude
+    // marker are rewritten; a current Muse launcher entry is `unchanged`.
+    // The global ~/.claude.json is Claude-only, so any launcher entry
+    // there is legacy Claude by construction.
     rewriteJsonEntry(
       resolveConfigPath('claude', 'project', workspaceRoot),
       buildAgentDeckEntry('claude', endpoint, { workspaceRoot }),
+      isLegacyClaudeLaunchEntry,
     ),
     rewriteCodexToml(
       resolveConfigPath('codex', 'project', workspaceRoot),

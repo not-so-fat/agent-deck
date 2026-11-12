@@ -9,6 +9,7 @@ import {
   formatLauncherMigrationResults,
   rewriteLegacyLauncherEntries,
 } from './launcher-migration';
+import { buildAgentDeckEntry, isMcpLaunchEntry } from './mcp-config';
 import { runUpgrade } from './upgrade';
 import { getAgentDeckVersion } from './version';
 
@@ -1228,5 +1229,63 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
       mcpServers: { memory: MEMORY_SERVER, 'agent-deck': LAUNCHER_JSON },
     });
     expect(output.join('\n')).not.toContain('rewrote legacy launcher entry');
+  });
+
+  it('leaves a current Muse launcher entry in the shared project .mcp.json byte-identical', () => {
+    // Exactly what `use --client muse` writes: mcp-launch with neither a
+    // Claude marker (no type, no workspace pin).
+    const museEntry = buildAgentDeckEntry('muse', ENDPOINT);
+    expect(isMcpLaunchEntry(museEntry)).toBe(true);
+    const configPath = path.join(workspace, '.mcp.json');
+    fs.writeFileSync(
+      configPath,
+      `${JSON.stringify({ mcpServers: { memory: MEMORY_SERVER, 'agent-deck': museEntry } }, null, 2)}\n`,
+    );
+    const before = fs.readFileSync(configPath, 'utf8');
+
+    const results = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+
+    expect(results[0]).toEqual({ path: configPath, action: 'unchanged' });
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before);
+    // Re-running `use --client muse` after an upgrade is a no-op, not a
+    // repair: the upgrade never converts the entry to the Claude HTTP shape.
+    expect(JSON.parse(before).mcpServers['agent-deck']).toEqual(museEntry);
+  });
+
+  it('rewrites a legacy Claude project entry pinned by workspace env without the stdio type', () => {
+    const configPath = path.join(workspace, '.mcp.json');
+    fs.writeFileSync(
+      configPath,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            'agent-deck': {
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: {
+                AGENT_DECK_MCP_PORT: '1110',
+                AGENT_DECK_HOST: '127.0.0.1',
+                AGENT_DECK_WORKSPACE: workspace,
+              },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const results = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+
+    expect(results[0].action).toBe('rewritten');
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({
+      mcpServers: {
+        'agent-deck': {
+          type: 'http',
+          url: MCP_URL,
+          headers: { 'x-agent-deck-workspace': workspace },
+        },
+      },
+    });
   });
 });

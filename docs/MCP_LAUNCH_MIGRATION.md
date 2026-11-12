@@ -34,17 +34,25 @@ unrelated servers, custom wrappers, and Cursor/Muse/Desktop entries are
 left untouched, as are files that fail to parse. The rewrite is
 idempotent — running `agent-deck upgrade` again changes nothing.
 
+`<folder>/.mcp.json` is shared between Claude Code and Muse, so the
+rewrite discriminates there: only a launcher entry with a Claude marker
+(`type: 'stdio'` or an `AGENT_DECK_WORKSPACE` pin — every launcher
+entry `use`/`setup --client claude` ever wrote carries at least one) is
+converted to the HTTP shape. A current Muse launcher entry carries
+neither marker and is left byte-identical, so Muse keeps working across
+upgrades with no re-run needed. A folder that serves both hosts keeps
+the shared launcher entry, which still connects for Claude Code too.
+
+Project entries are rewritten for the folder `agent-deck upgrade` runs
+in; run it (or `agent-deck use <deck>`) in each project folder to
+migrate that folder.
+
 Manual equivalent (same result, per host):
 
 - `agent-deck use <deck>` in the folder rewrites the per-folder entries.
 - `agent-deck setup --client codex` / `--client claude` rewrites the
   global fallbacks.
 - `agent-deck upgrade --check` never rewrites anything.
-
-One caveat: `<folder>/.mcp.json` is shared between Claude Code and Muse.
-The rewrite converts a launcher entry there to the Claude HTTP shape; if
-that folder also serves Muse, re-run `agent-deck use <deck> --client muse`
-afterwards to restore its launcher entry.
 
 ## Verifying
 

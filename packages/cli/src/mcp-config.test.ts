@@ -14,6 +14,7 @@ import {
   formatCodexMcpSection,
   formatCursorGlobalMcpEnsureMessage,
   isLegacyBareHttpAgentDeckEntry,
+  isLegacyClaudeLaunchEntry,
   isMcpLaunchEntry,
   mergeCodexTomlConfig,
   mergeMcpServerConfig,
@@ -620,6 +621,54 @@ describe('legacy bare HTTP detection', () => {
         env: { AGENT_DECK_WORKSPACE: '/tmp/ws' },
       }),
     ).toBeUndefined();
+  });
+});
+
+describe('NOT-566 isLegacyClaudeLaunchEntry', () => {
+  const ENDPOINT = { host: '127.0.0.1', mcpPort: 1110 };
+
+  it('matches legacy Claude launcher entries by the stdio type or the workspace pin', () => {
+    // Global shape: stdio type, no workspace pin.
+    expect(
+      isLegacyClaudeLaunchEntry({
+        type: 'stdio',
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+      }),
+    ).toBe(true);
+    // Project shape without the type: the workspace pin alone marks it.
+    expect(
+      isLegacyClaudeLaunchEntry({
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: {
+          AGENT_DECK_MCP_PORT: '1110',
+          AGENT_DECK_HOST: '127.0.0.1',
+          AGENT_DECK_WORKSPACE: '/tmp/ws',
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it('never matches the current Muse launcher entry', () => {
+    const museEntry = buildAgentDeckEntry('muse', ENDPOINT);
+    expect(isMcpLaunchEntry(museEntry)).toBe(true);
+    expect(isLegacyClaudeLaunchEntry(museEntry)).toBe(false);
+  });
+
+  it('rejects non-launcher entries and empty workspace pins', () => {
+    expect(isLegacyClaudeLaunchEntry({ type: 'http', url: 'http://127.0.0.1:1110/mcp' })).toBe(
+      false,
+    );
+    expect(isLegacyClaudeLaunchEntry({ command: 'agent-deck', args: ['mcp-launch'] })).toBe(false);
+    expect(
+      isLegacyClaudeLaunchEntry({
+        command: 'agent-deck',
+        args: ['mcp-launch'],
+        env: { AGENT_DECK_WORKSPACE: '' },
+      }),
+    ).toBe(false);
   });
 });
 
