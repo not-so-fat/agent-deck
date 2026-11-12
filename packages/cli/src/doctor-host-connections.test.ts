@@ -191,6 +191,48 @@ describe('doctor host connections (NOT-574)', () => {
     expect(text).toContain('agent-deck start');
   });
 
+  it('reports entry-daemon-down for every host when untrusted entries meet a stopped daemon (NOT-586)', async () => {
+    const { workspace } = makeRoots();
+    // Project entries everywhere, trust nowhere (plus a git repo so
+    // Muse reaches the daemon gate rather than the repository gate).
+    fs.mkdirSync(path.join(workspace, '.codex'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.codex', 'config.toml'),
+      ['[mcp_servers.agent-deck]', 'url = "http://127.0.0.1:1110/mcp"', ''].join('\n'),
+    );
+    writeJson(path.join(workspace, '.mcp.json'), {
+      mcpServers: {
+        'agent-deck': {
+          type: 'http',
+          url: 'http://127.0.0.1:1110/mcp',
+          headers: { 'x-agent-deck-workspace': workspace },
+        },
+      },
+    });
+    writeJson(path.join(workspace, '.cursor', 'mcp.json'), {
+      mcpServers: {
+        'agent-deck': {
+          url: 'http://127.0.0.1:1110/mcp',
+          headers: { 'x-agent-deck-workspace': workspace },
+        },
+      },
+    });
+    fs.mkdirSync(path.join(workspace, '.git'));
+
+    await runDoctor({ daemonHealth: { up: false, sessions: [] } });
+    const lines = connectionLines();
+    expect(lines).toHaveLength(4);
+    const text = lines.join('\n');
+    expect(text).toContain('Codex connection: entry-daemon-down');
+    expect(text).toContain('Claude Code connection: entry-daemon-down');
+    expect(text).toContain('Cursor connection: entry-daemon-down');
+    expect(text).toContain('Muse connection: entry-daemon-down');
+    expect(text).not.toContain('folder-not-trusted');
+    for (const line of lines) {
+      expect(line).toContain('agent-deck start');
+    }
+  });
+
   it('never reports connected for an untrusted folder', async () => {
     const { workspace } = makeRoots();
     // Project entries everywhere, trust nowhere (plus a git repo so

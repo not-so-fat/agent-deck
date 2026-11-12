@@ -156,10 +156,13 @@ export function countMatchingSessions(
 }
 
 /**
- * Pure classifier: config gates first (they block even with the daemon
- * up), then daemon reachability, then the attributed live-session
- * count. Trust and repository gates apply only when a project entry
- * exists — the global headerless fallback needs neither.
+ * Pure classifier: the Muse stale-conflict and repository gates first
+ * (they block even with the daemon up), then daemon reachability, then
+ * the trust gate, then the attributed live-session count. Daemon-down
+ * takes precedence over folder-not-trusted for every host: a trust
+ * remedy cannot help while the daemon is stopped. Trust and repository
+ * gates apply only when a project entry exists — the global headerless
+ * fallback needs neither.
  */
 export function classifyHostConnection(input: HostConnectionInput): HostConnectionResult {
   const { host } = input;
@@ -187,20 +190,20 @@ export function classifyHostConnection(input: HostConnectionInput): HostConnecti
       detail: 'project entry present',
     };
   }
-  if (input.hasProjectEntry && !input.folderTrusted) {
-    return {
-      host,
-      state: 'folder-not-trusted',
-      remedy: remedyFor(host, 'folder-not-trusted'),
-      detail: 'project entry present',
-    };
-  }
   if (!input.daemonUp) {
     return {
       host,
       state: 'entry-daemon-down',
       remedy: remedyFor(host, 'entry-daemon-down'),
       detail: entryDetail(input),
+    };
+  }
+  if (input.hasProjectEntry && !input.folderTrusted) {
+    return {
+      host,
+      state: 'folder-not-trusted',
+      remedy: remedyFor(host, 'folder-not-trusted'),
+      detail: 'project entry present',
     };
   }
   const matchingSessions = countMatchingSessions(input.sessions, host, input.folder);

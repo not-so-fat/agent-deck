@@ -139,6 +139,24 @@ describe('classifyHostConnection (NOT-574)', () => {
     }
   });
 
+  it('gives entry-daemon-down precedence over folder-not-trusted for every host (NOT-586)', () => {
+    for (const host of ['codex', 'claude', 'cursor', 'muse'] as const) {
+      const result = classifyHostConnection({
+        host,
+        folder: FOLDER,
+        hasProjectEntry: true,
+        hasGlobalEntry: true,
+        folderTrusted: false,
+        folderInRepository: true,
+        hasStaleConflict: false,
+        daemonUp: false,
+        sessions: [],
+      });
+      expect(result.state).toBe('entry-daemon-down');
+      expect(result.remedy).toContain('agent-deck start');
+    }
+  });
+
   it('skips the trust gate when only the global fallback exists', () => {
     const result = classifyHostConnection({
       host: 'codex',
@@ -602,6 +620,19 @@ describe('inspectHostConnection fixtures (NOT-574)', () => {
       expect(result.state).toBe('entry-daemon-down');
     });
 
+    it('entry-daemon-down for an untrusted project entry when the daemon is down (NOT-586)', () => {
+      const { workspace, codexHome, home } = makeRoots();
+      writeCodexProject(workspace);
+      writeCodexUser(codexHome, workspace, false);
+      const result = inspectHostConnection('codex', workspace, {
+        home,
+        codexHome,
+        daemon: DAEMON_DOWN,
+      });
+      expect(result.state).toBe('entry-daemon-down');
+      expect(result.remedy).toContain('agent-deck start');
+    });
+
     it('entry-daemon-up-no-session with no live session', () => {
       const { workspace, codexHome, home } = makeRoots();
       writeCodexProject(workspace);
@@ -679,6 +710,16 @@ describe('inspectHostConnection fixtures (NOT-574)', () => {
       expect(result.state).toBe('entry-daemon-down');
     });
 
+    it('entry-daemon-down for an unapproved project server when the daemon is down (NOT-586)', () => {
+      const { workspace, home } = makeRoots();
+      writeClaudeProject(workspace);
+      writeClaudeUser(home, workspace, false);
+      expect(isClaudeProjectApproved(home, workspace)).toBe(false);
+      const result = inspectHostConnection('claude', workspace, { home, daemon: DAEMON_DOWN });
+      expect(result.state).toBe('entry-daemon-down');
+      expect(result.remedy).toContain('agent-deck start');
+    });
+
     it('entry-daemon-up-no-session with no live session', () => {
       const { workspace, home } = makeRoots();
       writeClaudeProject(workspace);
@@ -721,6 +762,16 @@ describe('inspectHostConnection fixtures (NOT-574)', () => {
       expect(isCursorProjectApproved(home, workspace)).toBe(true);
       const result = inspectHostConnection('cursor', workspace, { home, daemon: DAEMON_DOWN });
       expect(result.state).toBe('entry-daemon-down');
+    });
+
+    it('entry-daemon-down for an unapproved project server when the daemon is down (NOT-586)', () => {
+      const { workspace, home } = makeRoots();
+      writeCursorProject(workspace);
+      writeCursorUser(home);
+      expect(isCursorProjectApproved(home, workspace)).toBe(false);
+      const result = inspectHostConnection('cursor', workspace, { home, daemon: DAEMON_DOWN });
+      expect(result.state).toBe('entry-daemon-down');
+      expect(result.remedy).toContain('agent-deck start');
     });
 
     it('entry-daemon-up-no-session with no live session', () => {
@@ -790,6 +841,17 @@ describe('inspectHostConnection fixtures (NOT-574)', () => {
       writeMuseTrust(xdg, workspace);
       const result = inspectHostConnection('muse', workspace, { home, xdgConfigHome: xdg, daemon: DAEMON_DOWN });
       expect(result.state).toBe('entry-daemon-down');
+    });
+
+    it('entry-daemon-down for an untrusted project entry when the daemon is down (NOT-586)', () => {
+      const { workspace, home, xdg } = makeRoots();
+      makeGitRepo(workspace);
+      writeMcpJson(path.join(workspace, '.mcp.json'), HTTP_PROJECT_ENTRY(workspace));
+      writeMuseGlobal(xdg, HTTP_ENTRY);
+      expect(isMuseFolderTrusted(home, workspace, xdg)).toBe(false);
+      const result = inspectHostConnection('muse', workspace, { home, xdgConfigHome: xdg, daemon: DAEMON_DOWN });
+      expect(result.state).toBe('entry-daemon-down');
+      expect(result.remedy).toContain('agent-deck start');
     });
 
     it('entry-daemon-up-no-session with no live session', () => {
