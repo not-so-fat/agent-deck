@@ -463,6 +463,63 @@ export function formatCodexGlobalFallbackSection(endpoint: McpEndpoint): string 
 }
 
 /**
+ * True when Codex TOML defines any `agent-deck` server entry (NOT-574):
+ * a managed `[mcp_servers.agent-deck]` section (or sub-table) in any
+ * transport, or a dotted/inline `agent-deck` key under a bare
+ * `[mcp_servers]` section. Other servers never match; a merely prefixed
+ * sibling such as `[mcp_servers.agent-deck-env]` never matches.
+ */
+export function codexTomlHasAgentDeckEntry(existingText: string): boolean {
+  if (!existingText.includes('agent-deck')) {
+    return false;
+  }
+  const lines = existingText.split('\n');
+  const headerKind = new Map<number, 'managed' | 'servers' | 'other'>();
+  for (const [index, line] of lines.entries()) {
+    if (!isTomlSectionHeader(line)) {
+      continue;
+    }
+    if (CODEX_AGENT_DECK_SECTION_RE.test(line)) {
+      return true;
+    }
+    if (CODEX_MCP_SERVERS_SECTION_RE.test(line)) {
+      headerKind.set(index, 'servers');
+    } else {
+      headerKind.set(index, 'other');
+    }
+  }
+  const headerIdxs = [...headerKind.keys()];
+  const rangeEnd = (headerIdx: number): number => {
+    for (const candidate of headerIdxs) {
+      if (candidate > headerIdx) {
+        return candidate;
+      }
+    }
+    return lines.length;
+  };
+  for (const [headerIdx, kind] of headerKind) {
+    if (kind !== 'servers') {
+      continue;
+    }
+    const end = rangeEnd(headerIdx);
+    let depth = 0;
+    let index = headerIdx + 1;
+    while (index < end) {
+      const line = lines[index];
+      if (depth === 0 && CODEX_MCP_SERVERS_AGENT_DECK_KEY_RE.test(line)) {
+        return true;
+      }
+      depth += tomlBracketDelta(line);
+      if (depth < 0) {
+        depth = 0;
+      }
+      index += 1;
+    }
+  }
+  return false;
+}
+
+/**
  * True when Codex TOML defines the `agent-deck` server through the legacy
  * stdio launcher (NOT-566): a managed `[mcp_servers.agent-deck]` section
  * (or sub-table) whose body mentions `mcp-launch`, or a dotted/inline

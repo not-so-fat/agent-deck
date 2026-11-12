@@ -722,13 +722,11 @@ exit 1
     promoteToCurrent();
 
     output.length = 0;
-    expect(
-      await runCodexPluginDoctor(CLI_VERSION, undefined, { probeDaemon: async () => false }),
-    ).toBe(0);
+    expect(await runCodexPluginDoctor(CLI_VERSION)).toBe(0);
     expect(output.join('\n')).toContain(
       `Codex plugin manifest: OK (${CLI_VERSION}, mcp-launch) (manifest-only, connection not verified)`,
     );
-    expect(output.join('\n')).toContain('daemon is not reachable');
+    expect(output.join('\n')).not.toContain('connection:');
     expect(output.join('\n')).not.toContain('Codex plugin: OK (');
   });
 });

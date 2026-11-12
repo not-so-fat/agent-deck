@@ -48,7 +48,13 @@ import { readLastReindex } from './backend-runtime';
 import { checkPathForStaleCli } from './stale-cli-check';
 import { formatLastReindex } from './store';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
-import { runCodexPluginDoctor, type CodexDaemonProbe } from './codex-plugin';
+import { runCodexPluginDoctor } from './codex-plugin';
+import {
+  formatHostConnectionLine,
+  inspectAllHostConnections,
+  type DaemonHealth,
+} from './host-connection';
+import { fetchLiveBindings } from './menubar';
 
 export interface StartOptions {
   backendPort?: number;
@@ -837,7 +843,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   return 0;
 }
 
-export async function runDoctor(options: { codexDaemonProbe?: CodexDaemonProbe } = {}): Promise<number> {
+export async function runDoctor(options: { daemonHealth?: DaemonHealth } = {}): Promise<number> {
   const { activated } = runManagedCliEntryHooks({ allowActivate: true });
   if (activated) {
     console.log(`[agent-deck] Activated managed version ${activated}`);
@@ -957,13 +963,30 @@ export async function runDoctor(options: { codexDaemonProbe?: CodexDaemonProbe }
     console.log(line);
   }
 
+  // NOT-574: real pure-MCP connection state per host (entry, daemon,
+  // live session, trust, repository) from the shared classifier. The
+  // daemon health is injectable so tests pin every host's line. Never
+  // prints OK for install state alone — only `connected` means live.
+  // Sessions come from GET /api/scope/bindings so the classifier can
+  // attribute each one to its host and folder; an unreachable backend
+  // answers no sessions, which degrades to entry-daemon-up-no-session
+  // rather than a false connected.
+  let daemonHealth = options.daemonHealth;
+  if (!daemonHealth) {
+    const up = probe.backendUp && probe.mcpUp;
+    const sessions = probe.backendUp ? ((await fetchLiveBindings(probe.backendUrl)) ?? []) : [];
+    daemonHealth = { up, sessions };
+  }
+  console.log('');
+  console.log('Host connections (pure MCP, read-only):');
+  for (const result of inspectAllHostConnections(process.cwd(), { daemon: daemonHealth })) {
+    console.log(`  ${formatHostConnectionLine(result)}`);
+  }
+
   // Read-only Codex plugin compatibility check (NOT-188): never mutates Codex
   // state, only reports it. A stale/disabled/ambiguous plugin fails doctor.
-  // NOT-564: the daemon probe is injectable so tests pin the connection line.
   console.log('');
-  const codexCode = await runCodexPluginDoctor(getAgentDeckVersion(), undefined, {
-    probeDaemon: options.codexDaemonProbe,
-  });
+  const codexCode = await runCodexPluginDoctor(getAgentDeckVersion());
   if (codexCode !== 0) {
     ok = false;
   }

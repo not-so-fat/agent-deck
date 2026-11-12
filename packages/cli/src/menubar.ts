@@ -234,6 +234,19 @@ async function fetchJson<T>(
   }
 }
 
+/**
+ * Read-only live-session list from `GET /api/scope/bindings` — the same
+ * source the menu bar renders. `null` when the backend is unreachable
+ * or answers outside the `{ success, data }` envelope. Shared with
+ * doctor so both read identical session facts.
+ */
+export async function fetchLiveBindings(
+  backendUrl: string,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<LiveBinding[] | null> {
+  return fetchJson<LiveBinding[]>(backendUrl, '/api/scope/bindings', timeoutMs);
+}
+
 export async function runMenubar(): Promise<number> {
   const host = process.env.AGENT_DECK_HOST ?? '127.0.0.1';
   const timeoutMs =
@@ -241,7 +254,7 @@ export async function runMenubar(): Promise<number> {
 
   for (const port of resolveBackendPorts()) {
     const backendUrl = `http://${host}:${port}`;
-    const bindings = await fetchJson<LiveBinding[]>(backendUrl, '/api/scope/bindings', timeoutMs);
+    const bindings = await fetchLiveBindings(backendUrl, timeoutMs);
     if (bindings !== null) {
       const pendingApprovals =
         (await fetchJson<PendingAdminChallenge[]>(
