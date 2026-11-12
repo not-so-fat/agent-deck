@@ -48,7 +48,12 @@ import { readLastReindex } from './backend-runtime';
 import { checkPathForStaleCli } from './stale-cli-check';
 import { formatLastReindex } from './store';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
-import { runCodexPluginDoctor, type CodexDaemonProbe } from './codex-plugin';
+import { runCodexPluginDoctor } from './codex-plugin';
+import {
+  formatHostConnectionLine,
+  inspectAllHostConnections,
+  type DaemonHealth,
+} from './host-connection';
 
 export interface StartOptions {
   backendPort?: number;
@@ -837,7 +842,7 @@ export async function runStart(options: StartOptions = {}): Promise<number> {
   return 0;
 }
 
-export async function runDoctor(options: { codexDaemonProbe?: CodexDaemonProbe } = {}): Promise<number> {
+export async function runDoctor(options: { daemonHealth?: DaemonHealth } = {}): Promise<number> {
   const { activated } = runManagedCliEntryHooks({ allowActivate: true });
   if (activated) {
     console.log(`[agent-deck] Activated managed version ${activated}`);
@@ -957,13 +962,24 @@ export async function runDoctor(options: { codexDaemonProbe?: CodexDaemonProbe }
     console.log(line);
   }
 
+  // NOT-574: real pure-MCP connection state per host (entry, daemon,
+  // live session, trust, repository) from the shared classifier. The
+  // daemon health is injectable so tests pin every host's line. Never
+  // prints OK for install state alone — only `connected` means live.
+  const daemonHealth: DaemonHealth = options.daemonHealth ?? {
+    up: probe.backendUp && probe.mcpUp,
+    liveSessions: probe.mcpSessions?.liveSessions ?? 0,
+  };
+  console.log('');
+  console.log('Host connections (pure MCP, read-only):');
+  for (const result of inspectAllHostConnections(process.cwd(), { daemon: daemonHealth })) {
+    console.log(`  ${formatHostConnectionLine(result)}`);
+  }
+
   // Read-only Codex plugin compatibility check (NOT-188): never mutates Codex
   // state, only reports it. A stale/disabled/ambiguous plugin fails doctor.
-  // NOT-564: the daemon probe is injectable so tests pin the connection line.
   console.log('');
-  const codexCode = await runCodexPluginDoctor(getAgentDeckVersion(), undefined, {
-    probeDaemon: options.codexDaemonProbe,
-  });
+  const codexCode = await runCodexPluginDoctor(getAgentDeckVersion());
   if (codexCode !== 0) {
     ok = false;
   }
