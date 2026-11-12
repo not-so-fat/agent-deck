@@ -789,7 +789,7 @@ describe('NOT-387 muse setup', () => {
     }
   });
 
-  it('writes global Muse settings through XDG_CONFIG_HOME idempotently', async () => {
+  it('NOT-570: writes the global headerless HTTP fallback through XDG_CONFIG_HOME idempotently', async () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-home-'));
     const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-xdg-'));
     const settingsPath = path.join(tmpXdg, 'muse', 'settings.json');
@@ -811,10 +811,12 @@ describe('NOT-387 muse setup', () => {
     try {
       const first = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
       expect(first.code).toBe(0);
-      expect(first.logged).toContain('Start a new Muse process');
+      expect(first.logged).toContain('headerless HTTP');
+      expect(first.logged).toContain('Unassigned folders land in the explain-only session');
+      expect(first.logged).toContain('start a new Muse process');
       expect(first.logged).toContain('/mcp');
-      expect(first.logged).toContain('workspace trust');
-      expect(first.logged).toContain('agent-deck use <deck> --client muse');
+      expect(first.logged).toContain('Trust the folder');
+      expect(first.logged).toContain('agent-deck use <deck>');
       expect(first.logged).toContain('MCP endpoint → http://127.0.0.1:1110/mcp');
       const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
       // Unrelated settings and servers survive parsing byte-equivalent.
@@ -824,12 +826,12 @@ describe('NOT-387 muse setup', () => {
         args: ['-y', 'memory'],
       });
       expect(written.schema_version).toBe(1);
-      // Exact launcher fields only — toEqual fails on any extra field.
+      // Exact fallback fields only — toEqual fails on any extra field.
       expect((written.mcpServers as Record<string, unknown>)['agent-deck']).toEqual({
-        command: 'agent-deck',
-        args: ['mcp-launch'],
-        env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
       });
+      expect(fs.readFileSync(settingsPath, 'utf8')).not.toContain('mcp-launch');
       // No Muse files leak into the mocked home.
       expect(fs.existsSync(path.join(tmpHome, '.config', 'muse', 'settings.json'))).toBe(false);
 
@@ -838,6 +840,94 @@ describe('NOT-387 muse setup', () => {
       expect(second.code).toBe(0);
       expect(fs.readFileSync(settingsPath, 'utf8')).toBe(beforeSecond);
     } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-570: global muse setup replaces the legacy launcher entry outright', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-legacy-'));
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-legacy-xdg-'));
+    const settingsPath = path.join(tmpXdg, 'muse', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      `${JSON.stringify(
+        {
+          schema_version: 1,
+          mcpServers: {
+            memory: { command: 'npx', args: ['-y', 'memory'] },
+            'agent-deck': {
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: { AGENT_DECK_MCP_PORT: '9999', AGENT_DECK_HOST: '127.0.0.1' },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    try {
+      const first = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
+      expect(first.code).toBe(0);
+      expect(first.logged).toContain('headerless HTTP');
+      const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
+      const servers = written.mcpServers as Record<string, unknown>;
+      // No leftover stdio fields — a merged entry would be rejected as
+      // invalid_transport_combination once the per-folder HTTP entry lands.
+      expect(servers['agent-deck']).toEqual({
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
+      });
+      expect(servers['agent-deck']).not.toHaveProperty('command');
+      expect(servers['agent-deck']).not.toHaveProperty('args');
+      expect(servers['agent-deck']).not.toHaveProperty('env');
+      expect(servers.memory).toEqual({ command: 'npx', args: ['-y', 'memory'] });
+      expect(written.schema_version).toBe(1);
+      expect(fs.readFileSync(settingsPath, 'utf8')).not.toContain('mcp-launch');
+
+      const beforeSecond = fs.readFileSync(settingsPath, 'utf8');
+      const second = await runWithXdg(tmpXdg, tmpHome, MUSE_ARGS);
+      expect(second.code).toBe(0);
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe(beforeSecond);
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-570: global muse setup leaves a custom entry untouched and reports it', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-custom-'));
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-muse-custom-xdg-'));
+    const settingsPath = path.join(tmpXdg, 'muse', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const custom = {
+      schema_version: 1,
+      mcpServers: {
+        memory: { command: 'npx', args: ['-y', 'memory'] },
+        'agent-deck': { command: 'npx', args: ['-y', 'custom-wrapper'] },
+      },
+    };
+    const original = `${JSON.stringify(custom, null, 2)}\n`;
+    fs.writeFileSync(settingsPath, original);
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = tmpXdg;
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      expect(await runSetup(MUSE_ARGS)).toBe(0);
+      expect(warn.mock.calls.flat().join('\n')).toContain('left custom agent-deck entry unchanged');
+      expect(fs.readFileSync(settingsPath, 'utf8')).toBe(original);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+      vi.restoreAllMocks();
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
       fs.rmSync(tmpHome, { recursive: true, force: true });
       fs.rmSync(tmpXdg, { recursive: true, force: true });
     }
@@ -919,9 +1009,8 @@ describe('NOT-387 muse setup', () => {
       const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>;
       expect(written.schema_version).toBe(1);
       expect((written.mcpServers as Record<string, unknown>)['agent-deck']).toEqual({
-        command: 'agent-deck',
-        args: ['mcp-launch'],
-        env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
       });
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });

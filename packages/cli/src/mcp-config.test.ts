@@ -588,6 +588,57 @@ describe('NOT-387 mergeMuseServerConfig', () => {
   );
 });
 
+describe('NOT-570 muse global HTTP fallback', () => {
+  const ENDPOINT = { host: '127.0.0.1', mcpPort: 1110 };
+  const configPath = path.join('/tmp', 'xdg', 'muse', 'settings.json');
+
+  it('writes the headerless { type: http, url } entry Muse reports as streamable-http', () => {
+    // toEqual fails on any extra field: no headers, no launcher keys.
+    expect(buildGlobalFallbackHttpEntry(ENDPOINT)).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+    });
+    expect(isHttpAgentDeckEntry(buildGlobalFallbackHttpEntry(ENDPOINT))).toBe(true);
+    expect(isMcpLaunchEntry(buildGlobalFallbackHttpEntry(ENDPOINT))).toBe(false);
+  });
+
+  it('replaces a legacy launcher entry outright — no leftover stdio fields', () => {
+    const merged = mergeMuseServerConfig(
+      {
+        theme: 'dark',
+        schema_version: 1,
+        mcpServers: {
+          memory: { command: 'npx', args: ['-y', 'memory'] },
+          'agent-deck': {
+            command: 'agent-deck',
+            args: ['mcp-launch'],
+            env: { AGENT_DECK_MCP_PORT: '9999', AGENT_DECK_HOST: '127.0.0.1' },
+          },
+        },
+      },
+      buildGlobalFallbackHttpEntry(ENDPOINT),
+      configPath,
+    );
+    const servers = merged.mcpServers as Record<string, unknown>;
+    // Exact fallback fields only — toEqual fails on any leftover field.
+    expect(servers['agent-deck']).toEqual({ type: 'http', url: 'http://127.0.0.1:1110/mcp' });
+    expect(servers['agent-deck']).not.toHaveProperty('command');
+    expect(servers['agent-deck']).not.toHaveProperty('args');
+    expect(servers['agent-deck']).not.toHaveProperty('env');
+    // Unrelated settings, servers, and schema_version survive.
+    expect(merged.theme).toBe('dark');
+    expect(merged.schema_version).toBe(1);
+    expect(servers.memory).toEqual({ command: 'npx', args: ['-y', 'memory'] });
+  });
+
+  it('merge is idempotent: a second merge is deep-equal', () => {
+    const once = mergeMuseServerConfig({}, buildGlobalFallbackHttpEntry(ENDPOINT), configPath);
+    expect(mergeMuseServerConfig(once, buildGlobalFallbackHttpEntry(ENDPOINT), configPath)).toEqual(
+      once,
+    );
+  });
+});
+
 describe('legacy bare HTTP detection', () => {
   it('flags url-only entries', () => {
     expect(isLegacyBareHttpAgentDeckEntry({ url: 'http://127.0.0.1:1110/mcp' })).toBe(true);
