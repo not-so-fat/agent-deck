@@ -5,13 +5,19 @@ entries in host config — no CLI lookup, no stdio bridge). The
 `agent-deck mcp-launch` launcher is retired for those two hosts and
 **retained** for the hosts that still need stdio.
 
+Update (NOT-567): Cursor connects over pure MCP too — the per-folder
+`.cursor/mcp.json` HTTP entry (`use`) plus the global headerless HTTP
+fallback (`setup`), with the plugin declaring no MCP server. Cursor
+entries migrate when `setup`/`use` re-runs; `agent-deck upgrade` does not
+rewrite them.
+
 ## Who uses what
 
 | Host | Connection | `mcp-launch` still used? |
 |------|------------|--------------------------|
 | Codex | Per-folder `.codex/config.toml` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until rewritten |
 | Claude Code | Per-folder `.mcp.json` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until rewritten |
-| Cursor | `mcp-launch` entries (project + user-level pin) | **Yes** |
+| Cursor | Per-folder `.cursor/mcp.json` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until `setup`/`use` re-runs |
 | Muse | `mcp-launch` entries (project + global settings) | **Yes** |
 | Claude Desktop | `mcp-launch` stdio entry (its JSON config is stdio-only) | **Yes** |
 
@@ -30,8 +36,9 @@ automatically (best-effort, silent when there is nothing to do):
 - `~/.codex/config.toml` launcher section → headerless global HTTP fallback
 
 Only entries that point at `agent-deck mcp-launch` are rewritten;
-unrelated servers, custom wrappers, and Cursor/Muse/Desktop entries are
-left untouched, as are files that fail to parse. The rewrite is
+unrelated servers, custom wrappers, and Muse/Desktop entries are
+left untouched, as are Cursor entries (those migrate via `setup`/`use`
+re-runs) and files that fail to parse. The rewrite is
 idempotent — running `agent-deck upgrade` again changes nothing.
 
 `<folder>/.mcp.json` is shared between Claude Code and Muse, so the
@@ -52,6 +59,8 @@ Manual equivalent (same result, per host):
 - `agent-deck use <deck>` in the folder rewrites the per-folder entries.
 - `agent-deck setup --client codex` / `--client claude` rewrites the
   global fallbacks.
+- `agent-deck setup --client cursor` rewrites the Cursor global fallback
+  (Cursor migrates through `setup`/`use`, never `upgrade`).
 - `agent-deck upgrade --check` never rewrites anything.
 
 ## Verifying

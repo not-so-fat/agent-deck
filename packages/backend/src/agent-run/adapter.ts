@@ -173,7 +173,7 @@ export type RunPlaybookPin = {
  * (NOT-537). The Codex/Claude run adapters no longer use it — their
  * per-run overrides are pure HTTP and carry the pin as a header directly
  * (NOT-566) — but the launcher keeps honoring it for the stdio hosts that
- * still connect through it (Cursor, Muse, Claude Desktop). Never carried
+ * still connect through it (Muse, Claude Desktop). Never carried
  * by process inheritance: MCP servers start with a restricted env, so an
  * inherited variable would silently never arrive and the run would read
  * the live playbook.

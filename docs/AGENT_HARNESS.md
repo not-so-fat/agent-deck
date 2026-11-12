@@ -14,7 +14,7 @@ Agents delegate a brief to another session only through Agent Deck MCP (`start_r
 
 ## Registering Agent Deck in your agent
 
-Your host needs an Agent Deck MCP transport—not direct registrations for Linear, Notion, or other downstream services. Codex and Claude Code connect over pure MCP (a global headerless HTTP fallback plus per-folder entries from `agent-deck use`); Cursor setup writes its host configuration. Without that transport, chat cannot reach your decks or collection.
+Your host needs an Agent Deck MCP transport—not direct registrations for Linear, Notion, or other downstream services. Codex, Claude Code, and Cursor connect over pure MCP (a global headerless HTTP fallback plus per-folder entries from `agent-deck use`). Without that transport, chat cannot reach your decks or collection.
 
 **Three layers** (one-time host setup, optional folder assignment, then session bootstrap):
 
