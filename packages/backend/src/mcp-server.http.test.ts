@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 import Fastify from 'fastify';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,6 +21,7 @@ import {
   LIVE_TOUCH_KEEPALIVE_ENV_VAR,
   MCP_INITIALIZE_RATE_LIMIT,
   MCP_INITIALIZE_RATE_WINDOW_MS,
+  MCP_REQUIRE_BEARER_ENV_VAR,
   resolveLiveTouchKeepAliveMs,
 } from './mcp-server';
 import type { McpSessionBindingStore } from './mcp-session-binding';
@@ -29,6 +31,8 @@ import {
   openSession,
   startMcpServer,
 } from './mcp-tools/test-harness';
+import { AuditStore } from './audit/store';
+import { ClientGrantStore } from './auth/client-grants';
 import { DatabaseManager } from './models/database';
 import { PatchManager } from './playbooks/patch-manager';
 import { PlaybookManager } from './playbooks/playbook-manager';
@@ -2132,5 +2136,642 @@ describe('folder-assignment deck binding (NOT-562)', () => {
     const after = await callToolMcpResult(port, fresh, 'get_session_context', {}, 11, headers);
     expect(after.isError).toBe(false);
     expect(after.data.effective_deck_name).toBe('beta');
+  });
+});
+
+describe('stale session recovery (NOT-569)', () => {
+  const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
+  const workspaces: string[] = [];
+  const dbs: Database.Database[] = [];
+  let mcpServer: AgentDeckMCPServer | undefined;
+  let previousSkipDeckHeader: string | undefined;
+  let previousSkipAdmin: string | undefined;
+  let previousStubSync: string | undefined;
+  let previousBearerFlag: string | undefined;
+  let previousHostedFlag: string | undefined;
+
+  beforeEach(() => {
+    previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    previousBearerFlag = process.env[MCP_REQUIRE_BEARER_ENV_VAR];
+    previousHostedFlag = process.env.AGENT_DECK_HOSTED_MODE;
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
+    process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
+    process.env.AGENT_DECK_STUB_SYNC = 'off';
+    delete process.env[MCP_REQUIRE_BEARER_ENV_VAR];
+    delete process.env.AGENT_DECK_HOSTED_MODE;
+  });
+
+  afterEach(async () => {
+    if (mcpServer) {
+      await mcpServer.stop();
+      mcpServer = undefined;
+    }
+    while (servers.length) {
+      await servers.pop()?.close();
+    }
+    while (workspaces.length) {
+      fs.rmSync(workspaces.pop()!, { recursive: true, force: true });
+    }
+    while (dbs.length) {
+      dbs.pop()?.close();
+    }
+    vi.restoreAllMocks();
+    if (previousSkipDeckHeader === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipDeckHeader;
+    }
+    if (previousSkipAdmin === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = previousSkipAdmin;
+    }
+    if (previousStubSync === undefined) {
+      delete process.env.AGENT_DECK_STUB_SYNC;
+    } else {
+      process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
+    }
+    if (previousBearerFlag === undefined) {
+      delete process.env[MCP_REQUIRE_BEARER_ENV_VAR];
+    } else {
+      process.env[MCP_REQUIRE_BEARER_ENV_VAR] = previousBearerFlag;
+    }
+    if (previousHostedFlag === undefined) {
+      delete process.env.AGENT_DECK_HOSTED_MODE;
+    } else {
+      process.env.AGENT_DECK_HOSTED_MODE = previousHostedFlag;
+    }
+  });
+
+  async function buildListeningBackend() {
+    const db = new DatabaseManager(':memory:');
+    const deckA = await db.createDeck({ name: 'alpha' });
+    const deckB = await db.createDeck({ name: 'beta' });
+
+    const store = new TrustedSessionStore(db.getSqliteDatabase());
+    const playbookManager = new PlaybookManager(db);
+
+    const fastify = Fastify();
+    fastify.decorate('db', db);
+    fastify.decorate('trustedSessionStore', store);
+    fastify.decorate('credentialManager', {
+      applySecretStatus: async (credentials: unknown[]) => credentials,
+    });
+    fastify.decorate('playbookManager', playbookManager);
+
+    registerHttpPolicyHook(fastify);
+    await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
+    await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+    await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
+    await fastify.listen({ port: 0, host: '127.0.0.1' });
+    servers.push(fastify);
+
+    const address = fastify.server.address();
+    const backendPort =
+      typeof address === 'object' && address && 'port' in address ? address.port : 0;
+
+    return {
+      backendUrl: `http://127.0.0.1:${backendPort}`,
+      db,
+      deckA,
+      deckB,
+    };
+  }
+
+  async function setup() {
+    const backend = await buildListeningBackend();
+    const started = await startMcpServer(backend.backendUrl, 'standard');
+    mcpServer = started.server;
+    return { ...backend, port: started.port, server: started.server };
+  }
+
+  function writeAssignment(dir: string, deckId: string, deckName: string): void {
+    fs.mkdirSync(path.join(dir, '.agent-deck'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.agent-deck', 'use.json'),
+      JSON.stringify({ version: 3, deckId, deckName }),
+    );
+  }
+
+  function makeWorkspace(assignment?: { deckId: string; deckName: string } | 'corrupt'): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'not569-'));
+    workspaces.push(dir);
+    if (assignment === 'corrupt') {
+      fs.mkdirSync(path.join(dir, '.agent-deck'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.agent-deck', 'use.json'), '{not json');
+    } else if (assignment) {
+      writeAssignment(dir, assignment.deckId, assignment.deckName);
+    }
+    return dir;
+  }
+
+  function workspaceHeaders(dir: string, deckId?: string): Record<string, string> {
+    return {
+      [AGENT_DECK_WORKSPACE_HEADER]: dir,
+      ...(deckId ? { [AGENT_DECK_DECK_ID_HEADER]: deckId } : {}),
+    };
+  }
+
+  type RawMcpResponse = {
+    status: number;
+    sessionHeader: string | null;
+    sessionStatus: string | null;
+    body: any;
+  };
+
+  async function postMcpRaw(
+    port: number,
+    payload: unknown,
+    headers: Record<string, string>,
+  ): Promise<RawMcpResponse> {
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        ...headers,
+      },
+      body: JSON.stringify(payload),
+    });
+    const body = (await response.json().catch(() => null)) as any;
+    return {
+      status: response.status,
+      sessionHeader: response.headers.get('mcp-session-id'),
+      sessionStatus: response.headers.get('mcp-session-status'),
+      body,
+    };
+  }
+
+  function toolsCall(name: string, args: unknown, id: number) {
+    return {
+      jsonrpc: '2.0',
+      id,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    };
+  }
+
+  function toolText(body: any): { isError: boolean; data: Record<string, unknown> } {
+    const text = body?.result?.content?.[0]?.text;
+    if (typeof text !== 'string') {
+      throw new Error(`Unexpected tools/call result: ${JSON.stringify(body)}`);
+    }
+    return {
+      isError: Boolean(body.result?.isError),
+      data: JSON.parse(text) as Record<string, unknown>,
+    };
+  }
+
+  async function readTally(port: number) {
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    return health.staleSessions as {
+      count: number;
+      distinctSessions: number;
+      recoveredSessions: number;
+      unresolvedSessions: number;
+    };
+  }
+
+  type RecoveryInternals = {
+    sessions: Map<string, unknown>;
+    recoveredSessionAlias: Map<string, string>;
+    staleSessionsById: Map<string, { recovered: boolean; lastAt: string }>;
+    closedSessionIds: Set<string>;
+  };
+
+  function internalsOf(server: AgentDeckMCPServer): RecoveryInternals {
+    return server as unknown as RecoveryInternals;
+  }
+
+  function recoveryWarnings(warnSpy: { mock: { calls: unknown[][] } }): unknown[][] {
+    return warnSpy.mock.calls.filter((call) =>
+      String(call[0] ?? '').includes('recovered from headers as'),
+    );
+  }
+
+  async function waitFor(check: () => boolean): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (check()) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error('timed out waiting for expected server state');
+  }
+
+  it('recovers a tools/call with an unknown session id from the workspace header', async () => {
+    const { deckA, port } = await setup();
+    const headers = workspaceHeaders(
+      makeWorkspace({ deckId: deckA.id, deckName: deckA.name }),
+    );
+    const staleId = 'stale-cursor-session-1';
+
+    // No initialize is ever sent: the first post-restart tools/call heals.
+    const first = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 1),
+      { 'mcp-session-id': staleId, ...headers },
+    );
+    expect(first.status).toBe(200);
+    // The response carries the id the client sent, so the client needs no change.
+    expect(first.sessionHeader).toBe(staleId);
+    const firstResult = toolText(first.body);
+    expect(firstResult.isError).toBe(false);
+    expect(firstResult.data.effective_deck_name).toBe('alpha');
+
+    // A second request with the same stale id serves from the alias.
+    const second = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 2),
+      { 'mcp-session-id': staleId, ...headers },
+    );
+    expect(second.status).toBe(200);
+    expect(second.sessionHeader).toBe(staleId);
+    const secondResult = toolText(second.body);
+    expect(secondResult.isError).toBe(false);
+    expect(secondResult.data.effective_deck_name).toBe('alpha');
+  });
+
+  it('recovers from an explicit deck header', async () => {
+    const { deckB, port } = await setup();
+    const headers = { [AGENT_DECK_DECK_ID_HEADER]: deckB.id };
+    const staleId = 'stale-deck-header-session';
+
+    const recovered = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 1),
+      { 'mcp-session-id': staleId, ...headers },
+    );
+    expect(recovered.status).toBe(200);
+    expect(recovered.sessionHeader).toBe(staleId);
+    const result = toolText(recovered.body);
+    expect(result.isError).toBe(false);
+    expect(result.data.effective_deck_name).toBe('beta');
+  });
+
+  it('prefers an explicit deck header over use.json on recovery', async () => {
+    const { deckA, deckB, port } = await setup();
+    const dir = makeWorkspace({ deckId: deckA.id, deckName: deckA.name });
+    const headers = workspaceHeaders(dir, deckB.id);
+
+    const recovered = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 1),
+      { 'mcp-session-id': 'stale-header-wins', ...headers },
+    );
+    expect(recovered.status).toBe(200);
+    expect(toolText(recovered.body).data.effective_deck_name).toBe('beta');
+  });
+
+  it('keeps the NOT-101 404 for requests that cannot rebind a deck', async () => {
+    const { db, port } = await setup();
+    const ghostDeck = '99999999-9999-4999-8999-999999999999';
+    const cases: Array<{ name: string; staleId: string; headers: Record<string, string> }> = [
+      {
+        name: 'no deck-resolving header',
+        staleId: 'not569-no-headers',
+        headers: {},
+      },
+      {
+        name: 'workspace with no use.json',
+        staleId: 'not569-no-manifest',
+        headers: workspaceHeaders(makeWorkspace()),
+      },
+      {
+        name: 'workspace with a corrupt use.json',
+        staleId: 'not569-corrupt-manifest',
+        headers: workspaceHeaders(makeWorkspace('corrupt')),
+      },
+      {
+        name: 'use.json naming a deleted deck',
+        staleId: 'not569-deleted-manifest-deck',
+        headers: workspaceHeaders(makeWorkspace({ deckId: ghostDeck, deckName: 'gone' })),
+      },
+      {
+        name: 'deck header naming a deleted deck',
+        staleId: 'not569-deleted-header-deck',
+        headers: { [AGENT_DECK_DECK_ID_HEADER]: ghostDeck },
+      },
+      {
+        name: 'unrelated headers only',
+        staleId: 'not569-unrelated-headers',
+        headers: { 'x-agent-deck-correlation-id': '00000000-0000-4000-8000-000000000000' },
+      },
+    ];
+    for (const { name, staleId, headers } of cases) {
+      const answered = await postMcpRaw(
+        port,
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        { 'mcp-session-id': staleId, ...headers },
+      );
+      expect(answered.status, name).toBe(404);
+      expect(answered.sessionStatus, name).toBe('expired');
+      expect(answered.body?.error?.code, name).toBe(-32001);
+      expect(String(answered.body?.error?.message ?? ''), name).toContain('Session not found');
+      expect(String(answered.body?.error?.message ?? ''), name).toContain('re-initialize');
+    }
+    // Failed binds leave no partial runtime session behind.
+    const row = db
+      .getSqliteDatabase()
+      .prepare('SELECT COUNT(*) AS n FROM runtime_sessions')
+      .get() as { n: number };
+    expect(row.n).toBe(0);
+  });
+
+  it('never resurrects a session id the server closed itself', async () => {
+    const { deckA, port, server } = await setup();
+    const headers = workspaceHeaders(
+      makeWorkspace({ deckId: deckA.id, deckName: deckA.name }),
+    );
+    const sessionId = await openSession(port, 1, headers);
+    const before = await readTally(port);
+
+    const closed = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'DELETE',
+      headers: { Accept: MCP_ACCEPT, 'mcp-session-id': sessionId, ...headers },
+    });
+    expect(closed.status).toBe(200);
+    await closed.arrayBuffer();
+    await waitFor(() => internalsOf(server).closedSessionIds.has(sessionId));
+
+    // Even with headers that could rebind the deck, a closed id stays 404.
+    const late = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 2),
+      { 'mcp-session-id': sessionId, ...headers },
+    );
+    expect(late.status).toBe(404);
+    expect(late.sessionStatus).toBe('expired');
+    expect(late.body?.error?.code).toBe(-32001);
+
+    // ...and nothing is reported as stranded.
+    expect(await readTally(port)).toEqual(before);
+  });
+
+  it('never recovers a request carrying a bearer token in local mode', async () => {
+    const { deckA, port } = await setup();
+    const headers = {
+      ...workspaceHeaders(makeWorkspace({ deckId: deckA.id, deckName: deckA.name })),
+      authorization: 'Bearer not-a-real-grant-token',
+    };
+
+    const answered = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 1),
+      { 'mcp-session-id': 'not569-bearer-stale', ...headers },
+    );
+    expect(answered.status).toBe(404);
+    expect(answered.sessionStatus).toBe('expired');
+    expect(answered.body?.error?.code).toBe(-32001);
+  });
+
+  it('keeps hosted mode unchanged: 401 without a bearer, 404 for unknown ids with one', async () => {
+    process.env[MCP_REQUIRE_BEARER_ENV_VAR] = '1';
+    process.env.AGENT_DECK_HOSTED_MODE = '1';
+    try {
+      const backend = await buildListeningBackend();
+      const db = new Database(':memory:');
+      dbs.push(db);
+      const grantStore = new ClientGrantStore(db);
+      const auditStore = new AuditStore(db);
+      const hosted = new AgentDeckMCPServer(0, backend.backendUrl, 'standard', '127.0.0.1', {
+        grantStore,
+        auditStore,
+      });
+      mcpServer = hosted;
+      await hosted.start();
+      const port = hosted.getPort();
+      const issued = grantStore.issueGrant({ label: 'hosted', defaultDeck: backend.deckA.id });
+      const headers = workspaceHeaders(
+        makeWorkspace({ deckId: backend.deckA.id, deckName: backend.deckA.name }),
+      );
+
+      const unauthenticated = await postMcpRaw(
+        port,
+        toolsCall('get_session_context', {}, 1),
+        { 'mcp-session-id': 'not569-hosted-no-bearer', ...headers },
+      );
+      expect(unauthenticated.status).toBe(401);
+      expect(unauthenticated.body?.error?.message).toBe('GRANT_REQUIRED');
+
+      const authenticated = await postMcpRaw(
+        port,
+        toolsCall('get_session_context', {}, 2),
+        {
+          'mcp-session-id': 'not569-hosted-unknown-id',
+          ...headers,
+          authorization: `Bearer ${issued.token}`,
+        },
+      );
+      expect(authenticated.status).toBe(404);
+      expect(authenticated.sessionStatus).toBe('expired');
+      expect(authenticated.body?.error?.code).toBe(-32001);
+      expect(String(authenticated.body?.error?.message ?? '')).toContain('Session not found');
+    } finally {
+      delete process.env[MCP_REQUIRE_BEARER_ENV_VAR];
+      delete process.env.AGENT_DECK_HOSTED_MODE;
+    }
+  });
+
+  it('counts a recovered stale id as recovered and logs one line per id', async () => {
+    const { deckA, port } = await setup();
+    const headers = workspaceHeaders(
+      makeWorkspace({ deckId: deckA.id, deckName: deckA.name }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const baseline = await readTally(port);
+
+    // A first attempt without headers strands the id...
+    const stranded = await postMcpRaw(
+      port,
+      { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+      { 'mcp-session-id': 'not569-flip' },
+    );
+    expect(stranded.status).toBe(404);
+    const afterStranded = await readTally(port);
+    expect(afterStranded.unresolvedSessions).toBe(baseline.unresolvedSessions + 1);
+    expect(afterStranded.recoveredSessions).toBe(baseline.recoveredSessions);
+
+    // ...and the same id with headers flips it to recovered.
+    const recovered = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 2),
+      { 'mcp-session-id': 'not569-flip', ...headers },
+    );
+    expect(recovered.status).toBe(200);
+    const afterRecovery = await readTally(port);
+    expect(afterRecovery.unresolvedSessions).toBe(baseline.unresolvedSessions);
+    expect(afterRecovery.recoveredSessions).toBe(baseline.recoveredSessions + 1);
+
+    const lines = recoveryWarnings(warnSpy).filter((call) =>
+      String(call[0]).includes('not569-flip'),
+    );
+    expect(lines).toHaveLength(1);
+
+    // Later requests on the same stale id serve quietly from the alias.
+    const again = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 3),
+      { 'mcp-session-id': 'not569-flip', ...headers },
+    );
+    expect(again.status).toBe(200);
+    expect(
+      recoveryWarnings(warnSpy).filter((call) => String(call[0]).includes('not569-flip')),
+    ).toHaveLength(1);
+    const afterAgain = await readTally(port);
+    expect(afterAgain.recoveredSessions).toBe(baseline.recoveredSessions + 1);
+    expect(afterAgain.unresolvedSessions).toBe(baseline.unresolvedSessions);
+  });
+
+  it('keeps the alias map and the recovered tally bounded under a flood of stale ids', async () => {
+    const { deckA, port, server } = await setup();
+    const headers = workspaceHeaders(
+      makeWorkspace({ deckId: deckA.id, deckName: deckA.name }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const FLOOD = 210;
+    const staleIds = Array.from({ length: FLOOD }, (_, index) => `not569-flood-${index}`);
+
+    for (let offset = 0; offset < staleIds.length; offset += 70) {
+      const chunk = staleIds.slice(offset, offset + 70);
+      const answers = await Promise.all(
+        chunk.map((staleId, index) =>
+          postMcpRaw(port, toolsCall('get_session_context', {}, offset + index), {
+            'mcp-session-id': staleId,
+            ...headers,
+          }).then((answer) => ({ staleId, answer })),
+        ),
+      );
+      for (const { staleId, answer } of answers) {
+        expect(answer.status, staleId).toBe(200);
+        expect(answer.sessionHeader, staleId).toBe(staleId);
+        expect(toolText(answer.body).data.effective_deck_name, staleId).toBe('alpha');
+      }
+    }
+
+    const internals = internalsOf(server);
+    expect(internals.recoveredSessionAlias.size).toBe(200);
+    expect(internals.staleSessionsById.size).toBe(200);
+
+    const tally = await readTally(port);
+    expect(tally.recoveredSessions).toBe(200);
+    expect(tally.unresolvedSessions).toBe(0);
+    // Served requests are not stale-request 404s, so the counter never moved.
+    expect(tally.count).toBe(0);
+
+    expect(recoveryWarnings(warnSpy)).toHaveLength(FLOOD);
+  }, 60000);
+
+  it('recovers once when parallel requests share one stale id', async () => {
+    const { deckA, port, server } = await setup();
+    const headers = workspaceHeaders(
+      makeWorkspace({ deckId: deckA.id, deckName: deckA.name }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const staleId = 'not569-race';
+
+    const [first, second] = await Promise.all([
+      postMcpRaw(port, toolsCall('get_session_context', {}, 1), {
+        'mcp-session-id': staleId,
+        ...headers,
+      }),
+      postMcpRaw(port, toolsCall('get_session_context', {}, 2), {
+        'mcp-session-id': staleId,
+        ...headers,
+      }),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.sessionHeader).toBe(staleId);
+    expect(second.sessionHeader).toBe(staleId);
+
+    const internals = internalsOf(server);
+    expect(internals.sessions.size).toBe(1);
+    expect(internals.recoveredSessionAlias.size).toBe(1);
+    expect(
+      recoveryWarnings(warnSpy).filter((call) => String(call[0]).includes(staleId)),
+    ).toHaveLength(1);
+  });
+
+  it('serves GET through an installed alias but never mints one from GET alone', async () => {
+    const { deckA, port } = await setup();
+    const headers = workspaceHeaders(
+      makeWorkspace({ deckId: deckA.id, deckName: deckA.name }),
+    );
+    const staleId = 'not569-get';
+
+    const recovered = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 1),
+      { 'mcp-session-id': staleId, ...headers },
+    );
+    expect(recovered.status).toBe(200);
+
+    const stream = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/event-stream',
+        'mcp-session-id': staleId,
+        ...headers,
+      },
+    });
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get('content-type')).toContain('text/event-stream');
+    expect(stream.headers.get('mcp-session-id')).toBe(staleId);
+    await stream.body?.cancel();
+
+    // GET alone — without a prior POST recovery — keeps the NOT-101 404.
+    const cold = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/event-stream',
+        'mcp-session-id': 'not569-get-cold',
+        ...headers,
+      },
+    });
+    expect(cold.status).toBe(404);
+    expect(cold.headers.get('mcp-session-status')).toBe('expired');
+    await cold.arrayBuffer();
+  });
+
+  it('closes a recovered session through DELETE and re-recovers on the next call', async () => {
+    const { deckA, port, server } = await setup();
+    const headers = workspaceHeaders(
+      makeWorkspace({ deckId: deckA.id, deckName: deckA.name }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const staleId = 'not569-delete';
+
+    const recovered = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 1),
+      { 'mcp-session-id': staleId, ...headers },
+    );
+    expect(recovered.status).toBe(200);
+    const internals = internalsOf(server);
+    expect(internals.recoveredSessionAlias.has(staleId)).toBe(true);
+
+    const closed = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'DELETE',
+      headers: { Accept: MCP_ACCEPT, 'mcp-session-id': staleId, ...headers },
+    });
+    expect(closed.status).toBe(200);
+    await closed.arrayBuffer();
+    await waitFor(() => !internals.recoveredSessionAlias.has(staleId));
+
+    // The stale id was never issued here, so the next call recovers again.
+    const rerecovered = await postMcpRaw(
+      port,
+      toolsCall('get_session_context', {}, 2),
+      { 'mcp-session-id': staleId, ...headers },
+    );
+    expect(rerecovered.status).toBe(200);
+    expect(rerecovered.sessionHeader).toBe(staleId);
+    expect(toolText(rerecovered.body).data.effective_deck_name).toBe('alpha');
+    expect(
+      recoveryWarnings(warnSpy).filter((call) => String(call[0]).includes(staleId)),
+    ).toHaveLength(2);
   });
 });
