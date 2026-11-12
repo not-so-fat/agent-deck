@@ -72,3 +72,27 @@ Manual equivalent (same result, per host):
   verifying as compatible.
 
 Background: [launcher-free host connection](./design/launcher-free-host-connection.md).
+
+## Session recovery after daemon restart (NOT-569)
+
+Cursor and Muse never re-initialize after a 404 (observed live), so any
+daemon restart used to kill Agent Deck for the rest of their host session.
+The daemon now heals them: in local (non-hosted, bearer-free) mode only, a
+non-`initialize` POST that carries an unknown `Mcp-Session-Id` plus headers
+resolving to a deck exactly as an `initialize` would (explicit deck header
+through launch authentication, or the workspace header through
+`.agent-deck/use.json`) is served on a fresh recovered session instead of
+answered 404. The server remembers a bounded stale → live alias (200
+entries, oldest-first), performs the MCP initialize handshake on the host's
+behalf, and answers with the id the client sent — the client needs no
+change, and later requests on the same stale id serve from the alias.
+
+Limits: everything else keeps the NOT-101 404 exactly (no deck-resolving
+header, unresolvable workspace, unreadable manifest, an id this process
+closed itself, any bearer/hosted/grant request, a failed bind); GET/DELETE
+honor an installed alias but never mint a recovery on their own; recovered
+sessions carry synthetic client identity (`agent-deck-recovery`, empty
+capabilities — form elicitation degrades to the browser fallback) until the
+host restarts; nothing is persisted, so a second restart recovers again
+from scratch. Recovered ids count as recovered in `/health`, and the daemon
+logs one line per recovered session id.
