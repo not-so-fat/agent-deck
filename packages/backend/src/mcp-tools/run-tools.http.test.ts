@@ -92,17 +92,26 @@ function gitWorktree(): string {
   return dir;
 }
 
-/** Recursive listing with contents, so any write under the worktree shows up. */
+/**
+ * Recursive listing with contents, so any write under the worktree shows up.
+ * Skips `.git/`: git internals (index, objects, packfiles, logs) can be
+ * rewritten by background maintenance between the before/after snapshots,
+ * which is not a worktree write the test should catch (NOT-566 CI repair).
+ */
 function snapshotTree(root: string): Record<string, string> {
   const out: Record<string, string> = {};
   const walk = (dir: string) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
+      const rel = path.relative(root, full);
+      if (rel === '.git' || rel.startsWith(`.git${path.sep}`)) {
+        continue;
+      }
       if (entry.isDirectory()) {
-        out[`${path.relative(root, full)}/`] = '';
+        out[`${rel}/`] = '';
         walk(full);
       } else {
-        out[path.relative(root, full)] = fs.readFileSync(full, 'utf8');
+        out[rel] = fs.readFileSync(full, 'utf8');
       }
     }
   };

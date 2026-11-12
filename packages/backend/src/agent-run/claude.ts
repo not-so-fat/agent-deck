@@ -7,7 +7,6 @@
 import {
   allowedToolsForProfile,
   formatRunPlaybookPin,
-  PLAYBOOK_PIN_ENV_VAR,
   RUN_PERMISSION_MODE,
   RUN_SETTING_SOURCES,
   type AdapterStartArgs,
@@ -27,6 +26,16 @@ export type RunQueryMessage = {
   };
 };
 
+/**
+ * Inline HTTP MCP server for this session (NOT-537). Minimal view of the
+ * SDK's `McpHttpServerConfig`: only what a pinned run passes.
+ */
+export type RunPinHttpMcpServer = {
+  type: 'http';
+  url: string;
+  headers: Record<string, string>;
+};
+
 export type RunQueryOptions = {
   cwd: string;
   resume?: string;
@@ -35,39 +44,39 @@ export type RunQueryOptions = {
   allowedTools: readonly string[];
   /** Aborts the SDK session when the run is canceled (NOT-481). */
   abortController?: AbortController;
-  /**
-   * Inline MCP servers for this session (NOT-537). Minimal view of the SDK's
-   * `McpStdioServerConfig`: only what a pinned run passes.
-   */
-  mcpServers?: Record<
-    string,
-    { type: 'stdio'; command: string; args: string[]; env: Record<string, string> }
-  >;
+  /** Inline MCP servers for this session (NOT-537). */
+  mcpServers?: Record<string, RunPinHttpMcpServer>;
   /** Ignore every configured MCP server except `mcpServers` (NOT-537). */
   strictMcpConfig?: boolean;
 };
 
 /**
- * Inline `agent-deck` MCP server carrying the run's playbook pin (NOT-537).
- * The SDK spawns MCP stdio servers with a restricted env (inherited process
- * env never arrives), so the pin travels as explicit per-server `env`. The
- * entry repeats the project-scope launcher env (`agent-deck mcp-launch` with
- * this run's cwd); endpoint values mirror `mcp-launch` defaults.
+ * Header names the pinned server sends. Literals (not `@agent-deck/shared` —
+ * this module imports node built-ins and siblings only, NOT-479); they must
+ * match `AGENT_DECK_WORKSPACE_HEADER` / `AGENT_DECK_PLAYBOOK_PIN_HEADER`.
+ */
+export const CLAUDE_PIN_WORKSPACE_HEADER = 'x-agent-deck-workspace';
+export const CLAUDE_PIN_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
+
+/**
+ * Inline `agent-deck` MCP server carrying the run's playbook pin (NOT-537),
+ * in pure-HTTP form (NOT-566): the daemon resolves the deck from the folder
+ * assignment named by the workspace header (NOT-562) and reads the pin
+ * header for the playbook version — no launcher process is involved.
  */
 export function buildClaudePinMcpServer(
   pin: RunPlaybookPin,
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
-): { type: 'stdio'; command: string; args: string[]; env: Record<string, string> } {
+): RunPinHttpMcpServer {
+  const port = env.AGENT_DECK_MCP_PORT?.trim() || '1110';
+  const host = env.AGENT_DECK_HOST?.trim() || '127.0.0.1';
   return {
-    type: 'stdio',
-    command: 'agent-deck',
-    args: ['mcp-launch'],
-    env: {
-      AGENT_DECK_WORKSPACE: cwd,
-      AGENT_DECK_MCP_PORT: env.AGENT_DECK_MCP_PORT?.trim() || '1110',
-      AGENT_DECK_HOST: env.AGENT_DECK_HOST?.trim() || '127.0.0.1',
-      [PLAYBOOK_PIN_ENV_VAR]: formatRunPlaybookPin(pin),
+    type: 'http',
+    url: `http://${host}:${port}/mcp`,
+    headers: {
+      [CLAUDE_PIN_WORKSPACE_HEADER]: cwd,
+      [CLAUDE_PIN_PLAYBOOK_PIN_HEADER]: formatRunPlaybookPin(pin),
     },
   };
 }
@@ -147,11 +156,12 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
           args.control.signal.addEventListener('abort', () => controller.abort(), { once: true });
         }
       }
-      // NOT-537: a pinned run passes its own `agent-deck` MCP server with
-      // the pin in the explicit per-server env (inherited process env never
-      // reaches an MCP stdio server) and `strictMcpConfig` so exactly that
-      // one server connects — no same-name merge ambiguity with the
-      // configured entry. The run allowlist needs no other MCP server
+      // NOT-537: a pinned run passes its own pure-HTTP `agent-deck` MCP
+      // server (NOT-566) with the pin in the explicit per-server headers
+      // (inherited process env never reaches an MCP server started with a
+      // restricted env) and `strictMcpConfig` so exactly that one server
+      // connects — no same-name merge ambiguity with the configured entry.
+      // The run allowlist needs no other MCP server
       // (`mcp__agent-deck__*` plus built-ins), so nothing else is lost.
       // Unpinned runs pass neither key and behave exactly as before.
       const stream = query({

@@ -194,6 +194,6 @@ PR description: scanner score output + link to the passing CI run on `main`. Do 
 ## 7. Risks & open questions
 
 - **Scanner vs. monorepo** — mitigated for Option A via `.plugin-scanner.toml` `ignore_paths`; re-check after large product-code adds that live outside ignore patterns.
-- **HTTP-only MCP** — install UX depends on the daemon running; the setup skill mitigates, a stdio entrypoint eliminates. Fast-follow candidate.
+- **HTTP-only MCP** — install UX depends on the daemon running; the setup skill mitigates. HTTP-only is the design (NOT-566): Codex re-initializes natively per the spec, so no stdio entrypoint is planned.
 - **Registry metadata** — `interface.category` values in the wild include "Productivity"; no published enum found. Copy whatever the reviewer requests.
 - **"Claim Your Plugin" / Trust Scores** — the list has a claim flow and trust scoring; after merge, claim the entry so we control the registry listing.

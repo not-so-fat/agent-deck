@@ -209,6 +209,36 @@ export function isMcpLaunchEntry(entry: unknown): boolean {
   return Array.isArray(args) && args.length === 1 && args[0] === 'mcp-launch';
 }
 
+/**
+ * True when a JSON `agent-deck` entry is a legacy Claude Code launcher
+ * entry (NOT-566): an `agent-deck mcp-launch` entry carrying
+ * `type: 'stdio'` or an `AGENT_DECK_WORKSPACE` env pin. Every launcher
+ * entry `use`/`setup --client claude` ever wrote carries at least one of
+ * those markers — project entries carry both, global entries the type.
+ *
+ * Muse writes the same command/args to the same project `.mcp.json` but
+ * never writes `type` or the workspace pin (see `buildAgentDeckEntry`),
+ * so a Muse-shaped entry never matches. The upgrade rewrite uses this
+ * predicate for the shared project file so it cannot convert a current
+ * Muse entry — a host that still depends on the launcher — to the
+ * Claude HTTP shape.
+ */
+export function isLegacyClaudeLaunchEntry(entry: unknown): boolean {
+  if (!isMcpLaunchEntry(entry)) {
+    return false;
+  }
+  const record = entry as Record<string, unknown>;
+  if (record.type === 'stdio') {
+    return true;
+  }
+  const env = record.env;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) {
+    return false;
+  }
+  const workspaceRoot = (env as Record<string, unknown>).AGENT_DECK_WORKSPACE;
+  return typeof workspaceRoot === 'string' && workspaceRoot.length > 0;
+}
+
 export function readCursorWorkspaceRoot(entry: unknown): string | undefined {
   if (!isMcpLaunchEntry(entry)) {
     return undefined;
@@ -585,6 +615,87 @@ export function formatCodexGlobalFallbackSection(endpoint: McpEndpoint): string 
     '[mcp_servers.agent-deck]',
     `url = "${escapeTomlBasicString(buildMcpUrl(endpoint))}"`,
   ].join('\n');
+}
+
+/**
+ * True when Codex TOML defines the `agent-deck` server through the legacy
+ * stdio launcher (NOT-566): a managed `[mcp_servers.agent-deck]` section
+ * (or sub-table) whose body mentions `mcp-launch`, or a dotted/inline
+ * `agent-deck` key under a bare `[mcp_servers]` section mentioning it.
+ * Pure-HTTP sections, custom entries, and other servers never match —
+ * only what the legacy-upgrade rewrite owns.
+ */
+export function codexTomlHasLauncherEntry(existingText: string): boolean {
+  if (!existingText.includes('mcp-launch')) {
+    return false;
+  }
+  const lines = existingText.split('\n');
+  const headerKind = new Map<number, 'managed' | 'servers' | 'other'>();
+  for (const [index, line] of lines.entries()) {
+    if (!isTomlSectionHeader(line)) {
+      continue;
+    }
+    if (CODEX_AGENT_DECK_SECTION_RE.test(line)) {
+      headerKind.set(index, 'managed');
+    } else if (CODEX_MCP_SERVERS_SECTION_RE.test(line)) {
+      headerKind.set(index, 'servers');
+    } else {
+      headerKind.set(index, 'other');
+    }
+  }
+  const headerIdxs = [...headerKind.keys()];
+  const rangeEnd = (headerIdx: number): number => {
+    for (const candidate of headerIdxs) {
+      if (candidate > headerIdx) {
+        return candidate;
+      }
+    }
+    return lines.length;
+  };
+
+  for (const [headerIdx, kind] of headerKind) {
+    const end = rangeEnd(headerIdx);
+    if (kind === 'managed') {
+      for (let index = headerIdx + 1; index < end; index += 1) {
+        if (lines[index].includes('mcp-launch')) {
+          return true;
+        }
+      }
+      continue;
+    }
+    if (kind !== 'servers') {
+      continue;
+    }
+    // Dotted/inline agent-deck definitions, same top-level-key rule as
+    // the merge: a nested `agent-deck` key inside another server's inline
+    // table belongs to that server, not to us.
+    let depth = 0;
+    let index = headerIdx + 1;
+    while (index < end) {
+      const line = lines[index];
+      if (depth === 0 && CODEX_MCP_SERVERS_AGENT_DECK_KEY_RE.test(line)) {
+        let block = line;
+        depth += tomlBracketDelta(line);
+        index += 1;
+        while (depth > 0 && index < end) {
+          block += `\n${lines[index]}`;
+          depth += tomlBracketDelta(lines[index]);
+          index += 1;
+        }
+        depth = 0;
+        if (block.includes('mcp-launch')) {
+          return true;
+        }
+        continue;
+      }
+      depth += tomlBracketDelta(line);
+      if (depth < 0) {
+        depth = 0;
+      }
+      index += 1;
+    }
+  }
+  return false;
 }
 
 /**

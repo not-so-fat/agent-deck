@@ -138,12 +138,12 @@ export type AdapterStartArgs = {
   control?: RunProcessControl;
   /**
    * Pinned playbook version for this run (NOT-537). Each adapter carries it
-   * to its MCP launch through that client's explicit per-server env
-   * mechanism — inherited process env never reaches an MCP stdio server
-   * (Codex documents a restricted env; the MCP SDK's StdioClientTransport
-   * only inherits a safe allowlist plus the configured server `env`). Clients
-   * with no per-run override fail closed in `planStart`. The pin lives only
-   * as long as the run's MCP session.
+   * to its MCP connection through that client's explicit per-run override —
+   * a `-c` server definition for Codex, an inline `mcpServers` entry for
+   * Claude — because inherited process env never reaches an MCP server
+   * started with a restricted env. Clients with no per-run override fail
+   * closed in `planStart`. The pin lives only as long as the run's MCP
+   * session.
    */
   playbookPin?: RunPlaybookPin;
 };
@@ -169,10 +169,14 @@ export type RunPlaybookPin = {
 };
 
 /**
- * Env var the run adapters set in their client's explicit per-server MCP env
- * and `mcp-launch` reads (NOT-537). Never carried by process inheritance:
- * MCP stdio servers start with a restricted env, so an inherited variable
- * would silently never arrive and the run would read the live playbook.
+ * Env var `mcp-launch` reads and turns into the playbook-pin header
+ * (NOT-537). The Codex/Claude run adapters no longer use it — their
+ * per-run overrides are pure HTTP and carry the pin as a header directly
+ * (NOT-566) — but the launcher keeps honoring it for the stdio hosts that
+ * still connect through it (Cursor, Muse, Claude Desktop). Never carried
+ * by process inheritance: MCP servers start with a restricted env, so an
+ * inherited variable would silently never arrive and the run would read
+ * the live playbook.
  */
 export const PLAYBOOK_PIN_ENV_VAR = 'AGENT_DECK_PLAYBOOK_PIN';
 

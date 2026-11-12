@@ -27,7 +27,6 @@ import readline from 'node:readline';
 
 import {
   formatRunPlaybookPin,
-  PLAYBOOK_PIN_ENV_VAR,
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
@@ -55,6 +54,12 @@ export type CodexArgvArgs = {
   insideGitRepo: boolean;
   /** Pinned playbook version, carried as a `-c` MCP override (NOT-537). */
   playbookPin?: RunPlaybookPin;
+  /**
+   * Run working directory. Required with `playbookPin`: the pure-MCP
+   * override (NOT-566) names it in the workspace header so the daemon can
+   * resolve the folder assignment — there is no launcher to read it.
+   */
+  workspaceRoot?: string;
 };
 
 /** Escape one TOML basic-string value (the pin is `id=uuid`; belt and suspenders). */
@@ -63,10 +68,10 @@ export function tomlEscape(value: string): string {
 }
 
 /**
- * MCP endpoint the pin override preserves. Codex starts MCP stdio servers
- * with a restricted env, so the override must repeat the endpoint
- * explicitly — mirroring `mcp-launch` defaults. Malformed values fall back
- * to the defaults rather than breaking a pinned run.
+ * MCP endpoint the pin override preserves. Codex starts MCP servers with a
+ * restricted env, so the override must repeat the endpoint explicitly.
+ * Malformed values fall back to the defaults rather than breaking a pinned
+ * run.
  */
 export function codexPinEndpoint(
   env: NodeJS.ProcessEnv = process.env,
@@ -80,23 +85,35 @@ export function codexPinEndpoint(
 }
 
 /**
+ * Header names the pin override sends. Literals (not `@agent-deck/shared` —
+ * this module imports node built-ins and siblings only, NOT-479); they must
+ * match `AGENT_DECK_WORKSPACE_HEADER` / `AGENT_DECK_PLAYBOOK_PIN_HEADER`.
+ */
+export const CODEX_PIN_WORKSPACE_HEADER = 'x-agent-deck-workspace';
+export const CODEX_PIN_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
+
+/**
  * The `-c` override value carrying the run's playbook pin (NOT-537). A full
- * `mcp_servers.agent-deck` definition — partial overrides (`...env={...}`)
- * fail codex bootstrap with "invalid transport" because the plugin-supplied
- * server has no config.toml base to merge with (verified on codex-cli
- * 0.157.1: the full override replaces the plugin server's env for the run).
- * Unpinned runs pass no `-c` at all and behave exactly as before.
+ * `mcp_servers.agent-deck` definition in pure-HTTP form (NOT-566): the
+ * daemon resolves the deck from the folder assignment named by the workspace
+ * header (NOT-562) and reads the pin header for the playbook version — no
+ * launcher process is involved. A full definition because partial overrides
+ * fail codex bootstrap with "invalid transport" (verified on codex-cli
+ * 0.157.1). Unpinned runs pass no `-c` at all and behave exactly as before.
  */
 export function buildCodexPinConfigOverride(
   pin: RunPlaybookPin,
+  workspaceRoot: string,
   endpoint: { port: string; host: string } = codexPinEndpoint(),
 ): string {
-  const env = [
-    `${PLAYBOOK_PIN_ENV_VAR}="${tomlEscape(formatRunPlaybookPin(pin))}"`,
-    `AGENT_DECK_MCP_PORT="${tomlEscape(endpoint.port)}"`,
-    `AGENT_DECK_HOST="${tomlEscape(endpoint.host)}"`,
+  const headers = [
+    `"${CODEX_PIN_WORKSPACE_HEADER}"="${tomlEscape(workspaceRoot)}"`,
+    `"${CODEX_PIN_PLAYBOOK_PIN_HEADER}"="${tomlEscape(formatRunPlaybookPin(pin))}"`,
   ].join(',');
-  return `mcp_servers.agent-deck={command="agent-deck",args=["mcp-launch"],env={${env}}}`;
+  return (
+    `mcp_servers.agent-deck={url="http://${tomlEscape(endpoint.host)}:${tomlEscape(endpoint.port)}/mcp",` +
+    `http_headers={${headers}}}`
+  );
 }
 
 /**
@@ -127,8 +144,11 @@ export function assertSafeResumeId(resumeId: string): void {
  * frontmatter, or a literal `--dangerously-...` string) from being parsed
  * as codex options.
  * A pinned run adds `-c <mcp_servers.agent-deck override>` (accepted by both
- * `exec` and `exec resume`) so the run's MCP servers start with the pin env;
- * a process env var would never arrive (restricted MCP env).
+ * `exec` and `exec resume`) so the run's MCP server sends the pin header;
+ * a process env var would never arrive (restricted MCP env). The override
+ * is pure HTTP (NOT-566), so a pinned run must also pass `workspaceRoot` —
+ * without the workspace header the daemon cannot resolve the folder
+ * assignment and the run would silently read live playbook bodies.
  */
 export function buildCodexArgv(args: CodexArgvArgs): string[] {
   const argv = ['exec'];
@@ -138,7 +158,13 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
     argv.push('resume');
   }
   if (args.playbookPin) {
-    argv.push('-c', buildCodexPinConfigOverride(args.playbookPin));
+    if (!args.workspaceRoot) {
+      throw new Error(
+        'Cannot build a pinned codex run without workspaceRoot: the pure-MCP pin override ' +
+          'needs the run directory for the x-agent-deck-workspace header.',
+      );
+    }
+    argv.push('-c', buildCodexPinConfigOverride(args.playbookPin, args.workspaceRoot));
   }
   argv.push('--json');
   if (!args.insideGitRepo) {
@@ -447,7 +473,9 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
         tools: args.tools,
         ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
         insideGitRepo,
-        ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+        ...(args.playbookPin
+          ? { playbookPin: args.playbookPin, workspaceRoot: args.cwd }
+          : {}),
       });
       // planStart rejects a resume without a matching resumedFrom.
       if (args.resumeId !== undefined && args.resumedFrom) {

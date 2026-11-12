@@ -1,20 +1,28 @@
 /**
- * NOT-537: the run's playbook pin reaches the agent's MCP launch through
- * each client's explicit per-server env mechanism — never through inherited
- * process env, which MCP stdio servers never see (Codex documents a
- * restricted env; the MCP SDK's StdioClientTransport only inherits a safe
- * allowlist plus the configured server `env`). Codex carries the pin as a
- * `-c mcp_servers.agent-deck` argv override; Claude passes an inline
- * `mcpServers` entry to the SDK; Cursor and Muse have no per-run override
- * and fail closed in `planStart` instead of silently reading live bodies.
+ * NOT-537: the run's playbook pin reaches the agent's MCP connection through
+ * each client's explicit per-run override — never through inherited process
+ * env, which MCP servers started with a restricted env never see. Codex
+ * carries the pin as a `-c mcp_servers.agent-deck` argv override; Claude
+ * passes an inline `mcpServers` entry to the SDK; Cursor and Muse have no
+ * per-run override and fail closed in `planStart` instead of silently
+ * reading live bodies. NOT-566: both overrides are pure HTTP (workspace +
+ * pin headers), with no launcher process involved.
  */
 import { describe, expect, it } from 'vitest';
 
 import { formatRunPlaybookPin, PLAYBOOK_PIN_ENV_VAR } from './adapter';
-import { buildClaudePinMcpServer, createClaudeAdapter, type RunQueryOptions } from './claude';
+import {
+  buildClaudePinMcpServer,
+  CLAUDE_PIN_PLAYBOOK_PIN_HEADER,
+  CLAUDE_PIN_WORKSPACE_HEADER,
+  createClaudeAdapter,
+  type RunQueryOptions,
+} from './claude';
 import {
   buildCodexArgv,
   buildCodexPinConfigOverride,
+  CODEX_PIN_PLAYBOOK_PIN_HEADER,
+  CODEX_PIN_WORKSPACE_HEADER,
   createCodexAdapter,
 } from './codex';
 import { createCursorAdapter } from './cursor';
@@ -44,19 +52,34 @@ describe('playbook pin carriage (NOT-537)', () => {
     expect(PLAYBOOK_PIN_ENV_VAR).toBe('AGENT_DECK_PLAYBOOK_PIN');
   });
 
-  it('codex builds a full mcp_servers override carrying the pin', () => {
-    expect(buildCodexPinConfigOverride(PIN, { port: '1110', host: '127.0.0.1' })).toBe(
-      'mcp_servers.agent-deck={command="agent-deck",args=["mcp-launch"],' +
-        'env={AGENT_DECK_PLAYBOOK_PIN="pb_baseline=123e4567-e89b-42d3-a456-426614174000",' +
-        'AGENT_DECK_MCP_PORT="1110",AGENT_DECK_HOST="127.0.0.1"}}',
+  it('codex builds a full pure-HTTP mcp_servers override carrying the pin', () => {
+    expect(buildCodexPinConfigOverride(PIN, '/work/repo', { port: '1110', host: '127.0.0.1' })).toBe(
+      'mcp_servers.agent-deck={url="http://127.0.0.1:1110/mcp",' +
+        'http_headers={"x-agent-deck-workspace"="/work/repo",' +
+        '"x-agent-deck-playbook-pin"="pb_baseline=123e4567-e89b-42d3-a456-426614174000"}}',
     );
   });
 
+  it('codex pin header names match the shared contract', () => {
+    expect(CODEX_PIN_WORKSPACE_HEADER).toBe('x-agent-deck-workspace');
+    expect(CODEX_PIN_PLAYBOOK_PIN_HEADER).toBe('x-agent-deck-playbook-pin');
+    expect(CLAUDE_PIN_WORKSPACE_HEADER).toBe('x-agent-deck-workspace');
+    expect(CLAUDE_PIN_PLAYBOOK_PIN_HEADER).toBe('x-agent-deck-playbook-pin');
+  });
+
   it('codex puts the pin override on start and resume argv, and no -c without a pin', () => {
-    const start = buildCodexArgv({ prompt: 'hi', tools: 'readonly', insideGitRepo: true, playbookPin: PIN });
+    const start = buildCodexArgv({
+      prompt: 'hi',
+      tools: 'readonly',
+      insideGitRepo: true,
+      playbookPin: PIN,
+      workspaceRoot: '/work/repo',
+    });
     const flag = start.indexOf('-c');
     expect(flag).toBeGreaterThan(-1);
-    expect(start[flag + 1]).toContain(`AGENT_DECK_PLAYBOOK_PIN="${PIN_VALUE}"`);
+    expect(start[flag + 1]).toContain(`"${CODEX_PIN_PLAYBOOK_PIN_HEADER}"="${PIN_VALUE}"`);
+    expect(start[flag + 1]).toContain(`"${CODEX_PIN_WORKSPACE_HEADER}"="/work/repo"`);
+    expect(start[flag + 1]).not.toContain('mcp-launch');
     // Before the `--` terminator, so codex parses it as an option.
     expect(flag).toBeLessThan(start.indexOf('--'));
 
@@ -66,12 +89,19 @@ describe('playbook pin carriage (NOT-537)', () => {
       insideGitRepo: true,
       resumeId: 'thread-1',
       playbookPin: PIN,
+      workspaceRoot: '/work/repo',
     });
     expect(resume).toContain('-c');
     expect(resume[resume.indexOf('-c') + 1]).toContain(PIN_VALUE);
 
     const unpinned = buildCodexArgv({ prompt: 'hi', tools: 'readonly', insideGitRepo: true });
     expect(unpinned).not.toContain('-c');
+  });
+
+  it('codex fails closed on a pin without a workspace root', () => {
+    expect(() =>
+      buildCodexArgv({ prompt: 'hi', tools: 'readonly', insideGitRepo: true, playbookPin: PIN }),
+    ).toThrow(/without workspaceRoot/);
   });
 
   it('codex start passes the pin argv and no pin env to the child', async () => {
@@ -93,16 +123,13 @@ describe('playbook pin carriage (NOT-537)', () => {
     expect(seenEnv[0]?.[PLAYBOOK_PIN_ENV_VAR]).toBeUndefined();
   });
 
-  it('claude builds an inline agent-deck server carrying the pin', () => {
+  it('claude builds an inline pure-HTTP agent-deck server carrying the pin', () => {
     expect(buildClaudePinMcpServer(PIN, '/work/repo', {})).toEqual({
-      type: 'stdio',
-      command: 'agent-deck',
-      args: ['mcp-launch'],
-      env: {
-        AGENT_DECK_WORKSPACE: '/work/repo',
-        AGENT_DECK_MCP_PORT: '1110',
-        AGENT_DECK_HOST: '127.0.0.1',
-        [PLAYBOOK_PIN_ENV_VAR]: PIN_VALUE,
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: {
+        'x-agent-deck-workspace': '/work/repo',
+        'x-agent-deck-playbook-pin': PIN_VALUE,
       },
     });
   });
@@ -119,12 +146,23 @@ describe('playbook pin carriage (NOT-537)', () => {
     });
 
     const previousPin = process.env[PLAYBOOK_PIN_ENV_VAR];
+    const previousPort = process.env.AGENT_DECK_MCP_PORT;
+    const previousHost = process.env.AGENT_DECK_HOST;
     delete process.env[PLAYBOOK_PIN_ENV_VAR];
+    delete process.env.AGENT_DECK_MCP_PORT;
+    delete process.env.AGENT_DECK_HOST;
     try {
       await drain(adapter.start({ cwd: '/tmp', prompt: 'hi', tools: 'readonly', playbookPin: PIN }));
       expect(seenOptions).toHaveLength(1);
       expect(seenOptions[0].strictMcpConfig).toBe(true);
-      expect(seenOptions[0].mcpServers?.['agent-deck']?.env?.[PLAYBOOK_PIN_ENV_VAR]).toBe(PIN_VALUE);
+      expect(seenOptions[0].mcpServers?.['agent-deck']).toEqual({
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
+        headers: {
+          'x-agent-deck-workspace': '/tmp',
+          'x-agent-deck-playbook-pin': PIN_VALUE,
+        },
+      });
       // No global env mutation: the SDK option is the only carrier.
       expect(process.env[PLAYBOOK_PIN_ENV_VAR]).toBeUndefined();
 
@@ -138,6 +176,16 @@ describe('playbook pin carriage (NOT-537)', () => {
         delete process.env[PLAYBOOK_PIN_ENV_VAR];
       } else {
         process.env[PLAYBOOK_PIN_ENV_VAR] = previousPin;
+      }
+      if (previousPort === undefined) {
+        delete process.env.AGENT_DECK_MCP_PORT;
+      } else {
+        process.env.AGENT_DECK_MCP_PORT = previousPort;
+      }
+      if (previousHost === undefined) {
+        delete process.env.AGENT_DECK_HOST;
+      } else {
+        process.env.AGENT_DECK_HOST = previousHost;
       }
     }
   });
