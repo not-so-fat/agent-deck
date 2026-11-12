@@ -51,8 +51,13 @@ neither marker and is left byte-identical. Note (NOT-570): once
 launcher project entry is rejected by Muse in that folder
 (`invalid_transport_combination`) — re-run plain
 `agent-deck use <deck>` in Muse folders to rewrite `.mcp.json` with the
-headered HTTP entry Muse accepts. A folder that serves both hosts keeps
-the shared launcher entry, which still connects for Claude Code too.
+headered HTTP entry Muse accepts. Note (NOT-571):
+`agent-deck use <deck> --client muse` now writes that same headed HTTP
+entry itself (replacing a legacy launcher shape in the file), so the
+re-run can use either form; converting old Muse-shaped launcher entries
+inside `upgrade` itself is the launcher-retirement ticket's job. A
+folder that serves both hosts keeps the shared launcher entry, which
+still connects for Claude Code too.
 
 Project entries are rewritten for the folder `agent-deck upgrade` runs
 in; run it (or `agent-deck use <deck>`) in each project folder to

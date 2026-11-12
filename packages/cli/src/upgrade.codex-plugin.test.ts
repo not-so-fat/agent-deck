@@ -9,7 +9,7 @@ import {
   formatLauncherMigrationResults,
   rewriteLegacyLauncherEntries,
 } from './launcher-migration';
-import { buildAgentDeckEntry, isMcpLaunchEntry } from './mcp-config';
+import { buildMuseLegacyLauncherEntry, isMcpLaunchEntry } from './mcp-config';
 import { runUpgrade } from './upgrade';
 import { getAgentDeckVersion } from './version';
 
@@ -1232,9 +1232,10 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
   });
 
   it('leaves a current Muse launcher entry in the shared project .mcp.json byte-identical', () => {
-    // Exactly what `use --client muse` writes: mcp-launch with neither a
+    // Exactly what `setup --client muse --scope project` still writes
+    // (and older `use --client muse` wrote): mcp-launch with neither a
     // Claude marker (no type, no workspace pin).
-    const museEntry = buildAgentDeckEntry('muse', ENDPOINT);
+    const museEntry = buildMuseLegacyLauncherEntry(ENDPOINT);
     expect(isMcpLaunchEntry(museEntry)).toBe(true);
     const configPath = path.join(workspace, '.mcp.json');
     fs.writeFileSync(
@@ -1247,8 +1248,8 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
 
     expect(results[0]).toEqual({ path: configPath, action: 'unchanged' });
     expect(fs.readFileSync(configPath, 'utf8')).toBe(before);
-    // Re-running `use --client muse` after an upgrade is a no-op, not a
-    // repair: the upgrade never converts the entry to the Claude HTTP shape.
+    // The upgrade never converts the entry to the HTTP shape — repairing
+    // it is `use --client muse`'s job now (NOT-571 rewrites the file).
     expect(JSON.parse(before).mcpServers['agent-deck']).toEqual(museEntry);
   });
 

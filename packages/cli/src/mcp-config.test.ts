@@ -8,6 +8,7 @@ import {
   buildAgentDeckEntry,
   buildCodexAgentDeckEntry,
   buildGlobalFallbackHttpEntry,
+  buildMuseLegacyLauncherEntry,
   codexTomlHasLauncherEntry,
   formatCodexGlobalFallbackSection,
   formatCodexMcpSection,
@@ -140,10 +141,63 @@ describe('buildAgentDeckEntry', () => {
     });
   });
 
-  it('NOT-387: writes the exact supported launcher fields for muse', () => {
+  it('NOT-571: writes the Claude-shaped per-folder HTTP entry for muse', () => {
+    // toEqual fails on any extra field: no deck id, no launcher keys.
+    // Same object as the Claude branch — the shared .mcp.json collision ends.
+    expect(
+      buildAgentDeckEntry(
+        'muse',
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: '/tmp/ws' },
+      ),
+    ).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: { 'x-agent-deck-workspace': '/tmp/ws' },
+    });
+    expect(
+      buildAgentDeckEntry(
+        'muse',
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: '/tmp/ws' },
+      ),
+    ).toEqual(
+      buildAgentDeckEntry(
+        'claude',
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: '/tmp/ws' },
+      ),
+    );
+  });
+
+  it('NOT-571: resolves a relative muse workspace root to an absolute header', () => {
+    expect(
+      buildAgentDeckEntry(
+        'muse',
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: 'relative/ws' },
+      ),
+    ).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: { 'x-agent-deck-workspace': path.resolve('relative/ws') },
+    });
+  });
+
+  it('NOT-571: uses the headerless HTTP fallback for muse without a workspace root', () => {
+    // toEqual fails on any extra field: no headers, no launcher keys.
+    expect(buildAgentDeckEntry('muse', { host: '127.0.0.2', mcpPort: 3001 })).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.2:3001/mcp',
+    });
+  });
+
+  it('NOT-387/NOT-571: the legacy muse launcher helper keeps the exact supported fields', () => {
     // toEqual fails on any extra field: no AGENT_DECK_WORKSPACE, cwd,
     // required, timeout, or redundant type — Muse preserves command/args/env.
-    expect(buildAgentDeckEntry('muse', { host: '127.0.0.1', mcpPort: 1110 })).toEqual({
+    // Only `setup --scope project` still writes this, until the
+    // launcher-retirement ticket removes the helper.
+    expect(buildMuseLegacyLauncherEntry({ host: '127.0.0.1', mcpPort: 1110 })).toEqual({
       command: 'agent-deck',
       args: ['mcp-launch'],
       env: {
@@ -151,42 +205,34 @@ describe('buildAgentDeckEntry', () => {
         AGENT_DECK_HOST: '127.0.0.1',
       },
     });
-  });
-
-  it('NOT-387: ignores a workspace pin for muse so selection stays dynamic', () => {
-    const entry = buildAgentDeckEntry(
-      'muse',
-      { host: '127.0.0.1', mcpPort: 1110 },
-      { workspaceRoot: '/tmp/ws' },
-    );
-    expect(entry).not.toHaveProperty('cwd');
-    expect(entry).not.toHaveProperty('type');
-    expect(entry.env).toEqual({
-      AGENT_DECK_MCP_PORT: '1110',
-      AGENT_DECK_HOST: '127.0.0.1',
-    });
-  });
-
-  it.each([
-    ['claude-desktop', 'global'],
-    ['muse', 'global'],
-    ['muse', 'project'],
-  ] as const)('every launcher client entry uses the mcp-launch launcher (%s/%s)', (client, _scope) => {
-    expect(isMcpLaunchEntry(buildAgentDeckEntry(client, { host: '127.0.0.1', mcpPort: 1110 }))).toBe(
-      true,
-    );
-  });
-
-  it.each(['cursor', 'claude'] as const)('NOT-567: pure-MCP client %s never uses the launcher', (client) => {
-    expect(isMcpLaunchEntry(buildAgentDeckEntry(client, { host: '127.0.0.1', mcpPort: 1110 }))).toBe(
-      false,
-    );
     expect(
-      isHttpAgentDeckEntry(
-        buildAgentDeckEntry(client, { host: '127.0.0.1', mcpPort: 1110 }, { workspaceRoot: '/tmp/ws' }),
-      ),
+      isMcpLaunchEntry(buildMuseLegacyLauncherEntry({ host: '127.0.0.1', mcpPort: 1110 })),
     ).toBe(true);
   });
+
+  it('every launcher client entry uses the mcp-launch launcher (claude-desktop/global)', () => {
+    expect(
+      isMcpLaunchEntry(buildAgentDeckEntry('claude-desktop', { host: '127.0.0.1', mcpPort: 1110 })),
+    ).toBe(true);
+  });
+
+  it.each(['cursor', 'claude', 'muse'] as const)(
+    'NOT-567/NOT-571: pure-MCP client %s never uses the launcher',
+    (client) => {
+      expect(isMcpLaunchEntry(buildAgentDeckEntry(client, { host: '127.0.0.1', mcpPort: 1110 }))).toBe(
+        false,
+      );
+      expect(
+        isHttpAgentDeckEntry(
+          buildAgentDeckEntry(
+            client,
+            { host: '127.0.0.1', mcpPort: 1110 },
+            { workspaceRoot: '/tmp/ws' },
+          ),
+        ),
+      ).toBe(true);
+    },
+  );
 });
 
 describe('NOT-563 codex config paths', () => {
@@ -717,8 +763,11 @@ describe('NOT-566 isLegacyClaudeLaunchEntry', () => {
     ).toBe(true);
   });
 
-  it('never matches the current Muse launcher entry', () => {
-    const museEntry = buildAgentDeckEntry('muse', ENDPOINT);
+  it('never matches the Muse-shaped launcher entry', () => {
+    // NOT-571: `use --client muse` writes HTTP now, but the Muse-shaped
+    // launcher (older `use`, still `setup --scope project`) carries
+    // neither Claude marker and must stay out of the Claude rewrite.
+    const museEntry = buildMuseLegacyLauncherEntry(ENDPOINT);
     expect(isMcpLaunchEntry(museEntry)).toBe(true);
     expect(isLegacyClaudeLaunchEntry(museEntry)).toBe(false);
   });

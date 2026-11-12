@@ -5,6 +5,7 @@ import {
   buildAgentDeckEntry,
   buildGlobalFallbackHttpEntry,
   buildMcpUrl,
+  buildMuseLegacyLauncherEntry,
   formatCodexGlobalFallbackSection,
   isHttpAgentDeckEntry,
   isMcpLaunchEntry,
@@ -447,11 +448,11 @@ export async function runSetup(args: string[]): Promise<number> {
     // A same-name launcher project entry in this folder would now break
     // Muse here: Muse merges it with the HTTP user entry field by field
     // (url plus command → invalid_transport_combination) and omits the
-    // server. Folders assigned with `use --client muse` or project-scope
-    // setup still hold that entry — plain `use` rewrites .mcp.json with
-    // the headered HTTP entry Muse accepts (the Muse-native per-folder
-    // entry is the next ticket). A missing or unparsable file simply
-    // skips the warning; global setup must not fail on it.
+    // server. Folders assigned with an older `use --client muse` or
+    // project-scope setup still hold that entry — `use` (plain or
+    // `--client muse`) rewrites .mcp.json with the headered HTTP entry
+    // Muse accepts. A missing or unparsable file simply skips the
+    // warning; global setup must not fail on it.
     const museProjectPath = resolveConfigPath('muse', 'project');
     let museProjectEntry: unknown;
     try {
@@ -481,9 +482,14 @@ export async function runSetup(args: string[]): Promise<number> {
   // Project scope writes the per-folder HTTP entry (workspace header);
   // only global setup writes the headerless fallback. (Cursor and Muse
   // global are handled above; Claude global prefers `claude mcp add`.)
+  // Muse project scope is the one exception: it still writes the legacy
+  // launcher entry until the launcher-retirement ticket removes it.
   const workspaceRoot =
     (client === 'cursor' || client === 'claude') && scope === 'project' ? process.cwd() : undefined;
-  const entry = buildAgentDeckEntry(client, endpoint, { workspaceRoot });
+  const entry =
+    client === 'muse' && scope === 'project'
+      ? buildMuseLegacyLauncherEntry(endpoint)
+      : buildAgentDeckEntry(client, endpoint, { workspaceRoot });
   const merged = mergeMcpServerConfig(existingConfig, entry);
   writeJsonFile(configPath, merged);
 
@@ -493,12 +499,13 @@ export async function runSetup(args: string[]): Promise<number> {
     console.log('Start Agent Deck before opening Claude Desktop.');
   }
   if (client === 'muse' && scope === 'project') {
-    // NOT-570: project scope still writes the legacy launcher entry
-    // (the per-folder HTTP entry is the next ticket; the write itself
-    // stays until the ticket after that). Against the new HTTP user
-    // entry Muse rejects it (invalid_transport_combination) and omits
-    // the server in this folder — the durable part of project setup is
-    // the root AGENTS.md merge.
+    // NOT-571: project scope still writes the legacy launcher entry
+    // (`use --client muse` now writes the per-folder HTTP entry; this
+    // write stays until the launcher-retirement ticket removes it).
+    // Against the new HTTP user entry Muse rejects it
+    // (invalid_transport_combination) and omits the server in this
+    // folder — the durable part of project setup is the root AGENTS.md
+    // merge.
     console.warn(
       'Muse MCP: .mcp.json now holds the legacy launcher entry, which Muse rejects against the HTTP user entry (invalid_transport_combination) — agent-deck is omitted in this folder.',
     );
