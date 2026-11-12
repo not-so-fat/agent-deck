@@ -82,6 +82,26 @@ describe('agent-harness templates', () => {
     }
   });
 
+  it('NOT-570: harness teaches the pure-MCP Muse connection with setup/use/trust/reload steps', () => {
+    const texts = [
+      buildCursorHarnessFile('global'),
+      buildClaudeHarnessBlock('global'),
+      buildClaudeHarnessBlock('project'),
+      buildCodexHarnessBlock('global'),
+      buildMuseHarnessBlock('project'),
+    ];
+    for (const text of texts) {
+      expect(text).toContain('Muse connects over pure MCP too');
+      expect(text).toContain('agent-deck setup --client muse');
+      expect(text).toContain('global headerless fallback');
+      expect(text).toContain('agent-deck setup --client codex|claude|cursor|muse');
+      expect(text).toContain('trust the folder, then reload MCP (restart Muse)');
+      expect(text).toContain('`/mcp` should show agent-deck');
+      expect(text).toContain('unassigned folders land in the explain-only session');
+      expect(text).not.toContain('mcp-launch');
+    }
+  });
+
   it('harness teaches the request-only switch flow, not the retired direct switch (NOT-214)', () => {
     const texts = [
       buildCursorHarnessFile('global'),
