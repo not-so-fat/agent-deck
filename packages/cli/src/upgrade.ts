@@ -16,6 +16,11 @@ import {
   reconcileCodexPluginAfterUpgrade,
   type CodexRunner,
 } from './codex-plugin';
+import { parseCliMcpPort } from './defaults';
+import {
+  formatLauncherMigrationResults,
+  rewriteLegacyLauncherEntries,
+} from './launcher-migration';
 import { getAgentDeckVersion } from './version';
 
 export type UpgradeDeps = {
@@ -123,6 +128,37 @@ function parseToVersion(args: string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * NOT-566: after the plugin reconcile, rewrite any legacy launcher entries
+ * in this folder's and the global Codex/Claude configs to pure MCP.
+ * Best-effort and silent when clean — it never changes the upgrade result.
+ */
+async function reconcilePluginAndMigrateLauncherEntries(
+  expectedVersion: string,
+  codexRunner: CodexRunner | undefined,
+  options: { alreadyCurrent?: boolean } = {},
+): Promise<number> {
+  const code = await reconcileCodexPluginAfterUpgrade(expectedVersion, codexRunner, options);
+  try {
+    const results = rewriteLegacyLauncherEntries({
+      workspaceRoot: process.cwd(),
+      endpoint: {
+        host: process.env.AGENT_DECK_HOST ?? '127.0.0.1',
+        mcpPort: parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT),
+      },
+    });
+    for (const line of formatLauncherMigrationResults(results)) {
+      console.log(line);
+    }
+  } catch (error) {
+    console.warn(
+      `MCP config: legacy launcher-entry rewrite skipped (${error instanceof Error ? error.message : String(error)}). ` +
+        'Re-run `agent-deck use <deck>` or `agent-deck setup --client codex|claude` to migrate by hand.',
+    );
+  }
+  return code;
+}
+
 export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promise<number> {
   const checkOnly = args.includes('--check');
   const toVersion = parseToVersion(args);
@@ -144,7 +180,7 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
       if (checkOnly) {
         return 0;
       }
-      return reconcileCodexPluginAfterUpgrade(current, deps.codexRunner, { alreadyCurrent: true });
+      return reconcilePluginAndMigrateLauncherEntries(current, deps.codexRunner, { alreadyCurrent: true });
     }
 
     if (checkOnly) {
@@ -168,7 +204,7 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
       activateVersion(latest);
     }
     console.log('Upgrade complete. Restart any running Agent Deck process.');
-    return reconcileCodexPluginAfterUpgrade(latest, deps.codexRunner);
+    return reconcilePluginAndMigrateLauncherEntries(latest, deps.codexRunner);
   }
 
   const result = await checkForUpgrade({ force: true });
@@ -188,7 +224,7 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
     if (checkOnly) {
       return 0;
     }
-    return reconcileCodexPluginAfterUpgrade(result.current, deps.codexRunner, { alreadyCurrent: true });
+    return reconcilePluginAndMigrateLauncherEntries(result.current, deps.codexRunner, { alreadyCurrent: true });
   }
 
   if (checkOnly) {
@@ -205,13 +241,13 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
       return 1;
     }
     console.log('Upgrade complete. Restart any running Agent Deck process.');
-    return reconcileCodexPluginAfterUpgrade(target, deps.codexRunner);
+    return reconcilePluginAndMigrateLauncherEntries(target, deps.codexRunner);
   }
   const code = await runNpmInstallGlobal(target);
   if (code === 0) {
     console.log('Upgrade complete. Restart any running Agent Deck process.');
     console.log('Tip: agent-deck install  # switch CLI binary to managed auto-updates (data unchanged)');
-    return reconcileCodexPluginAfterUpgrade(target, deps.codexRunner);
+    return reconcilePluginAndMigrateLauncherEntries(target, deps.codexRunner);
   }
   console.error('Upgrade failed. Try manually:');
   console.error(`  npm install -g ${PACKAGE_NAME}@${target}`);

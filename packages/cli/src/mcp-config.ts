@@ -588,6 +588,87 @@ export function formatCodexGlobalFallbackSection(endpoint: McpEndpoint): string 
 }
 
 /**
+ * True when Codex TOML defines the `agent-deck` server through the legacy
+ * stdio launcher (NOT-566): a managed `[mcp_servers.agent-deck]` section
+ * (or sub-table) whose body mentions `mcp-launch`, or a dotted/inline
+ * `agent-deck` key under a bare `[mcp_servers]` section mentioning it.
+ * Pure-HTTP sections, custom entries, and other servers never match —
+ * only what the legacy-upgrade rewrite owns.
+ */
+export function codexTomlHasLauncherEntry(existingText: string): boolean {
+  if (!existingText.includes('mcp-launch')) {
+    return false;
+  }
+  const lines = existingText.split('\n');
+  const headerKind = new Map<number, 'managed' | 'servers' | 'other'>();
+  for (const [index, line] of lines.entries()) {
+    if (!isTomlSectionHeader(line)) {
+      continue;
+    }
+    if (CODEX_AGENT_DECK_SECTION_RE.test(line)) {
+      headerKind.set(index, 'managed');
+    } else if (CODEX_MCP_SERVERS_SECTION_RE.test(line)) {
+      headerKind.set(index, 'servers');
+    } else {
+      headerKind.set(index, 'other');
+    }
+  }
+  const headerIdxs = [...headerKind.keys()];
+  const rangeEnd = (headerIdx: number): number => {
+    for (const candidate of headerIdxs) {
+      if (candidate > headerIdx) {
+        return candidate;
+      }
+    }
+    return lines.length;
+  };
+
+  for (const [headerIdx, kind] of headerKind) {
+    const end = rangeEnd(headerIdx);
+    if (kind === 'managed') {
+      for (let index = headerIdx + 1; index < end; index += 1) {
+        if (lines[index].includes('mcp-launch')) {
+          return true;
+        }
+      }
+      continue;
+    }
+    if (kind !== 'servers') {
+      continue;
+    }
+    // Dotted/inline agent-deck definitions, same top-level-key rule as
+    // the merge: a nested `agent-deck` key inside another server's inline
+    // table belongs to that server, not to us.
+    let depth = 0;
+    let index = headerIdx + 1;
+    while (index < end) {
+      const line = lines[index];
+      if (depth === 0 && CODEX_MCP_SERVERS_AGENT_DECK_KEY_RE.test(line)) {
+        let block = line;
+        depth += tomlBracketDelta(line);
+        index += 1;
+        while (depth > 0 && index < end) {
+          block += `\n${lines[index]}`;
+          depth += tomlBracketDelta(lines[index]);
+          index += 1;
+        }
+        depth = 0;
+        if (block.includes('mcp-launch')) {
+          return true;
+        }
+        continue;
+      }
+      depth += tomlBracketDelta(line);
+      if (depth < 0) {
+        depth = 0;
+      }
+      index += 1;
+    }
+  }
+  return false;
+}
+
+/**
  * Merge our managed section into existing Codex TOML, preserving every
  * unrelated byte. Stale agent-deck content in any form is removed first:
  * the parent section, every `[mcp_servers.agent-deck.<sub>]` sub-table

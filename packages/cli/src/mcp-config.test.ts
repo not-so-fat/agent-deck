@@ -8,6 +8,7 @@ import {
   buildAgentDeckEntry,
   buildCodexAgentDeckEntry,
   buildGlobalFallbackHttpEntry,
+  codexTomlHasLauncherEntry,
   ensureGlobalCursorMcpLaunch,
   formatCodexGlobalFallbackSection,
   formatCodexMcpSection,
@@ -872,5 +873,70 @@ describe('compareSemver', () => {
     expect(compareSemver('1.1.1', '1.1.0')).toBeGreaterThan(0);
     expect(compareSemver('1.1.0', '1.1.1')).toBeLessThan(0);
     expect(compareSemver('1.1.0', '1.1.0')).toBe(0);
+  });
+});
+
+describe('NOT-566 codexTomlHasLauncherEntry', () => {
+  it('matches a managed launcher section', () => {
+    expect(
+      codexTomlHasLauncherEntry(
+        '[mcp_servers.agent-deck]\ncommand = "agent-deck"\nargs = ["mcp-launch"]\n',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches a quoted managed header with trailing content', () => {
+    expect(
+      codexTomlHasLauncherEntry(
+        '[model]\nname = "gpt-5"\n\n[mcp_servers."agent-deck"]  # legacy\ncommand = "agent-deck"\nargs = ["mcp-launch"]\n\n[mcp_servers.other]\nurl = "http://example.com/mcp"\n',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches a dotted launcher definition under bare [mcp_servers]', () => {
+    expect(
+      codexTomlHasLauncherEntry(
+        '[mcp_servers]\nagent-deck = {command="agent-deck", args=["mcp-launch"]}\n',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches a multi-line inline launcher definition', () => {
+    expect(
+      codexTomlHasLauncherEntry(
+        '[mcp_servers]\nagent-deck = {\n  command="agent-deck",\n  args=["mcp-launch"],\n}\n',
+      ),
+    ).toBe(true);
+  });
+
+  it('ignores pure-HTTP sections', () => {
+    expect(
+      codexTomlHasLauncherEntry(
+        '[mcp_servers.agent-deck]\nurl = "http://127.0.0.1:1110/mcp"\nhttp_headers = { "x-agent-deck-workspace" = "/tmp/ws" }\n',
+      ),
+    ).toBe(false);
+  });
+
+  it('ignores other servers that mention mcp-launch', () => {
+    expect(
+      codexTomlHasLauncherEntry(
+        '[mcp_servers.other]\ncommand = "agent-deck"\nargs = ["mcp-launch"]\n',
+      ),
+    ).toBe(false);
+    // A nested agent-deck key inside another server's table is not ours.
+    expect(
+      codexTomlHasLauncherEntry(
+        '[mcp_servers]\nother = {command="agent-deck", args=["mcp-launch"]}\n',
+      ),
+    ).toBe(false);
+  });
+
+  it('ignores prefixed siblings and empty text', () => {
+    expect(
+      codexTomlHasLauncherEntry(
+        '[mcp_servers.agent-deck-env]\ncommand = "agent-deck"\nargs = ["mcp-launch"]\n',
+      ),
+    ).toBe(false);
+    expect(codexTomlHasLauncherEntry('')).toBe(false);
   });
 });

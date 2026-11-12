@@ -2,9 +2,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { reconcileCodexPluginAfterUpgrade, runCodexPluginDoctor } from './codex-plugin';
+import {
+  formatLauncherMigrationResults,
+  rewriteLegacyLauncherEntries,
+} from './launcher-migration';
 import { runUpgrade } from './upgrade';
 import { getAgentDeckVersion } from './version';
 
@@ -983,5 +987,246 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     expect(text).not.toContain('Codex plugin manifest: OK (');
     expect(text).not.toContain('Codex plugin: OK (');
     expect(hashLiveFixtures()).toBe(before);
+  });
+});
+
+describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 }, () => {
+  const ENDPOINT = { host: '127.0.0.1', mcpPort: 1110 };
+  const MCP_URL = 'http://127.0.0.1:1110/mcp';
+
+  let fakeHome = '';
+  let workspace = '';
+  let deckHome = '';
+  let savedDeckHome: string | undefined;
+  let savedFetch: typeof globalThis.fetch | undefined;
+  let savedMcpPort: string | undefined;
+  let savedHost: string | undefined;
+
+  const LAUNCHER_JSON = {
+    type: 'stdio',
+    command: 'agent-deck',
+    args: ['mcp-launch'],
+    env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+  };
+  const MEMORY_SERVER = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] };
+
+  beforeEach(() => {
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-migrate-home-'));
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-migrate-ws-'));
+    savedDeckHome = process.env.AGENT_DECK_HOME;
+    savedFetch = globalThis.fetch;
+    savedMcpPort = process.env.AGENT_DECK_MCP_PORT;
+    savedHost = process.env.AGENT_DECK_HOST;
+    delete process.env.AGENT_DECK_MCP_PORT;
+    process.env.AGENT_DECK_HOST = '127.0.0.1';
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (savedDeckHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = savedDeckHome;
+    }
+    globalThis.fetch = savedFetch as typeof globalThis.fetch;
+    if (savedMcpPort === undefined) {
+      delete process.env.AGENT_DECK_MCP_PORT;
+    } else {
+      process.env.AGENT_DECK_MCP_PORT = savedMcpPort;
+    }
+    if (savedHost === undefined) {
+      delete process.env.AGENT_DECK_HOST;
+    } else {
+      process.env.AGENT_DECK_HOST = savedHost;
+    }
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+    if (deckHome) {
+      fs.rmSync(deckHome, { recursive: true, force: true });
+      deckHome = '';
+    }
+  });
+
+  function seedLegacyInstall(): void {
+    fs.writeFileSync(
+      path.join(workspace, '.mcp.json'),
+      `${JSON.stringify({ mcpServers: { memory: MEMORY_SERVER, 'agent-deck': LAUNCHER_JSON } }, null, 2)}\n`,
+    );
+    fs.mkdirSync(path.join(workspace, '.codex'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.codex', 'config.toml'),
+      '[model]\nname = "gpt-5"\n\n[mcp_servers.agent-deck]\ncommand = "agent-deck"\nargs = ["mcp-launch"]\n',
+    );
+    fs.writeFileSync(
+      path.join(fakeHome, '.claude.json'),
+      `${JSON.stringify({ theme: 'dark', mcpServers: { 'agent-deck': LAUNCHER_JSON } }, null, 2)}\n`,
+    );
+    fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, '.codex', 'config.toml'),
+      '[mcp_servers.agent-deck]\ncommand = "agent-deck"\nargs = ["mcp-launch"]\n',
+    );
+    // Hosts that keep the launcher must never be rewritten.
+    fs.mkdirSync(path.join(fakeHome, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(fakeHome, '.cursor', 'mcp.json'),
+      `${JSON.stringify({ mcpServers: { 'agent-deck': LAUNCHER_JSON } }, null, 2)}\n`,
+    );
+  }
+
+  it('rewrites legacy launcher entries to pure MCP and preserves unrelated content', () => {
+    seedLegacyInstall();
+
+    const results = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+
+    expect(results).toEqual([
+      { path: path.join(workspace, '.mcp.json'), action: 'rewritten' },
+      { path: path.join(workspace, '.codex', 'config.toml'), action: 'rewritten' },
+      { path: path.join(fakeHome, '.claude.json'), action: 'rewritten' },
+      { path: path.join(fakeHome, '.codex', 'config.toml'), action: 'rewritten' },
+    ]);
+
+    const projectMcp = JSON.parse(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8'));
+    expect(projectMcp).toEqual({
+      mcpServers: {
+        memory: MEMORY_SERVER,
+        'agent-deck': {
+          type: 'http',
+          url: MCP_URL,
+          headers: { 'x-agent-deck-workspace': workspace },
+        },
+      },
+    });
+    expect(fs.readFileSync(path.join(workspace, '.codex', 'config.toml'), 'utf8')).toBe(
+      `[model]\nname = "gpt-5"\n\n[mcp_servers.agent-deck]\nurl = "${MCP_URL}"\nhttp_headers = { "x-agent-deck-workspace" = "${workspace}" }\n`,
+    );
+    const userClaude = JSON.parse(fs.readFileSync(path.join(fakeHome, '.claude.json'), 'utf8'));
+    expect(userClaude).toEqual({
+      theme: 'dark',
+      mcpServers: { 'agent-deck': { type: 'http', url: MCP_URL } },
+    });
+    expect(fs.readFileSync(path.join(fakeHome, '.codex', 'config.toml'), 'utf8')).toBe(
+      `[mcp_servers.agent-deck]\nurl = "${MCP_URL}"\n`,
+    );
+    // Cursor keeps the launcher: byte-identical.
+    expect(
+      JSON.parse(fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8')),
+    ).toEqual({ mcpServers: { 'agent-deck': LAUNCHER_JSON } });
+
+    const lines = formatLauncherMigrationResults(results);
+    expect(lines).toHaveLength(4);
+    expect(lines.join('\n')).toContain('rewrote legacy launcher entry to pure MCP');
+  });
+
+  it('is idempotent: a second run changes nothing', () => {
+    seedLegacyInstall();
+
+    const first = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+    expect(first.every((result) => result.action === 'rewritten')).toBe(true);
+    const bytes = [
+      fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8'),
+      fs.readFileSync(path.join(workspace, '.codex', 'config.toml'), 'utf8'),
+      fs.readFileSync(path.join(fakeHome, '.claude.json'), 'utf8'),
+      fs.readFileSync(path.join(fakeHome, '.codex', 'config.toml'), 'utf8'),
+    ];
+
+    const second = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+    expect(second.every((result) => result.action === 'unchanged')).toBe(true);
+    expect(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8')).toBe(bytes[0]);
+    expect(fs.readFileSync(path.join(workspace, '.codex', 'config.toml'), 'utf8')).toBe(bytes[1]);
+    expect(fs.readFileSync(path.join(fakeHome, '.claude.json'), 'utf8')).toBe(bytes[2]);
+    expect(fs.readFileSync(path.join(fakeHome, '.codex', 'config.toml'), 'utf8')).toBe(bytes[3]);
+    expect(formatLauncherMigrationResults(second)).toEqual([]);
+  });
+
+  it('leaves custom and pure-HTTP entries alone, and skips corrupt files with a reason', () => {
+    fs.writeFileSync(
+      path.join(workspace, '.mcp.json'),
+      `${JSON.stringify({ mcpServers: { 'agent-deck': { command: 'npx', args: ['-y', 'custom'] } } }, null, 2)}\n`,
+    );
+    fs.writeFileSync(path.join(fakeHome, '.claude.json'), '{ not json');
+    fs.mkdirSync(path.join(workspace, '.codex'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.codex', 'config.toml'),
+      `[mcp_servers.agent-deck]\nurl = "${MCP_URL}"\nhttp_headers = { "x-agent-deck-workspace" = "${workspace}" }\n`,
+    );
+
+    const results = rewriteLegacyLauncherEntries({ workspaceRoot: workspace, endpoint: ENDPOINT });
+
+    expect(results[0].action).toBe('unchanged');
+    expect(results[1].action).toBe('unchanged');
+    expect(results[2].action).toBe('skipped');
+    expect(results[2].reason).toBeTruthy();
+    expect(results[3].action).toBe('unchanged');
+    // Custom entry byte-identical.
+    expect(JSON.parse(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8'))).toEqual({
+      mcpServers: { 'agent-deck': { command: 'npx', args: ['-y', 'custom'] } },
+    });
+    const lines = formatLauncherMigrationResults(results);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(path.join(fakeHome, '.claude.json'));
+  });
+
+  it('agent-deck upgrade rewrites a legacy fixture install', async () => {
+    seedLegacyInstall();
+    // npm-global kind at the current version: upgrade is a no-op that still
+    // runs the plugin reconcile and the launcher-entry migration.
+    deckHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-deck-npm-'));
+    process.env.AGENT_DECK_HOME = deckHome;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({ version: CLI_VERSION }),
+    })) as typeof globalThis.fetch;
+    seedUpgradeHome();
+    writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
+    fs.writeFileSync(
+      path.join(codexHome, 'plugin-list.json'),
+      `${JSON.stringify({ plugins: [{ name: 'agent-deck', version: CLI_VERSION, selector: SELECTOR, enabled: true, marketplace: 'agent-deck', install_root: pluginRoot }] }, null, 2)}\n`,
+    );
+    // Current version, skills-only manifest: compatible, no remove/add.
+    fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(NO_SERVER_MCP, null, 2)}\n`);
+
+    const code = await runUpgrade([], { performCliUpgrade: async () => ({ ok: true }) });
+    const text = output.join('\n');
+
+    expect(code).toBe(0);
+    expect(text).toContain('Already on the latest version.');
+    const projectMcp = JSON.parse(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8'));
+    expect(projectMcp.mcpServers['agent-deck']).toEqual({
+      type: 'http',
+      url: MCP_URL,
+      headers: { 'x-agent-deck-workspace': workspace },
+    });
+    expect(fs.readFileSync(path.join(workspace, '.codex', 'config.toml'), 'utf8')).toContain(
+      `url = "${MCP_URL}"`,
+    );
+    expect(fs.readFileSync(path.join(workspace, '.codex', 'config.toml'), 'utf8')).not.toContain(
+      'mcp-launch',
+    );
+    expect(text).toContain('rewrote legacy launcher entry to pure MCP');
+    // Cursor untouched by the documented upgrade path too.
+    expect(
+      JSON.parse(fs.readFileSync(path.join(fakeHome, '.cursor', 'mcp.json'), 'utf8')),
+    ).toEqual({ mcpServers: { 'agent-deck': LAUNCHER_JSON } });
+  });
+
+  it('agent-deck upgrade --check never rewrites launcher entries', async () => {
+    seedLegacyInstall();
+    deckHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-deck-npm-'));
+    process.env.AGENT_DECK_HOME = deckHome;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({ version: CLI_VERSION }),
+    })) as typeof globalThis.fetch;
+
+    const code = await runUpgrade(['--check'], { performCliUpgrade: async () => ({ ok: true }) });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8'))).toEqual({
+      mcpServers: { memory: MEMORY_SERVER, 'agent-deck': LAUNCHER_JSON },
+    });
+    expect(output.join('\n')).not.toContain('rewrote legacy launcher entry');
   });
 });
