@@ -481,9 +481,9 @@ export async function inspectCodexPlugin(
 
   // `compatible` requires a verified transport: no plugin-declared
   // server (the current skills-only shape), or a recognised legacy shape
-  // on already-installed plugins (the mcp-launch launcher, or the earlier
-  // headerless HTTP entry). Only an unreadable or unrecognised entry is
-  // unverifiable — never healthy.
+  // on already-installed plugins (the retired mcp-launch launcher entry,
+  // or the earlier headerless HTTP entry). Only an unreadable or
+  // unrecognised entry is unverifiable — never healthy.
   if (transport !== 'mcp-launch' && transport !== 'direct-http' && transport !== 'none') {
     return {
       ...base,
@@ -662,8 +662,8 @@ function printManualSyncBlock(selector: string, marketplaceName?: string): void 
  * from a successful marketplace listing. For a Git marketplace the
  * marketplace is refreshed first. Reinstalls through supported
  * `codex plugin remove` / `codex plugin add` commands, then re-reads plugin
- * state (which must verify a known transport — `none`, `mcp-launch`,
- * or `direct-http` — before reporting OK). Never edits
+ * state (which must verify a known transport — `none`, legacy
+ * `mcp-launch`, or `direct-http` — before reporting OK). Never edits
  * Codex files directly: every failure path prints whether the CLI upgrade
  * succeeded and whether the plugin was left unchanged or was removed, plus
  * the exact manual Codex commands, and returns 1.

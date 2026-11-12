@@ -127,6 +127,8 @@ agent-deck setup --client muse
 
 See [PUBLISHING.md](./PUBLISHING.md) and [README](../README.md). Design: [managed CLI auto-upgrade](./superpowers/specs/2026-07-30-managed-cli-auto-upgrade-design.md).
 
+Upgrading an older install? Codex and Claude Code now connect over pure MCP; `agent-deck upgrade` rewrites any legacy `mcp-launch` entries automatically. Details: [mcp-launch migration](./MCP_LAUNCH_MIGRATION.md).
+
 ### IDE deck indicator (optional)
 
 MCP alone does **not** show the bound deck in Cursor IDE Agent chat. Terminal status line (Claude Code / Cursor CLI footer) is installed by default via `setup` — see [Distribution](./PUBLISHING.md#distribution-what-users-install). Muse has no Agent Deck status line.

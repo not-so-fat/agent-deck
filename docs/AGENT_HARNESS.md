@@ -21,9 +21,9 @@ Your host needs an Agent Deck MCP transport—not direct registrations for Linea
 | Command | When | What it does |
 |---------|------|----------------|
 | **`setup`** | **Once** per machine | Host MCP configuration where applicable + agent harness (this doc). For Codex, writes the global headerless HTTP fallback and marker-merges `~/.codex/AGENTS.md`; the plugin supplies skills. |
-| **`use <deck>`** | Once per IDE repo unless the launcher selects a deck | Folder assignment (`.agent-deck/use.json`) + thin **trigger stubs** for better implicit playbook matching — bodies still live on the deck |
+| **`use <deck>`** | Once per IDE repo unless the session carries its own deck header | Folder assignment (`.agent-deck/use.json`) + thin **trigger stubs** for better implicit playbook matching — bodies still live on the deck |
 
-Use `agent-deck use <deck>` for ordinary IDE folders so the host session binds the folder's deck at MCP initialize. Launch-selected unattended sessions may supply the deck header directly and intentionally omit the assignment file.
+Use `agent-deck use <deck>` for ordinary IDE folders so the host session binds the folder's deck at MCP initialize. Unattended sessions that supply the deck header directly may intentionally omit the assignment file.
 
 `setup` also installs the terminal status line by default for Cursor CLI and Claude Code (`--no-statusline` to skip). Muse has no Agent Deck status line.
 
