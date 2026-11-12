@@ -51,8 +51,10 @@ network, so config-layer questions (a), (b) and the static half of (c) are
 answered with verified command transcripts. Live header transmission,
 404 recovery and the unassigned-folder UX need the real provider plus
 loopback plus (for (e)) the real daemon, which this sandbox cannot do
-(no `listen()`, no credentials); Appendix B gives the exact operator
-protocol with paste blocks for the raw stub lines.
+(no `listen()`, no credentials); the operator ran probes B1–B4 live on
+real Muse Code 1.4.14 (Appendix B), with the real settings and trust
+files backed up and restored byte-identical (verified by hash), and the
+raw stub lines are recorded there.
 
 ## (a) Literal vs `${VAR}` header values in settings.json
 
@@ -109,11 +111,19 @@ refuses only secret-*looking* literals
 --bearer-token-env-var VAR to forward it by name instead.`); a filesystem
 path is not secret-looking and is written verbatim.
 
+Live (operator probe B1, Appendix B.1): all four variants — literal
+and `${MUSE_LIVE_WS}` headers, each in user settings and in the project
+`<repo>/.mcp.json` — returned `pong`, and the stub saw
+`x-agent-deck-workspace: /private/tmp/muse-live/repo` on `initialize`,
+`notifications/initialized`, `tools/list` AND `tools/call`. File-based
+`${VAR}` resolved from the invoking process environment (the caller had
+to export `MUSE_LIVE_WS`).
+
 **Answer: `settings.json` accepts a literal header value; `${VAR}` is
 also accepted. The whole-value-`${VAR}`-naming-a-set-variable rule is
 `-c`-only (plus a secret-looking-literal refusal on `--project` writes).
-Live delivery of a file-configured header (literal and `${VAR}`) is
-operator probe B1.**
+Both spellings deliver the header on every request, including
+`tools/call`, live (B1).**
 
 ## (b) Per-workspace config layer for mcpServers
 
@@ -163,10 +173,16 @@ Claude Code uses, and Muse parses the exact entry shape
 checkout with a Claude per-folder entry is one `mcp list` away from
 showing that entry to Muse.
 
+Live (operator probe B1 variants 3/4, Appendix B.1): the project
+`<repo>/.mcp.json` entry, written with `muse mcp add-json ... --project`
+inside a trusted git repo, delivered the per-folder header on all four
+request types and `ping` returned `pong` — for both the literal and the
+`${MUSE_LIVE_WS}` spelling.
+
 **Answer: yes — the `.mcp.json` chain from repository root to cwd
 carries `mcpServers` per workspace, with same-name project-over-user
-shadowing. It loads only inside a repository (git verified) and only for
-trusted folders.**
+shadowing, confirmed live (B1). It loads only inside a repository (git
+verified) and only for trusted folders.**
 
 ## (c) Muse-set workspace environment variable for `${VAR}`
 
@@ -193,37 +209,50 @@ produced no dump file — confirming the pre-collected claim that
 `--provider echo` never starts MCP servers (so B4 needs the real
 provider).
 
-**Answer: no Muse-set session-workspace variable exists (static search
-of the 1.4.15 binary and CLI surface); `${VAR}` resolves from the
-invoking process environment and therefore cannot carry per-workspace
-identity. Operator probe B4 confirms empirically via the full spawn
-environment dump.**
+Live (operator probe B4, Appendix B.4): the full spawn environment
+of a stdio MCP server started by Muse contained the marker
+`PROBE_MARKER=m1` and exactly two Muse-set variables —
+`MUSE_SESSION_ID` and `PWD`. `PWD` equalled the session workspace
+(`/private/tmp/muse-live/repo`), but that is the working directory of a
+spawned stdio process, not a variable a `${VAR}` header can reference in
+an HTTP entry: B1 variants 2/4 proved HTTP `${VAR}` headers resolve from
+the invoking process environment (the caller had to export
+`MUSE_LIVE_WS`).
+
+**Answer: no — no Muse-set session-workspace variable exists (static
+search of the 1.4.15 binary and CLI surface, confirmed empirically by
+the B4 spawn-environment dump); `${VAR}` resolves from the invoking
+process environment and therefore cannot carry per-workspace identity.
+Per-workspace identity must come from the project file layer in
+(b).**
 
 ## (d) 404 re-initialize and per-request headers
 
-Pre-collected evidence shows the configured header on `initialize`,
-`notifications/initialized` and `tools/list`, and a `tools/call`
-returning `pong` — but the header's presence on `tools/call` was not
-explicitly recorded, and no restart/404 run was done. Static probing
-adds nothing: the binary yielded no session-expiry handling strings
-either way. The MCP specification (2025-06-18, Streamable HTTP, Session
-Management, rules 3–4, quoted in the companion design §3) requires the
-client to start a new session with a fresh `InitializeRequest` on HTTP
-404, and both sibling hosts were observed doing exactly that — so a yes
-is expected, but it is not yet observed for Muse.
+Headers reach every request type live: B1 shows
+`x-agent-deck-workspace` on `initialize`, `notifications/initialized`,
+`tools/list` AND `tools/call`.
 
-Operator probe B2 (Appendix B.2) decides it: the recording stub with
-`--restart-after-first-call`, a file-configured settings entry (literal
-header), and a prompt that calls the stub's `ping` tool twice in
-sequence. A yes looks like the Codex/Claude runs — `tools/call`,
-`SIMULATED_RESTART`, `tools/call` → 404, fresh `initialize` with no
-session id, retried `tools/call` → 200 — with `x-agent-deck-workspace`
-on every line.
+But Muse does **not** re-initialize after a 404 (operator probe B2,
+Appendix B.2, raw lines recorded). With the stub started with
+`--restart-after-first-call`, the first `ping` returned `pong`; after
+the simulated restart the next `tools/call` (old session id) got 404
+and Muse sent no new `initialize` — the model was told `live-b2: MCP
+HTTP session expired`. Follow-up B2b (three pings, restart after the
+first): call 1 `pong`; calls 2 and 3 both failed with `MCP HTTP session
+expired`, and the stub saw two more `tools/call` with the SAME dead
+session id, each answered 404, still no `initialize`. The MCP session
+is dead for the rest of the Muse session.
 
-**Answer: not yet observed — operator probe B2 is the decision
-procedure (expected yes per the spec). The recommendation does not
-assume it: writing per-folder and fallback entries (C1/C2) is safe
-either way; only launcher removal (C3) requires a yes.**
+This violates the MCP Streamable HTTP rule the companion design quotes
+(client MUST start a new session with a new `InitializeRequest` on
+404). Consequence: for Muse, any daemon restart or session expiry
+silently kills Agent Deck for the rest of that Muse session until Muse
+is restarted.
+
+**Answer: headers are sent on every request (B1), but NO — Muse does
+not re-initialize after a 404 (B2/B2b). The recommendation therefore
+blocks launcher removal (C3) on a recovery answer (C5), not just on a
+soak.**
 
 ## (e) Headerless global entry in an unassigned folder
 
@@ -255,53 +284,102 @@ for Muse (it would write a `.mcp.json` Muse still ignores). The message
 stays correct for repo checkouts; non-repo folders are a documented
 limitation (see Recommendation).
 
+Live (operator probe B3, Appendix B.3): the headerless global user
+entry `{"type":"http","url":"http://127.0.0.1:1110/mcp"}` against the
+real daemon in the unassigned trusted repo connected, listed only the
+two explain-only tools (`get_session_binding`, `get_session_context`),
+and `get_session_binding` returned `{"deck": null, "error_code":
+"GRANT_REQUIRED", "message": "No deck assigned to this folder. Run
+`agent-deck use <deck>` in the project folder, then reload MCP."}` — no
+error, no crash. (The operator's own existing launcher entry
+`agent_deck` was also loaded, so the run listed both namespaces with
+identical results; the B3 protocol now neutralizes that entry for
+re-runs.)
+
 **Answer: Muse accepts the headerless global entry and connects; the
 server lands it in the existing explain-only unassigned session with no
-server change. Operator probe B3 confirms the live UX against the real
-daemon in an unassigned folder.**
+server change, confirmed live (B3).**
 
 ## Recommendation
 
 Adopt the same per-folder plus global-fallback pattern as Claude, with
-no Muse-specific entry shape and no permanent launcher exception:
+no Muse-specific entry shape — plus a server-side session-recovery
+change that closes the 404 gap B2 exposed, before the launcher is
+retired for Muse:
 
 1. **Per-folder entry** (written by `agent-deck use --client muse`):
    the identical `<folder>/.mcp.json` `agent-deck` entry Claude uses
    today — `{type: http, url, headers: {x-agent-deck-workspace}}` — which
-   Muse parses (b) and which shadows the global entry by same-name
-   precedence. The server binds the deck from `.agent-deck/use.json`
-   (NOT-562, already merged). This also ends the current shared-file
-   collision where `use --client muse` (launcher entry) and
-   `use --client claude` (HTTP entry) overwrite each other's
+   Muse parses (b) and delivers live (B1), and which shadows the global
+   entry by same-name precedence. The server binds the deck from
+   `.agent-deck/use.json` (NOT-562, already merged). This also ends the
+   current shared-file collision where `use --client muse` (launcher
+   entry) and `use --client claude` (HTTP entry) overwrite each other's
    `agent-deck` entry in the same file.
 2. **Global fallback** (written by `agent-deck setup --client muse`):
    the headerless `{type: http, url}` entry in user `settings.json`
    (reusing `buildGlobalFallbackHttpEntry`), landing unassigned folders
-   in the explain-only session (e). Same-name per-folder entries shadow
-   it where an assignment exists.
-3. **Documented gates**: the per-folder entry loads only inside a
+   in the explain-only session (e, confirmed live in B3). Same-name
+   per-folder entries shadow it where an assignment exists.
+3. **Server-side session tolerance (C5)**: the daemon treats a request
+   that carries an unknown `Mcp-Session-Id` plus an
+   `x-agent-deck-workspace` header as a resumable session — re-creating
+   it from the headers instead of answering 404. The spec only says the
+   server MAY terminate sessions, so answering with a recovered session
+   instead of 404 is allowed; it also heals every other host after a
+   daemon restart. C3 (launcher removal) is blocked on C5 plus an
+   operator re-run of B2 against the tolerant daemon, not just on a
+   soak.
+4. **Documented gates**: the per-folder entry loads only inside a
    repository (git verified) and only in trusted folders; after
    `agent-deck use` the host must reload MCP (and first time per folder,
    trust it). Non-repository folders stay on the headerless fallback and
    read the unassigned message — the same tradeoff Codex accepts for
    untrusted folders — with `git init` as the one-step remedy.
-4. **Retire the launcher for Muse** once probe B2 answers yes (d),
-   following the NOT-566 precedent: no `agent-deck` executable lookup
-   remains on the Muse path.
+5. **Retire the launcher for Muse** (C3) only after C1+C2 have soaked
+   AND C5 ships AND the operator re-runs B2 green against the new
+   daemon, following the NOT-566 precedent: no `agent-deck` executable
+   lookup remains on the Muse path.
 
-Rejected alternatives: server-side workspace resolution without any
-header is impossible over plain HTTP (no folder signal reaches the
-server); a `${VAR}`-carried workspace is impossible (no Muse-set
-workspace variable, (c)); keeping a permanent launcher exception would
-preserve the `PATH` fragility that motivated the whole pure-MCP program
-plus the shared-file collision.
+Why (i) server-side tolerance, not the other two ways to close the
+gap:
+
+- (i) Server-side tolerance (recommended): one daemon change in
+  `sendSessionNotFound` (`packages/backend/src/mcp-server.ts`), covered
+  by HTTP tests; fixes Muse without touching Muse; also removes the
+  restart cliff for Codex/Claude/Cursor, which today depend on their
+  clients' re-initialize behavior. Cost: a deliberate deviation from the
+  NOT-101 "unknown id → 404" rule, needing a tight scope (only when the
+  workspace/deck headers can fully rebind the session) and owner
+  sign-off.
+- (ii) Keep the launcher for Muse as a documented exception: zero
+  server risk, and the bridge handles re-initialize today. Cost: keeps
+  the `PATH` fragility that motivated the pure-MCP program, keeps the
+  shared-file collision (launcher vs HTTP entry overwriting each other),
+  and forks the host story permanently ("pure MCP everywhere except
+  Muse").
+- (iii) Wait for Muse to fix its client: zero code on our side. Cost:
+  no timeline, no leverage, and Muse sessions stay one daemon restart
+  away from a dead Agent Deck with a cryptic `MCP HTTP session expired`
+  until the vendor ships — unbounded.
+
+Rejected outright: server-side workspace resolution without any header
+is impossible over plain HTTP (no folder signal reaches the server); a
+`${VAR}`-carried workspace is impossible (no Muse-set workspace
+variable, (c)).
+
+**This recommendation needs the owner's approval before any child
+ticket is filed: picking (i) is a product-level decision (server
+session semantics change) that C3 and C5 depend on.**
 
 ## Proposed child tickets
 
-Ordering: C1 and C2 run in parallel; C3 after C1+C2 have soaked AND
-probe B2 answers yes; C4 standalone, blocks nothing and is blocked by
-nothing. No server change in any ticket (NOT-562 already binds
-workspace → deck).
+Ordering: C1 and C2 run in parallel; C5 standalone (server), blocks
+C3; C3 after C1+C2 have soaked AND C5 ships AND the operator re-runs
+B2 green against the tolerant daemon; C4 standalone, blocks nothing
+and is blocked by nothing. No deck-binding server change in any ticket
+(NOT-562 already binds workspace → deck); the only server change is
+the C5 session-recovery rule.
 
 - **C1 — `agent-deck use`: write the per-folder pure-MCP entry for
   Muse.** Scope: `buildAgentDeckEntry('muse', ...)` returns the HTTP
@@ -310,7 +388,8 @@ workspace → deck).
   `parsed.workspaceRoot` for Muse instead of `undefined` and prints the
   trust + reload-MCP next steps. Merge-preserving edit of the shared
   `.mcp.json` (Claude entries and unrelated servers untouched); writing
-  for Muse and Claude converges on one identical entry.
+  for Muse and Claude converges on one identical entry. Warn when the
+  folder is not a repository (the file would be inert there, (b)).
   Files: `packages/cli/src/mcp-config.ts`,
   `packages/cli/src/mcp-config.test.ts`, `packages/cli/src/use.ts`,
   `packages/cli/src/use.test.ts`.
@@ -318,9 +397,11 @@ workspace → deck).
   writes `{type:http,url,headers}` with the resolved workspace and keeps
   a sibling Claude entry byte-identical; [agent] `use.test.ts` /
   `mcp-config.test.ts` cover the muse branch and the shared-file merge;
+  [agent] `use --client muse` outside a repository warns that the
+  project entry will not load until the folder is a repository;
   [ci] `ci.yml` green on the PR head; [operator] live run shows the
   header delivered from the project entry in a trusted git repo (or
-  cites Appendix B.1 of this note once filled).
+  cites Appendix B.1 of this note).
 - **C2 — `agent-deck setup`: headerless global fallback for Muse plus
   guidance.** Scope: `setup --client muse --scope global` writes the
   headerless HTTP entry via `buildGlobalFallbackHttpEntry` (keeping the
@@ -333,7 +414,8 @@ workspace → deck).
   that `muse mcp get agent-deck` reports as `streamable-http` with empty
   headers; [agent] project setup writes the headed entry; [ci] `ci.yml`
   green; [operator] headerless global entry in an unassigned folder
-  lands in the explain-only session (or cites Appendix B.3 once filled).
+  lands in the explain-only session (or cites Appendix B.3 of this
+  note).
 - **C3 — Retire `mcp-launch` for Muse.** Scope: remove the Muse stdio
   launcher branch; extend the legacy-upgrade rewrite to convert
   existing Muse launcher entries (user `settings.json` and the shared
@@ -341,21 +423,42 @@ workspace → deck).
   `type: stdio` nor the workspace pin — see the
   `isLegacyClaudeLaunchEntry` comment) to the HTTP shape; update
   setup/use/doctor texts and docs. Explicitly after C1+C2 have soaked
-  and probe B2 answers yes. Files: `packages/cli/src/mcp-config.ts`,
+  AND C5 ships AND the operator re-runs B2 green against the tolerant
+  daemon — not on a soak alone, because Muse never recovers from a 404
+  ((d)). Files: `packages/cli/src/mcp-config.ts`,
   `packages/cli/src/use.ts`, `packages/cli/src/setup.ts`, upgrade
   helpers + their tests, docs mentioning the Muse launcher.
   Acceptance criteria: [agent] no `mcp-launch` reference remains on the
   Muse path and the upgrade converts a Muse launcher entry to the HTTP
   entry in both files; [agent] tests cover the conversion;
   [ci] `ci.yml` green; [operator] fresh `setup` + `use` in a trusted
-  repo binds the deck end-to-end over pure MCP.
+  repo binds the deck end-to-end over pure MCP, and a daemon restart
+  mid-session recovers (B2 re-run against the C5 daemon).
 - **C4 — Honest doctor reporting for the Muse connection (non-blocker).**
   Scope: `doctor` distinguishes "no entry", "entry present, daemon
   down", "entry present, daemon up, no live session", and (Muse-only)
   "folder is not a repository" / "folder is not trusted" instead of
-  reporting install state as OK. Files: doctor module(s) under
-  `packages/cli/src/` + tests. Acceptance criteria: [agent] each state
-  renders distinctly in a scratch-driven test; [ci] `ci.yml` green.
+  reporting install state as OK. Files: `packages/cli/src/start.ts`
+  (`runDoctor`), `packages/cli/src/start.test.ts`.
+  Acceptance criteria: [agent] each state renders distinctly in a
+  scratch-driven test; [ci] `ci.yml` green.
+- **C5 — Server-side session tolerance for unknown session ids with
+  rebindable headers (blocks C3).** Scope: in `sendSessionNotFound`
+  (`packages/backend/src/mcp-server.ts`), when the request carries an
+  unknown `Mcp-Session-Id` but headers that fully rebind the session
+  (`x-agent-deck-workspace` resolving via NOT-562, or an explicit
+  `x-agent-deck-deck-id`), re-create the session from those headers and
+  answer the request instead of replying 404; keep the 404 path for
+  requests that cannot rebind. Update the NOT-101 comment block. Needs
+  the owner's approval (product-level session-semantics change) before
+  filing. Files: `packages/backend/src/mcp-server.ts`,
+  `packages/backend/src/mcp-server.http.test.ts`.
+  Acceptance criteria: [agent] HTTP tests cover rebind-from-workspace,
+  rebind-from-deck-id, and still-404-when-unbindable;
+  [ci] `ci.yml` green; [operator] B2 re-run against the new daemon:
+  after the simulated restart the retried `tools/call` returns `pong`
+  with no `MCP HTTP session expired` and the stub/daemon log shows the
+  session recovered.
 
 ## Appendix A — Static probe record (agent, Muse Code 1.4.15)
 
@@ -449,6 +552,11 @@ temporary backup/restore of the real Muse settings and trust file; the
 real files must be byte-identical afterwards (the `trap` below
 guarantees it). Use a free loopback port per probe (shown as 18211+).
 
+Probes B1–B4 below were run live by the operator on real Muse Code
+1.4.14 with the recording stub (and the real daemon for B3); the raw
+lines are recorded verbatim. The operator's real settings and trust
+files were backed up and restored byte-identical, verified by hash.
+
 Setup (once):
 
 ```sh
@@ -500,11 +608,32 @@ user settings. PASS: the stub log shows `x-agent-deck-workspace` on
 `initialize`, `notifications/initialized`, `tools/list` and
 `tools/call`, and the reply is `pong`.
 
-OPERATOR: paste raw `/tmp/muse-live/b1.log` lines here (redact only
-`user-agent` and the private path prefix):
+B1 PASS (operator run, Muse Code 1.4.14). Four variants, each in the
+trusted `git init` repo `/private/tmp/muse-live/repo`, each returned
+`pong`, and the stub saw the `x-agent-deck-workspace` header (value
+/private/tmp/muse-live/repo) on `initialize`,
+`notifications/initialized`, `tools/list` AND `tools/call` for ALL four:
+(1) literal header in user settings, (2) `${MUSE_LIVE_WS}` header in
+user settings, (3) literal header in the project `<repo>/.mcp.json`
+(written with `muse mcp add-json ... --project`), (4)
+`${MUSE_LIVE_WS}` header in the project file. Raw `/tmp/muse-live/b1.log`
+lines for variant 1 (the others are identical apart from the session
+id):
 
 ```
-(pending operator run)
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo"}, "status": 200, "issued_session": "dc3575f90f984197a7667b660e95d74a"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "dc3575f90f984197a7667b660e95d74a"}, "status": 202}
+{"http": "POST", "rpc": "tools/list", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "dc3575f90f984197a7667b660e95d74a"}, "status": 200}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "dc3575f90f984197a7667b660e95d74a"}, "status": 200}
+```
+
+Project-file variant (3):
+
+```
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo"}, "status": 200, "issued_session": "a80d7563047b48c3a5bc548efc748b1f"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "a80d7563047b48c3a5bc548efc748b1f"}, "status": 202}
+{"http": "POST", "rpc": "tools/list", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "a80d7563047b48c3a5bc548efc748b1f"}, "status": 200}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "a80d7563047b48c3a5bc548efc748b1f"}, "status": 200}
 ```
 
 ### B.2 404 re-initialize (decides (d))
@@ -524,10 +653,35 @@ PASS: both replies are `pong`; the log shows `tools/call` →
 session id → retried `tools/call` → 200, with the workspace header on
 every request.
 
-OPERATOR: paste raw `/tmp/muse-live/b2.log` lines here:
+B2 FAIL (operator run, Muse Code 1.4.14): Muse does NOT re-initialize
+after a 404. First ping returned `pong`; after the simulated restart
+the next `tools/call` (old session id) got 404 and Muse sent no new
+`initialize` — the model was told `live-b2: MCP HTTP session expired`.
+Raw `/tmp/muse-live/b2.log` lines:
 
 ```
-(pending operator run)
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo"}, "status": 200, "issued_session": "5e5d98d8f43d43b3874ca1e1e9327c19"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "5e5d98d8f43d43b3874ca1e1e9327c19"}, "status": 202}
+{"http": "POST", "rpc": "tools/list", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "5e5d98d8f43d43b3874ca1e1e9327c19"}, "status": 200}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "5e5d98d8f43d43b3874ca1e1e9327c19"}, "status": 200}
+{"event": "SIMULATED_RESTART: all sessions forgotten"}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "5e5d98d8f43d43b3874ca1e1e9327c19"}, "status": 404, "note": "unknown session id"}
+```
+
+Follow-up B2b, three pings in one session, restart after the first:
+call 1 `pong`; calls 2 and 3 both failed with `MCP HTTP session
+expired`, and the stub saw two more `tools/call` with the SAME dead
+session id, each answered 404, and still no `initialize` — the MCP
+session is dead for the rest of the Muse session. Raw lines:
+
+```
+{"http": "POST", "rpc": "initialize", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo"}, "status": 200, "issued_session": "43d8b83709b94bf897ef1c6adcb29818"}
+{"http": "POST", "rpc": "notifications/initialized", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "43d8b83709b94bf897ef1c6adcb29818"}, "status": 202}
+{"http": "POST", "rpc": "tools/list", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "43d8b83709b94bf897ef1c6adcb29818"}, "status": 200}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "43d8b83709b94bf897ef1c6adcb29818"}, "status": 200}
+{"event": "SIMULATED_RESTART: all sessions forgotten"}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "43d8b83709b94bf897ef1c6adcb29818"}, "status": 404, "note": "unknown session id"}
+{"http": "POST", "rpc": "tools/call", "headers": {"x-agent-deck-workspace": "/private/tmp/muse-live/repo", "mcp-session-id": "43d8b83709b94bf897ef1c6adcb29818"}, "status": 404, "note": "unknown session id"}
 ```
 
 ### B.3 Headerless global entry in an unassigned folder (decides (e))
@@ -538,6 +692,9 @@ unassigned), keeping the workspace-trust gate satisfied:
 
 ```sh
 agent-deck start --daemon
+# Neutralize any existing real agent-deck launcher entry for this run
+# only (the EXIT trap restores the real settings file byte-identical):
+muse mcp remove agent_deck --user 2>/dev/null || true
 muse mcp add-json live-b3 '{"type":"http","url":"http://127.0.0.1:1110/mcp"}'
 cd /tmp/muse-live/repo && muse exec 'List your Agent Deck tools and report what get_session_binding says.'
 muse mcp remove live-b3 --user
@@ -547,12 +704,21 @@ PASS: the run reports only the explain-only tools and the
 `GRANT_REQUIRED` "No deck assigned to this folder" message; no error
 response, no crash.
 
-OPERATOR: paste the `muse exec` output and the daemon-side session line
-here:
+B3 PASS (operator run, Muse Code 1.4.14, real daemon, unassigned
+trusted repo): Muse connected and listed only the two explain-only
+tools (`get_session_binding`, `get_session_context`);
+`get_session_binding` returned:
 
 ```
-(pending operator run)
+{"deck": null, "error_code": "GRANT_REQUIRED", "message": "No deck assigned to this folder. Run `agent-deck use <deck>` in the project folder, then reload MCP."}
 ```
+
+No error, no crash. Note: in the recorded run the operator's own
+existing launcher entry `agent_deck` was still loaded, so the run
+listed both namespaces with identical results; the `muse mcp remove
+agent_deck --user` line above (restored by the trap) neutralizes that
+entry for re-runs so the tool list and binding readout come from the
+headerless entry alone.
 
 ### B.4 Spawn-environment dump (confirms (c))
 
@@ -597,9 +763,19 @@ print('MUSE_PARENT_SESSION_PROJECT:', e.get('MUSE_PARENT_SESSION_PROJECT'))"
 PASS: the dump lists the full spawn environment; confirm no variable
 carries the session workspace path (expected per (c)).
 
-OPERATOR: paste the `workspace-ish` line (and any variable whose value
-is the session workspace path) here:
+B4 result (operator run, Muse Code 1.4.14, trusted repo
+`/private/tmp/muse-live/repo`): marker `PROBE_MARKER=m1` present;
+Muse-set variables: only `MUSE_SESSION_ID` and `PWD`. `PWD` equals the
+session workspace but is the working directory of the spawned stdio
+process, not an environment variable a `${VAR}` header can reference
+in an HTTP entry (HTTP `${VAR}` resolves from the invoking process
+environment — B1 variants 2/4 needed `MUSE_LIVE_WS` exported by the
+caller). No Muse-set session-workspace variable exists. (c) = no.
+Operator-reported output of the probe script's final step (fixed print
+format, values as reported):
 
 ```
-(pending operator run)
+marker: m1
+workspace-ish: ['MUSE_SESSION_ID', 'PWD']
+MUSE_PARENT_SESSION_PROJECT: None
 ```
