@@ -61,7 +61,7 @@ function printUsage() {
   agent-deck run log <runId> [--tail <n>] [--follow] [--json]
   agent-deck run list [--json] [--limit <n>]
   agent-deck install [--to VERSION] [--migrate-cli] [--purge-global]
-  agent-deck upgrade [--check] [--to VERSION]
+  agent-deck upgrade [--check] [--to VERSION] [--scan DIR]...
   agent-deck doctor
   agent-deck debug-mcp
   agent-deck --version
