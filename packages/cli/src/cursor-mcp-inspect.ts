@@ -3,8 +3,10 @@ import path from 'node:path';
 
 import {
   CURSOR_MCP_RECOVERY_HINT,
-  isLegacyBareHttpAgentDeckEntry,
+  buildMcpUrl,
+  isHttpAgentDeckEntry,
   isMcpLaunchEntry,
+  readHttpWorkspaceHeader,
   readJsonFile,
   resolveConfigPath,
   type McpEndpoint,
@@ -12,14 +14,13 @@ import {
 
 export type CursorMcpConfigSource = 'global' | 'project';
 
-export type CursorMcpEntryShape = 'missing' | 'legacy-bare-url' | 'mcp-launch' | 'custom';
+export type CursorMcpEntryShape = 'missing' | 'http' | 'mcp-launch' | 'custom';
 
 export type CursorMcpTransport = 'none' | 'stdio' | 'http' | 'unknown';
 
 export type CursorMcpIssueCode =
   | 'missing'
-  | 'bare-url'
-  | 'mcp_auth_dead_end'
+  | 'missing-workspace-header'
   | 'missing-workspace-pin'
   | 'unresolved-workspace-pin'
   | 'stale-endpoint'
@@ -144,6 +145,58 @@ export function resolveWorkspacePinValue(
   return { pin: path.resolve(trimmed), unresolved: false };
 }
 
+/**
+ * Pure-MCP HTTP entry (NOT-567): the per-folder `{ url, headers }` entry
+ * or the headerless global fallback. A project entry without the
+ * workspace header still connects but cannot select a deck; a headerless
+ * global entry is the healthy fallback.
+ */
+function classifyHttpEntry(
+  source: CursorMcpConfigSource,
+  configPath: string,
+  fileExists: boolean,
+  entry: unknown,
+  endpoint: McpEndpoint,
+): CursorMcpEntryReport {
+  const record = entry as Record<string, unknown>;
+  const url = record.url as string;
+  const rawHeader = readHttpWorkspaceHeader(entry);
+  // Cursor sends header values literally — `${...}` is never interpolated,
+  // so an interpolated header cannot resolve and is flagged, not expanded.
+  const unresolved = rawHeader !== undefined && rawHeader.includes('${');
+  const workspacePin = rawHeader && !unresolved ? path.resolve(rawHeader) : null;
+  const issues: CursorMcpIssue[] = [];
+  if (source === 'project' && !rawHeader) {
+    issues.push({
+      code: 'missing-workspace-header',
+      message: `Headerless HTTP entry in ${configPath} cannot select a deck — the folder lands in the unassigned session.`,
+    });
+  } else if (unresolved) {
+    issues.push({
+      code: 'unresolved-workspace-pin',
+      message: `x-agent-deck-workspace in ${configPath} contains unresolved interpolation (${rawHeader}); Cursor sends header values literally.`,
+    });
+  }
+  const expectedUrl = buildMcpUrl(endpoint);
+  if (url !== expectedUrl) {
+    issues.push({
+      code: 'stale-endpoint',
+      message: `Configured endpoint ${url} does not match running Agent Deck ${expectedUrl}.`,
+    });
+  }
+
+  return {
+    source,
+    path: configPath,
+    fileExists,
+    shape: 'http',
+    transport: 'http',
+    endpoint: summarizeEndpoint(entry),
+    workspacePin,
+    issues,
+  };
+}
+
 function classifyEntry(
   source: CursorMcpConfigSource,
   configPath: string,
@@ -169,26 +222,8 @@ function classifyEntry(
     };
   }
 
-  if (isLegacyBareHttpAgentDeckEntry(entry)) {
-    return {
-      source,
-      path: configPath,
-      fileExists,
-      shape: 'legacy-bare-url',
-      transport: 'http',
-      endpoint: summarizeEndpoint(entry),
-      workspacePin: null,
-      issues: [
-        {
-          code: 'bare-url',
-          message: `Legacy bare URL in ${configPath} has no deck-assignment launcher.`,
-        },
-        {
-          code: 'mcp_auth_dead_end',
-          message: `${CURSOR_MCP_RECOVERY_HINT} Bare HTTP entries are missing a folder assignment.`,
-        },
-      ],
-    };
+  if (isHttpAgentDeckEntry(entry)) {
+    return classifyHttpEntry(source, configPath, fileExists, entry, endpoint);
   }
 
   if (!isMcpLaunchEntry(entry)) {
@@ -203,7 +238,7 @@ function classifyEntry(
       issues: [
         {
           code: 'custom-entry',
-          message: `Custom agent-deck wrapper in ${configPath} is left unchanged; configure it to run \`agent-deck mcp-launch\` with AGENT_DECK_WORKSPACE.`,
+          message: `Custom agent-deck wrapper in ${configPath} is left unchanged; point it at the Agent Deck MCP endpoint with the x-agent-deck-workspace header for this folder.`,
         },
       ],
     };
@@ -251,7 +286,7 @@ function classifyEntry(
 /**
  * Read usable assignment metadata from `.agent-deck/use.json` without returning secrets.
  * Accepts v3 assignments and legacy v2 manifests (deckId only for display).
- * Legacy v1 manifests are not assignments — `mcp-launch` still requires `agent-deck use`.
+ * Legacy v1 manifests are not assignments — they still require `agent-deck use`.
  */
 export function readAssignmentSummarySync(workspaceRoot: string): CursorMcpAssignmentSummary {
   const checkedRoot = path.resolve(workspaceRoot);
@@ -287,8 +322,9 @@ function collectOverallIssues(
   const issues: CursorMcpIssue[] = [];
   for (const report of [global, project]) {
     for (const issue of report.issues) {
-      // Keep shape=missing on the per-source report, but do not alarm on a healthy
-      // single-source setup (ADR: user-level launcher is the primary path).
+      // Keep shape=missing on the per-source report, but do not alarm on a
+      // healthy single-source setup: the global fallback covers folders
+      // with no project entry, and a project entry stands alone.
       if (issue.code === 'missing' && preferredSource !== 'none') {
         continue;
       }
@@ -335,9 +371,10 @@ export function inspectCursorMcpConfig(options: {
 }
 
 /**
- * Distinct recoveries for status/doctor: workspace-pin repair (agent sandbox OK
- * when assignment exists) vs missing assignment / home-store write (unsandboxed).
- * Bracket labels match issue `code` values for grep parity.
+ * Distinct recoveries for status/doctor: per-folder entry repair (agent
+ * sandbox OK when assignment exists) vs missing assignment / home-store
+ * write (unsandboxed). Bracket labels match issue `code` values for grep
+ * parity.
  */
 export function formatCursorMcpRecoveryLines(report: CursorMcpInspection): string[] {
   const codes = new Set(report.issues.map((issue) => issue.code));
@@ -353,11 +390,13 @@ export function formatCursorMcpRecoveryLines(report: CursorMcpInspection): strin
     report.assignment.present
   ) {
     lines.push(
-      '  Recovery [missing-workspace-pin]: assignment exists — run `agent-deck use <deck> --client cursor` in this project to pin AGENT_DECK_WORKSPACE (workspace-writable; works under host agent sandboxes).',
+      '  Recovery [missing-workspace-pin]: assignment exists — run `agent-deck use <deck> --client cursor` in this project to rewrite the per-folder entry (workspace-writable; works under host agent sandboxes).',
     );
   }
-  if (codes.has('bare-url') || codes.has('mcp_auth_dead_end')) {
-    lines.push(`  Recovery [mcp_auth_dead_end]: ${CURSOR_MCP_RECOVERY_HINT}`);
+  if (codes.has('missing-workspace-header')) {
+    lines.push(
+      '  Recovery [missing-workspace-header]: run `agent-deck use <deck> --client cursor` in this project to write the per-folder entry with the workspace header, then reload MCP.',
+    );
   }
   if (lines.length === 0) {
     lines.push(`  Recovery: ${CURSOR_MCP_RECOVERY_HINT}`);

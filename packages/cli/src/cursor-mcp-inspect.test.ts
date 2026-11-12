@@ -76,7 +76,7 @@ describe('inspectCursorMcpConfig', () => {
     expect(fs.existsSync(path.join(home, '.cursor', 'mcp.json'))).toBe(false);
   });
 
-  it('flags bare URL with mcp_auth_dead_end and does not rewrite the file', () => {
+  it('NOT-567: accepts the headerless global fallback with no entry issues', () => {
     const { home, workspace } = makeHomeAndWorkspace();
     fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
     const original = `${JSON.stringify(
@@ -85,19 +85,126 @@ describe('inspectCursorMcpConfig', () => {
       2,
     )}\n`;
     fs.writeFileSync(path.join(home, '.cursor', 'mcp.json'), original);
+    writeV3Assignment(workspace);
 
     const report = inspectCursorMcpConfig({
       cwd: workspace,
       endpoint: { host: '127.0.0.1', mcpPort: 1110 },
     });
 
-    expect(report.global.shape).toBe('legacy-bare-url');
+    expect(report.global.shape).toBe('http');
+    expect(report.global.transport).toBe('http');
+    expect(report.global.issues).toEqual([]);
     expect(report.preferredSource).toBe('global');
-    expect(report.global.issues.map((i) => i.code)).toEqual(
-      expect.arrayContaining(['bare-url', 'mcp_auth_dead_end']),
-    );
+    expect(report.issues).toEqual([]);
+    expect(formatCursorMcpInspection(report)).toContain('Issues: none');
     expect(fs.readFileSync(path.join(home, '.cursor', 'mcp.json'), 'utf8')).toBe(original);
-    expect(formatCursorMcpInspection(report)).toContain('mcp_auth');
+  });
+
+  it('NOT-567: accepts a per-folder HTTP entry with the workspace header', () => {
+    const { workspace } = makeHomeAndWorkspace();
+    fs.mkdirSync(path.join(workspace, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.cursor', 'mcp.json'),
+      `${JSON.stringify({
+        mcpServers: {
+          'agent-deck': {
+            url: 'http://127.0.0.1:1110/mcp',
+            headers: { 'x-agent-deck-workspace': workspace },
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    writeV3Assignment(workspace);
+
+    const report = inspectCursorMcpConfig({
+      cwd: workspace,
+      endpoint: { host: '127.0.0.1', mcpPort: 1110 },
+    });
+
+    expect(report.project.shape).toBe('http');
+    expect(report.project.transport).toBe('http');
+    expect(report.project.workspacePin).toBe(workspace);
+    expect(report.preferredSource).toBe('project');
+    expect(report.assignment.present).toBe(true);
+    expect(report.issues).toEqual([]);
+    expect(formatCursorMcpInspection(report)).toContain('Issues: none');
+  });
+
+  it('NOT-567: flags a headerless project entry that cannot select a deck', () => {
+    const { workspace } = makeHomeAndWorkspace();
+    fs.mkdirSync(path.join(workspace, '.cursor'), { recursive: true });
+    const original = `${JSON.stringify(
+      { mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:1110/mcp' } } },
+      null,
+      2,
+    )}\n`;
+    fs.writeFileSync(path.join(workspace, '.cursor', 'mcp.json'), original);
+    writeV3Assignment(workspace);
+
+    const report = inspectCursorMcpConfig({
+      cwd: workspace,
+      endpoint: { host: '127.0.0.1', mcpPort: 1110 },
+    });
+
+    expect(report.project.shape).toBe('http');
+    expect(report.project.issues.map((i) => i.code)).toEqual(
+      expect.arrayContaining(['missing-workspace-header']),
+    );
+    expect(fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8')).toBe(original);
+    const formatted = formatCursorMcpInspection(report);
+    expect(formatted).toContain('Recovery [missing-workspace-header]');
+    expect(formatted).toContain('agent-deck use <deck> --client cursor');
+  });
+
+  it('NOT-567: flags an interpolated workspace header as unresolved', () => {
+    // Cursor sends header values literally — unlike the legacy launcher
+    // pin, `${workspaceFolder}` in a header is never expanded.
+    const { workspace } = makeHomeAndWorkspace();
+    fs.mkdirSync(path.join(workspace, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.cursor', 'mcp.json'),
+      `${JSON.stringify({
+        mcpServers: {
+          'agent-deck': {
+            url: 'http://127.0.0.1:1110/mcp',
+            headers: { 'x-agent-deck-workspace': '${workspaceFolder}' },
+          },
+        },
+      }, null, 2)}\n`,
+    );
+
+    const report = inspectCursorMcpConfig({
+      cwd: workspace,
+      endpoint: { host: '127.0.0.1', mcpPort: 1110 },
+    });
+
+    expect(report.project.shape).toBe('http');
+    expect(report.project.workspacePin).toBeNull();
+    expect(report.project.issues.map((i) => i.code)).toEqual(
+      expect.arrayContaining(['unresolved-workspace-pin']),
+    );
+  });
+
+  it('NOT-567: detects a stale HTTP endpoint', () => {
+    const { home, workspace } = makeHomeAndWorkspace();
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.cursor', 'mcp.json'),
+      `${JSON.stringify({
+        mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:9999/mcp' } },
+      }, null, 2)}\n`,
+    );
+
+    const report = inspectCursorMcpConfig({
+      cwd: workspace,
+      endpoint: { host: '127.0.0.1', mcpPort: 1110 },
+    });
+
+    expect(report.global.shape).toBe('http');
+    expect(report.global.issues.map((i) => i.code)).toEqual(
+      expect.arrayContaining(['stale-endpoint']),
+    );
   });
 
   it('accepts a valid mcp-launch pin with assignment metadata (no secrets in output)', () => {
@@ -398,7 +505,7 @@ describe('inspectCursorMcpConfig', () => {
     expect(report.preferredSource).toBe('project');
     expect(report.expectedPrecedence).toBe('project-over-global');
     expect(report.project.shape).toBe('mcp-launch');
-    expect(report.global.shape).toBe('legacy-bare-url');
+    expect(report.global.shape).toBe('http');
   });
 
   it('readAssignmentSummarySync never exposes secret field', () => {
