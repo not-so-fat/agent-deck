@@ -69,14 +69,17 @@ function checkReleaseSync() {
     const entry = mcp?.mcpServers?.['agent-deck'];
     transportOk =
       !!entry &&
-      entry.command === 'agent-deck' &&
-      Array.isArray(entry.args) &&
-      entry.args.includes('mcp-launch');
+      entry.type === 'http' &&
+      typeof entry.url === 'string' &&
+      /^https?:\/\//.test(entry.url) &&
+      entry.command === undefined;
   } catch {
     transportOk = false;
   }
   if (!transportOk) {
-    failures.push('.mcp.json does not invoke `agent-deck mcp-launch` for the agent-deck server (legacy direct-HTTP transport)');
+    failures.push(
+      '.mcp.json is not the global headerless HTTP fallback for the agent-deck server (expected { type: "http", url: "http://127.0.0.1:<port>/mcp" } with no command)',
+    );
   }
 
   if (failures.length > 0) {
