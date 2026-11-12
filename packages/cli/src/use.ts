@@ -5,13 +5,18 @@ import { createCollectionAdmin } from './backend-runtime';
 import { parseCliMcpPort } from './defaults';
 import {
   buildAgentDeckEntry,
+  buildCodexAgentDeckEntry,
   buildMcpUrl,
   ensureGlobalCursorMcpLaunch,
+  formatCodexMcpSection,
   formatCursorGlobalMcpEnsureMessage,
+  mergeCodexTomlConfig,
   mergeMcpServerConfig,
   readJsonFile,
+  readTextFile,
   resolveConfigPath,
   writeJsonFile,
+  writeTextFile,
   type McpClient,
   type McpEndpoint,
 } from './mcp-config';
@@ -31,7 +36,7 @@ import {
   isHomeStoreWriteError,
 } from './home-write';
 
-export type UseClientTarget = 'cursor' | 'claude' | 'muse' | 'both';
+export type UseClientTarget = 'cursor' | 'claude' | 'codex' | 'muse' | 'both';
 
 export interface UseOptions {
   deckRef?: string;
@@ -92,7 +97,7 @@ function parseUseClient(value: string | undefined): UseClientTarget | null {
   if (!value || value === 'both') {
     return 'both';
   }
-  if (value === 'cursor' || value === 'claude' || value === 'muse') {
+  if (value === 'cursor' || value === 'claude' || value === 'codex' || value === 'muse') {
     return value;
   }
   return null;
@@ -113,7 +118,7 @@ export function parseUseArgs(args: string[]): UseOptions | { error: string } {
     } else if (arg === '--client') {
       const parsed = parseUseClient(args[++i]);
       if (!parsed) {
-        return { error: '--client must be cursor, claude, muse, or both' };
+        return { error: '--client must be cursor, claude, codex, muse, or both' };
       }
       clients = parsed;
     } else if (arg === '--host') {
@@ -159,13 +164,17 @@ function clientsToWrite(target: UseClientTarget): McpClient[] {
   if (target === 'claude') {
     return ['claude'];
   }
+  if (target === 'codex') {
+    return ['codex'];
+  }
   if (target === 'muse') {
     return ['muse'];
   }
-  return ['cursor', 'claude'];
+  // Legacy `both` keeps its name but now covers cursor, claude, and codex.
+  return ['cursor', 'claude', 'codex'];
 }
 
-/** Muse writes no Cursor- or Claude-only stub files; legacy `both` still covers both. */
+/** Codex and Muse write no Cursor- or Claude-only stub files. */
 function stubTargets(target: UseClientTarget): { cursor: boolean; claude: boolean } {
   return {
     cursor: target === 'cursor' || target === 'both',
@@ -183,8 +192,17 @@ function writeProjectMcpConfigs(
   }
   for (const client of clientsToWrite(parsed.clients)) {
     const configPath = resolveConfigPath(client, 'project', parsed.workspaceRoot);
+    if (client === 'codex') {
+      const section = formatCodexMcpSection(
+        buildCodexAgentDeckEntry(endpoint, { workspaceRoot: parsed.workspaceRoot }),
+      );
+      writeTextFile(configPath, mergeCodexTomlConfig(readTextFile(configPath), section));
+      mcpWritten.push({ client, path: configPath });
+      continue;
+    }
     const entry = buildAgentDeckEntry(client, endpoint, {
-      workspaceRoot: client === 'cursor' ? parsed.workspaceRoot : undefined,
+      // Muse resolves its workspace dynamically — it must not be pinned.
+      workspaceRoot: client === 'muse' ? undefined : parsed.workspaceRoot,
     });
     const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
     writeJsonFile(configPath, merged);
@@ -389,6 +407,17 @@ export function formatUseSummary(result: UseResult): string {
   );
   lines.push(`Cursor stubs → ${path.join('.cursor', 'rules', 'agent-deck-stubs')}`);
   lines.push(`Claude stubs → ${path.join('.claude', 'skills', 'agent-deck-<slug>')}`);
+  const written = new Set(result.mcp.map((entry) => entry.client));
+  if (written.has('claude')) {
+    lines.push(
+      'Claude Code: approve the project agent-deck entry (.mcp.json) when prompted, then reload MCP.',
+    );
+  }
+  if (written.has('codex')) {
+    lines.push(
+      'Codex: trust this folder so .codex/config.toml applies, then reload MCP (start a new task).',
+    );
+  }
   lines.push('Restart the IDE host so MCP and stub discovery reload.');
   return lines.join('\n');
 }
@@ -398,7 +427,7 @@ export async function runUseCommand(args: string[]): Promise<number> {
   if ('error' in parsed) {
     if (parsed.error === 'help') {
       console.log(`Usage:
-  agent-deck use <deck> [--client cursor|claude|muse|both] [--host HOST] [--mcp-port PORT] [--no-mcp]
+  agent-deck use <deck> [--client cursor|claude|codex|muse|both] [--host HOST] [--mcp-port PORT] [--no-mcp]
   agent-deck use --refresh
 
 Writes project MCP config (one agent-deck entry), .agent-deck/use.json, and thin playbook trigger stubs.

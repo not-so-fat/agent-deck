@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 
-import { parseUseArgs, runUse } from './use';
+import { formatUseSummary, parseUseArgs, runUse } from './use';
 import { writeUseManifest } from './playbook-stubs';
 import { HOME_STORE_WRITE_BLOCKED_HINT } from './home-write';
 
@@ -64,6 +64,7 @@ describe('agent-deck use', () => {
     { args: ['dev'], clients: 'both' },
     { args: ['dev', '--client', 'cursor'], clients: 'cursor' },
     { args: ['dev', '--client', 'claude'], clients: 'claude' },
+    { args: ['dev', '--client', 'codex'], clients: 'codex' },
     { args: ['dev', '--client', 'muse'], clients: 'muse' },
     { args: ['dev', '--client', 'both'], clients: 'both' },
   ])('NOT-387: parseUseArgs accepts --client $clients', ({ args, clients }) => {
@@ -71,8 +72,8 @@ describe('agent-deck use', () => {
   });
 
   it('NOT-387: parseUseArgs rejects unknown clients', () => {
-    expect(parseUseArgs(['dev', '--client', 'codex'])).toEqual({
-      error: '--client must be cursor, claude, muse, or both',
+    expect(parseUseArgs(['dev', '--client', 'vim'])).toEqual({
+      error: '--client must be cursor, claude, codex, muse, or both',
     });
   });
 
@@ -528,5 +529,228 @@ describe('agent-deck use', () => {
     }
     expect(result.error).toContain('attempt to write a readonly database');
     expect(result.error.startsWith('attempt to write a readonly database')).toBe(false);
+  });
+
+  it('NOT-563: default use writes per-folder pure-MCP entries for Codex and Claude', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const parsed = parseUseArgs(['dev']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(false);
+    if ('error' in result) {
+      return;
+    }
+
+    const mcpUrl = `http://${parsed.host}:${parsed.mcpPort}/mcp`;
+    const codexPath = path.join(workspace, '.codex', 'config.toml');
+    const codexText = fs.readFileSync(codexPath, 'utf8');
+    expect(codexText).toBe(
+      `[mcp_servers.agent-deck]\nurl = "${mcpUrl}"\nhttp_headers = { "x-agent-deck-workspace" = "${workspace}" }\n`,
+    );
+    expect(codexText).not.toContain('deck-1');
+
+    const claudePath = path.join(workspace, '.mcp.json');
+    const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(claude.mcpServers['agent-deck']).toEqual({
+      type: 'http',
+      url: mcpUrl,
+      headers: { 'x-agent-deck-workspace': workspace },
+    });
+    expect(fs.readFileSync(claudePath, 'utf8')).not.toContain('deck-1');
+
+    // The assignment still carries the deck id for the daemon to resolve.
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),
+    ) as { deckId: string };
+    expect(manifest.deckId).toBe('deck-1');
+
+    expect(result.mcp).toContainEqual({ client: 'codex', path: codexPath });
+    expect(result.mcp).toContainEqual({ client: 'claude', path: claudePath });
+  });
+
+  it('NOT-563: use preserves unrelated entries and is byte-identical on re-run', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const memoryServer = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] };
+    fs.writeFileSync(
+      path.join(workspace, '.mcp.json'),
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            memory: memoryServer,
+            'agent-deck': {
+              type: 'stdio',
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: { AGENT_DECK_MCP_PORT: '9999', AGENT_DECK_HOST: '127.0.0.1' },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const codexPrefix = '[model]\nname = "gpt-5"\n\n[mcp_servers.other]\nurl = "http://example.com/mcp"\n';
+    fs.mkdirSync(path.join(workspace, '.codex'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.codex', 'config.toml'), codexPrefix);
+
+    const parsed = parseUseArgs(['dev']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const first = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in first).toBe(false);
+    if ('error' in first) {
+      return;
+    }
+
+    const claudePath = path.join(workspace, '.mcp.json');
+    const claude = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(claude.mcpServers.memory).toEqual(memoryServer);
+    expect(claude.mcpServers['agent-deck']).toEqual({
+      type: 'http',
+      url: `http://${parsed.host}:${parsed.mcpPort}/mcp`,
+      headers: { 'x-agent-deck-workspace': workspace },
+    });
+
+    const codexPath = path.join(workspace, '.codex', 'config.toml');
+    const codexText = fs.readFileSync(codexPath, 'utf8');
+    expect(codexText.startsWith(codexPrefix)).toBe(true);
+    expect(codexText).toContain('[mcp_servers.agent-deck]');
+
+    const claudeBefore = fs.readFileSync(claudePath, 'utf8');
+    const codexBefore = fs.readFileSync(codexPath, 'utf8');
+    const second = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in second).toBe(false);
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(claudeBefore);
+    expect(fs.readFileSync(codexPath, 'utf8')).toBe(codexBefore);
+  });
+
+  it('NOT-563: use removes a stale codex env sub-table left by codex mcp add', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    fs.mkdirSync(path.join(workspace, '.codex'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.codex', 'config.toml'),
+      [
+        '[mcp_servers.agent-deck]',
+        'command = "agent-deck"',
+        '',
+        '[mcp_servers.agent-deck.env]',
+        'AGENT_DECK_WORKSPACE = "/stale/ws"',
+        '',
+      ].join('\n'),
+    );
+
+    const parsed = parseUseArgs(['dev', '--client', 'codex']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(false);
+    if ('error' in result) {
+      return;
+    }
+
+    const mcpUrl = `http://${parsed.host}:${parsed.mcpPort}/mcp`;
+    const codexPath = path.join(workspace, '.codex', 'config.toml');
+    const codexText = fs.readFileSync(codexPath, 'utf8');
+    expect(codexText).toBe(
+      `[mcp_servers.agent-deck]\nurl = "${mcpUrl}"\nhttp_headers = { "x-agent-deck-workspace" = "${workspace}" }\n`,
+    );
+    expect(codexText).not.toContain('AGENT_DECK_WORKSPACE');
+
+    const second = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in second).toBe(false);
+    expect(fs.readFileSync(codexPath, 'utf8')).toBe(codexText);
+  });
+
+  it('NOT-563: summary names the Claude approval, Codex trust, and reload-MCP steps', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const parsed = parseUseArgs(['dev']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(false);
+    if ('error' in result) {
+      return;
+    }
+    const summary = formatUseSummary(result);
+    expect(summary).toContain('approve the project agent-deck entry');
+    expect(summary).toContain('trust this folder');
+    expect(summary).toContain('reload MCP');
+
+    const cursorOnly = await runUse({
+      ...parsed,
+      clients: 'cursor',
+      workspaceRoot: workspace,
+    });
+    expect('error' in cursorOnly).toBe(false);
+    if ('error' in cursorOnly) {
+      return;
+    }
+    const cursorSummary = formatUseSummary(cursorOnly);
+    expect(cursorSummary).not.toContain('approve the project agent-deck entry');
+    expect(cursorSummary).not.toContain('trust this folder');
+  });
+
+  it('NOT-563: the Cursor entry written by use is unchanged', async () => {
+    const workspace = makeWorkspace();
+    const fakeHome = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const parsed = parseUseArgs(['dev']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+    const result = await runUse({ ...parsed, workspaceRoot: workspace });
+    expect('error' in result).toBe(false);
+    if ('error' in result) {
+      return;
+    }
+
+    const mcp = JSON.parse(
+      fs.readFileSync(path.join(workspace, '.cursor', 'mcp.json'), 'utf8'),
+    ) as { mcpServers: Record<string, unknown> };
+    // Exact pre-change launcher fixture — toEqual fails on any extra field.
+    expect(mcp.mcpServers['agent-deck']).toEqual({
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+      env: {
+        AGENT_DECK_MCP_PORT: String(parsed.mcpPort),
+        AGENT_DECK_HOST: parsed.host,
+        AGENT_DECK_WORKSPACE: workspace,
+      },
+    });
   });
 });

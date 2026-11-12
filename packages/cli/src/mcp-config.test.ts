@@ -6,10 +6,13 @@ import path from 'node:path';
 import {
   MUSE_SCHEMA_VERSION,
   buildAgentDeckEntry,
+  buildCodexAgentDeckEntry,
   ensureGlobalCursorMcpLaunch,
+  formatCodexMcpSection,
   formatCursorGlobalMcpEnsureMessage,
   isLegacyBareHttpAgentDeckEntry,
   isMcpLaunchEntry,
+  mergeCodexTomlConfig,
   mergeMcpServerConfig,
   mergeMuseServerConfig,
   readCursorWorkspaceRoot,
@@ -62,6 +65,62 @@ describe('buildAgentDeckEntry', () => {
       env: {
         AGENT_DECK_MCP_PORT: '3001',
         AGENT_DECK_HOST: '127.0.0.1',
+      },
+    });
+  });
+
+  it('NOT-563: writes a pure-HTTP entry for claude project folders', () => {
+    // toEqual fails on any extra field: no deck id, no launcher keys.
+    expect(
+      buildAgentDeckEntry(
+        'claude',
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: '/tmp/ws' },
+      ),
+    ).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: { 'x-agent-deck-workspace': '/tmp/ws' },
+    });
+  });
+
+  it('NOT-563: writes a URL-plus-header entry for codex project folders', () => {
+    const expected = {
+      url: 'http://127.0.0.1:1110/mcp',
+      http_headers: { 'x-agent-deck-workspace': '/tmp/ws' },
+    };
+    expect(
+      buildCodexAgentDeckEntry({ host: '127.0.0.1', mcpPort: 1110 }, { workspaceRoot: '/tmp/ws' }),
+    ).toEqual(expected);
+    expect(
+      buildAgentDeckEntry(
+        'codex',
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: '/tmp/ws' },
+      ),
+    ).toEqual(expected);
+  });
+
+  it('NOT-563: codex requires a workspace root for the header', () => {
+    expect(() => buildAgentDeckEntry('codex', { host: '127.0.0.1', mcpPort: 1110 })).toThrow(
+      /workspaceRoot/,
+    );
+  });
+
+  it('NOT-563: keeps the cursor project launcher byte-identical to the pre-change fixture', () => {
+    expect(
+      buildAgentDeckEntry(
+        'cursor',
+        { host: '127.0.0.1', mcpPort: 1110 },
+        { workspaceRoot: '/tmp/ws' },
+      ),
+    ).toEqual({
+      command: 'agent-deck',
+      args: ['mcp-launch'],
+      env: {
+        AGENT_DECK_MCP_PORT: '1110',
+        AGENT_DECK_HOST: '127.0.0.1',
+        AGENT_DECK_WORKSPACE: '/tmp/ws',
       },
     });
   });
@@ -119,6 +178,278 @@ describe('buildAgentDeckEntry', () => {
     expect(isMcpLaunchEntry(buildAgentDeckEntry(client, { host: '127.0.0.1', mcpPort: 1110 }))).toBe(
       true,
     );
+  });
+});
+
+describe('NOT-563 codex config paths', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('resolves codex project scope to .codex/config.toml and global to ~/.codex/config.toml', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-home-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-workspace-'));
+    vi.spyOn(os, 'homedir').mockReturnValue(home);
+    try {
+      expect(resolveConfigPath('codex', 'project', workspace)).toBe(
+        path.join(workspace, '.codex', 'config.toml'),
+      );
+      expect(resolveConfigPath('codex', 'global')).toBe(
+        path.join(home, '.codex', 'config.toml'),
+      );
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('NOT-563 codex TOML section', () => {
+  const entry = buildCodexAgentDeckEntry(
+    { host: '127.0.0.1', mcpPort: 1110 },
+    { workspaceRoot: '/tmp/ws' },
+  );
+  const section = [
+    '[mcp_servers.agent-deck]',
+    'url = "http://127.0.0.1:1110/mcp"',
+    'http_headers = { "x-agent-deck-workspace" = "/tmp/ws" }',
+  ].join('\n');
+
+  it('formats the canonical section from the entry', () => {
+    expect(formatCodexMcpSection(entry)).toBe(section);
+  });
+
+  it('escapes backslashes and quotes in values', () => {
+    expect(
+      formatCodexMcpSection({
+        url: 'http://127.0.0.1:1110/mcp',
+        http_headers: { 'x-agent-deck-workspace': 'C:\\ws\\"quoted"' },
+      }),
+    ).toBe(
+      [
+        '[mcp_servers.agent-deck]',
+        'url = "http://127.0.0.1:1110/mcp"',
+        'http_headers = { "x-agent-deck-workspace" = "C:\\\\ws\\\\\\"quoted\\"" }',
+      ].join('\n'),
+    );
+  });
+
+  it('writes the section alone for a missing file', () => {
+    expect(mergeCodexTomlConfig('', section)).toBe(`${section}\n`);
+  });
+
+  it('appends after unrelated content with a blank separator, preserving every byte', () => {
+    const existing = '[model]\nname = "gpt-5"\n\n[mcp_servers.other]\nurl = "http://example.com/mcp"\n';
+    expect(mergeCodexTomlConfig(existing, section)).toBe(`${existing}\n${section}\n`);
+  });
+
+  it('appends after a file with no trailing newline', () => {
+    expect(mergeCodexTomlConfig('[model]\nname = "gpt-5"', section)).toBe(
+      `[model]\nname = "gpt-5"\n\n${section}\n`,
+    );
+  });
+
+  it('replaces a stale agent-deck section in place, keeping the blank separator', () => {
+    const existing = [
+      '[model]',
+      'name = "gpt-5"',
+      '',
+      '[mcp_servers.agent-deck]',
+      'url = "http://127.0.0.1:9999/mcp"',
+      '',
+      '[mcp_servers.other]',
+      'url = "http://example.com/mcp"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      [
+        '[model]',
+        'name = "gpt-5"',
+        '',
+        section,
+        '',
+        '[mcp_servers.other]',
+        'url = "http://example.com/mcp"',
+        '',
+      ].join('\n'),
+    );
+    expect(merged).not.toContain('9999');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('removes a stale env sub-table adjoining the parent section', () => {
+    // The layout `codex mcp add --env` writes: a stale launcher parent plus
+    // an env sub-table that must not survive next to the pure-HTTP entry.
+    const existing = [
+      '[mcp_servers.agent-deck]',
+      'command = "agent-deck"',
+      '',
+      '[mcp_servers.agent-deck.env]',
+      'AGENT_DECK_WORKSPACE = "/stale/ws"',
+      '',
+      '[mcp_servers.other]',
+      'url = "http://example.com/mcp"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      [section, '', '[mcp_servers.other]', 'url = "http://example.com/mcp"', ''].join('\n'),
+    );
+    expect(merged).not.toContain('AGENT_DECK_WORKSPACE');
+    expect(merged).not.toContain('command = ');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('removes a non-adjacent sub-table elsewhere in the file', () => {
+    const existing = [
+      '[mcp_servers.agent-deck]',
+      'url = "http://127.0.0.1:9999/mcp"',
+      '',
+      '[mcp_servers.other]',
+      'url = "http://example.com/mcp"',
+      '',
+      '[mcp_servers.agent-deck.env]',
+      'FOO = "bar"',
+      '',
+      '[model]',
+      'name = "gpt-5"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      [
+        section,
+        '',
+        '[mcp_servers.other]',
+        'url = "http://example.com/mcp"',
+        '',
+        '[model]',
+        'name = "gpt-5"',
+        '',
+      ].join('\n'),
+    );
+    expect(merged).not.toContain('FOO');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('removes an http_headers sub-table that would redefine the inline headers', () => {
+    const merged = mergeCodexTomlConfig(
+      [
+        '[mcp_servers.agent-deck]',
+        'url = "http://127.0.0.1:9999/mcp"',
+        '[mcp_servers.agent-deck.http_headers]',
+        'x-agent-deck-workspace = "/stale/ws"',
+        '',
+      ].join('\n'),
+      section,
+    );
+    expect(merged).toBe(`${section}\n`);
+    expect(merged).not.toContain('/stale/ws');
+  });
+
+  it('removes quoted and whitespace-padded sub-table headers', () => {
+    const merged = mergeCodexTomlConfig(
+      '[mcp_servers."agent-deck"]\nurl = "http://127.0.0.1:9999/mcp"\n\n[mcp_servers."agent-deck".env]\nFOO = "bar"\n',
+      section,
+    );
+    expect(merged).toBe(`${section}\n`);
+    const padded = mergeCodexTomlConfig(
+      '[ mcp_servers . agent-deck ]\nurl = "http://127.0.0.1:9999/mcp"\n',
+      section,
+    );
+    expect(padded).toBe(`${section}\n`);
+  });
+
+  it('leaves a merely prefixed sibling section alone', () => {
+    const existing = '[mcp_servers.agent-deck-env]\nurl = "http://example.com/mcp"\n';
+    expect(mergeCodexTomlConfig(existing, section)).toBe(`${existing}\n${section}\n`);
+  });
+
+  it('replaces a single-line inline table under [mcp_servers]', () => {
+    const existing = [
+      '[mcp_servers]',
+      'agent-deck = { url = "http://127.0.0.1:9999/mcp" }',
+      'other = { url = "http://example.com/mcp" }',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      ['[mcp_servers]', 'other = { url = "http://example.com/mcp" }', '', section, ''].join('\n'),
+    );
+    expect(merged).not.toContain('9999');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('replaces dotted keys under [mcp_servers]', () => {
+    const existing = [
+      '[mcp_servers]',
+      'other = { url = "http://example.com/mcp" }',
+      'agent-deck.url = "http://127.0.0.1:9999/mcp"',
+      'agent-deck.token = "stale"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      ['[mcp_servers]', 'other = { url = "http://example.com/mcp" }', '', section, ''].join('\n'),
+    );
+    expect(merged).not.toContain('9999');
+    expect(merged).not.toContain('stale');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('replaces a multi-line inline table under [mcp_servers]', () => {
+    const existing = [
+      '[mcp_servers]',
+      'agent-deck = {',
+      '  url = "http://127.0.0.1:9999/mcp", # a { brace in a comment',
+      '  note = "a } brace { in a string",',
+      '}',
+      '',
+      '[model]',
+      'name = "gpt-5"',
+      '',
+    ].join('\n');
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(
+      ['[mcp_servers]', '[model]', 'name = "gpt-5"', '', section, ''].join('\n'),
+    );
+    expect(merged).not.toContain('9999');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('ignores a nested agent-deck key inside another server table', () => {
+    const existing = ['[mcp_servers]', 'other = {', '  agent-deck = "nested",', '}', ''].join(
+      '\n',
+    );
+    const merged = mergeCodexTomlConfig(existing, section);
+    expect(merged).toBe(`${existing}\n${section}\n`);
+    expect(merged).toContain('agent-deck = "nested"');
+    expect(mergeCodexTomlConfig(merged, section)).toBe(merged);
+  });
+
+  it('normalizes a quoted section header', () => {
+    const merged = mergeCodexTomlConfig(
+      '[mcp_servers."agent-deck"]\nurl = "http://127.0.0.1:9999/mcp"\n',
+      section,
+    );
+    expect(merged).toBe(`${section}\n`);
+  });
+
+  it('is idempotent', () => {
+    const cases = [
+      '',
+      '[model]\nname = "gpt-5"\n',
+      '[mcp_servers."agent-deck"]\nurl = "http://127.0.0.1:9999/mcp"\n',
+      '[mcp_servers.agent-deck]\nurl = "http://127.0.0.1:9999/mcp"\n\n[mcp_servers.agent-deck.env]\nFOO = "bar"\n',
+      '[mcp_servers]\nagent-deck = { url = "http://127.0.0.1:9999/mcp" }\n',
+      '[mcp_servers]\nagent-deck.url = "http://127.0.0.1:9999/mcp"\n',
+      `${section}\n`,
+    ];
+    for (const existing of cases) {
+      const once = mergeCodexTomlConfig(existing, section);
+      expect(mergeCodexTomlConfig(once, section)).toBe(once);
+    }
   });
 });
 
