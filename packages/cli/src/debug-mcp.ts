@@ -94,6 +94,32 @@ function readClaudeMcpEntry(configPath: string, displayPath: string): ClaudeMcpE
   }
 }
 
+/** Pure-HTTP agent-deck entry: the expected shape for Claude Code (NOT-563/565). */
+function isPureHttpAgentDeckEntry(entry: unknown): boolean {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return false;
+  }
+  const record = entry as Record<string, unknown>;
+  if (typeof record.url !== 'string' || !record.url) {
+    return false;
+  }
+  // Explicit stdio entries are never HTTP, even with a stale url key.
+  if (record.type === 'stdio' || typeof record.command === 'string') {
+    return false;
+  }
+  return record.type === 'http' || record.type === undefined;
+}
+
+function httpEntryWorkspaceHeader(entry: unknown): string | undefined {
+  const record = entry as Record<string, unknown>;
+  const headers = record.headers;
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+    return undefined;
+  }
+  const value = (headers as Record<string, unknown>)['x-agent-deck-workspace'];
+  return typeof value === 'string' && value ? value : undefined;
+}
+
 export function assessClaudeMcpConfig(
   project: ClaudeMcpEntryRead,
   user: ClaudeMcpEntryRead,
@@ -105,7 +131,6 @@ export function assessClaudeMcpConfig(
     label: 'project' | 'user',
     displayPath: string,
     result: ClaudeMcpEntryRead,
-    conflictingLauncher: 'project' | 'user' | null = null,
   ): boolean => {
     if (result.kind === 'missing') {
       return false;
@@ -117,19 +142,36 @@ export function assessClaudeMcpConfig(
     }
 
     const serialized = JSON.stringify(result.entry);
+    if (isPureHttpAgentDeckEntry(result.entry)) {
+      // A project HTTP entry without the workspace header silently drops
+      // the folder into the unassigned session (NOT-565 repair note).
+      if (label === 'project' && !httpEntryWorkspaceHeader(result.entry)) {
+        lines.push(
+          `WARN Claude project config (${displayPath}) is a headerless HTTP entry that cannot select a deck: ${serialized}`,
+        );
+        lines.push('     Fix: agent-deck use <deck>  (rewrites the per-folder entry with the workspace header)');
+        ok = false;
+        return false;
+      }
+      lines.push(`OK  Claude ${label} config (${displayPath}): ${serialized}`);
+      return true;
+    }
+
+    // The launcher still works (Cursor/Muse/Desktop keep it), so a legacy
+    // launcher entry is a migration note, not a failure.
     if (isMcpLaunchEntry(result.entry)) {
       lines.push(`OK  Claude ${label} config (${displayPath}): ${serialized}`);
+      lines.push(
+        '     Legacy launcher entry — still connects, but run `agent-deck upgrade` to rewrite it to pure MCP.',
+      );
       return true;
     }
 
     const shape = isLegacyBareHttpAgentDeckEntry(result.entry)
       ? 'bare HTTP entry'
       : 'custom entry';
-    const conflict = conflictingLauncher
-      ? ` conflicts with the ${conflictingLauncher} launcher and`
-      : '';
-    lines.push(`WARN Claude ${label} config (${displayPath}) has a ${shape} that${conflict} cannot select a deck: ${serialized}`);
-    lines.push(`     Expected the trusted \`agent-deck mcp-launch\` stdio entry.`);
+    lines.push(`WARN Claude ${label} config (${displayPath}) has a ${shape} that cannot select a deck: ${serialized}`);
+    lines.push('     Expected the pure-HTTP agent-deck entry (url plus the x-agent-deck-workspace header for project scope).');
     const scope = label === 'project' ? 'project' : 'user';
     const setupScope = label === 'project' ? ' --scope project' : '';
     lines.push(`     Fix: claude mcp remove agent-deck -s ${scope} && agent-deck setup --client claude${setupScope}`);
@@ -137,10 +179,14 @@ export function assessClaudeMcpConfig(
     return false;
   };
 
-  const projectTrusted = project.kind === 'entry' && isMcpLaunchEntry(project.entry);
-  const userTrusted = user.kind === 'entry' && isMcpLaunchEntry(user.entry);
-  assess('project', './.mcp.json', project, userTrusted ? 'user' : null);
-  assess('user', '~/.claude.json', user, projectTrusted ? 'project' : null);
+  const projectTrusted =
+    project.kind === 'entry' &&
+    (isPureHttpAgentDeckEntry(project.entry) || isMcpLaunchEntry(project.entry));
+  const userTrusted =
+    user.kind === 'entry' &&
+    (isPureHttpAgentDeckEntry(user.entry) || isMcpLaunchEntry(user.entry));
+  assess('project', './.mcp.json', project);
+  assess('user', '~/.claude.json', user);
 
   if (!projectTrusted && !userTrusted && project.kind === 'missing' && user.kind === 'missing') {
     lines.push('Claude config: no agent-deck entry in ./.mcp.json or ~/.claude.json');
@@ -231,13 +277,13 @@ export async function runDebugMcp(): Promise<number> {
   } else {
     console.log(`WARN No v2/v3 folder assignment @ ${workspaceRoot}`);
     console.log('     Run `agent-deck use <deck>` for an IDE folder, or supply the deck header in an unattended launch.');
-    console.log('INFO Skipping authenticated MCP initialize probe; the deck must come from the launcher.');
+    console.log('INFO Skipping authenticated MCP initialize probe; no folder assignment names a deck.');
   }
 
   if (probePlan.shouldProbe) {
     const init = await probeMcpInitialize(probe.mcpUrl, probePlan.launchHeaders);
     if (init.ok) {
-      console.log(`OK  ${init.detail} (same deck headers mcp-launch uses)`);
+      console.log(`OK  ${init.detail} (same deck headers the host connection sends)`);
     } else {
       console.log(`FAIL ${init.detail}`);
       ok = false;

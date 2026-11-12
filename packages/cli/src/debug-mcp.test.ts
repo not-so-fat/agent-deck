@@ -56,43 +56,66 @@ describe('assessClaudeMcpConfig', () => {
     kind: 'entry',
     entry: { type: 'stdio', command: 'agent-deck', args: ['mcp-launch'] },
   } as const;
-  const bareHttp = {
+  const projectHttp = {
+    kind: 'entry',
+    entry: {
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: { 'x-agent-deck-workspace': '/work/repo' },
+    },
+  } as const;
+  const fallbackHttp = {
     kind: 'entry',
     entry: { type: 'http', url: 'http://127.0.0.1:1110/mcp' },
   } as const;
+  const custom = {
+    kind: 'entry',
+    entry: { command: 'npx', args: ['-y', 'custom-wrapper'] },
+  } as const;
 
-  it('accepts a project launcher without requiring a user-scope entry', () => {
-    const result = assessClaudeMcpConfig(launcher, missing);
+  it('NOT-566: accepts a project pure-HTTP entry without requiring a user-scope entry', () => {
+    const result = assessClaudeMcpConfig(projectHttp, missing);
 
     expect(result.ok).toBe(true);
     expect(result.lines.join('\n')).toContain('OK  Claude project config');
     expect(result.lines.join('\n')).not.toContain('Fix:');
   });
 
-  it('accepts the global launcher written by setup when no project entry exists', () => {
-    const result = assessClaudeMcpConfig(missing, launcher);
+  it('NOT-566: accepts the headerless global HTTP fallback written by setup', () => {
+    const result = assessClaudeMcpConfig(missing, fallbackHttp);
 
     expect(result.ok).toBe(true);
     expect(result.lines.join('\n')).toContain('OK  Claude user config');
     expect(result.lines.join('\n')).not.toContain('Fix:');
   });
 
-  it('rejects a stale user HTTP entry that conflicts with a project launcher', () => {
-    const result = assessClaudeMcpConfig(launcher, bareHttp);
+  it('NOT-566: warns on a headerless project HTTP entry that cannot select a deck', () => {
+    const result = assessClaudeMcpConfig(fallbackHttp, missing);
 
     expect(result.ok).toBe(false);
-    expect(result.lines.join('\n')).toContain('conflicts with the project launcher');
-    expect(result.lines.join('\n')).toContain('cannot select a deck');
-    expect(result.lines).toContain(
-      '     Fix: claude mcp remove agent-deck -s user && agent-deck setup --client claude',
-    );
+    expect(result.lines.join('\n')).toContain('headerless HTTP entry that cannot select a deck');
+    expect(result.lines.join('\n')).toContain('Fix: agent-deck use <deck>');
   });
 
-  it('reports a bad project entry as conflicting with a trusted user launcher', () => {
-    const result = assessClaudeMcpConfig(bareHttp, launcher);
+  it('NOT-566: keeps a legacy launcher entry healthy with a migration note', () => {
+    const project = assessClaudeMcpConfig(launcher, missing);
+    expect(project.ok).toBe(true);
+    expect(project.lines.join('\n')).toContain('OK  Claude project config');
+    expect(project.lines.join('\n')).toContain('Legacy launcher entry');
+    expect(project.lines.join('\n')).toContain('agent-deck upgrade');
+
+    const user = assessClaudeMcpConfig(missing, launcher);
+    expect(user.ok).toBe(true);
+    expect(user.lines.join('\n')).toContain('OK  Claude user config');
+    expect(user.lines.join('\n')).toContain('Legacy launcher entry');
+  });
+
+  it('rejects a custom entry with the pure-HTTP expectation', () => {
+    const result = assessClaudeMcpConfig(custom, missing);
 
     expect(result.ok).toBe(false);
-    expect(result.lines.join('\n')).toContain('conflicts with the user launcher');
+    expect(result.lines.join('\n')).toContain('custom entry');
+    expect(result.lines.join('\n')).toContain('Expected the pure-HTTP agent-deck entry');
     expect(result.lines).toContain(
       '     Fix: claude mcp remove agent-deck -s project && agent-deck setup --client claude --scope project',
     );
