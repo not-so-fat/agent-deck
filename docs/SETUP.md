@@ -271,9 +271,9 @@ Sessions that die without a clean disconnect (killed terminal, `kill -9`, crashe
 
 ### No Agent Deck tools in Codex / Claude Code (pure-MCP connection)
 
-Codex and Claude Code connect over pure MCP (streamable HTTP) with no `agent-deck` executable lookup. `agent-deck setup --client codex|claude` writes one **global headerless fallback** entry (`http://127.0.0.1:1110/mcp`, no headers — `~/.codex/config.toml`, `~/.claude.json`), so folders with no assignment still connect and land in the explain-only unassigned session. `agent-deck use <deck>` writes a same-name **per-folder entry** carrying the workspace header (`.codex/config.toml`, `.mcp.json`); it shadows the fallback where an assignment exists, and the daemon resolves the deck from `.agent-deck/use.json`.
+Codex and Claude Code connect over pure MCP (streamable HTTP) with no `agent-deck` executable lookup. The plugins carry skills and guidance only — they declare no MCP server. The connection is plain host MCP config: `agent-deck setup --client codex|claude` writes one **global headerless fallback** entry (`http://127.0.0.1:1110/mcp`, no headers — `~/.codex/config.toml`, `~/.claude.json`), so folders with no assignment still connect and land in the explain-only unassigned session. `agent-deck use <deck>` writes a same-name **per-folder entry** carrying the workspace header (`.codex/config.toml`, `.mcp.json`); it shadows the fallback where an assignment exists, and the daemon resolves the deck from `.agent-deck/use.json`.
 
-If the host shows no Agent Deck tools, work the three recovery steps in order:
+If the host shows no Agent Deck tools, first run `agent-deck start --daemon` and `agent-deck setup --client codex|claude` (with the plugin installed), then work the three recovery steps in order:
 
 1. **Trust the folder** so the host loads the project entry (Codex needs the canonical path trusted; Claude Code loads `.mcp.json` after trust).
 2. **Approve the project agent-deck entry** when the host prompts (Claude Code project entries start as Pending approval).

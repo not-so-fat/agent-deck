@@ -7,8 +7,8 @@
 **As-built notes**
 
 - Layout: Option A at repo root (not a thin sibling repo). Scanner scans the monorepo; [`.plugin-scanner.toml`](../.plugin-scanner.toml) `ignore_paths` mirrors [`.codexignore`](../.codexignore) so product surfaces (`apps/`, `packages/`, `scripts/`, …) do not tank secrets/code-quality checks.
-- `.mcp.json` on `main` stays at port **1110** (installed daemon). Dev override lives in local `.cursor/mcp.json` (3001), not the bundle file.
-- Claude Code: [`.claude-plugin/plugin.json`](../.claude-plugin/plugin.json) + [`marketplace.json`](../.claude-plugin/marketplace.json) share the same `skills/` and `.mcp.json`.
+- No `.mcp.json` ships in the bundle: the Codex/Claude plugins declare no MCP server (skills and guidance only). The connection is plain host MCP config written by `agent-deck setup` (global headerless fallback, port **1110** on the installed daemon) and `agent-deck use` (per-folder entry). Dev override lives in local `.cursor/mcp.json` (3001).
+- Claude Code: [`.claude-plugin/plugin.json`](../.claude-plugin/plugin.json) + [`marketplace.json`](../.claude-plugin/marketplace.json) share the same `skills/`.
 - Version: `scripts/sync-versions.mjs` updates `.codex-plugin/plugin.json` and Claude plugin manifests.
 
 ---
@@ -60,7 +60,6 @@ Everything below is written for Option A; it transfers to Option B unchanged (th
 agent_deck/
 ├── .codex-plugin/
 │   └── plugin.json          # Codex manifest (new)
-├── .mcp.json                # agent-deck MCP registration (exists — see 3.3)
 ├── .codexignore             # trims bundle to plugin files only (new)
 ├── skills/
 │   ├── agent-deck-setup/SKILL.md      # install/start/doctor (new)
@@ -85,7 +84,6 @@ Modeled on live marketplace entries (e.g. `changelog-forge`):
   "license": "MIT",
   "keywords": ["mcp", "playbooks", "agent-context", "codex-plugin"],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Agent Deck",
     "shortDescription": "Decks of tools, keys, and self-improving playbooks.",
@@ -103,7 +101,7 @@ Modeled on live marketplace entries (e.g. `changelog-forge`):
 }
 ```
 
-`mcpServers` must be declared (path to root `.mcp.json`). Omit it and ChatGPT desktop shows **Failed to load plugin connection**. Prefer `Read`/`Write` capabilities over `Interactive` unless you also ship an `.app.json` connector.
+`mcpServers` must **not** be declared: the plugin ships skills and guidance only, and the connection is plain host MCP config (see 3.3). A plugin-declared server would sit beside the per-folder entry as a second deck-less server instead of being replaced by it. Prefer `Read`/`Write` capabilities over `Interactive` unless you also ship an `.app.json` connector.
 
 Version: add `.codex-plugin/plugin.json` to `scripts/sync-versions.mjs` so it tracks the package version.
 
@@ -117,20 +115,19 @@ Playbook bodies live on the deck; the plugin ships only generic protocol stubs (
 
 Skill format is the standard Agent Skills `SKILL.md` (name/description frontmatter) — identical for Codex and Claude Code, so one `skills/` tree serves both (§5).
 
-### 3.3 `.mcp.json` — the global headerless fallback
+### 3.3 No bundled connection — host MCP config carries it
 
-Marketplace precedent (e.g. AgiFlow) is a top-level `.mcp.json` with the server entry; ours is the **global headerless fallback** pointing at the **local daemon** — pure MCP with no `agent-deck` executable lookup, so desktop-launched hosts (minimal `PATH`) connect:
+The plugin declares no MCP server: no `mcpServers` key in the manifest, no `.mcp.json` in the bundle. The connection is plain host MCP config — pure MCP with no `agent-deck` executable lookup, so desktop-launched hosts (minimal `PATH`) connect:
 
-```json
-{ "mcpServers": { "agent-deck": { "type": "http", "url": "http://127.0.0.1:1110/mcp" } } }
-```
+- `agent-deck setup --client codex|claude` writes the **global headerless fallback** (`http://127.0.0.1:1110/mcp`, no headers — `~/.codex/config.toml`, `~/.claude.json`). Folders with no assignment connect through this entry and land in the explain-only unassigned session.
+- `agent-deck use <deck>` writes a same-name **per-folder entry** carrying the workspace header (`.codex/config.toml`, `.mcp.json`); it shadows the fallback where an assignment exists, and the daemon resolves the deck from `.agent-deck/use.json`.
 
-Folders with no assignment connect through this entry and land in the explain-only unassigned session. `agent-deck setup --client codex|claude` writes the same fallback into host config (`~/.codex/config.toml`, `~/.claude.json`); `agent-deck use <deck>` writes a same-name per-folder entry carrying the workspace header that shadows it where an assignment exists. When the host shows no tools: trust the folder, approve the project entry, run `agent-deck use <deck>`, then reload MCP.
+When the host shows no tools, first run `agent-deck start --daemon` and `agent-deck setup --client codex|claude` (with the plugin installed), then: trust the folder, approve the project entry, run `agent-deck use <deck>`, then reload MCP.
 
 Two constraints shape this:
 
 1. **The daemon must already be running** — the HTTP entry cannot start it on demand — hence the `agent-deck-setup` skill as the recovery path. A refused connection at the entry means the entry is present but the daemon is down (`agent-deck start --daemon`).
-2. **This repo's `.mcp.json` on `main` points at the installed daemon (1110).** Dev-on-3001 stays in Cursor-local `.cursor/mcp.json` — do not commit a 3001 override into the mirrored bundle.
+2. **Dev-on-3001 stays in Cursor-local `.cursor/mcp.json`** — never commit a dev-port override where release config could pick it up.
 
 ### 3.4 `.codexignore`
 
@@ -151,7 +148,7 @@ tsconfig.json
 server.json
 ```
 
-(Keep: `.codex-plugin/`, `skills/`, `.mcp.json`, `README.md`, `LICENSE`, `SECURITY.md`, `CHANGELOG.md`, `assets/`.)
+(Keep: `.codex-plugin/`, `skills/`, `README.md`, `LICENSE`, `SECURITY.md`, `CHANGELOG.md`, `assets/`.)
 
 ## 4. Compliance work
 
@@ -168,7 +165,7 @@ server.json
 
 ## 5. Cross-platform: Claude Code and Cursor
 
-- **Claude Code**: add `.claude-plugin/plugin.json` (+ optional `.claude-plugin/marketplace.json` so the repo is directly addable via `/plugin marketplace add not-so-fat/agent-deck`), referencing the **same** `skills/` and `.mcp.json`. Near-zero marginal cost, and it makes "works across Codex, Claude Code, and Cursor" literally true at install level.
+- **Claude Code**: add `.claude-plugin/plugin.json` (+ optional `.claude-plugin/marketplace.json` so the repo is directly addable via `/plugin marketplace add not-so-fat/agent-deck`), referencing the **same** `skills/` and likewise declaring no MCP server. Near-zero marginal cost, and it makes "works across Codex, Claude Code, and Cursor" literally true at install level.
 - **Cursor**: already served by `agent-deck setup --client cursor` (stub generation). No new artifact; the README line and registry copy just mention it.
 
 ## 6. Implementation plan
@@ -179,7 +176,7 @@ server.json
 | 1 | `SECURITY.md` | Exists, linked from README |
 | 2 | `.codex-plugin/plugin.json` + `assets/icon.svg` | `plugin-scanner lint .` manifest checks pass |
 | 3 | `skills/` (3 stubs) | Bodies < ~30 lines each; no playbook content; no elevated steps |
-| 4 | `.codexignore`; resolve `.mcp.json` dev-override (§3.3) | Bundle lists only plugin files; `main` has port 1110 |
+| 4 | `.codexignore`; no `.mcp.json` in the bundle (§3.3) | Bundle lists only plugin files; connection is host MCP config |
 | 5 | Fix scanner findings | `scan .` ≥ 80, zero high/critical |
 | 6 | Scanner CI workflow; SHA-pin audit of `ci.yml` | Green run on `main` |
 | 7 | `.claude-plugin/` manifests | Installable via Claude Code plugin marketplace |
