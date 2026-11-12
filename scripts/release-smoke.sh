@@ -202,10 +202,21 @@ MUSE_SETTINGS="$SMOKE_HOME/.config/muse/settings.json"
 if ! grep -q '"schema_version": 1' "$MUSE_SETTINGS"; then
   fail "Muse settings.json missing schema_version 1"
 fi
-if ! grep -q 'mcp-launch' "$MUSE_SETTINGS"; then
-  fail "Muse settings.json missing agent-deck mcp-launch entry"
+# NOT-570/572: Muse connects over pure MCP — a headerless HTTP agent-deck entry,
+# no stdio launcher fields and no executable lookup.
+if ! node -e '
+const fs = require("fs");
+const entry = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).mcpServers?.["agent-deck"];
+const ok = entry && typeof entry.url === "string" && /\/mcp$/.test(entry.url)
+  && !entry.command && !entry.args && !entry.env && !entry.headers;
+process.exit(ok ? 0 : 1);
+' "$MUSE_SETTINGS"; then
+  fail "Muse settings.json must hold the headerless HTTP agent-deck entry (url only; no command/args/env/headers)"
 fi
-pass "Muse settings wire agent-deck mcp-launch"
+if grep -q 'mcp-launch' "$MUSE_SETTINGS"; then
+  fail "Muse settings.json must not reference mcp-launch"
+fi
+pass "Muse settings wire the headerless HTTP agent-deck entry (no mcp-launch)"
 
 for skill in agent-deck-session agent-deck-playbooks agent-deck-setup agent-deck-run; do
   SKILL_PATH="$SMOKE_HOME/.config/muse/skills/$skill/SKILL.md"
@@ -219,14 +230,14 @@ for skill in agent-deck-session agent-deck-playbooks agent-deck-setup agent-deck
 done
 pass "Muse bootstrap skills installed under .config/muse/skills"
 
-if ! grep -q 'agent-deck use <deck> --client muse' "$MUSE_SETUP_OUT"; then
-  fail "muse next steps must mention agent-deck use <deck> --client muse"
+if ! grep -q 'agent-deck use <deck>' "$MUSE_SETUP_OUT"; then
+  fail "muse next steps must mention agent-deck use <deck>"
 fi
 if ! grep -q '/mcp' "$MUSE_SETUP_OUT"; then
   fail "muse next steps must mention /mcp verification"
 fi
-if ! grep -qi 'workspace trust' "$MUSE_SETUP_OUT"; then
-  fail "muse next steps must mention workspace trust"
+if ! grep -qi 'trust the folder' "$MUSE_SETUP_OUT"; then
+  fail "muse next steps must mention trusting the folder"
 fi
 if ! grep -q 'new Muse process' "$MUSE_SETUP_OUT"; then
   fail "muse next steps must mention starting a new Muse process"
