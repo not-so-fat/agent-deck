@@ -27,12 +27,77 @@ function codexBin(): string {
   return process.env.CODEX_BIN?.trim() || 'codex';
 }
 
+/**
+ * NOT-576: every `codex` subprocess is time-bounded so a hung Codex CLI
+ * can never block `agent-deck upgrade` forever. Default 60s, overridable
+ * by `AGENT_DECK_CODEX_TIMEOUT_MS` (positive integer milliseconds).
+ */
+export function codexTimeoutMs(): number {
+  const raw = process.env.AGENT_DECK_CODEX_TIMEOUT_MS?.trim();
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.floor(parsed);
+    }
+  }
+  return 60_000;
+}
+
+function codexTimeoutResult(args: string[], timeoutMs: number, stdout = '', stderr = ''): CodexRunResult {
+  const line = `codex ${args.join(' ')} timed out after ${timeoutMs}ms`;
+  return { code: 1, stdout, stderr: stderr ? `${stderr}\n${line}` : line };
+}
+
+/**
+ * NOT-576: race an injected runner against the same timeout so a runner
+ * that never settles still yields a reportable failure. The real
+ * `runCodexCommand` already bounds and kills its own subprocess, so it
+ * runs directly: wrapping it would resolve first (same duration, earlier
+ * timer) and let the CLI exit before its SIGKILL timer fires, orphaning
+ * the hung child.
+ */
+async function runRunnerWithTimeout(runner: CodexRunner, args: string[]): Promise<CodexRunResult> {
+  if (runner === runCodexCommand) {
+    return runner(args);
+  }
+  const timeoutMs = codexTimeoutMs();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeoutPromise = new Promise<CodexRunResult>((resolve) => {
+      timer = setTimeout(() => {
+        resolve(codexTimeoutResult(args, timeoutMs));
+      }, timeoutMs);
+      timer.unref?.();
+    });
+    return await Promise.race([runner(args), timeoutPromise]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export function runCodexCommand(args: string[]): Promise<CodexRunResult> {
   const bin = codexBin();
+  const timeoutMs = codexTimeoutMs();
   return new Promise((resolve) => {
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Already exited; the close handler is suppressed via `settled`.
+      }
+      resolve(codexTimeoutResult(args, timeoutMs, stdout, stderr));
+    }, timeoutMs);
+    timer.unref?.();
     child.stdout?.on('data', (chunk) => {
       stdout += String(chunk);
     });
@@ -40,11 +105,21 @@ export function runCodexCommand(args: string[]): Promise<CodexRunResult> {
       stderr += String(chunk);
     });
     child.on('error', (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
       resolve({ code: 127, stdout: '', stderr: error instanceof Error ? error.message : String(error) });
     });
     // Resolve on 'close', not 'exit': 'exit' can fire before piped stdio is
     // fully flushed, which drops JSON output under load and breaks parsing.
     child.on('close', (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
       resolve({ code: code ?? 1, stdout, stderr });
     });
   });
@@ -322,7 +397,7 @@ export async function inspectCodexPlugin(
 
   let listOut: CodexRunResult;
   try {
-    listOut = await runner(['plugin', 'list', '--available', '--json']);
+    listOut = await runRunnerWithTimeout(runner, ['plugin', 'list', '--available', '--json']);
   } catch (error) {
     return {
       ...base,
@@ -339,7 +414,7 @@ export async function inspectCodexPlugin(
 
   let marketplaceOut: CodexRunResult;
   try {
-    marketplaceOut = await runner(['plugin', 'marketplace', 'list', '--json']);
+    marketplaceOut = await runRunnerWithTimeout(runner, ['plugin', 'marketplace', 'list', '--json']);
   } catch (error) {
     return {
       ...base,
@@ -738,7 +813,12 @@ export async function reconcileCodexPluginAfterUpgrade(
   const marketplaceName = state.marketplaceName;
 
   if (state.sourceKind === 'git' && marketplaceName) {
-    const refreshed = await runner(['plugin', 'marketplace', 'upgrade', marketplaceName]);
+    const refreshed = await runRunnerWithTimeout(runner, [
+      'plugin',
+      'marketplace',
+      'upgrade',
+      marketplaceName,
+    ]);
     if (refreshed.code !== 0) {
       console.log(
         `${prefix}; Codex plugin unchanged (marketplace refresh failed: ${(refreshed.stderr.trim() || refreshed.stdout.trim() || `exit ${refreshed.code}`)}).`,
@@ -748,7 +828,7 @@ export async function reconcileCodexPluginAfterUpgrade(
     }
   }
 
-  const removed = await runner(['plugin', 'remove', targetSelector]);
+  const removed = await runRunnerWithTimeout(runner, ['plugin', 'remove', targetSelector]);
   if (removed.code !== 0) {
     console.log(
       `${prefix}; Codex plugin unchanged (remove failed: ${(removed.stderr.trim() || removed.stdout.trim() || `exit ${removed.code}`)}).`,
@@ -757,7 +837,7 @@ export async function reconcileCodexPluginAfterUpgrade(
     return 1;
   }
 
-  const added = await runner(['plugin', 'add', targetSelector]);
+  const added = await runRunnerWithTimeout(runner, ['plugin', 'add', targetSelector]);
   if (added.code !== 0) {
     // `remove` already succeeded, so the plugin is uninstalled — not
     // "unchanged". Say so and print only the recovery commands.
@@ -768,7 +848,16 @@ export async function reconcileCodexPluginAfterUpgrade(
     if (state.sourceKind === 'git' && marketplaceName) {
       console.log(`  codex plugin marketplace upgrade ${marketplaceName}`);
     }
-    console.log(`  codex plugin add ${targetSelector}`);
+    // NOT-576: `add` can fail with `Directory not empty` when a sticky
+    // versioned cache survives the remove. Print the same cache-clearing
+    // recovery block as the version-mismatch branch when the installed
+    // root is a known versioned cache path. Agent Deck never deletes it.
+    const failedAddInstalledRoot = state.installedRoot ?? state.root;
+    if (stickyCacheClearCommands(failedAddInstalledRoot).length > 0) {
+      printStickyCacheBlock(failedAddInstalledRoot, targetSelector);
+    } else {
+      console.log(`  codex plugin add ${targetSelector}`);
+    }
     return 1;
   }
 

@@ -1,3 +1,4 @@
+import { ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1430,5 +1431,280 @@ describe('upgrade legacy launcher-entry rewrite (NOT-566)', { timeout: 30_000 },
         },
       },
     });
+  });
+});
+
+describe('upgrade migration-first, codex timeout, add-failure recovery (NOT-576)', { timeout: 30_000 }, () => {
+  const MCP_URL = 'http://127.0.0.1:1110/mcp';
+  const STALE_VERSION = '1.11.7';
+  const LAUNCHER_ENTRY = {
+    type: 'stdio',
+    command: 'agent-deck',
+    args: ['mcp-launch'],
+    env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+  };
+
+  let fakeHome = '';
+  let workspace = '';
+  let stickyCodexHome = '';
+  let savedTimeout: string | undefined;
+  let savedHost: string | undefined;
+  let savedMcpPort: string | undefined;
+  let savedXdg: string | undefined;
+
+  beforeEach(() => {
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-576-home-'));
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-576-ws-'));
+    savedTimeout = process.env.AGENT_DECK_CODEX_TIMEOUT_MS;
+    savedHost = process.env.AGENT_DECK_HOST;
+    savedMcpPort = process.env.AGENT_DECK_MCP_PORT;
+    savedXdg = process.env.XDG_CONFIG_HOME;
+    delete process.env.AGENT_DECK_MCP_PORT;
+    delete process.env.XDG_CONFIG_HOME;
+    process.env.AGENT_DECK_HOST = '127.0.0.1';
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (savedTimeout === undefined) {
+      delete process.env.AGENT_DECK_CODEX_TIMEOUT_MS;
+    } else {
+      process.env.AGENT_DECK_CODEX_TIMEOUT_MS = savedTimeout;
+    }
+    if (savedHost === undefined) {
+      delete process.env.AGENT_DECK_HOST;
+    } else {
+      process.env.AGENT_DECK_HOST = savedHost;
+    }
+    if (savedMcpPort === undefined) {
+      delete process.env.AGENT_DECK_MCP_PORT;
+    } else {
+      process.env.AGENT_DECK_MCP_PORT = savedMcpPort;
+    }
+    if (savedXdg === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = savedXdg;
+    }
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+    if (stickyCodexHome) {
+      fs.rmSync(stickyCodexHome, { recursive: true, force: true });
+      stickyCodexHome = '';
+    }
+    fakeHome = '';
+    workspace = '';
+  });
+
+  function seedLegacyProjectEntry(): string {
+    const configPath = path.join(workspace, '.mcp.json');
+    fs.writeFileSync(
+      configPath,
+      `${JSON.stringify({ mcpServers: { 'agent-deck': LAUNCHER_ENTRY } }, null, 2)}\n`,
+    );
+    return configPath;
+  }
+
+  function firstPluginLineIndex(): number {
+    return output.findIndex((line) => line.includes('Codex plugin'));
+  }
+
+  it('migrates the legacy entry before the plugin step even when every codex call fails', async () => {
+    const configPath = seedLegacyProjectEntry();
+    const failingRunner = async () => ({ code: 1, stdout: '', stderr: 'stub codex: always fails' });
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+      codexRunner: failingRunner,
+    });
+
+    expect(code).toBe(1);
+    const rewritten = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(rewritten.mcpServers['agent-deck']).toEqual({
+      type: 'http',
+      url: MCP_URL,
+      headers: { 'x-agent-deck-workspace': workspace },
+    });
+    const rewrittenIdx = output.findIndex((line) => line.includes('rewrote legacy launcher entry'));
+    const pluginIdx = firstPluginLineIndex();
+    expect(rewrittenIdx).toBeGreaterThanOrEqual(0);
+    expect(pluginIdx).toBeGreaterThanOrEqual(0);
+    expect(rewrittenIdx).toBeLessThan(pluginIdx);
+  });
+
+  it('kills a never-resolving runner after AGENT_DECK_CODEX_TIMEOUT_MS and still migrates', async () => {
+    const configPath = seedLegacyProjectEntry();
+    process.env.AGENT_DECK_CODEX_TIMEOUT_MS = '200';
+    const hangingRunner = () => new Promise<never>(() => {});
+    const startedAt = Date.now();
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+      codexRunner: hangingRunner,
+    });
+    const elapsed = Date.now() - startedAt;
+
+    expect(code).toBe(1);
+    expect(elapsed).toBeLessThan(10_000);
+    const text = output.join('\n');
+    expect(text).toContain('timed out after 200ms');
+    expect(text).toContain('codex plugin list --available --json');
+    const rewritten = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(rewritten.mcpServers['agent-deck'].type).toBe('http');
+    const rewrittenIdx = output.findIndex((line) => line.includes('rewrote legacy launcher entry'));
+    const pluginIdx = firstPluginLineIndex();
+    expect(rewrittenIdx).toBeGreaterThanOrEqual(0);
+    expect(pluginIdx).toBeGreaterThanOrEqual(0);
+    expect(rewrittenIdx).toBeLessThan(pluginIdx);
+  });
+
+  it('prints the cache-clearing recovery when add fails with Directory not empty after remove', async () => {
+    const configPath = seedLegacyProjectEntry();
+    stickyCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-576-codex-'));
+    process.env.CODEX_HOME = stickyCodexHome;
+    const marketplaceRoot = path.join(stickyCodexHome, 'marketplace', 'agent-deck');
+    fs.mkdirSync(marketplaceRoot, { recursive: true });
+    const installedCacheRoot = path.join(
+      stickyCodexHome,
+      'plugins',
+      'cache',
+      'agent-deck',
+      'agent-deck',
+      STALE_VERSION,
+    );
+    fs.mkdirSync(installedCacheRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(installedCacheRoot, '.mcp.json'),
+      `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`,
+    );
+
+    const calls: string[][] = [];
+    const runner = async (args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'plugin' && args[1] === 'list') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            installed: [
+              {
+                pluginId: SELECTOR,
+                name: 'agent-deck',
+                marketplaceName: 'agent-deck',
+                version: STALE_VERSION,
+                installed: true,
+                enabled: true,
+                source: { source: 'local', path: marketplaceRoot },
+                marketplaceSource: { sourceType: 'local', source: marketplaceRoot },
+              },
+            ],
+            available: [],
+          }),
+          stderr: '',
+        };
+      }
+      if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'list') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            marketplaces: [{ name: 'agent-deck', root: marketplaceRoot, source: 'local' }],
+          }),
+          stderr: '',
+        };
+      }
+      if (args[0] === 'plugin' && args[1] === 'remove') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'plugin' && args[1] === 'add') {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: 'failed to activate plugin cache entry: Directory not empty (os error 66)',
+        };
+      }
+      return { code: 1, stdout: '', stderr: `unexpected invocation: ${args.join(' ')}` };
+    };
+
+    const code = await runUpgrade(['--to', CLI_VERSION], {
+      performCliUpgrade: async () => ({ ok: true }),
+      codexRunner: runner,
+    });
+    const text = output.join('\n');
+
+    expect(code).toBe(1);
+    expect(text).toContain('Codex plugin removed but reinstall failed');
+    expect(text).toContain('Directory not empty');
+    const rmLine = `rm -rf "${installedCacheRoot}"`;
+    const addLine = `codex plugin add ${SELECTOR}`;
+    expect(text).toContain(rmLine);
+    expect(text).toContain(addLine);
+    expect(text.indexOf(rmLine)).toBeLessThan(text.indexOf(addLine));
+    const mutating = calls.filter((args) => args[0] === 'plugin' && (args[1] === 'remove' || args[1] === 'add'));
+    expect(mutating).toEqual([
+      ['plugin', 'remove', SELECTOR],
+      ['plugin', 'add', SELECTOR],
+    ]);
+    expect(fs.existsSync(installedCacheRoot)).toBe(true);
+    const rewritten = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(rewritten.mcpServers['agent-deck'].type).toBe('http');
+    const rewrittenIdx = output.findIndex((line) => line.includes('rewrote legacy launcher entry'));
+    const pluginIdx = firstPluginLineIndex();
+    expect(rewrittenIdx).toBeGreaterThanOrEqual(0);
+    expect(pluginIdx).toBeGreaterThanOrEqual(0);
+    expect(rewrittenIdx).toBeLessThan(pluginIdx);
+  });
+
+  it('kills a hung real codex subprocess on timeout instead of orphaning it', async () => {
+    process.env.AGENT_DECK_CODEX_TIMEOUT_MS = '200';
+    const hangDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-576-hang-'));
+    try {
+      const pidFile = path.join(hangDir, 'codex.pid');
+      const stub = path.join(hangDir, 'codex');
+      // `exec` so $$ is the sleeping process itself: SIGKILL on the child
+      // leaves nothing orphaned behind.
+      fs.writeFileSync(stub, `#!/bin/bash\necho $$ > "${pidFile}"\nexec sleep 30\n`);
+      fs.chmodSync(stub, 0o755);
+      process.env.CODEX_BIN = stub;
+      process.env.CODEX_HOME = hangDir;
+      const killSpy = vi.spyOn(ChildProcess.prototype, 'kill');
+
+      const startedAt = Date.now();
+      // Default runner: the real `runCodexCommand` through the reconcile path.
+      const code = await reconcileCodexPluginAfterUpgrade(CLI_VERSION);
+      const elapsed = Date.now() - startedAt;
+
+      expect(code).toBe(1);
+      expect(elapsed).toBeLessThan(10_000);
+      expect(output.join('\n')).toContain('timed out after 200ms');
+      // The kill must already have been issued when the step resolves —
+      // otherwise the CLI can exit first and orphan the hung child.
+      expect(killSpy).toHaveBeenCalledWith('SIGKILL');
+
+      expect(fs.existsSync(pidFile)).toBe(true);
+      const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+      const deadline = Date.now() + 5_000;
+      let alive = true;
+      while (Date.now() < deadline) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          alive = false;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (alive) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already gone.
+        }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      fs.rmSync(hangDir, { recursive: true, force: true });
+    }
   });
 });
