@@ -7,7 +7,9 @@ import {
   MUSE_SCHEMA_VERSION,
   buildAgentDeckEntry,
   buildCodexAgentDeckEntry,
+  buildGlobalFallbackHttpEntry,
   ensureGlobalCursorMcpLaunch,
+  formatCodexGlobalFallbackSection,
   formatCodexMcpSection,
   formatCursorGlobalMcpEnsureMessage,
   isLegacyBareHttpAgentDeckEntry,
@@ -39,16 +41,22 @@ describe('mergeMcpServerConfig', () => {
 });
 
 describe('buildAgentDeckEntry', () => {
-  it('uses stdio launcher for claude', () => {
+  it('NOT-565: uses the headerless HTTP fallback for claude without a workspace root', () => {
+    // toEqual fails on any extra field: no headers, no launcher keys.
     expect(buildAgentDeckEntry('claude', { host: '127.0.0.2', mcpPort: 3001 })).toEqual({
-      type: 'stdio',
-      command: 'agent-deck',
-      args: ['mcp-launch'],
-      env: {
-        AGENT_DECK_MCP_PORT: '3001',
-        AGENT_DECK_HOST: '127.0.0.2',
-      },
+      type: 'http',
+      url: 'http://127.0.0.2:3001/mcp',
     });
+    expect(buildGlobalFallbackHttpEntry({ host: '127.0.0.2', mcpPort: 3001 })).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.2:3001/mcp',
+    });
+  });
+
+  it('NOT-565: formats the headerless Codex global fallback section', () => {
+    expect(formatCodexGlobalFallbackSection({ host: '127.0.0.1', mcpPort: 1110 })).toBe(
+      '[mcp_servers.agent-deck]\nurl = "http://127.0.0.1:1110/mcp"',
+    );
   });
 
   it('uses agent-deck launcher for claude-desktop', () => {
@@ -169,12 +177,10 @@ describe('buildAgentDeckEntry', () => {
   it.each([
     ['cursor', 'global'],
     ['cursor', 'project'],
-    ['claude', 'global'],
-    ['claude', 'project'],
     ['claude-desktop', 'global'],
     ['muse', 'global'],
     ['muse', 'project'],
-  ] as const)('every client entry uses the mcp-launch launcher (%s/%s)', (client, _scope) => {
+  ] as const)('every launcher client entry uses the mcp-launch launcher (%s/%s)', (client, _scope) => {
     expect(isMcpLaunchEntry(buildAgentDeckEntry(client, { host: '127.0.0.1', mcpPort: 1110 }))).toBe(
       true,
     );

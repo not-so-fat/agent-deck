@@ -224,21 +224,32 @@ describe('bridge selection (NOT-101)', () => {
 });
 
 describe('supported production host transport', () => {
-  it('routes the Codex plugin and Claude plugin through the shared mcp-launch path', () => {
+  it('NOT-565: Codex and Claude plugins declare no MCP server (skills and guidance only)', () => {
     const repositoryRoot = path.resolve(__dirname, '../../..');
-    const transport = JSON.parse(
-      fs.readFileSync(path.join(repositoryRoot, '.mcp.json'), 'utf8'),
-    ) as { mcpServers?: Record<string, { command?: string; args?: string[] }> };
-    const codexPlugin = JSON.parse(
-      fs.readFileSync(path.join(repositoryRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
-    ) as { mcpServers?: string };
-    const claudePlugin = JSON.parse(
-      fs.readFileSync(path.join(repositoryRoot, '.claude-plugin', 'plugin.json'), 'utf8'),
-    ) as { mcpServers?: string };
+    for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']) {
+      const raw = fs.readFileSync(path.join(repositoryRoot, manifest), 'utf8');
+      expect(raw).not.toContain('mcp-launch');
+      expect(raw).not.toContain('"command"');
+      expect(raw).not.toContain('mcpServers');
+      const plugin = JSON.parse(raw) as { mcpServers?: unknown };
+      expect(plugin.mcpServers).toBeUndefined();
+    }
+    // The connection is plain host MCP config (global fallback + per-folder
+    // entry); no plugin-shipped connection file remains for these hosts.
+    expect(fs.existsSync(path.join(repositoryRoot, '.mcp.json'))).toBe(false);
+  });
 
-    expect(codexPlugin.mcpServers).toBe('./.mcp.json');
-    expect(claudePlugin.mcpServers).toBe('./.mcp.json');
-    expect(transport.mcpServers?.['agent-deck']).toMatchObject({
+  it('NOT-565 repair: Cursor plugin keeps its own mcp-launch manifest (out of scope)', () => {
+    const repositoryRoot = path.resolve(__dirname, '../../..');
+    const cursorPlugin = JSON.parse(
+      fs.readFileSync(path.join(repositoryRoot, '.cursor-plugin', 'plugin.json'), 'utf8'),
+    ) as { mcpServers?: string };
+    expect(cursorPlugin.mcpServers).toBe('./.cursor-plugin/.mcp.json');
+    const cursorTransport = JSON.parse(
+      fs.readFileSync(path.join(repositoryRoot, '.cursor-plugin', '.mcp.json'), 'utf8'),
+    ) as { mcpServers?: Record<string, Record<string, unknown>> };
+    expect(cursorTransport.mcpServers?.['agent-deck']).toEqual({
+      type: 'stdio',
       command: 'agent-deck',
       args: ['mcp-launch'],
     });

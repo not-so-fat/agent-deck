@@ -175,18 +175,18 @@ npx @agent-deck/cli start
 ```
 
 ```bash
-claude mcp add --scope user agent-deck -- agent-deck mcp-launch
+claude mcp add --scope user --transport http agent-deck http://127.0.0.1:1110/mcp
 ```
 
 ### MCP client setup
 
 | Client | Command |
 |--------|---------|
-| Codex (global instructions) | `agent-deck setup --client codex` → `~/.codex/AGENTS.md`; plugin owns MCP transport |
+| Codex (global instructions) | `agent-deck setup --client codex` → global HTTP fallback in `~/.codex/config.toml` + `~/.codex/AGENTS.md`; plugin supplies skills |
 | Codex (project instructions) | `agent-deck setup --client codex --scope project` → `./AGENTS.md` |
 | Cursor (global) | `agent-deck setup --client cursor` |
 | Cursor (project) | `agent-deck setup --client cursor --scope project` |
-| Claude Code | `agent-deck setup --client claude` (uses `claude mcp add` with the stdio `mcp-launch` bridge → `~/.claude.json`; fallback writes the same entry — **not** `settings.json`) |
+| Claude Code | `agent-deck setup --client claude` (uses `claude mcp add` with the headerless HTTP fallback → `~/.claude.json`; fallback writes the same entry — **not** `settings.json`) |
 | Claude Code (project) | `agent-deck setup --client claude --scope project` → `.mcp.json` |
 | Claude Desktop | `agent-deck setup --client claude-desktop` (Agent Deck's built-in stdio bridge) |
 | Muse (global) | `agent-deck setup --client muse` → MCP settings + three native bootstrap skills (no status line, no plugin) |

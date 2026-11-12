@@ -90,6 +90,20 @@ export function buildCodexAgentDeckEntry(
 }
 
 /**
+ * Global headerless HTTP fallback entry (NOT-565, design §4): folders with
+ * no assignment connect everywhere over pure MCP and land in the existing
+ * unassigned (explain-only) session. No headers, no executable lookup.
+ * Per-folder entries written by `agent-deck use` use the same server name,
+ * so they shadow this fallback where an assignment exists.
+ */
+export function buildGlobalFallbackHttpEntry(endpoint: McpEndpoint): Record<string, unknown> {
+  return {
+    type: 'http',
+    url: buildMcpUrl(endpoint),
+  };
+}
+
+/**
  * MCP client entry for the agent-deck server. Launcher clients use the
  * trusted local launcher, which reads the folder assignment at runtime —
  * no deck id in tracked config. Codex and Claude project entries are
@@ -97,7 +111,7 @@ export function buildCodexAgentDeckEntry(
  * daemon resolves the deck from `.agent-deck/use.json`.
  *
  * A `workspaceRoot` selects the per-folder HTTP form for Claude; without
- * one Claude keeps the legacy stdio launcher (global setup fallback).
+ * one Claude gets the global headerless HTTP fallback (NOT-565).
  */
 export function buildAgentDeckEntry(
   client: McpClient,
@@ -149,20 +163,10 @@ export function buildAgentDeckEntry(
         },
       };
     }
-    const env: Record<string, string> = {
-      AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
-      AGENT_DECK_HOST: endpoint.host,
-    };
-    if (options?.workspaceRoot) {
-      env.AGENT_DECK_WORKSPACE = path.resolve(options.workspaceRoot);
-    }
-    const entry: Record<string, unknown> = {
-      type: 'stdio',
-      command: 'agent-deck',
-      args: ['mcp-launch'],
-      env,
-    };
-    return entry;
+    // NOT-565 global setup fallback: headerless pure HTTP, no launcher
+    // and no executable lookup. (The per-folder form above already
+    // returned, so no workspaceRoot is in scope here.)
+    return buildGlobalFallbackHttpEntry(endpoint);
   }
 
   const env: Record<string, string> = {
@@ -567,6 +571,19 @@ export function formatCodexMcpSection(entry: CodexAgentDeckEntry): string {
     '[mcp_servers.agent-deck]',
     `url = "${escapeTomlBasicString(entry.url)}"`,
     `http_headers = { ${headers} }`,
+  ].join('\n');
+}
+
+/**
+ * Canonical headerless `[mcp_servers.agent-deck]` TOML block: the global
+ * unassigned-folder fallback (NOT-565, design §4). Same-name per-folder
+ * entries written by `agent-deck use` shadow it. No trailing newline —
+ * the merge helper owns file framing.
+ */
+export function formatCodexGlobalFallbackSection(endpoint: McpEndpoint): string {
+  return [
+    '[mcp_servers.agent-deck]',
+    `url = "${escapeTomlBasicString(buildMcpUrl(endpoint))}"`,
   ].join('\n');
 }
 

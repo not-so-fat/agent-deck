@@ -20,8 +20,10 @@ function readJson(relativePath) {
 }
 
 /**
- * NOT-188: the Codex/Claude plugin manifests, workspace package versions, and
- * the bundled `.mcp.json` transport must stay synchronized with the release.
+ * NOT-188: the Codex/Claude plugin manifests and workspace package versions
+ * must stay synchronized with the release. NOT-565: the Codex/Claude plugins
+ * declare no MCP server (skills and guidance only; the connection is plain
+ * host MCP config), so no shipped `.mcp.json` may carry an agent-deck server.
  * Fails fast with an actionable message before the slow rebuild/test gates.
  */
 function checkReleaseSync() {
@@ -63,20 +65,32 @@ function checkReleaseSync() {
     }
   }
 
-  let transportOk = false;
+  for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']) {
+    let declared = null;
+    try {
+      declared = readJson(manifest).mcpServers;
+    } catch {
+      continue;
+    }
+    if (declared !== undefined) {
+      failures.push(
+        `${manifest} declares an MCP server: the Codex/Claude plugins ship skills and guidance only (remove mcpServers; the connection is host MCP config)`,
+      );
+    }
+  }
+
+  // A shipped root .mcp.json must not carry an agent-deck server either
+  // (absent is the expected state; per-folder .mcp.json files are written
+  // locally by `agent-deck use` and never ship in the release).
   try {
     const mcp = readJson('.mcp.json');
-    const entry = mcp?.mcpServers?.['agent-deck'];
-    transportOk =
-      !!entry &&
-      entry.command === 'agent-deck' &&
-      Array.isArray(entry.args) &&
-      entry.args.includes('mcp-launch');
+    if (mcp?.mcpServers?.['agent-deck'] !== undefined) {
+      failures.push(
+        'shipped .mcp.json carries an agent-deck server: the Codex/Claude plugins declare no MCP server (remove the file or the agent-deck entry)',
+      );
+    }
   } catch {
-    transportOk = false;
-  }
-  if (!transportOk) {
-    failures.push('.mcp.json does not invoke `agent-deck mcp-launch` for the agent-deck server (legacy direct-HTTP transport)');
+    // Absent or unreadable here means no shipped server — the expected state.
   }
 
   if (failures.length > 0) {
@@ -85,7 +99,7 @@ function checkReleaseSync() {
     }
     process.exit(1);
   }
-  console.log('[pre-publish] Release sync check passed (plugin manifests, package versions, .mcp.json transport).');
+  console.log('[pre-publish] Release sync check passed (plugin manifests, package versions, no plugin-declared MCP server).');
 }
 
 checkReleaseSync();

@@ -15,7 +15,7 @@ export type CodexClassification =
   | 'unknown-transport'
   | 'ambiguous-source';
 
-export type CodexTransport = 'mcp-launch' | 'direct-http' | 'unknown';
+export type CodexTransport = 'mcp-launch' | 'direct-http' | 'none' | 'unknown';
 
 export type CodexRunResult = { code: number; stdout: string; stderr: string };
 export type CodexRunner = (args: string[]) => Promise<CodexRunResult>;
@@ -271,11 +271,15 @@ function readTransport(root: string | undefined): CodexTransport {
   if (!root) {
     return 'unknown';
   }
+  // NOT-565: the shipped plugin declares no MCP server (skills and
+  // guidance only; the connection is plain host MCP config). A missing
+  // `.mcp.json`, or one with no agent-deck server, is the expected
+  // installed state — valid, never unknown.
   let raw: string;
   try {
     raw = fs.readFileSync(path.join(root, '.mcp.json'), 'utf8');
   } catch {
-    return 'unknown';
+    return 'none';
   }
   let parsed: unknown;
   try {
@@ -287,7 +291,7 @@ function readTransport(root: string | undefined): CodexTransport {
   const servers = record ? asRecord(record.mcpServers) : null;
   const entry = servers ? asRecord(servers[AGENT_DECK_PLUGIN_NAME]) : null;
   if (!entry) {
-    return 'unknown';
+    return 'none';
   }
   const command = asString(entry.command) ?? '';
   const args = Array.isArray(entry.args)
@@ -438,7 +442,10 @@ export async function inspectCodexPlugin(
   const sourceKind = resolvedMarketplace?.source ?? 'unknown';
   const transport = readTransport(installedRoot ?? marketplaceRoot);
 
-  if (transport === 'direct-http') {
+  // NOT-565: the shipped plugin declares no MCP server, so `none` at
+  // the current version is compatible. `legacy-http` means an outdated
+  // plugin still carrying the earlier headerless HTTP entry.
+  if (transport === 'direct-http' && first.version !== cliVersion) {
     return {
       ...base,
       installed,
@@ -472,9 +479,12 @@ export async function inspectCodexPlugin(
     };
   }
 
-  // `compatible` requires a verified mcp-launch transport. An unreadable,
-  // missing, or unrecognised `.mcp.json` is unverifiable — never healthy.
-  if (transport !== 'mcp-launch') {
+  // `compatible` requires a verified transport: no plugin-declared
+  // server (the current skills-only shape), or a recognised legacy shape
+  // on already-installed plugins (the mcp-launch launcher, or the earlier
+  // headerless HTTP entry). Only an unreadable or unrecognised entry is
+  // unverifiable — never healthy.
+  if (transport !== 'mcp-launch' && transport !== 'direct-http' && transport !== 'none') {
     return {
       ...base,
       installed,
@@ -652,7 +662,8 @@ function printManualSyncBlock(selector: string, marketplaceName?: string): void 
  * from a successful marketplace listing. For a Git marketplace the
  * marketplace is refreshed first. Reinstalls through supported
  * `codex plugin remove` / `codex plugin add` commands, then re-reads plugin
- * state (which must verify `mcp-launch` before reporting OK). Never edits
+ * state (which must verify a known transport — `none`, `mcp-launch`,
+ * or `direct-http` — before reporting OK). Never edits
  * Codex files directly: every failure path prints whether the CLI upgrade
  * succeeded and whether the plugin was left unchanged or was removed, plus
  * the exact manual Codex commands, and returns 1.
@@ -784,7 +795,7 @@ export async function reconcileCodexPluginAfterUpgrade(
 /**
  * Read-only `doctor` section for the Codex plugin. Never mutates Codex state:
  * it only runs `codex plugin list` / `codex plugin marketplace list`, reads
- * the installed plugin's bundled `.mcp.json`, and probes daemon health.
+ * the installed plugin's bundled `.mcp.json` when present, and probes daemon health.
  * Returns 0 when the plugin is compatible (or Codex is entirely absent / no
  * plugin installed — those are warnings for non-Codex users), 1 when the
  * installed plugin is stale, disabled, ambiguous, or unreadable.

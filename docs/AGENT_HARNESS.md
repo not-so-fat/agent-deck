@@ -6,7 +6,7 @@
 
 > **Switching contract:** deck-switching via admin elevation described here is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204).
 
-Agent Deck exposes **tools** (MCP). Your agent’s **control plane** (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`) teaches *how* to use them. Setup treats the harness as a **required install step** alongside host MCP configuration where applicable. For Codex, the plugin owns MCP transport and setup only merges the harness. Agent Deck can run without the harness, but the intended workflow always installs it.
+Agent Deck exposes **tools** (MCP). Your agent’s **control plane** (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`) teaches *how* to use them. Setup treats the harness as a **required install step** alongside host MCP configuration where applicable. For Codex, setup writes the global headerless HTTP fallback and merges the harness; the plugin supplies skills, not transport. Agent Deck can run without the harness, but the intended workflow always installs it.
 
 Agents delegate a brief to another session only through Agent Deck MCP (`start_run`, `get_run`, `cancel_run`; see [MCP_RUN_TOOLS.md](./MCP_RUN_TOOLS.md) and the `agent-deck-run` skill). The host CLI `agent-deck run` is for operators on the host (installation, diagnostics, recovery) — see [DELEGATION.md](./DELEGATION.md) for per-client flags, resume, and trust behavior.
 
@@ -14,22 +14,22 @@ Agents delegate a brief to another session only through Agent Deck MCP (`start_r
 
 ## Registering Agent Deck in your agent
 
-Your host needs an Agent Deck MCP transport—not direct registrations for Linear, Notion, or other downstream services. The Codex plugin supplies `agent-deck mcp-launch`; Cursor and Claude setup write their host configuration. Without that transport, chat cannot reach your decks or collection.
+Your host needs an Agent Deck MCP transport—not direct registrations for Linear, Notion, or other downstream services. Codex and Claude Code connect over pure MCP (a global headerless HTTP fallback plus per-folder entries from `agent-deck use`); Cursor setup writes its host configuration. Without that transport, chat cannot reach your decks or collection.
 
 **Three layers** (one-time host setup, optional folder assignment, then session bootstrap):
 
 | Command | When | What it does |
 |---------|------|----------------|
-| **`setup`** | **Once** per machine | Host MCP configuration where applicable + agent harness (this doc). For Codex, marker-merges `~/.codex/AGENTS.md`; the plugin owns MCP transport. |
+| **`setup`** | **Once** per machine | Host MCP configuration where applicable + agent harness (this doc). For Codex, writes the global headerless HTTP fallback and marker-merges `~/.codex/AGENTS.md`; the plugin supplies skills. |
 | **`use <deck>`** | Once per IDE repo unless the launcher selects a deck | Folder assignment (`.agent-deck/use.json`) + thin **trigger stubs** for better implicit playbook matching — bodies still live on the deck |
 
-Use `agent-deck use <deck>` for ordinary IDE folders so `mcp-launch` can select the deck before MCP initializes. Launch-selected unattended sessions may supply the deck header directly and intentionally omit the assignment file.
+Use `agent-deck use <deck>` for ordinary IDE folders so the host session binds the folder's deck at MCP initialize. Launch-selected unattended sessions may supply the deck header directly and intentionally omit the assignment file.
 
 `setup` also installs the terminal status line by default for Cursor CLI and Claude Code (`--no-statusline` to skip). Muse has no Agent Deck status line.
 
 ### Per-client registration and verification
 
-**Codex.** Install and enable the Agent Deck plugin, then install the global bootstrap guidance (`agent-deck setup --client codex` merges `~/.codex/AGENTS.md`; it does not install the plugin). Optional per repo: `agent-deck use my-deck` writes `.agent-deck/use.json`. Start a new Codex task after setup so Codex rebuilds its instruction chain and reloads the plugin connection.
+**Codex.** Install and enable the Agent Deck plugin (skills), then `agent-deck setup --client codex` writes the global headerless HTTP fallback and merges the bootstrap guidance into `~/.codex/AGENTS.md` (it does not install the plugin). Optional per repo: `agent-deck use my-deck` writes the per-folder entry plus `.agent-deck/use.json`. Trust the folder, approve the project entry, then start a new Codex task after setup so Codex rebuilds its instruction chain and reloads MCP.
 
 **Cursor.** `agent-deck setup --client cursor` once. Optional per repo: `agent-deck use my-deck` → project `.cursor/mcp.json`, stubs under `.cursor/rules/agent-deck-stubs/`. Or **Settings → Tools & MCP → Add custom MCP** (HTTP) with the MCP URL. **Restart Cursor** — `agent-deck` should show connected while `agent-deck start` is running.
 
@@ -56,7 +56,7 @@ If you use `use` and accept playbook patches that change **triggers**, run `agen
 | **Claude Desktop** | — | MCP only; use Claude Code/Cursor harness if you use those too |
 
 ```bash
-npx @agent-deck/cli setup --client codex     # AGENTS.md harness; plugin owns MCP transport
+npx @agent-deck/cli setup --client codex     # global HTTP fallback + AGENTS.md harness; plugin supplies skills
 npx @agent-deck/cli setup --client codex --scope project
 npx @agent-deck/cli setup --client cursor    # MCP + global harness
 npx @agent-deck/cli setup --client claude   # MCP + harness + status line (default)
@@ -119,7 +119,7 @@ Add your own notes above/below the harness markers in `agent-deck.mdc`, or anywh
 
 **Data:** decks, collection, and credentials in `~/.agent-deck/` are separate from setup; upgrade does not reset them.
 
-**Claude Code:** if `claude mcp add` succeeds, MCP is registered via the CLI as the stdio `agent-deck mcp-launch` bridge (second run is usually harmless). If the CLI fails, setup falls back to merging the same launcher into `~/.claude.json` or project `.mcp.json`.
+**Claude Code:** if `claude mcp add` succeeds, MCP is registered via the CLI as the headerless HTTP fallback (second run is usually harmless). If the CLI fails, setup falls back to merging the same entry into `~/.claude.json` or project `.mcp.json`.
 
 ---
 

@@ -67,7 +67,7 @@ export function formatStartVersionLine(version = getAgentDeckVersion()): string 
 }
 
 export function formatClaudeMcpAddCommand(host: string, mcpPort: number): string {
-  return `claude mcp add --scope user agent-deck -e AGENT_DECK_MCP_PORT=${mcpPort} -e AGENT_DECK_HOST=${host} -- agent-deck mcp-launch`;
+  return `claude mcp add --scope user --transport http agent-deck http://${host}:${mcpPort}/mcp`;
 }
 
 type SpawnIoMode = 'inherit' | 'file';

@@ -26,7 +26,9 @@ echo "stub codex: unexpected invocation: $*" >&2
 exit 1
 `;
 
-const LEGACY_MCP = {
+// Headerless HTTP bytes: the 1.4.4-era shape and the current global
+// fallback shape are identical — legacy only by installed version.
+const HTTP_MCP = {
   mcpServers: { 'agent-deck': { type: 'http', url: 'http://127.0.0.1:1110/mcp' } },
 };
 
@@ -59,11 +61,13 @@ function stopCapture() {
   console.error = originalError;
 }
 
-function seedCodexHome(pluginVersion: string, mcp: unknown): void {
+function seedCodexHome(pluginVersion: string, mcp: unknown, opts: { skipMcp?: boolean } = {}): void {
   codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-home-'));
   pluginRoot = path.join(codexHome, 'roots', 'agent-deck');
   fs.mkdirSync(pluginRoot, { recursive: true });
-  fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(mcp, null, 2)}\n`);
+  if (!opts.skipMcp) {
+    fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(mcp, null, 2)}\n`);
+  }
   fs.writeFileSync(
     path.join(codexHome, 'plugin-list.json'),
     `${JSON.stringify(
@@ -150,7 +154,7 @@ afterEach(() => {
 
 describe('doctor codex plugin state (NOT-188)', () => {
   it('fails read-only on a legacy direct-HTTP 1.4.4 plugin', async () => {
-    seedCodexHome('1.4.4', LEGACY_MCP);
+    seedCodexHome('1.4.4', HTTP_MCP);
     // Isolated fixture home: never the developer's real ~/.codex.
     expect(process.env.CODEX_HOME).toBe(codexHome);
     expect(path.dirname(codexHome)).toBe(path.resolve(os.tmpdir()));
@@ -179,11 +183,16 @@ describe('doctor codex plugin state (NOT-188)', () => {
   });
 
   it('fails when the version matches but the transport is unverifiable', async () => {
-    seedCodexHome(CLI_VERSION, { mcpServers: {} });
+    // An unrecognised entry shape (not the legacy launcher, not HTTP, not
+    // absent) is unverifiable. A missing .mcp.json or an empty mcpServers
+    // map is the current skills-only shape — valid, covered below.
+    seedCodexHome(CLI_VERSION, {
+      mcpServers: { 'agent-deck': { command: 'custom-wrapper', args: ['serve'] } },
+    });
     const before = hashFixtures();
 
-    // A matching version with an unreadable/missing/unrecognised .mcp.json
-    // is never "compatible": compatible requires a verified mcp-launch.
+    // A matching version with an unreadable/unrecognised entry is never
+    // "compatible": compatible requires a verified transport.
     const state = await inspectCodexPlugin(CLI_VERSION);
     expect(state.classification).toBe('unknown-transport');
 
@@ -589,10 +598,67 @@ describe('sticky versioned cache (NOT-360)', () => {
   });
 });
 
+describe('launcher-free plugin connection (NOT-565)', () => {
+  it('ships Codex and Claude plugin manifests with no MCP server at all', () => {
+    const repositoryRoot = path.join(__dirname, '..', '..', '..');
+    for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']) {
+      const raw = fs.readFileSync(path.join(repositoryRoot, manifest), 'utf8');
+      expect(raw).not.toContain('mcp-launch');
+      expect(raw).not.toContain('"command"');
+      expect(raw).not.toContain('mcpServers');
+      const shipped = JSON.parse(raw) as { mcpServers?: unknown };
+      expect(shipped.mcpServers).toBeUndefined();
+    }
+    // No plugin-shipped connection file: the Codex/Claude connection is
+    // plain host MCP config (global fallback + per-folder entry).
+    expect(fs.existsSync(path.join(repositoryRoot, '.mcp.json'))).toBe(false);
+  });
+
+  it('still recognises the legacy bare agent-deck mcp-launch shape', async () => {
+    seedCodexHome(CLI_VERSION, LAUNCH_MCP);
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.transport).toBe('mcp-launch');
+    expect(state.classification).toBe('compatible');
+  });
+
+  it('classifies the earlier headerless HTTP shape as direct-http, not unknown', async () => {
+    seedCodexHome(CLI_VERSION, HTTP_MCP);
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.transport).toBe('direct-http');
+    expect(state.classification).toBe('compatible');
+  });
+
+  it('treats a missing plugin .mcp.json as no declared server, not unknown', async () => {
+    seedCodexHome(CLI_VERSION, HTTP_MCP, { skipMcp: true });
+    expect(fs.existsSync(path.join(pluginRoot, '.mcp.json'))).toBe(false);
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.transport).toBe('none');
+    expect(state.classification).toBe('compatible');
+  });
+
+  it('treats an empty plugin mcpServers map as no declared server, not unknown', async () => {
+    seedCodexHome(CLI_VERSION, { mcpServers: {} });
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.transport).toBe('none');
+    expect(state.classification).toBe('compatible');
+  });
+
+  it('reports the no-server transport on the manifest-only doctor line', async () => {
+    seedCodexHome(CLI_VERSION, { mcpServers: {} });
+    expect(
+      await runCodexPluginDoctor(CLI_VERSION, undefined, { probeDaemon: async () => false }),
+    ).toBe(0);
+    expect(output.join('\n')).toContain(
+      `Codex plugin manifest: OK (${CLI_VERSION}, none) (manifest-only, connection not verified)`,
+    );
+    expect(output.join('\n')).not.toContain('Codex plugin: OK (');
+  });
+});
+
 describe('pre-publish release sync (NOT-188)', () => {
   const script = path.join(__dirname, '..', '..', '..', 'scripts', 'pre-publish-check.mjs');
 
-  function makeFixture(opts: { version?: string; mcp?: unknown }): string {
+  function makeFixture(opts: { version?: string; mcp?: unknown; mcpServers?: unknown }): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-sync-'));
     const rootPkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8')) as {
       version: string;
@@ -603,12 +669,19 @@ describe('pre-publish release sync (NOT-188)', () => {
     );
     for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']) {
       fs.mkdirSync(path.join(dir, path.dirname(manifest)), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, manifest),
-        `${JSON.stringify({ name: 'agent-deck', version: opts.version ?? rootPkg.version }, null, 2)}\n`,
-      );
+      const body: Record<string, unknown> = {
+        name: 'agent-deck',
+        version: opts.version ?? rootPkg.version,
+      };
+      if (opts.mcpServers !== undefined) {
+        body.mcpServers = opts.mcpServers;
+      }
+      fs.writeFileSync(path.join(dir, manifest), `${JSON.stringify(body, null, 2)}\n`);
     }
-    fs.writeFileSync(path.join(dir, '.mcp.json'), `${JSON.stringify(opts.mcp ?? LAUNCH_MCP, null, 2)}\n`);
+    // No shipped .mcp.json by default: the plugins declare no MCP server.
+    if (opts.mcp !== undefined) {
+      fs.writeFileSync(path.join(dir, '.mcp.json'), `${JSON.stringify(opts.mcp, null, 2)}\n`);
+    }
     return dir;
   }
 
@@ -632,12 +705,23 @@ describe('pre-publish release sync (NOT-188)', () => {
     }
   });
 
-  it('fails when .mcp.json does not invoke agent-deck mcp-launch', () => {
-    const dir = makeFixture({ mcp: LEGACY_MCP });
+  it('NOT-565: fails when a plugin manifest declares an MCP server', () => {
+    const dir = makeFixture({ mcpServers: './.mcp.json' });
     try {
       expect(() =>
         execFileSync(process.execPath, [script, '--root', dir, '--sync-only'], { stdio: 'pipe' }),
-      ).toThrow(/mcp-launch/);
+      ).toThrow(/declares an MCP server/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-565: fails when a shipped .mcp.json carries an agent-deck server', () => {
+    const dir = makeFixture({ mcp: HTTP_MCP });
+    try {
+      expect(() =>
+        execFileSync(process.execPath, [script, '--root', dir, '--sync-only'], { stdio: 'pipe' }),
+      ).toThrow(/carries an agent-deck server/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

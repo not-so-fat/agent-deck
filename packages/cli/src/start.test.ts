@@ -7,9 +7,9 @@ describe('start output', () => {
     expect(formatStartVersionLine('1.7.3')).toBe('  Version    1.7.3');
   });
 
-  it('preserves a custom endpoint in the Claude launcher hint', () => {
+  it('NOT-565: preserves a custom endpoint in the Claude HTTP fallback hint', () => {
     expect(formatClaudeMcpAddCommand('127.0.0.2', 2110)).toBe(
-      'claude mcp add --scope user agent-deck -e AGENT_DECK_MCP_PORT=2110 -e AGENT_DECK_HOST=127.0.0.2 -- agent-deck mcp-launch',
+      'claude mcp add --scope user --transport http agent-deck http://127.0.0.2:2110/mcp',
     );
   });
 });
