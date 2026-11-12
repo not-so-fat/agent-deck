@@ -19,8 +19,11 @@ import {
 import { parseCliMcpPort } from './defaults';
 import {
   formatLauncherMigrationResults,
+  formatScanSummary,
   rewriteLegacyLauncherEntries,
+  rewriteScanFolders,
 } from './launcher-migration';
+import { findAssignedFolders, parseScanDirs } from './upgrade-scan';
 import { getAgentDeckVersion } from './version';
 
 export type UpgradeDeps = {
@@ -134,22 +137,36 @@ function parseToVersion(args: string[]): string | undefined {
  * reconcile, so a hung or failing `codex` step can never block or undo
  * the migration. Best-effort and silent when clean — it never changes
  * the upgrade result, which is still the plugin step's exit code.
+ *
+ * NOT-577: with `scanDirs` the same pass covers every assigned folder
+ * under those roots (including Cursor project entries) and the globals
+ * once; the plugin step still runs once per invocation, not per folder.
  */
 async function reconcilePluginAndMigrateLauncherEntries(
   expectedVersion: string,
   codexRunner: CodexRunner | undefined,
-  options: { alreadyCurrent?: boolean } = {},
+  options: { alreadyCurrent?: boolean; scanDirs?: string[] } = {},
 ): Promise<number> {
   try {
-    const results = rewriteLegacyLauncherEntries({
-      workspaceRoot: process.cwd(),
-      endpoint: {
-        host: process.env.AGENT_DECK_HOST ?? '127.0.0.1',
-        mcpPort: parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT),
-      },
-    });
-    for (const line of formatLauncherMigrationResults(results)) {
-      console.log(line);
+    const endpoint = {
+      host: process.env.AGENT_DECK_HOST ?? '127.0.0.1',
+      mcpPort: parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT),
+    };
+    if (options.scanDirs && options.scanDirs.length > 0) {
+      const folders = findAssignedFolders(options.scanDirs);
+      const results = rewriteScanFolders(folders, endpoint);
+      for (const line of formatLauncherMigrationResults(results)) {
+        console.log(line);
+      }
+      console.log(formatScanSummary(folders, results));
+    } else {
+      const results = rewriteLegacyLauncherEntries({
+        workspaceRoot: process.cwd(),
+        endpoint,
+      });
+      for (const line of formatLauncherMigrationResults(results)) {
+        console.log(line);
+      }
     }
   } catch (error) {
     console.warn(
@@ -160,9 +177,46 @@ async function reconcilePluginAndMigrateLauncherEntries(
   return reconcileCodexPluginAfterUpgrade(expectedVersion, codexRunner, options);
 }
 
+/**
+ * NOT-577: `upgrade --scan <dir> --check` reports the planned migration
+ * across every assigned folder under the roots and writes nothing — no
+ * version check, no install, no plugin step.
+ */
+function runScanCheck(scanDirs: string[]): number {
+  try {
+    const endpoint = {
+      host: process.env.AGENT_DECK_HOST ?? '127.0.0.1',
+      mcpPort: parseCliMcpPort(process.env.AGENT_DECK_MCP_PORT),
+    };
+    const folders = findAssignedFolders(scanDirs);
+    const results = rewriteScanFolders(folders, endpoint, { dryRun: true });
+    for (const line of formatLauncherMigrationResults(results, { check: true })) {
+      console.log(line);
+    }
+    console.log(formatScanSummary(folders, results, { check: true }));
+  } catch (error) {
+    console.warn(
+      `MCP config: legacy launcher-entry scan skipped (${error instanceof Error ? error.message : String(error)}).`,
+    );
+  }
+  return 0;
+}
+
 export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promise<number> {
   const checkOnly = args.includes('--check');
   const toVersion = parseToVersion(args);
+  const { dirs: scanDirs, error: scanError } = parseScanDirs(args);
+  if (scanError) {
+    console.error(scanError);
+    return 1;
+  }
+  const scanOptions = scanDirs.length > 0 ? { scanDirs } : {};
+
+  // NOT-577: scan + check is a pure dry-run report — no version check,
+  // no install, no plugin step, no writes.
+  if (scanDirs.length > 0 && checkOnly) {
+    return runScanCheck(scanDirs);
+  }
 
   if (detectInstallKind() === 'managed') {
     const current = readCurrentManagedVersion() ?? getAgentDeckVersion();
@@ -181,7 +235,10 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
       if (checkOnly) {
         return 0;
       }
-      return reconcilePluginAndMigrateLauncherEntries(current, deps.codexRunner, { alreadyCurrent: true });
+      return reconcilePluginAndMigrateLauncherEntries(current, deps.codexRunner, {
+        alreadyCurrent: true,
+        ...scanOptions,
+      });
     }
 
     if (checkOnly) {
@@ -205,7 +262,7 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
       activateVersion(latest);
     }
     console.log('Upgrade complete. Restart any running Agent Deck process.');
-    return reconcilePluginAndMigrateLauncherEntries(latest, deps.codexRunner);
+    return reconcilePluginAndMigrateLauncherEntries(latest, deps.codexRunner, scanOptions);
   }
 
   const result = await checkForUpgrade({ force: true });
@@ -225,7 +282,10 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
     if (checkOnly) {
       return 0;
     }
-    return reconcilePluginAndMigrateLauncherEntries(result.current, deps.codexRunner, { alreadyCurrent: true });
+    return reconcilePluginAndMigrateLauncherEntries(result.current, deps.codexRunner, {
+      alreadyCurrent: true,
+      ...scanOptions,
+    });
   }
 
   if (checkOnly) {
@@ -242,13 +302,13 @@ export async function runUpgrade(args: string[], deps: UpgradeDeps = {}): Promis
       return 1;
     }
     console.log('Upgrade complete. Restart any running Agent Deck process.');
-    return reconcilePluginAndMigrateLauncherEntries(target, deps.codexRunner);
+    return reconcilePluginAndMigrateLauncherEntries(target, deps.codexRunner, scanOptions);
   }
   const code = await runNpmInstallGlobal(target);
   if (code === 0) {
     console.log('Upgrade complete. Restart any running Agent Deck process.');
     console.log('Tip: agent-deck install  # switch CLI binary to managed auto-updates (data unchanged)');
-    return reconcilePluginAndMigrateLauncherEntries(target, deps.codexRunner);
+    return reconcilePluginAndMigrateLauncherEntries(target, deps.codexRunner, scanOptions);
   }
   console.error('Upgrade failed. Try manually:');
   console.error(`  npm install -g ${PACKAGE_NAME}@${target}`);
