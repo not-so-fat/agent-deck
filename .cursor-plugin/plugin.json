@@ -23,7 +23,6 @@
   ],
   "category": "developer-tools",
   "skills": "./skills/",
-  "mcpServers": "./.cursor-plugin/.mcp.json",
   "tags": [
     "mcp",
     "playbooks",
