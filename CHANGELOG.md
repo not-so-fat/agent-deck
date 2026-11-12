@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.5.0 — 2026-11-12
+
+### Change: Codex, Claude Code, Cursor and Muse connect over plain MCP (NOT-561 to NOT-572)
+
+- The default connection no longer needs an `agent-deck` executable on `PATH`. This fixes the Codex desktop plugin failing to start because the app launches its MCP host with a minimal `PATH`. Each host now talks HTTP to the daemon directly.
+- `agent-deck use <deck>` writes a per-folder entry that names the folder in an `x-agent-deck-workspace` header: `.codex/config.toml` for Codex, `.mcp.json` for Claude Code and Muse, `.cursor/mcp.json` for Cursor. No deck id is written; the server resolves the deck from the folder's `.agent-deck/use.json` (NOT-562, NOT-563, NOT-567, NOT-571).
+- `agent-deck setup --client codex|claude|cursor|muse` writes a global headerless HTTP fallback entry. A folder with no assignment lands in the explain-only unassigned session. Agent Deck's own earlier `mcp-launch` entries are replaced; custom entries are never changed (NOT-565, NOT-567, NOT-570).
+- The Codex, Claude Code and Cursor plugins no longer declare an MCP server; they supply skills and guidance only. The repository-root `.mcp.json` is removed (NOT-565, NOT-567).
+- What each host needs once: Codex requires the folder to be trusted in `~/.codex/config.toml` (a per-run override is not enough); Claude Code and Cursor ask you to approve the project server; Muse loads project config only inside a trusted git repository.
+- The Muse launcher path is retired (NOT-572). `agent-deck mcp-launch` and the bridge remain for Claude Desktop, which is still launcher-based.
+
+### Fix: sessions survive a daemon restart for hosts that never re-initialize (NOT-569)
+
+- Cursor and Muse do not send a new `initialize` after the daemon answers 404 to a stale `Mcp-Session-Id`, so a daemon restart used to end Agent Deck for the rest of that host session. In local mode, a request with an unknown session id whose headers resolve to a deck (workspace header with an assignment, or an authenticated deck header) is now served on a recovered session and keeps working on the same id. Everything else keeps the 404 (no deck-resolving header, unassigned workspace, a session the server itself closed, hosted and grant-bound sessions). `/health` counts these as recovered sessions.
+
+### Fix: `doctor` reports the real Codex connection (NOT-564)
+
+- `agent-deck doctor` reports the Codex host's real connection state and labels the plugin manifest as manifest-only, instead of treating an installed manifest as a working connection.
+
+### Docs
+
+- Design notes with the live evidence behind these changes: `docs/design/launcher-free-host-connection.md` (Codex and Claude Code, NOT-561) and `docs/design/muse-pure-mcp-connection.md` (Muse, NOT-568).
+
+### Release tooling
+
+- The packaged-install smoke asserts Muse's headerless HTTP entry and the current setup next steps (it still expected the old launcher entry).
+
+### Not changed
+
+- Claude Desktop keeps using `agent-deck mcp-launch`.
+
 ## 2.4.0 — 2026-10-31
 
 ### Change: delegation is MCP-only for agents (NOT-540)
