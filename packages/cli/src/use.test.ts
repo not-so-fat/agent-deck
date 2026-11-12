@@ -453,7 +453,7 @@ describe('agent-deck use', () => {
     expect(createCollectionAdminMock).toHaveBeenCalled();
   });
 
-  it('NOT-387: use --client muse writes use.json plus .mcp.json only, idempotently', async () => {
+  it('NOT-571: use --client muse writes use.json plus the per-folder HTTP .mcp.json, idempotently', async () => {
     const workspace = makeWorkspace();
     execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
     const fakeHome = makeWorkspace();
@@ -469,6 +469,7 @@ describe('agent-deck use', () => {
     }
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const first = await runUse({ ...parsed, workspaceRoot: workspace });
       expect('error' in first).toBe(false);
@@ -486,18 +487,18 @@ describe('agent-deck use', () => {
       expect(manifest.deckId).toBe('deck-1');
       expect(manifest.deckName).toBe('dev');
 
-      const mcp = JSON.parse(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8')) as {
+      const mcpPath = path.join(workspace, '.mcp.json');
+      const mcp = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as {
         mcpServers: Record<string, unknown>;
       };
-      // Exact launcher fields only — toEqual fails on any extra field.
+      // Exact per-folder HTTP shape — toEqual fails on any extra field.
       expect(mcp.mcpServers['agent-deck']).toEqual({
-        command: 'agent-deck',
-        args: ['mcp-launch'],
-        env: {
-          AGENT_DECK_MCP_PORT: String(parsed.mcpPort),
-          AGENT_DECK_HOST: parsed.host,
-        },
+        type: 'http',
+        url: `http://${parsed.host}:${parsed.mcpPort}/mcp`,
+        headers: { 'x-agent-deck-workspace': workspace },
       });
+      expect(fs.readFileSync(mcpPath, 'utf8')).not.toContain('deck-1');
+      expect(fs.readFileSync(mcpPath, 'utf8')).not.toContain('mcp-launch');
 
       // No Cursor- or Claude-only files, and no other host configs touched.
       expect(fs.existsSync(path.join(workspace, '.cursor'))).toBe(false);
@@ -505,17 +506,237 @@ describe('agent-deck use', () => {
       expect(fs.existsSync(path.join(fakeHome, '.cursor', 'mcp.json'))).toBe(false);
       expect(fs.existsSync(path.join(fakeXdg, 'muse', 'settings.json'))).toBe(false);
 
+      // Git repository plus no legacy user entry: no warnings.
+      expect(warn).not.toHaveBeenCalled();
+
+      // The summary names the Muse trust + reload steps.
+      const summary = formatUseSummary(first);
+      expect(summary).toContain('Muse: trust this folder');
+      expect(summary).toContain('.mcp.json');
+      expect(summary).toContain('reload MCP');
+      expect(summary).toContain('restart Muse');
+
       const useJsonBefore = fs.readFileSync(
         path.join(workspace, '.agent-deck', 'use.json'),
         'utf8',
       );
-      const mcpBefore = fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8');
+      const mcpBefore = fs.readFileSync(mcpPath, 'utf8');
       const second = await runUse({ ...parsed, workspaceRoot: workspace });
       expect('error' in second).toBe(false);
       expect(
         fs.readFileSync(path.join(workspace, '.agent-deck', 'use.json'), 'utf8'),
       ).toBe(useJsonBefore);
-      expect(fs.readFileSync(path.join(workspace, '.mcp.json'), 'utf8')).toBe(mcpBefore);
+      expect(fs.readFileSync(mcpPath, 'utf8')).toBe(mcpBefore);
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+    }
+  });
+
+  it('NOT-571: use --client muse leaves a sibling Claude entry byte-identical', async () => {
+    const workspace = makeWorkspace();
+    execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
+    const fakeHome = makeWorkspace();
+    const fakeXdg = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = fakeXdg;
+
+    const parsed = parseUseArgs(['dev', '--client', 'muse']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    // A Claude run already wrote the identical entry plus an unrelated server.
+    const memoryServer = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] };
+    const mcpPath = path.join(workspace, '.mcp.json');
+    fs.writeFileSync(
+      mcpPath,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            memory: memoryServer,
+            'agent-deck': {
+              type: 'http',
+              url: `http://${parsed.host}:${parsed.mcpPort}/mcp`,
+              headers: { 'x-agent-deck-workspace': workspace },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const before = fs.readFileSync(mcpPath, 'utf8');
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runUse({ ...parsed, workspaceRoot: workspace });
+      expect('error' in result).toBe(false);
+      // Same file, same shape — the Muse write is a no-op on Claude's entry.
+      expect(fs.readFileSync(mcpPath, 'utf8')).toBe(before);
+      const mcp = JSON.parse(before) as { mcpServers: Record<string, unknown> };
+      expect(mcp.mcpServers.memory).toEqual(memoryServer);
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+    }
+  });
+
+  it('NOT-571: use --client muse replaces a legacy launcher shape, keeping others, byte-identical on re-run', async () => {
+    const workspace = makeWorkspace();
+    execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
+    const fakeHome = makeWorkspace();
+    const fakeXdg = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = fakeXdg;
+
+    const parsed = parseUseArgs(['dev', '--client', 'muse']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    // The Muse-shaped launcher an older `use --client muse` wrote: no
+    // type, no workspace pin — plus an unrelated server.
+    const memoryServer = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] };
+    const mcpPath = path.join(workspace, '.mcp.json');
+    fs.writeFileSync(
+      mcpPath,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            memory: memoryServer,
+            'agent-deck': {
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: { AGENT_DECK_MCP_PORT: '9999', AGENT_DECK_HOST: '127.0.0.1' },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const first = await runUse({ ...parsed, workspaceRoot: workspace });
+      expect('error' in first).toBe(false);
+      if ('error' in first) {
+        return;
+      }
+
+      const mcp = JSON.parse(fs.readFileSync(mcpPath, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      expect(mcp.mcpServers.memory).toEqual(memoryServer);
+      // Exact per-folder HTTP shape — toEqual fails on any leftover field.
+      expect(mcp.mcpServers['agent-deck']).toEqual({
+        type: 'http',
+        url: `http://${parsed.host}:${parsed.mcpPort}/mcp`,
+        headers: { 'x-agent-deck-workspace': workspace },
+      });
+      expect(mcp.mcpServers['agent-deck']).not.toHaveProperty('command');
+      expect(fs.readFileSync(mcpPath, 'utf8')).not.toContain('mcp-launch');
+
+      const before = fs.readFileSync(mcpPath, 'utf8');
+      const second = await runUse({ ...parsed, workspaceRoot: workspace });
+      expect('error' in second).toBe(false);
+      expect(fs.readFileSync(mcpPath, 'utf8')).toBe(before);
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+    }
+  });
+
+  it('NOT-571: use --client muse warns outside a git repository without failing', async () => {
+    const workspace = makeWorkspace();
+    // No `git init`: Muse would ignore the project file here.
+    const fakeHome = makeWorkspace();
+    const fakeXdg = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = fakeXdg;
+
+    const parsed = parseUseArgs(['dev', '--client', 'muse']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runUse({ ...parsed, workspaceRoot: workspace });
+      // Exit status unchanged: the assignment and .mcp.json are written.
+      expect('error' in result).toBe(false);
+      expect(fs.existsSync(path.join(workspace, '.agent-deck', 'use.json'))).toBe(true);
+      expect(fs.existsSync(path.join(workspace, '.mcp.json'))).toBe(true);
+
+      const warned = warn.mock.calls.flat().join('\n');
+      expect(warned).toContain('not inside a git repository');
+      expect(warned).toContain('.mcp.json only inside a repository');
+      expect(warned).toContain('git init');
+      expect(warned).toContain('trust the folder');
+    } finally {
+      if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previousXdg;
+    }
+  });
+
+  it('NOT-571: use --client muse warns on a legacy launcher entry in the user settings without failing', async () => {
+    const workspace = makeWorkspace();
+    execFileSync('git', ['init'], { cwd: workspace, stdio: 'ignore' });
+    const fakeHome = makeWorkspace();
+    const fakeXdg = makeWorkspace();
+    vi.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+    const previousXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = fakeXdg;
+
+    // Agent Deck's own legacy launcher entry in the Muse user settings.
+    const settingsPath = path.join(fakeXdg, 'muse', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      `${JSON.stringify(
+        {
+          schema_version: 1,
+          mcpServers: {
+            'agent-deck': {
+              command: 'agent-deck',
+              args: ['mcp-launch'],
+              env: { AGENT_DECK_MCP_PORT: '1110', AGENT_DECK_HOST: '127.0.0.1' },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const parsed = parseUseArgs(['dev', '--client', 'muse']);
+    expect('error' in parsed).toBe(false);
+    if ('error' in parsed) {
+      return;
+    }
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runUse({ ...parsed, workspaceRoot: workspace });
+      // Exit status unchanged: the assignment and .mcp.json are written.
+      expect('error' in result).toBe(false);
+      expect(fs.existsSync(path.join(workspace, '.agent-deck', 'use.json'))).toBe(true);
+
+      const warned = warn.mock.calls.flat().join('\n');
+      expect(warned).toContain("still holds Agent Deck's legacy launcher entry");
+      expect(warned).toContain('invalid_transport_combination');
+      expect(warned).toContain('agent-deck setup --client muse');
+      // Git repository, so only the legacy-user-entry warning fires.
+      expect(warned).not.toContain('not inside a git repository');
     } finally {
       if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = previousXdg;

@@ -104,18 +104,40 @@ export function buildGlobalFallbackHttpEntry(endpoint: McpEndpoint): Record<stri
 }
 
 /**
- * MCP client entry for the agent-deck server. Codex, Claude, and Cursor
- * connect over pure HTTP (NOT-563/565/567): the workspace header names
- * the folder and the daemon resolves the deck from `.agent-deck/use.json`
- * — no deck id in tracked config, no executable lookup.
+ * Legacy Muse stdio launcher entry (NOT-387 shape). `agent-deck use
+ * --client muse` no longer writes this (NOT-571: it writes the same
+ * per-folder HTTP entry as Claude); only `setup --client muse --scope
+ * project` still does, until the launcher-retirement ticket removes this
+ * helper. Muse may rewrite its settings file, so rely only on the
+ * preserved command/args/env fields: no cwd, type, required, or timeout
+ * fields. No AGENT_DECK_WORKSPACE pin either — an omitted cwd means the
+ * Muse session working directory, so mcp-launch resolves the active
+ * workspace's .agent-deck/use.json dynamically.
+ */
+export function buildMuseLegacyLauncherEntry(endpoint: McpEndpoint): Record<string, unknown> {
+  return {
+    command: 'agent-deck',
+    args: ['mcp-launch'],
+    env: {
+      AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
+      AGENT_DECK_HOST: endpoint.host,
+    },
+  };
+}
+
+/**
+ * MCP client entry for the agent-deck server. Codex, Claude, Cursor, and
+ * Muse connect over pure HTTP (NOT-563/565/567/570/571): the workspace
+ * header names the folder and the daemon resolves the deck from
+ * `.agent-deck/use.json` — no deck id in tracked config, no executable
+ * lookup.
  *
  * A `workspaceRoot` selects the per-folder HTTP form; without one the
- * client gets the global headerless HTTP fallback (NOT-565/567).
+ * client gets the global headerless HTTP fallback (NOT-565/567/570).
  * Claude Desktop still uses the trusted local launcher, which reads the
- * folder assignment at runtime. Muse global setup writes the headerless
- * HTTP fallback directly (NOT-570); the Muse branch below still returns
- * the launcher for project scope (`setup --scope project`,
- * `agent-deck use`) until the per-folder ticket lands.
+ * folder assignment at runtime. The retired Muse launcher shape lives on
+ * only in {@link buildMuseLegacyLauncherEntry} for `setup --scope
+ * project` until the launcher-retirement ticket removes it.
  */
 export function buildAgentDeckEntry(
   client: McpClient,
@@ -138,28 +160,13 @@ export function buildAgentDeckEntry(
     };
   }
 
-  if (client === 'muse') {
-    // Project scope only: NOT-570 global setup bypasses this branch with
-    // buildGlobalFallbackHttpEntry. Muse may rewrite its settings file, so
-    // rely only on the preserved command/args/env fields: no cwd, type,
-    // required, or timeout fields. No AGENT_DECK_WORKSPACE pin either — an
-    // omitted cwd means the Muse session working directory, so mcp-launch
-    // resolves the active workspace's .agent-deck/use.json dynamically.
-    // options.workspaceRoot is deliberately ignored.
-    return {
-      command: 'agent-deck',
-      args: ['mcp-launch'],
-      env: {
-        AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
-        AGENT_DECK_HOST: endpoint.host,
-      },
-    };
-  }
-
-  if (client === 'claude') {
+  if (client === 'muse' || client === 'claude') {
+    // NOT-571: Muse writes the identical entry Claude writes (NOT-563) —
+    // the same <folder>/.mcp.json, the same shape — so the two clients no
+    // longer overwrite each other's agent-deck entry.
     if (options?.workspaceRoot) {
-      // NOT-563 per-folder pure-MCP entry: the daemon resolves the deck
-      // from `.agent-deck/use.json` — no deck id in the file.
+      // Per-folder pure-MCP entry: the daemon resolves the deck from
+      // `.agent-deck/use.json` — no deck id in the file.
       return {
         type: 'http',
         url: buildMcpUrl(endpoint),
@@ -168,9 +175,9 @@ export function buildAgentDeckEntry(
         },
       };
     }
-    // NOT-565 global setup fallback: headerless pure HTTP, no launcher
-    // and no executable lookup. (The per-folder form above already
-    // returned, so no workspaceRoot is in scope here.)
+    // Global setup fallback: headerless pure HTTP, no launcher and no
+    // executable lookup. (The per-folder form above already returned, so
+    // no workspaceRoot is in scope here.)
     return buildGlobalFallbackHttpEntry(endpoint);
   }
 
@@ -261,12 +268,13 @@ export function isMcpLaunchEntry(entry: unknown): boolean {
  * entry `use`/`setup --client claude` ever wrote carries at least one of
  * those markers — project entries carry both, global entries the type.
  *
- * Muse writes the same command/args to the same project `.mcp.json` but
- * never writes `type` or the workspace pin (see `buildAgentDeckEntry`),
- * so a Muse-shaped entry never matches. The upgrade rewrite uses this
- * predicate for the shared project file so it cannot convert a current
- * Muse entry — whose project scope still depends on the launcher — to
- * the Claude HTTP shape.
+ * Muse-shaped launcher entries (written by older `use --client muse`
+ * and still by `setup --client muse --scope project` until the
+ * launcher-retirement ticket) carry the same command/args but never
+ * `type` or the workspace pin (see `buildMuseLegacyLauncherEntry`), so
+ * they never match. The upgrade rewrite uses this predicate for the
+ * shared project file so it cannot convert a Muse-shaped entry to the
+ * HTTP shape; converting those is the launcher-retirement ticket's job.
  */
 export function isLegacyClaudeLaunchEntry(entry: unknown): boolean {
   if (!isMcpLaunchEntry(entry)) {

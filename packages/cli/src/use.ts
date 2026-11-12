@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { ensureGitExcluded } from '@agent-deck/shared';
@@ -8,6 +9,7 @@ import {
   buildCodexAgentDeckEntry,
   buildMcpUrl,
   formatCodexMcpSection,
+  isMcpLaunchEntry,
   mergeCodexTomlConfig,
   mergeMcpServerConfig,
   readJsonFile,
@@ -198,15 +200,76 @@ function writeProjectMcpConfigs(
       mcpWritten.push({ client, path: configPath });
       continue;
     }
+    // NOT-571: Muse takes the same headed per-folder HTTP entry as
+    // Claude — the same file, the same shape, no more collision.
     const entry = buildAgentDeckEntry(client, endpoint, {
-      // Muse resolves its workspace dynamically — it must not be pinned.
-      workspaceRoot: client === 'muse' ? undefined : parsed.workspaceRoot,
+      workspaceRoot: parsed.workspaceRoot,
     });
     const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
     writeJsonFile(configPath, merged);
     mcpWritten.push({ client, path: configPath });
   }
   return mcpWritten;
+}
+
+/** True when `folder` sits inside a git working tree (`.git` here or above). */
+function isInsideGitRepository(folder: string): boolean {
+  let current = path.resolve(folder);
+  for (;;) {
+    try {
+      if (fs.existsSync(path.join(current, '.git'))) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return false;
+    }
+    current = parent;
+  }
+}
+
+/**
+ * NOT-571 post-write warnings for the Muse per-folder entry. Both warn
+ * without failing: the assignment and `.mcp.json` are already written.
+ * A missing or unparsable user settings file simply skips the legacy
+ * check — `use` must not fail on it.
+ */
+function warnMuseProjectEntry(workspaceRoot: string): void {
+  if (!isInsideGitRepository(workspaceRoot)) {
+    console.warn(
+      `Muse MCP: ${workspaceRoot} is not inside a git repository — Muse loads .mcp.json only inside a repository, so the project entry will not load here.`,
+    );
+    console.warn('  Run `git init` (or move into a repository), trust the folder, then reload MCP.');
+  }
+  const userSettingsPath = resolveConfigPath('muse', 'global');
+  let userEntry: unknown;
+  try {
+    const servers = readJsonFile(userSettingsPath).mcpServers;
+    userEntry =
+      servers && typeof servers === 'object' && !Array.isArray(servers)
+        ? (servers as Record<string, unknown>)['agent-deck']
+        : undefined;
+  } catch {
+    userEntry = undefined;
+  }
+  if (isMcpLaunchEntry(userEntry)) {
+    console.warn(
+      `Muse MCP: ${userSettingsPath} still holds Agent Deck's legacy launcher entry, which Muse rejects against the project HTTP entry (invalid_transport_combination) — agent-deck is omitted in this folder.`,
+    );
+    console.warn(
+      '  Re-run `agent-deck setup --client muse` to replace it with the headerless HTTP fallback, then reload MCP.',
+    );
+  }
+}
+
+/** Emit Muse post-write warnings only when this run actually wrote the Muse entry. */
+function maybeWarnMuse(parsed: UseOptions, result: UseResult): void {
+  if (result.mcp.some((entry) => entry.client === 'muse')) {
+    warnMuseProjectEntry(parsed.workspaceRoot);
+  }
 }
 
 /**
@@ -331,7 +394,11 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
   const mcpUrl = buildMcpUrl(endpoint);
 
   try {
-    return await runUseFullPath(parsed, deckRef, endpoint, mcpUrl);
+    const result = await runUseFullPath(parsed, deckRef, endpoint, mcpUrl);
+    if (!('error' in result)) {
+      maybeWarnMuse(parsed, result);
+    }
+    return result;
   } catch (error) {
     if (!isHomeStoreWriteError(error)) {
       throw error;
@@ -339,7 +406,11 @@ export async function runUse(parsed: UseOptions): Promise<UseResult | { error: s
     const detail = error instanceof Error ? error.message : String(error);
     const assignment = await readAssignment(parsed.workspaceRoot);
     if (assignment && assignmentMatchesDeckRef(assignment, deckRef)) {
-      return runUseWorkspaceOnlyRepair(parsed, assignment, endpoint, mcpUrl);
+      const repaired = await runUseWorkspaceOnlyRepair(parsed, assignment, endpoint, mcpUrl);
+      if (!('error' in repaired)) {
+        maybeWarnMuse(parsed, repaired);
+      }
+      return repaired;
     }
     return { error: formatHomeStoreWriteBlockedMessage(detail) };
   }
@@ -376,6 +447,11 @@ export function formatUseSummary(result: UseResult): string {
   if (written.has('codex')) {
     lines.push(
       'Codex: trust this folder so .codex/config.toml applies, then reload MCP (start a new task).',
+    );
+  }
+  if (written.has('muse')) {
+    lines.push(
+      'Muse: trust this folder so the project agent-deck entry (.mcp.json) loads, then reload MCP (restart Muse).',
     );
   }
   lines.push('Restart the IDE host so MCP and stub discovery reload.');
