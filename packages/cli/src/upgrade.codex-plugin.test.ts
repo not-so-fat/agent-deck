@@ -11,7 +11,9 @@ import { getAgentDeckVersion } from './version';
 const CLI_VERSION = getAgentDeckVersion();
 const SELECTOR = 'agent-deck@agent-deck';
 
-const LEGACY_MCP = {
+// Headerless HTTP bytes: the pre-upgrade shape and the current global
+// fallback shape are identical — legacy only by installed version.
+const HTTP_MCP = {
   mcpServers: { 'agent-deck': { type: 'http', url: 'http://127.0.0.1:1110/mcp' } },
 };
 
@@ -74,15 +76,16 @@ exit 1
 }
 
 /**
- * One installed plugin at 1.4.4 with legacy direct-HTTP transport; the stub
- * promotes it to the post-upgrade state on `plugin add`. Each test writes its
- * own marketplace-list.json via writeMarketplaces().
+ * One installed plugin at 1.4.4 with direct-HTTP transport; the stub
+ * promotes it to the post-upgrade state (current version, headerless HTTP
+ * fallback) on `plugin add`. Each test writes its own
+ * marketplace-list.json via writeMarketplaces().
  */
 function seedUpgradeHome(): void {
   codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-up-'));
   pluginRoot = path.join(codexHome, 'roots', 'agent-deck');
   fs.mkdirSync(pluginRoot, { recursive: true });
-  fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(LEGACY_MCP, null, 2)}\n`);
+  fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(HTTP_MCP, null, 2)}\n`);
   fs.writeFileSync(
     path.join(codexHome, 'plugin-list.json'),
     `${JSON.stringify(
@@ -127,7 +130,7 @@ function seedUpgradeHome(): void {
       2,
     )}\n`,
   );
-  fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`);
+  fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(HTTP_MCP, null, 2)}\n`);
   writeStub();
 }
 
@@ -215,7 +218,7 @@ describe('upgrade codex plugin reconciliation (NOT-188)', { timeout: 30_000 }, (
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(calls.some((line) => line.includes('marketplace upgrade'))).toBe(false);
     expect(text).toContain(
-      `Codex plugin manifest: OK (${CLI_VERSION}, mcp-launch) (manifest-only, connection not verified)`,
+      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
     );
     expect(text).not.toContain('Codex plugin: OK (');
   });
@@ -244,7 +247,7 @@ describe('upgrade codex plugin reconciliation (NOT-188)', { timeout: 30_000 }, (
     const rootB = path.join(codexHome, 'roots', 'b');
     for (const root of [rootA, rootB]) {
       fs.mkdirSync(root, { recursive: true });
-      fs.writeFileSync(path.join(root, '.mcp.json'), `${JSON.stringify(LEGACY_MCP, null, 2)}\n`);
+      fs.writeFileSync(path.join(root, '.mcp.json'), `${JSON.stringify(HTTP_MCP, null, 2)}\n`);
     }
     writeMarketplaces([
       { name: 'agent-deck', root: rootA, source: 'local' },
@@ -395,11 +398,15 @@ describe('upgrade codex plugin reconciliation (NOT-188)', { timeout: 30_000 }, (
     expect(hashLiveFixtures()).toBe(before);
   });
 
-  it('fails the re-read when the reinstalled plugin still lacks mcp-launch', async () => {
+  it('fails the re-read when the reinstalled plugin has an unverifiable transport', async () => {
     seedUpgradeHome();
     writeMarketplaces([{ name: 'agent-deck', root: pluginRoot, source: 'local' }]);
-    // The reinstall "succeeds" but leaves the legacy direct-HTTP transport.
-    fs.writeFileSync(path.join(codexHome, 'after', 'mcp.json'), `${JSON.stringify(LEGACY_MCP, null, 2)}\n`);
+    // The reinstall "succeeds" but leaves an unrecognised transport: the
+    // headerless HTTP fallback would verify, an empty entry does not.
+    fs.writeFileSync(
+      path.join(codexHome, 'after', 'mcp.json'),
+      `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`,
+    );
 
     const code = await runUpgrade(['--to', CLI_VERSION], {
       performCliUpgrade: async () => ({ ok: true }),
@@ -412,7 +419,7 @@ describe('upgrade codex plugin reconciliation (NOT-188)', { timeout: 30_000 }, (
     expect(calls).toContain(`codex plugin add ${SELECTOR}`);
     expect(text).not.toContain('Codex plugin manifest: OK (');
     expect(text).not.toContain('Codex plugin: OK (');
-    expect(text).toContain('still legacy-http');
+    expect(text).toContain('still unknown-transport');
     expect(text).toContain(`codex plugin add ${SELECTOR}`);
   });
 });
@@ -429,7 +436,7 @@ describe('current-contract reconciliation (NOT-301)', { timeout: 30_000 }, () =>
     codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-codex-cur-up-'));
     pluginRoot = path.join(codexHome, 'roots', 'agent-deck');
     fs.mkdirSync(pluginRoot, { recursive: true });
-    fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(LEGACY_MCP, null, 2)}\n`);
+    fs.writeFileSync(path.join(pluginRoot, '.mcp.json'), `${JSON.stringify(HTTP_MCP, null, 2)}\n`);
     const pluginList = {
       installed: [
         {
@@ -483,11 +490,11 @@ describe('current-contract reconciliation (NOT-301)', { timeout: 30_000 }, () =>
         2,
       )}\n`,
     );
-    fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`);
+    fs.writeFileSync(path.join(after, 'mcp.json'), `${JSON.stringify(HTTP_MCP, null, 2)}\n`);
     writeStub();
   }
 
-  it('reconciles installed[] 1.11.7 through remove/add and verifies 1.11.8 plus mcp-launch', async () => {
+  it('reconciles installed[] 1.11.7 through remove/add and verifies current plus direct-http', async () => {
     seedCurrentShapeUpgradeHome();
     // One unambiguous local marketplace; the stale available[] dev row
     // must not create source ambiguity.
@@ -506,7 +513,7 @@ describe('current-contract reconciliation (NOT-301)', { timeout: 30_000 }, () =>
     expect(removeIdx).toBeGreaterThanOrEqual(0);
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(text).toContain(
-      `Codex plugin manifest: OK (${CLI_VERSION}, mcp-launch) (manifest-only, connection not verified)`,
+      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
     );
     expect(text).not.toContain('Codex plugin: OK (');
   });
@@ -568,6 +575,8 @@ describe('sticky versioned cache reconciliation (NOT-360)', { timeout: 30_000 },
       path.join(marketplaceRoot, '.codex-plugin', 'plugin.json'),
       `${JSON.stringify({ name: 'agent-deck', version: CLI_VERSION }, null, 2)}\n`,
     );
+    // Legacy launcher transport on purpose: the sticky-cache mechanics
+    // are transport-agnostic, and this keeps the legacy path covered.
     fs.writeFileSync(
       path.join(marketplaceRoot, '.mcp.json'),
       `${JSON.stringify(LAUNCH_MCP, null, 2)}\n`,
@@ -767,6 +776,8 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     stubFetchLatest(CLI_VERSION);
   }
 
+  // Legacy launcher transport on purpose: already-installed plugins
+  // keep verifying as compatible without a reinstall.
   function seedCompatiblePlugin(): void {
     fs.writeFileSync(
       path.join(codexHome, 'plugin-list.json'),
@@ -807,7 +818,7 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(text).toContain('Already on the latest version.');
     expect(text).toContain(
-      `Codex plugin manifest: OK (${CLI_VERSION}, mcp-launch) (manifest-only, connection not verified)`,
+      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
     );
     expect(text).not.toContain('Codex plugin: OK (');
     expect(text).not.toContain('Upgrade complete');
@@ -831,7 +842,7 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     expect(addIdx).toBeGreaterThan(removeIdx);
     expect(text).toContain('Already on the latest version.');
     expect(text).toContain(
-      `Codex plugin manifest: OK (${CLI_VERSION}, mcp-launch) (manifest-only, connection not verified)`,
+      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
     );
     expect(text).not.toContain('Codex plugin: OK (');
     expect(text).not.toContain('Upgrade complete');
@@ -885,7 +896,7 @@ describe('upgrade no-op reconciliation (NOT-291)', { timeout: 30_000 }, () => {
     const rootB = path.join(codexHome, 'roots', 'b');
     for (const root of [rootA, rootB]) {
       fs.mkdirSync(root, { recursive: true });
-      fs.writeFileSync(path.join(root, '.mcp.json'), `${JSON.stringify(LEGACY_MCP, null, 2)}\n`);
+      fs.writeFileSync(path.join(root, '.mcp.json'), `${JSON.stringify(HTTP_MCP, null, 2)}\n`);
     }
     writeMarketplaces([
       { name: 'agent-deck', root: rootA, source: 'local' },

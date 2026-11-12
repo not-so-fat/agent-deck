@@ -26,7 +26,9 @@ echo "stub codex: unexpected invocation: $*" >&2
 exit 1
 `;
 
-const LEGACY_MCP = {
+// Headerless HTTP bytes: the 1.4.4-era shape and the current global
+// fallback shape are identical — legacy only by installed version.
+const HTTP_MCP = {
   mcpServers: { 'agent-deck': { type: 'http', url: 'http://127.0.0.1:1110/mcp' } },
 };
 
@@ -150,7 +152,7 @@ afterEach(() => {
 
 describe('doctor codex plugin state (NOT-188)', () => {
   it('fails read-only on a legacy direct-HTTP 1.4.4 plugin', async () => {
-    seedCodexHome('1.4.4', LEGACY_MCP);
+    seedCodexHome('1.4.4', HTTP_MCP);
     // Isolated fixture home: never the developer's real ~/.codex.
     expect(process.env.CODEX_HOME).toBe(codexHome);
     expect(path.dirname(codexHome)).toBe(path.resolve(os.tmpdir()));
@@ -589,6 +591,47 @@ describe('sticky versioned cache (NOT-360)', () => {
   });
 });
 
+describe('launcher-free plugin connection (NOT-565)', () => {
+  it('ships a global headerless HTTP .mcp.json with no agent-deck command', () => {
+    const shippedPath = path.join(__dirname, '..', '..', '..', '.mcp.json');
+    const raw = fs.readFileSync(shippedPath, 'utf8');
+    expect(raw).not.toContain('mcp-launch');
+    const shipped = JSON.parse(raw) as {
+      mcpServers?: Record<string, Record<string, unknown>>;
+    };
+    // toEqual fails on any extra field: no headers, no launcher keys.
+    expect(shipped.mcpServers?.['agent-deck']).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+    });
+  });
+
+  it('still recognises the legacy bare agent-deck mcp-launch shape', async () => {
+    seedCodexHome(CLI_VERSION, LAUNCH_MCP);
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.transport).toBe('mcp-launch');
+    expect(state.classification).toBe('compatible');
+  });
+
+  it('classifies the new headerless HTTP shape as direct-http, not unknown', async () => {
+    seedCodexHome(CLI_VERSION, HTTP_MCP);
+    const state = await inspectCodexPlugin(CLI_VERSION);
+    expect(state.transport).toBe('direct-http');
+    expect(state.classification).toBe('compatible');
+  });
+
+  it('reports the headerless HTTP transport on the manifest-only doctor line', async () => {
+    seedCodexHome(CLI_VERSION, HTTP_MCP);
+    expect(
+      await runCodexPluginDoctor(CLI_VERSION, undefined, { probeDaemon: async () => false }),
+    ).toBe(0);
+    expect(output.join('\n')).toContain(
+      `Codex plugin manifest: OK (${CLI_VERSION}, direct-http) (manifest-only, connection not verified)`,
+    );
+    expect(output.join('\n')).not.toContain('Codex plugin: OK (');
+  });
+});
+
 describe('pre-publish release sync (NOT-188)', () => {
   const script = path.join(__dirname, '..', '..', '..', 'scripts', 'pre-publish-check.mjs');
 
@@ -608,7 +651,7 @@ describe('pre-publish release sync (NOT-188)', () => {
         `${JSON.stringify({ name: 'agent-deck', version: opts.version ?? rootPkg.version }, null, 2)}\n`,
       );
     }
-    fs.writeFileSync(path.join(dir, '.mcp.json'), `${JSON.stringify(opts.mcp ?? LAUNCH_MCP, null, 2)}\n`);
+    fs.writeFileSync(path.join(dir, '.mcp.json'), `${JSON.stringify(opts.mcp ?? HTTP_MCP, null, 2)}\n`);
     return dir;
   }
 
@@ -632,12 +675,12 @@ describe('pre-publish release sync (NOT-188)', () => {
     }
   });
 
-  it('fails when .mcp.json does not invoke agent-deck mcp-launch', () => {
-    const dir = makeFixture({ mcp: LEGACY_MCP });
+  it('NOT-565: fails when .mcp.json is not the headerless HTTP fallback', () => {
+    const dir = makeFixture({ mcp: LAUNCH_MCP });
     try {
       expect(() =>
         execFileSync(process.execPath, [script, '--root', dir, '--sync-only'], { stdio: 'pipe' }),
-      ).toThrow(/mcp-launch/);
+      ).toThrow(/headerless HTTP/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

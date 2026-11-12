@@ -438,7 +438,10 @@ export async function inspectCodexPlugin(
   const sourceKind = resolvedMarketplace?.source ?? 'unknown';
   const transport = readTransport(installedRoot ?? marketplaceRoot);
 
-  if (transport === 'direct-http') {
+  // NOT-565: the shipped plugin connection is the global headerless HTTP
+  // fallback, so direct-http at the current version is compatible.
+  // `legacy-http` now means an outdated plugin still on direct HTTP.
+  if (transport === 'direct-http' && first.version !== cliVersion) {
     return {
       ...base,
       installed,
@@ -472,9 +475,11 @@ export async function inspectCodexPlugin(
     };
   }
 
-  // `compatible` requires a verified mcp-launch transport. An unreadable,
-  // missing, or unrecognised `.mcp.json` is unverifiable — never healthy.
-  if (transport !== 'mcp-launch') {
+  // `compatible` requires a verified transport: the legacy mcp-launch
+  // launcher on already-installed plugins, or the current headerless HTTP
+  // fallback. An unreadable, missing, or unrecognised `.mcp.json` is
+  // unverifiable — never healthy.
+  if (transport !== 'mcp-launch' && transport !== 'direct-http') {
     return {
       ...base,
       installed,
@@ -652,7 +657,8 @@ function printManualSyncBlock(selector: string, marketplaceName?: string): void 
  * from a successful marketplace listing. For a Git marketplace the
  * marketplace is refreshed first. Reinstalls through supported
  * `codex plugin remove` / `codex plugin add` commands, then re-reads plugin
- * state (which must verify `mcp-launch` before reporting OK). Never edits
+ * state (which must verify a known transport — `mcp-launch` or the
+ * headerless HTTP fallback — before reporting OK). Never edits
  * Codex files directly: every failure path prints whether the CLI upgrade
  * succeeded and whether the plugin was left unchanged or was removed, plus
  * the exact manual Codex commands, and returns 1.
