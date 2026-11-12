@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { LATEST_PROTOCOL_VERSION, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import {
   AGENT_DECK_BRIDGE_LIVENESS_HEADER,
   AGENT_DECK_BRIDGE_LIVENESS_V1,
@@ -307,8 +307,21 @@ export class AgentDeckMCPServer {
   private readonly instanceId = randomUUID();
   private readonly startedAt = new Date().toISOString();
   private staleSessionCount = 0;
-  /** Pre-restart session id → whether its client has since re-initialized. */
+  /**
+   * Pre-restart session id → whether its client has since come back: by
+   * re-initializing (our bridge names the session it lost on the replayed
+   * handshake) or by server-side recovery from rebindable headers (NOT-569).
+   */
   private staleSessionsById = new Map<string, { recovered: boolean; lastAt: string }>();
+  /**
+   * NOT-569: stale pre-restart session id → live recovered session id.
+   * Hosts that never re-initialize after a 404 (observed: Cursor, Muse)
+   * keep sending the old id; once a request on it is recovered from
+   * deck-resolving headers, the alias keeps serving later requests on that
+   * id. Bounded with the same oldest-first discipline as the stale tally
+   * and the closed set — diagnostics/routing, not a ledger.
+   */
+  private recoveredSessionAlias = new Map<string, string>();
   /**
    * Sessions this process issued and then closed. A late request on one of them is
    * an ordinary end-of-session race, not a client left behind by a restart, and
@@ -839,6 +852,14 @@ export class AgentDeckMCPServer {
     const session = this.sessions.get(sessionId);
     this.sessions.delete(sessionId);
     this.rememberClosedSession(sessionId);
+    // NOT-569: drop recovery aliases pointing at the cleaned session, so a
+    // later request on a stale id re-recovers from headers instead of
+    // resolving to a dead session.
+    for (const [staleId, liveId] of this.recoveredSessionAlias) {
+      if (liveId === sessionId) {
+        this.recoveredSessionAlias.delete(staleId);
+      }
+    }
     this.pendingSessionClose.delete(sessionId);
     this.lastClientActivityAtMs.delete(sessionId);
     this.heartbeatCapableSessions.delete(sessionId);
@@ -1457,6 +1478,13 @@ export class AgentDeckMCPServer {
    * `Mcp-Session-Id`, and that a client seeing 404 MUST re-initialize. The old
    * 400 "Bad Request: No valid session ID provided" was indistinguishable from a
    * malformed request, so bridges parked on it forever instead of reconnecting.
+   *
+   * Narrow exception (NOT-569): the POST handler tries
+   * `tryRecoverStaleSession` before reaching here. A non-initialize request
+   * whose headers rebind the folder's deck exactly as an initialize would is
+   * served on a recovered session instead — for hosts that never
+   * re-initialize (observed: Cursor, Muse). Everything this method still
+   * sees keeps the 404 behavior exactly.
    */
   private sendSessionNotFound(sessionId: string, res: Response): void {
     if (this.closedSessionIds.has(sessionId)) {
@@ -1520,6 +1548,45 @@ export class AgentDeckMCPServer {
       }
     }
     this.closedSessionIds.add(sessionId);
+  }
+
+  /**
+   * NOT-569: remember a stale → recovered alias, evicting the oldest alias
+   * first when full — the same size discipline as the stale tally and the
+   * closed set. Eviction drops routing only; the underlying live session
+   * keeps its normal idle-TTL retention, and a later request on the evicted
+   * stale id simply recovers again.
+   */
+  private rememberRecoveryAlias(staleSessionId: string, liveSessionId: string): void {
+    if (
+      !this.recoveredSessionAlias.has(staleSessionId) &&
+      this.recoveredSessionAlias.size >= AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT
+    ) {
+      const oldest = this.recoveredSessionAlias.keys().next().value;
+      if (oldest !== undefined) {
+        this.recoveredSessionAlias.delete(oldest);
+      }
+    }
+    this.recoveredSessionAlias.set(staleSessionId, liveSessionId);
+  }
+
+  /**
+   * NOT-569: count a stale id recovered from headers as recovered in the
+   * tally, so `/health` (and `agent-deck status`) stop warning for hosts
+   * that recover this way. Mirrors `markStaleSessionRecovered` without
+   * needing a replayed handshake: a known entry flips to recovered, an
+   * unknown one is recorded as recovered within the same bound. The request
+   * counter is untouched — the request was served, not answered 404.
+   */
+  private markStaleSessionRecoveredById(staleSessionId: string): void {
+    const at = new Date().toISOString();
+    const known = this.staleSessionsById.get(staleSessionId);
+    if (known) {
+      known.recovered = true;
+      known.lastAt = at;
+    } else if (this.staleSessionsById.size < AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT) {
+      this.staleSessionsById.set(staleSessionId, { recovered: true, lastAt: at });
+    }
   }
 
   private async refreshRuntimeSession(sessionId: string): Promise<{ mode: 'normal' | 'agent-admin'; deckId: string }> {
@@ -1896,6 +1963,26 @@ export class AgentDeckMCPServer {
   }
 
   /**
+   * Resolve the deck a bearer-free request binds (NOT-562, shared by the
+   * initialize path and NOT-569 recovery so the two resolve identically):
+   * an explicit deck header wins, else the folder assignment from
+   * `<workspace>/.agent-deck/use.json`. Anything else is not a deck —
+   * recovery refuses it and initialize takes the unassigned flow.
+   */
+  private resolveHeaderDeck(req: Request): {
+    launchDeck: string | undefined;
+    workspaceRoot: string | undefined;
+    manifestDeck: string | undefined;
+    effectiveDeck: string | undefined;
+  } {
+    const launchDeck = readLaunchDeckHeader(req);
+    const workspaceRoot = readWorkspaceRootHeader(req);
+    const manifestDeck =
+      !launchDeck && workspaceRoot ? resolveUseManifestDeckId(workspaceRoot) : undefined;
+    return { launchDeck, workspaceRoot, manifestDeck, effectiveDeck: launchDeck ?? manifestDeck };
+  }
+
+  /**
    * NOT-318: initialize with a bearer grant. Authenticates before
    * advertising any `mcp-session-id`: failure answers the uniform 401
    * with no transport or session record created. Success binds the fresh
@@ -1952,41 +2039,137 @@ export class AgentDeckMCPServer {
     await this.establishTransportSession(req, res, sessionId);
   }
 
-  private async handleMcpPost(req: Request, res: Response): Promise<void> {
-    const sessionIdHeader = this.getSessionIdHeader(req);
-    const existing = sessionIdHeader ? this.sessions.get(sessionIdHeader) : undefined;
-    const bearerRequired = isBearerGrantRequired();
-
-    if (existing && sessionIdHeader) {
-      // Grant-bound sessions revalidate the bearer on every request and
-      // never take the trust-the-header launch path: a forged deck header
-      // is denied by the grant allowlist, not trusted into a new deck.
-      if (this.sessionBinding.isGrantSession(sessionIdHeader)) {
-        if (!(await this.requireGrantFollowUp(sessionIdHeader, req, res))) {
-          return;
-        }
-      } else {
-        // Hosted mode has no bearer-free sessions; a non-grant session id
-        // is unusable there — fail closed before touching the transport.
-        if (bearerRequired) {
-          this.sendGrantRequired(res);
-          return;
-        }
-        if (!(await this.requireFollowUpDeckHeader(sessionIdHeader, req, res))) {
-          return;
-        }
-      }
-      // The auth above awaits, so re-check: a sweep may have expired the
-      // session while it ran, and answering on a dead transport would hang.
-      const live = this.sessions.get(sessionIdHeader);
-      if (!live) {
-        this.sendSessionNotFound(sessionIdHeader, res);
+  /**
+   * Serve one follow-up request on a live session. `presentedSessionId` is
+   * the id the client sent when it differs from the live session id (a
+   * NOT-569 recovery alias): the headers are translated so the transport
+   * validates and answers under the live id while the client keeps seeing
+   * the id it sent.
+   */
+  private async serveFollowUp(
+    sessionId: string,
+    req: Request,
+    res: Response,
+    presentedSessionId?: string,
+  ): Promise<void> {
+    // Grant-bound sessions revalidate the bearer on every request and
+    // never take the trust-the-header launch path: a forged deck header
+    // is denied by the grant allowlist, not trusted into a new deck.
+    if (this.sessionBinding.isGrantSession(sessionId)) {
+      if (!(await this.requireGrantFollowUp(sessionId, req, res))) {
         return;
       }
-      this.noteClientActivity(sessionIdHeader, req);
-      this.touchLiveDisplay(sessionIdHeader);
-      await this.handleTransportPost(sessionIdHeader, req, res);
+    } else {
+      // Hosted mode has no bearer-free sessions; a non-grant session id
+      // is unusable there — fail closed before touching the transport.
+      if (isBearerGrantRequired()) {
+        this.sendGrantRequired(res);
+        return;
+      }
+      if (!(await this.requireFollowUpDeckHeader(sessionId, req, res))) {
+        return;
+      }
+    }
+    // The auth above awaits, so re-check: a sweep may have expired the
+    // session while it ran, and answering on a dead transport would hang.
+    const live = this.sessions.get(sessionId);
+    if (!live) {
+      this.sendSessionNotFound(presentedSessionId ?? sessionId, res);
       return;
+    }
+    this.noteClientActivity(sessionId, req);
+    this.touchLiveDisplay(sessionId);
+    if (presentedSessionId && presentedSessionId !== sessionId) {
+      await this.withPresentedSessionId(sessionId, presentedSessionId, req, res, () =>
+        this.handleTransportPost(sessionId, req, res),
+      );
+    } else {
+      await this.handleTransportPost(sessionId, req, res);
+    }
+  }
+
+  /**
+   * NOT-569: run `serve` with the wire session id translated. The request
+   * header is rewritten to the live id so the transport's own session
+   * validation passes, and every response header write is translated back
+   * so the client keeps seeing the id it sent. Both `setHeader` and
+   * `writeHead` are covered — the Hono Node adapter answers JSON
+   * responses through `writeHead`.
+   */
+  private async withPresentedSessionId<T>(
+    liveSessionId: string,
+    presentedSessionId: string,
+    req: Request,
+    res: Response,
+    serve: () => Promise<T>,
+  ): Promise<T> {
+    const headerKey = 'mcp-session-id';
+    const previousHeader = req.headers[headerKey];
+    req.headers[headerKey] = liveSessionId;
+    const resRecord = res as unknown as {
+      setHeader: Response['setHeader'];
+      writeHead: Response['writeHead'];
+    };
+    // Pristine refs for an exact restore; bound copies for calling through.
+    const pristineSetHeader = resRecord.setHeader;
+    const pristineWriteHead = resRecord.writeHead;
+    const originalSetHeader = pristineSetHeader.bind(res);
+    const originalWriteHead = pristineWriteHead.bind(res);
+    resRecord.setHeader = ((name: string, value: number | string | string[]) => {
+      if (typeof name === 'string' && name.toLowerCase() === headerKey && value === liveSessionId) {
+        return originalSetHeader(name, presentedSessionId);
+      }
+      return originalSetHeader(name, value);
+    }) as Response['setHeader'];
+    resRecord.writeHead = ((...args: unknown[]) => {
+      // writeHead(status[, statusMessage][, headers]) — translate a headers
+      // object in the trailing position without mutating the caller's copy.
+      const last = args[args.length - 1];
+      if (last && typeof last === 'object' && !Array.isArray(last)) {
+        const headers = last as Record<string, unknown>;
+        const translated = { ...headers };
+        for (const key of Object.keys(translated)) {
+          if (key.toLowerCase() === headerKey && translated[key] === liveSessionId) {
+            translated[key] = presentedSessionId;
+          }
+        }
+        args[args.length - 1] = translated;
+      }
+      return (originalWriteHead as (...callArgs: unknown[]) => unknown)(...args);
+    }) as Response['writeHead'];
+    try {
+      return await serve();
+    } finally {
+      if (previousHeader === undefined) {
+        delete req.headers[headerKey];
+      } else {
+        req.headers[headerKey] = previousHeader;
+      }
+      resRecord.setHeader = pristineSetHeader;
+      resRecord.writeHead = pristineWriteHead;
+    }
+  }
+
+  private async handleMcpPost(req: Request, res: Response): Promise<void> {
+    const sessionIdHeader = this.getSessionIdHeader(req);
+    const bearerRequired = isBearerGrantRequired();
+
+    // Direct hit, or a NOT-569 recovery alias from a stale pre-restart id.
+    // An alias pointing at a dead session is dropped so the request below
+    // re-recovers from headers instead of sticking to it.
+    if (sessionIdHeader && this.sessions.has(sessionIdHeader)) {
+      await this.serveFollowUp(sessionIdHeader, req, res);
+      return;
+    }
+    if (sessionIdHeader) {
+      const aliased = this.recoveredSessionAlias.get(sessionIdHeader);
+      if (aliased && this.sessions.has(aliased)) {
+        await this.serveFollowUp(aliased, req, res, sessionIdHeader);
+        return;
+      }
+      if (aliased) {
+        this.recoveredSessionAlias.delete(sessionIdHeader);
+      }
     }
 
     const body = req.body;
@@ -2024,7 +2207,15 @@ export class AgentDeckMCPServer {
       // A session id we don't know is a restart, not a malformed request — 404 so
       // the client re-initializes. An initialize carrying a stale id falls through
       // and gets a fresh session, which is exactly the recovery we want.
+      //
+      // NOT-569: before the 404, a bearer-free request whose headers rebind
+      // the deck gets one narrow exception — hosts that never re-initialize
+      // (observed: Cursor, Muse) are served on a recovered session instead.
+      // Anything recovery refuses keeps the NOT-101 404 below.
       if (sessionIdHeader) {
+        if (await this.tryRecoverStaleSession(req, res, sessionIdHeader)) {
+          return;
+        }
         this.sendSessionNotFound(sessionIdHeader, res);
         return;
       }
@@ -2049,14 +2240,12 @@ export class AgentDeckMCPServer {
       return;
     }
 
-    const launchDeck = readLaunchDeckHeader(req);
     // NOT-562: workspace-header-only hosts (pure MCP, no launcher) resolve
     // the deck from the folder assignment. An explicit deck header still
-    // wins; the manifest is consulted only when it is absent.
-    const workspaceRoot = readWorkspaceRootHeader(req);
-    const manifestDeck =
-      !launchDeck && workspaceRoot ? resolveUseManifestDeckId(workspaceRoot) : undefined;
-    const effectiveDeck = launchDeck ?? manifestDeck;
+    // wins; the manifest is consulted only when it is absent. Shared with
+    // NOT-569 recovery so both paths resolve identically.
+    const { launchDeck, workspaceRoot, manifestDeck, effectiveDeck } =
+      this.resolveHeaderDeck(req);
     const skipDeckHeader = skipDeckHeaderAuth();
     const unassigned = !effectiveDeck && !skipDeckHeader;
 
@@ -2106,6 +2295,221 @@ export class AgentDeckMCPServer {
     }
 
     await this.establishTransportSession(req, res, sessionId);
+  }
+
+  /**
+   * NOT-569: narrow exception to the NOT-101 404 rule. In local
+   * (non-hosted, bearer-free) mode only, a non-initialize request that
+   * carries an unknown session id plus headers resolving to a deck exactly
+   * as an initialize would is served on a fresh recovered session instead
+   * of answered 404 — for hosts that never re-initialize (observed:
+   * Cursor, Muse). Returns whether the request was served; anything
+   * refused (no deck-resolving header, unresolvable workspace, an id this
+   * process closed itself, any bearer/hosted/grant request, a bind or
+   * handshake failure) keeps the NOT-101 404 at the call site.
+   *
+   * Recovery mints a fresh transport session for the deck, remembers a
+   * bounded stale → live alias, performs the MCP initialize handshake on
+   * the host's behalf, and serves the request with the wire id translated
+   * back to the id the client sent — the client needs no change, and
+   * later requests on the same stale id serve from the alias. A bind
+   * failure answers 404, never a new 401 surface on follow-up requests.
+   */
+  private async tryRecoverStaleSession(
+    req: Request,
+    res: Response,
+    staleSessionId: string,
+  ): Promise<boolean> {
+    // Local bearer-free mode only: hosted requests keep the 401 gate (or
+    // the 404 below once authenticated), and any request carrying a grant
+    // bearer keeps the restart 404 — grant clients re-initialize.
+    if (isBearerGrantRequired()) {
+      return false;
+    }
+    if (readBearerToken(req)) {
+      return false;
+    }
+    // A session this process closed stays closed — never resurrect it.
+    if (this.closedSessionIds.has(staleSessionId)) {
+      return false;
+    }
+    const { launchDeck, manifestDeck, effectiveDeck } = this.resolveHeaderDeck(req);
+    if (!effectiveDeck) {
+      return false;
+    }
+    // A racing recovery may have installed an alias while headers resolved.
+    if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
+      return true;
+    }
+
+    const freshSessionId = randomUUID();
+    try {
+      await this.authenticateLaunchDeck(freshSessionId, req, effectiveDeck);
+      if (manifestDeck && !launchDeck) {
+        this.sessionBinding.markUseManifestSession(freshSessionId);
+      }
+    } catch {
+      // Opportunistic: a bind failure falls back to the NOT-101 404 the
+      // call site answers — silently, so a retrying host cannot spam one
+      // line per request (the 404 path logs first-seen ids already).
+      this.sessionBinding.clearSession(freshSessionId);
+      return false;
+    }
+
+    // Adopt a concurrent winner instead of minting a second session.
+    if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
+      await this.disconnectTrustedSession(freshSessionId, req);
+      this.sessionBinding.clearSession(freshSessionId);
+      return true;
+    }
+
+    const server = await this.createMcpServer(freshSessionId);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => freshSessionId,
+      enableJsonResponse: true,
+      onsessioninitialized: (initializedSessionId) => {
+        this.sessions.set(initializedSessionId, { transport, server });
+      },
+    });
+    transport.onclose = () => {
+      const closedSessionId = transport.sessionId;
+      if (closedSessionId) {
+        void this.startCleanupSession(closedSessionId, { closeTransport: false });
+      }
+    };
+    try {
+      await server.connect(transport);
+      await this.performRecoveryHandshake(transport, req);
+    } catch {
+      this.sessions.delete(freshSessionId);
+      await this.disconnectTrustedSession(freshSessionId, req);
+      this.sessionBinding.clearSession(freshSessionId);
+      return false;
+    }
+    if (!this.sessions.has(freshSessionId)) {
+      this.sessions.set(freshSessionId, { transport, server });
+    }
+
+    // Atomic install: a concurrent recovery may have won during the
+    // handshake above — the check and the set below run with no await
+    // between them, so exactly one winner installs the alias.
+    const lateWinner = this.recoveredSessionAlias.get(staleSessionId);
+    if (lateWinner && this.sessions.has(lateWinner)) {
+      await this.startCleanupSession(freshSessionId, { closeTransport: true });
+      await this.serveFollowUp(lateWinner, req, res, staleSessionId);
+      return true;
+    }
+    if (lateWinner) {
+      this.recoveredSessionAlias.delete(staleSessionId);
+    }
+    this.rememberRecoveryAlias(staleSessionId, freshSessionId);
+    this.markStaleSessionRecoveredById(staleSessionId);
+    // One line per recovered session id, not per request — the host keeps
+    // sending the stale id on every later call.
+    console.warn(
+      `[agent-deck] MCP session ${staleSessionId} recovered from headers as ${freshSessionId} ` +
+        `(deck ${effectiveDeck}); the client never re-initialized after the restart.`,
+    );
+    // NOT-513: adopt the host-side session id before the first live-display
+    // register, so the entry carries it from the start.
+    this.adoptHostSessionId(freshSessionId, req);
+    if (!this.sessionBinding.isUnassigned(freshSessionId)) {
+      void this.registerLiveDisplay(freshSessionId).catch(() => {});
+    }
+    await this.serveFollowUp(freshSessionId, req, res, staleSessionId);
+    return true;
+  }
+
+  /**
+   * NOT-569: serve one request from an installed recovery alias. Returns
+   * whether an alias served the request; a dead alias is dropped so the
+   * caller re-recovers from headers instead of sticking to it.
+   */
+  private async serveFromRecoveryAlias(
+    req: Request,
+    res: Response,
+    staleSessionId: string,
+  ): Promise<boolean> {
+    const aliased = this.recoveredSessionAlias.get(staleSessionId);
+    if (!aliased) {
+      return false;
+    }
+    if (this.sessions.has(aliased)) {
+      await this.serveFollowUp(aliased, req, res, staleSessionId);
+      return true;
+    }
+    this.recoveredSessionAlias.delete(staleSessionId);
+    return false;
+  }
+
+  /**
+   * NOT-569: perform the MCP initialize handshake on the host's behalf so
+   * the recovered transport is initialized before it serves the request.
+   * The host's original handshake died with the previous process, so the
+   * client identity is synthetic and marked as such (`agent-deck-recovery`
+   * with empty capabilities — form elicitation degrades to the browser
+   * fallback on recovered sessions); the protocol version reuses the
+   * client's when it sent one. Runs entirely in memory — the host never
+   * sees this exchange.
+   */
+  private async performRecoveryHandshake(
+    transport: StreamableHTTPServerTransport,
+    req: Request,
+  ): Promise<void> {
+    const webTransport = (
+      transport as unknown as {
+        _webStandardTransport: {
+          handleRequest: (
+            request: globalThis.Request,
+            opts?: { parsedBody?: unknown },
+          ) => Promise<globalThis.Response>;
+        };
+      }
+    )._webStandardTransport;
+    const requestedVersion = req.headers['mcp-protocol-version'];
+    const protocolVersion =
+      typeof requestedVersion === 'string' && requestedVersion.trim()
+        ? requestedVersion.trim()
+        : LATEST_PROTOCOL_VERSION;
+    const initializeBody = {
+      jsonrpc: '2.0',
+      id: 'agent-deck-recovery',
+      method: 'initialize',
+      params: {
+        protocolVersion,
+        capabilities: {},
+        clientInfo: { name: 'agent-deck-recovery', version: '0.0.0' },
+      },
+    };
+    const initializeResponse = await webTransport.handleRequest(
+      new globalThis.Request('http://127.0.0.1/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify(initializeBody),
+      }),
+      { parsedBody: initializeBody },
+    );
+    await initializeResponse.arrayBuffer();
+    if (!initializeResponse.ok || !transport.sessionId) {
+      throw new Error(`recovery handshake failed (status ${initializeResponse.status})`);
+    }
+    const initializedBody = { jsonrpc: '2.0', method: 'notifications/initialized' };
+    const initializedResponse = await webTransport.handleRequest(
+      new globalThis.Request('http://127.0.0.1/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'mcp-session-id': transport.sessionId,
+        },
+        body: JSON.stringify(initializedBody),
+      }),
+      { parsedBody: initializedBody },
+    );
+    await initializedResponse.arrayBuffer();
   }
 
   /**
@@ -2181,7 +2585,7 @@ export class AgentDeckMCPServer {
   }
 
   private async handleMcpSessionRequest(req: Request, res: Response): Promise<void> {
-    const sessionId = this.getSessionIdHeader(req);
+    const sessionIdHeader = this.getSessionIdHeader(req);
     const bearerRequired = isBearerGrantRequired();
 
     // Hosted endpoints run the Bearer [REDACTED] before session existence
@@ -2191,14 +2595,31 @@ export class AgentDeckMCPServer {
       return;
     }
 
-    if (!sessionId) {
+    if (!sessionIdHeader) {
       res.status(400).send('Invalid or missing session ID');
       return;
     }
 
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      this.sendSessionNotFound(sessionId, res);
+    // Direct hit, or a NOT-569 recovery alias from a stale pre-restart id.
+    // GET/DELETE honor an installed alias but never mint a fresh recovery
+    // on their own — only POST (tool calls) does that.
+    let sessionId: string | undefined;
+    let presentedSessionId: string | undefined;
+    if (this.sessions.has(sessionIdHeader)) {
+      sessionId = sessionIdHeader;
+    } else {
+      const aliased = this.recoveredSessionAlias.get(sessionIdHeader);
+      if (aliased && this.sessions.has(aliased)) {
+        sessionId = aliased;
+        presentedSessionId = sessionIdHeader;
+      } else if (aliased) {
+        this.recoveredSessionAlias.delete(sessionIdHeader);
+      }
+    }
+
+    const session = sessionId ? this.sessions.get(sessionId) : undefined;
+    if (!sessionId || !session) {
+      this.sendSessionNotFound(sessionIdHeader, res);
       return;
     }
 
@@ -2235,7 +2656,13 @@ export class AgentDeckMCPServer {
       return;
     }
     this.touchLiveDisplay(sessionId);
-    await live.transport.handleRequest(req, res);
+    if (presentedSessionId) {
+      await this.withPresentedSessionId(sessionId, presentedSessionId, req, res, () =>
+        live.transport.handleRequest(req, res),
+      );
+    } else {
+      await live.transport.handleRequest(req, res);
+    }
   }
 
   async start() {
