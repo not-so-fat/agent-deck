@@ -153,8 +153,12 @@ export function resolveSetupStatusline(client: SetupClient, explicit?: boolean):
   return client === 'cursor' || client === 'claude';
 }
 
-export function buildClaudeCliAddArgs(scope: SetupScope, endpoint: McpEndpoint): string[] {
-  return [
+export function buildClaudeCliAddArgs(
+  scope: SetupScope,
+  endpoint: McpEndpoint,
+  options?: { workspaceRoot?: string },
+): string[] {
+  const args = [
     'mcp',
     'add',
     '--scope',
@@ -164,16 +168,23 @@ export function buildClaudeCliAddArgs(scope: SetupScope, endpoint: McpEndpoint):
     'agent-deck',
     buildMcpUrl(endpoint),
   ];
+  // Project scope carries the workspace header so the daemon can resolve
+  // the folder assignment (NOT-563 shape); global stays headerless (NOT-565).
+  if (options?.workspaceRoot) {
+    args.push('--header', `x-agent-deck-workspace: ${options.workspaceRoot}`);
+  }
+  return args;
 }
 
 async function tryClaudeCliAdd(
   scope: SetupScope,
   endpoint: McpEndpoint,
+  options?: { workspaceRoot?: string },
 ): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     const child = spawn(
       'claude',
-      buildClaudeCliAddArgs(scope, endpoint),
+      buildClaudeCliAddArgs(scope, endpoint, options),
       { stdio: ['ignore', 'pipe', 'pipe'], env: process.env },
     );
 
@@ -325,11 +336,20 @@ export async function runSetup(args: string[]): Promise<number> {
   }
 
   if (client === 'claude') {
-    const added = await tryClaudeCliAdd(scope, endpoint);
+    // Project scope must keep the workspace header (same NOT-563 shape
+    // `agent-deck use` writes); a headerless project entry would silently
+    // drop the folder into the unassigned session.
+    const claudeWorkspaceRoot = scope === 'project' ? process.cwd() : undefined;
+    const added = await tryClaudeCliAdd(scope, endpoint, { workspaceRoot: claudeWorkspaceRoot });
     if (added.ok) {
       const target = scope === 'project' ? '.mcp.json' : '~/.claude.json';
-      console.log(`Configured Claude Code via \`claude mcp add\` → ${target} (headerless HTTP fallback, no executable lookup)`);
-      console.log('Unassigned folders land in the explain-only session; `agent-deck use <deck>` writes the per-folder entry.');
+      if (scope === 'project') {
+        console.log(`Configured Claude Code via \`claude mcp add\` → ${target} (per-folder HTTP entry with workspace header)`);
+        console.log('Approve the project agent-deck entry when prompted, then reload MCP.');
+      } else {
+        console.log(`Configured Claude Code via \`claude mcp add\` → ${target} (headerless HTTP fallback, no executable lookup)`);
+        console.log('Unassigned folders land in the explain-only session; `agent-deck use <deck>` writes the per-folder entry.');
+      }
       console.log('Verify: claude mcp list');
       return await finishSetup(client, scope, endpoint, parsed.start === true, parsed.statusline, parsed.menubar);
     }
@@ -345,12 +365,16 @@ export async function runSetup(args: string[]): Promise<number> {
       : undefined;
   // Project launchers always know their workspace. Global setup preserves a pin
   // written by `agent-deck use` so re-running setup cannot drop the deck header.
+  // Claude project scope writes the per-folder HTTP entry (workspace header);
+  // only Claude global gets the headerless fallback.
   const workspaceRoot =
     client === 'cursor'
       ? scope === 'project'
         ? process.cwd()
         : readCursorWorkspaceRoot(existingEntry)
-      : undefined;
+      : client === 'claude' && scope === 'project'
+        ? process.cwd()
+        : undefined;
   const entry = buildAgentDeckEntry(client, endpoint, { workspaceRoot });
   let merged: Record<string, unknown>;
   if (client === 'muse' && scope === 'global') {

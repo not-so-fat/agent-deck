@@ -34,7 +34,7 @@ describe('setup statusline defaults', () => {
     expect(resolveSetupStatusline('claude-desktop', true)).toBe(true);
   });
 
-  it('NOT-565: registers Claude Code with the headerless HTTP fallback in the requested scope', () => {
+  it('NOT-565: registers Claude Code global scope with the headerless HTTP fallback', () => {
     const endpoint = { host: '127.0.0.2', mcpPort: 2110 };
     expect(buildClaudeCliAddArgs('global', endpoint)).toEqual([
       'mcp',
@@ -46,7 +46,11 @@ describe('setup statusline defaults', () => {
       'agent-deck',
       'http://127.0.0.2:2110/mcp',
     ]);
-    expect(buildClaudeCliAddArgs('project', endpoint)).toEqual([
+  });
+
+  it('NOT-565 repair: Claude Code project scope carries the workspace header', () => {
+    const endpoint = { host: '127.0.0.2', mcpPort: 2110 };
+    expect(buildClaudeCliAddArgs('project', endpoint, { workspaceRoot: '/tmp/proj' })).toEqual([
       'mcp',
       'add',
       '--scope',
@@ -55,6 +59,8 @@ describe('setup statusline defaults', () => {
       'http',
       'agent-deck',
       'http://127.0.0.2:2110/mcp',
+      '--header',
+      'x-agent-deck-workspace: /tmp/proj',
     ]);
   });
 
@@ -314,6 +320,77 @@ describe('setup statusline defaults', () => {
       else process.env.PATH = previousPath;
       vi.restoreAllMocks();
       fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('NOT-565 repair: claude project setup writes the per-folder header entry, preserving use + other entries', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-claude-proj-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-setup-claude-projw-'));
+    const projectMcp = path.join(workspace, '.mcp.json');
+    vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    // Pre-existing `agent-deck use` entry plus an unrelated server.
+    fs.writeFileSync(
+      projectMcp,
+      `${JSON.stringify(
+        {
+          mcpServers: {
+            'agent-deck': {
+              type: 'http',
+              url: 'http://127.0.0.1:1110/mcp',
+              headers: { 'x-agent-deck-workspace': workspace },
+            },
+            memory: { command: 'npx', args: ['-y', 'memory'] },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    // Force the `claude` CLI miss so setup takes the deterministic file fallback.
+    const previousPath = process.env.PATH;
+    process.env.PATH = path.join(tmpHome, 'empty-bin');
+    const args = [
+      '--client',
+      'claude',
+      '--scope',
+      'project',
+      '--host',
+      '127.0.0.1',
+      '--mcp-port',
+      '1110',
+      '--no-statusline',
+      '--no-menubar',
+    ];
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      expect(await runSetup(args)).toBe(0);
+      const written = JSON.parse(fs.readFileSync(projectMcp, 'utf8')) as {
+        mcpServers: Record<string, unknown>;
+      };
+      // Same NOT-563 shape `agent-deck use` writes — workspace header kept,
+      // so the folder does not fall into the unassigned session.
+      expect(written.mcpServers['agent-deck']).toEqual({
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
+        headers: { 'x-agent-deck-workspace': workspace },
+      });
+      expect(written.mcpServers.memory).toEqual({ command: 'npx', args: ['-y', 'memory'] });
+
+      const beforeSecond = fs.readFileSync(projectMcp, 'utf8');
+      expect(await runSetup(args)).toBe(0);
+      expect(fs.readFileSync(projectMcp, 'utf8')).toBe(beforeSecond);
+    } finally {
+      cwd.mockRestore();
+      log.mockRestore();
+      warn.mockRestore();
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      vi.restoreAllMocks();
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
     }
   });
 
