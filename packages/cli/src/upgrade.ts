@@ -129,9 +129,10 @@ function parseToVersion(args: string[]): string | undefined {
 }
 
 /**
- * NOT-566: after the plugin reconcile, rewrite any legacy launcher entries
- * in this folder's and the global Codex/Claude configs to pure MCP.
- * Best-effort and silent when clean — it never changes the upgrade result.
+ * NOT-566/572: after the plugin reconcile, rewrite any legacy launcher
+ * entries in this folder's and the global Codex/Claude/Muse configs to
+ * pure MCP. Best-effort and silent when clean — it never changes the
+ * upgrade result.
  */
 async function reconcilePluginAndMigrateLauncherEntries(
   expectedVersion: string,

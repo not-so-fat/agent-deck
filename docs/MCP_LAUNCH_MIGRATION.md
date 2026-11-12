@@ -1,15 +1,22 @@
-# `mcp-launch` retirement for Codex and Claude Code (NOT-566)
+# `mcp-launch` retirement for hosts on pure MCP (NOT-566/567/572)
 
-Codex and Claude Code connect to Agent Deck over **pure MCP** (plain HTTP
-entries in host config — no CLI lookup, no stdio bridge). The
-`agent-deck mcp-launch` launcher is retired for those two hosts and
-**retained** for the hosts that still need stdio.
+Codex, Claude Code, Cursor, and Muse connect to Agent Deck over **pure
+MCP** (plain HTTP entries in host config — no CLI lookup, no stdio
+bridge). The `agent-deck mcp-launch` launcher is retired for those hosts
+and **retained** for the host that still needs stdio.
 
 Update (NOT-567): Cursor connects over pure MCP too — the per-folder
 `.cursor/mcp.json` HTTP entry (`use`) plus the global headerless HTTP
 fallback (`setup`), with the plugin declaring no MCP server. Cursor
 entries migrate when `setup`/`use` re-runs; `agent-deck upgrade` does not
 rewrite them.
+
+Update (NOT-572): Muse connects over pure MCP too — the per-folder
+`.mcp.json` HTTP entry (the same headed shape Claude uses, written by
+`use` or `setup --scope project`) plus the global headerless HTTP
+fallback in the user settings (`setup`). No Muse code path writes a
+launcher entry; legacy Muse launcher entries are converted by
+`agent-deck upgrade` (below).
 
 ## Who uses what
 
@@ -18,7 +25,7 @@ rewrite them.
 | Codex | Per-folder `.codex/config.toml` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until rewritten |
 | Claude Code | Per-folder `.mcp.json` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until rewritten |
 | Cursor | Per-folder `.cursor/mcp.json` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until `setup`/`use` re-runs |
-| Muse | `mcp-launch` entries (project + global settings) | **Yes** |
+| Muse | Per-folder `.mcp.json` HTTP entry (`use` or `setup --scope project`) + global headerless HTTP fallback in the user settings (`setup`) | No — legacy entries keep working until rewritten |
 | Claude Desktop | `mcp-launch` stdio entry (its JSON config is stdio-only) | **Yes** |
 
 The `mcp-launch` command, the stdio↔HTTP bridge, and the pin-env intake
@@ -30,34 +37,31 @@ stay supported: nothing that points at them breaks.
 automatically (best-effort, silent when there is nothing to do):
 
 - `<folder>/.mcp.json` launcher entry → per-folder HTTP entry with the
-  `x-agent-deck-workspace` header
+  `x-agent-deck-workspace` header (a Muse-shaped launcher entry in a
+  folder with no deck assignment is removed instead, so the global
+  fallback applies — with a notice naming `agent-deck use <deck>`)
 - `<folder>/.codex/config.toml` launcher section → per-folder HTTP section
 - `~/.claude.json` launcher entry → headerless global HTTP fallback
 - `~/.codex/config.toml` launcher section → headerless global HTTP fallback
+- Muse user settings (`$XDG_CONFIG_HOME/muse/settings.json`) launcher
+  entry → headerless global HTTP fallback (schema_version preserved)
 
 Only entries that point at `agent-deck mcp-launch` are rewritten;
-unrelated servers, custom wrappers, and Muse/Desktop entries are
+unrelated servers, custom wrappers, and Desktop entries are
 left untouched, as are Cursor entries (those migrate via `setup`/`use`
 re-runs) and files that fail to parse. The rewrite is
 idempotent — running `agent-deck upgrade` again changes nothing.
 
 `<folder>/.mcp.json` is shared between Claude Code and Muse, so the
-rewrite discriminates there: only a launcher entry with a Claude marker
+rewrite discriminates there: a launcher entry with a Claude marker
 (`type: 'stdio'` or an `AGENT_DECK_WORKSPACE` pin — every launcher
 entry `use`/`setup --client claude` ever wrote carries at least one) is
-converted to the HTTP shape. A current Muse launcher entry carries
-neither marker and is left byte-identical. Note (NOT-570): once
-`setup --client muse` has written the HTTP user entry, that kept
-launcher project entry is rejected by Muse in that folder
-(`invalid_transport_combination`) — re-run plain
-`agent-deck use <deck>` in Muse folders to rewrite `.mcp.json` with the
-headered HTTP entry Muse accepts. Note (NOT-571):
-`agent-deck use <deck> --client muse` now writes that same headed HTTP
-entry itself (replacing a legacy launcher shape in the file), so the
-re-run can use either form; converting old Muse-shaped launcher entries
-inside `upgrade` itself is the launcher-retirement ticket's job. A
-folder that serves both hosts keeps the shared launcher entry, which
-still connects for Claude Code too.
+always converted to the HTTP shape, and a Muse-shaped launcher entry
+(neither marker — every launcher entry older `use --client muse` and
+older `setup --client muse --scope project` wrote) is converted the
+same way when the folder has a deck assignment, otherwise removed with
+a notice. Both clients read the same HTTP shape now (NOT-571), so one
+conversion serves both hosts.
 
 Project entries are rewritten for the folder `agent-deck upgrade` runs
 in; run it (or `agent-deck use <deck>`) in each project folder to
@@ -66,8 +70,9 @@ migrate that folder.
 Manual equivalent (same result, per host):
 
 - `agent-deck use <deck>` in the folder rewrites the per-folder entries.
-- `agent-deck setup --client codex` / `--client claude` rewrites the
-  global fallbacks.
+- `agent-deck setup --client codex` / `--client claude` / `--client muse`
+  rewrites the global fallbacks (Muse project scope also rewrites the
+  per-folder `.mcp.json` entry).
 - `agent-deck setup --client cursor` rewrites the Cursor global fallback
   (Cursor migrates through `setup`/`use`, never `upgrade`).
 - `agent-deck upgrade --check` never rewrites anything.

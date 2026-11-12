@@ -11,10 +11,10 @@
  * replays it against the server when a session goes missing, then retries the
  * request that failed. The stdio client upstream never sees the gap.
  *
- * Retained transport (NOT-566/567): native HTTP hosts (Codex, Claude Code,
- * Cursor) re-initialize themselves per the spec and no longer use this
- * bridge; the stdio hosts that still connect through `agent-deck mcp-launch`
- * (Muse, Claude Desktop) keep it.
+ * Retained transport (NOT-566/567/572): native HTTP hosts (Codex, Claude
+ * Code, Cursor, Muse) connect over pure MCP and no longer use this bridge;
+ * the stdio host that still connects through `agent-deck mcp-launch`
+ * (Claude Desktop) keeps it.
  */
 import {
   AGENT_DECK_BRIDGE_LIVENESS_HEADER,

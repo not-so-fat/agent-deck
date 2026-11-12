@@ -5,7 +5,6 @@ import {
   buildAgentDeckEntry,
   buildGlobalFallbackHttpEntry,
   buildMcpUrl,
-  buildMuseLegacyLauncherEntry,
   formatCodexGlobalFallbackSection,
   isHttpAgentDeckEntry,
   isMcpLaunchEntry,
@@ -445,14 +444,15 @@ export async function runSetup(args: string[]): Promise<number> {
     console.log(
       'Unassigned folders land in the explain-only session; run `agent-deck use <deck>` in each folder that needs a persistent assignment, then reload MCP.',
     );
-    // A same-name launcher project entry in this folder would now break
-    // Muse here: Muse merges it with the HTTP user entry field by field
-    // (url plus command → invalid_transport_combination) and omits the
-    // server. Folders assigned with an older `use --client muse` or
-    // project-scope setup still hold that entry — `use` (plain or
-    // `--client muse`) rewrites .mcp.json with the headered HTTP entry
-    // Muse accepts. A missing or unparsable file simply skips the
-    // warning; global setup must not fail on it.
+    // A same-name legacy launcher project entry in this folder would
+    // now break Muse here: Muse merges it with the HTTP user entry field
+    // by field (url plus command → invalid_transport_combination) and
+    // omits the server. Folders assigned by an older `use --client muse`
+    // or older project-scope setup still hold that entry — `use` (plain
+    // or `--client muse`) rewrites .mcp.json with the headered HTTP entry
+    // Muse accepts (`agent-deck upgrade` converts it too). A missing or
+    // unparsable file simply skips the warning; global setup must not
+    // fail on it.
     const museProjectPath = resolveConfigPath('muse', 'project');
     let museProjectEntry: unknown;
     try {
@@ -482,14 +482,13 @@ export async function runSetup(args: string[]): Promise<number> {
   // Project scope writes the per-folder HTTP entry (workspace header);
   // only global setup writes the headerless fallback. (Cursor and Muse
   // global are handled above; Claude global prefers `claude mcp add`.)
-  // Muse project scope is the one exception: it still writes the legacy
-  // launcher entry until the launcher-retirement ticket removes it.
+  // NOT-572: Muse project scope writes the same headed HTTP entry Claude
+  // writes — no launcher remains on the Muse path.
   const workspaceRoot =
-    (client === 'cursor' || client === 'claude') && scope === 'project' ? process.cwd() : undefined;
-  const entry =
-    client === 'muse' && scope === 'project'
-      ? buildMuseLegacyLauncherEntry(endpoint)
-      : buildAgentDeckEntry(client, endpoint, { workspaceRoot });
+    (client === 'cursor' || client === 'claude' || client === 'muse') && scope === 'project'
+      ? process.cwd()
+      : undefined;
+  const entry = buildAgentDeckEntry(client, endpoint, { workspaceRoot });
   const merged = mergeMcpServerConfig(existingConfig, entry);
   writeJsonFile(configPath, merged);
 
@@ -497,21 +496,6 @@ export async function runSetup(args: string[]): Promise<number> {
   if (client === 'claude-desktop') {
     console.log("Claude Desktop uses Agent Deck's stdio bridge because JSON config is stdio-only.");
     console.log('Start Agent Deck before opening Claude Desktop.');
-  }
-  if (client === 'muse' && scope === 'project') {
-    // NOT-571: project scope still writes the legacy launcher entry
-    // (`use --client muse` now writes the per-folder HTTP entry; this
-    // write stays until the launcher-retirement ticket removes it).
-    // Against the new HTTP user entry Muse rejects it
-    // (invalid_transport_combination) and omits the server in this
-    // folder — the durable part of project setup is the root AGENTS.md
-    // merge.
-    console.warn(
-      'Muse MCP: .mcp.json now holds the legacy launcher entry, which Muse rejects against the HTTP user entry (invalid_transport_combination) — agent-deck is omitted in this folder.',
-    );
-    console.warn(
-      '  For the folder connection, re-run plain `agent-deck use <deck>` here instead (it writes the headered HTTP entry Muse accepts), then reload MCP.',
-    );
   }
 
   return await finishSetup(client, scope, endpoint, parsed.start === true, parsed.statusline, parsed.menubar);

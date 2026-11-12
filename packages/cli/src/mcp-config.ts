@@ -104,28 +104,6 @@ export function buildGlobalFallbackHttpEntry(endpoint: McpEndpoint): Record<stri
 }
 
 /**
- * Legacy Muse stdio launcher entry (NOT-387 shape). `agent-deck use
- * --client muse` no longer writes this (NOT-571: it writes the same
- * per-folder HTTP entry as Claude); only `setup --client muse --scope
- * project` still does, until the launcher-retirement ticket removes this
- * helper. Muse may rewrite its settings file, so rely only on the
- * preserved command/args/env fields: no cwd, type, required, or timeout
- * fields. No AGENT_DECK_WORKSPACE pin either — an omitted cwd means the
- * Muse session working directory, so mcp-launch resolves the active
- * workspace's .agent-deck/use.json dynamically.
- */
-export function buildMuseLegacyLauncherEntry(endpoint: McpEndpoint): Record<string, unknown> {
-  return {
-    command: 'agent-deck',
-    args: ['mcp-launch'],
-    env: {
-      AGENT_DECK_MCP_PORT: String(endpoint.mcpPort),
-      AGENT_DECK_HOST: endpoint.host,
-    },
-  };
-}
-
-/**
  * MCP client entry for the agent-deck server. Codex, Claude, Cursor, and
  * Muse connect over pure HTTP (NOT-563/565/567/570/571): the workspace
  * header names the folder and the daemon resolves the deck from
@@ -135,9 +113,10 @@ export function buildMuseLegacyLauncherEntry(endpoint: McpEndpoint): Record<stri
  * A `workspaceRoot` selects the per-folder HTTP form; without one the
  * client gets the global headerless HTTP fallback (NOT-565/567/570).
  * Claude Desktop still uses the trusted local launcher, which reads the
- * folder assignment at runtime. The retired Muse launcher shape lives on
- * only in {@link buildMuseLegacyLauncherEntry} for `setup --scope
- * project` until the launcher-retirement ticket removes it.
+ * folder assignment at runtime. The retired Muse launcher shape (NOT-387:
+ * command/args/env only, no type or workspace pin) is never built —
+ * legacy entries are detected with {@link isLegacyMuseLaunchEntry} and
+ * converted by the upgrade path (NOT-572).
  */
 export function buildAgentDeckEntry(
   client: McpClient,
@@ -268,13 +247,10 @@ export function isMcpLaunchEntry(entry: unknown): boolean {
  * entry `use`/`setup --client claude` ever wrote carries at least one of
  * those markers — project entries carry both, global entries the type.
  *
- * Muse-shaped launcher entries (written by older `use --client muse`
- * and still by `setup --client muse --scope project` until the
- * launcher-retirement ticket) carry the same command/args but never
- * `type` or the workspace pin (see `buildMuseLegacyLauncherEntry`), so
- * they never match. The upgrade rewrite uses this predicate for the
- * shared project file so it cannot convert a Muse-shaped entry to the
- * HTTP shape; converting those is the launcher-retirement ticket's job.
+ * Muse-shaped launcher entries carry the same command/args but never
+ * `type` or the workspace pin, so they never match here; they match
+ * {@link isLegacyMuseLaunchEntry} instead, and the upgrade rewrite
+ * handles each marker with its own conversion (NOT-572).
  */
 export function isLegacyClaudeLaunchEntry(entry: unknown): boolean {
   if (!isMcpLaunchEntry(entry)) {
@@ -290,6 +266,21 @@ export function isLegacyClaudeLaunchEntry(entry: unknown): boolean {
   }
   const workspaceRoot = (env as Record<string, unknown>).AGENT_DECK_WORKSPACE;
   return typeof workspaceRoot === 'string' && workspaceRoot.length > 0;
+}
+
+/**
+ * True when a JSON `agent-deck` entry is a legacy Muse launcher entry
+ * (NOT-387 shape, retired NOT-572): an `agent-deck mcp-launch` entry
+ * with neither Claude marker — no `type: 'stdio'`, no
+ * `AGENT_DECK_WORKSPACE` env pin. Every launcher entry older
+ * `use --client muse` and `setup --client muse --scope project` wrote
+ * has exactly this shape (command/args/env only). Nothing builds it;
+ * the upgrade path converts it to the HTTP shape (or removes it when
+ * the folder has no assignment), and setup/use only detect it for
+ * legacy warnings.
+ */
+export function isLegacyMuseLaunchEntry(entry: unknown): boolean {
+  return isMcpLaunchEntry(entry) && !isLegacyClaudeLaunchEntry(entry);
 }
 
 export function readJsonFile(filePath: string): Record<string, unknown> {
