@@ -448,11 +448,11 @@ export async function runSetup(args: string[]): Promise<number> {
     // A same-name launcher project entry in this folder would now break
     // Muse here: Muse merges it with the HTTP user entry field by field
     // (url plus command → invalid_transport_combination) and omits the
-    // server. Folders assigned with `use --client muse` or project-scope
-    // setup still hold that entry — plain `use` rewrites .mcp.json with
-    // the headered HTTP entry Muse accepts (the Muse-native per-folder
-    // entry is the next ticket). A missing or unparsable file simply
-    // skips the warning; global setup must not fail on it.
+    // server. Folders assigned with an older `use --client muse` or
+    // project-scope setup still hold that entry — `use` (plain or
+    // `--client muse`) rewrites .mcp.json with the headered HTTP entry
+    // Muse accepts. A missing or unparsable file simply skips the
+    // warning; global setup must not fail on it.
     const museProjectPath = resolveConfigPath('muse', 'project');
     let museProjectEntry: unknown;
     try {
