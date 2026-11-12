@@ -111,23 +111,25 @@ Version: add `.codex-plugin/plugin.json` to `scripts/sync-versions.mjs` so it tr
 
 Playbook bodies live on the deck; the plugin ships only generic protocol stubs (same rule as `.cursor/skills/` stubs — pointers, never mirrored content). This also helps Skill Security scoring: no fat prompt bodies, no elevated steps.
 
-- **`agent-deck-setup`** — triggers: "set up agent deck", "agent deck not connected". Body: diagnose daemon health, Codex plugin transport, folder assignment, and Codex instruction discovery separately. If agent-deck is missing, guide `npx @agent-deck/cli@latest install`; if outdated, `agent-deck upgrade`; if the daemon is down, `agent-deck start --daemon`. Codex transport comes from the enabled plugin's bundled `.mcp.json` running `agent-deck mcp-launch`. `agent-deck setup --client codex` marker-merges bootstrap guidance into global `~/.codex/AGENTS.md` (or project `./AGENTS.md`) without replacing other instructions; it does not install the plugin. A missing or legacy folder assignment is repaired with `agent-deck use <deck>`, followed by an MCP reload/retry. Read-only checks only; the *user* runs install commands.
+- **`agent-deck-setup`** — triggers: "set up agent deck", "agent deck not connected". Body: diagnose daemon health, host transport, folder assignment, and Codex instruction discovery separately. If agent-deck is missing, guide `npx @agent-deck/cli@latest install`; if outdated, `agent-deck upgrade`; if the daemon is down, `agent-deck start --daemon`. Codex connects over pure MCP (streamable HTTP): a global headerless fallback entry plus a per-folder entry carrying the workspace header — no `agent-deck` executable lookup. `agent-deck setup --client codex` writes the global fallback and marker-merges bootstrap guidance into global `~/.codex/AGENTS.md` (or project `./AGENTS.md`) without replacing other instructions; it does not install the plugin (skills). When the host shows no tools: trust the folder, approve the project entry, repair a missing or legacy folder assignment with `agent-deck use <deck>`, then reload MCP / retry. Read-only checks only; the *user* runs install commands.
 - **`agent-deck-session`** — triggers: session start when Agent Deck MCP is configured. Body: bootstrap is fail-closed for both launch-selected sessions and optional `.agent-deck/use.json` assignments — require `get_session_binding` → `get_bound_deck`, print the one-line `display_summary`, load every matching playbook, and stop before task work if the tools or selected deck are unavailable. Once per session.
 - **`agent-deck-playbooks`** — triggers: task matches a bound-deck playbook / user corrects playbook-derived output. Body: check `triggers` on `get_bound_deck`, `get_playbook` before improvising; on correction, `propose_playbook_patch` (update case) or `kind: "create"` (genesis case) with `evidence.user_feedback_excerpt`.
 
 Skill format is the standard Agent Skills `SKILL.md` (name/description frontmatter) — identical for Codex and Claude Code, so one `skills/` tree serves both (§5).
 
-### 3.3 `.mcp.json` — the daemon question
+### 3.3 `.mcp.json` — the global headerless fallback
 
-Marketplace precedent (e.g. AgiFlow) is a top-level `.mcp.json` with the server entry; ours must point at the **local daemon**:
+Marketplace precedent (e.g. AgiFlow) is a top-level `.mcp.json` with the server entry; ours is the **global headerless fallback** pointing at the **local daemon** — pure MCP with no `agent-deck` executable lookup, so desktop-launched hosts (minimal `PATH`) connect:
 
 ```json
 { "mcpServers": { "agent-deck": { "type": "http", "url": "http://127.0.0.1:1110/mcp" } } }
 ```
 
+Folders with no assignment connect through this entry and land in the explain-only unassigned session. `agent-deck setup --client codex|claude` writes the same fallback into host config (`~/.codex/config.toml`, `~/.claude.json`); `agent-deck use <deck>` writes a same-name per-folder entry carrying the workspace header that shadows it where an assignment exists. When the host shows no tools: trust the folder, approve the project entry, run `agent-deck use <deck>`, then reload MCP.
+
 Two constraints shape this:
 
-1. **Our transport is HTTP-only** (`mcp-index.ts`); there is no stdio entrypoint, so the plugin cannot use a `command:`-launched server that would start on demand. The daemon must already be running — hence the `agent-deck-setup` skill as the recovery path. A stdio transport (`agent-deck mcp --stdio`) would remove this seam entirely and is worth considering as a fast-follow, but it is **not** a blocker for listing.
+1. **The daemon must already be running** — the HTTP entry cannot start it on demand — hence the `agent-deck-setup` skill as the recovery path. A refused connection at the entry means the entry is present but the daemon is down (`agent-deck start --daemon`).
 2. **This repo's `.mcp.json` on `main` points at the installed daemon (1110).** Dev-on-3001 stays in Cursor-local `.cursor/mcp.json` — do not commit a 3001 override into the mirrored bundle.
 
 ### 3.4 `.codexignore`
