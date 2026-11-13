@@ -7,6 +7,10 @@
 - A local MCP session whose folder assignment (`.agent-deck/use.json`) names a deck that no longer exists now resolves as if the folder had no assignment: it binds the user default deck when one is set, instead of landing in the explain-only unassigned session. A launch deck header naming a deleted deck still fails closed, and the assignment file is never rewritten.
 - With no usable default deck, the session stays explain-only and the `GRANT_REQUIRED` reply names the missing deck by its saved `deckName`, so the user can see which assignment went stale.
 
+### Feature: session receipt marks the default-deck fallback (NOT-601)
+
+- When a session is bound to the user default deck because no folder pin resolved, `display_summary` in `get_session_context` and `get_session_binding` ends with `default deck, no folder pin`, so the silent fallback is distinguishable from a pinned folder on the first turn. Folder-assigned, launch-selected and session-override receipts are unchanged, as are the status line and menubar text.
+
 ### Feature: headerless sessions bind the user default deck (NOT-600)
 
 - A local MCP session that arrives with no deck header and no usable folder assignment now binds the user's default deck (`$AGENT_DECK_HOME/default-deck.json`) instead of landing in the explain-only session, so a missing pin or unapproved project server no longer makes Agent Deck unreachable. Precedence is strict: launch deck header, then folder assignment, then default deck; hosted and grant-bound sessions are unchanged.
