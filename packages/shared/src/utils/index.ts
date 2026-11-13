@@ -11,3 +11,5 @@ export * from './agent-deck-home';
 export * from './trigger-hygiene';
 export * from './workspace-key';
 export * from './git-exclude';
+export * from './strip-ansi';
+export * from './mcp-config';

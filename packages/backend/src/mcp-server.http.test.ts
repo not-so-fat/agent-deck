@@ -1999,7 +1999,11 @@ describe('folder-assignment deck binding (NOT-562)', () => {
     await init.arrayBuffer();
 
     const names = await listToolNames(port, sessionId!, headers, 2);
-    expect(names.sort()).toEqual(['get_session_binding', 'get_session_context']);
+    expect(names.sort()).toEqual([
+      'get_session_binding',
+      'get_session_context',
+      'request_deck_assignment',
+    ]);
     const context = await callToolMcpResult(port, sessionId!, 'get_session_context', {}, 3, headers);
     expect(context.isError).toBe(true);
     expect(context.data.error_code).toBe('GRANT_REQUIRED');
@@ -2016,7 +2020,11 @@ describe('folder-assignment deck binding (NOT-562)', () => {
     await init.arrayBuffer();
 
     const names = await listToolNames(port, sessionId!, headers, 2);
-    expect(names.sort()).toEqual(['get_session_binding', 'get_session_context']);
+    expect(names.sort()).toEqual([
+      'get_session_binding',
+      'get_session_context',
+      'request_deck_assignment',
+    ]);
     const context = await callToolMcpResult(port, sessionId!, 'get_session_context', {}, 3, headers);
     expect(context.isError).toBe(true);
     expect(context.data.error_code).toBe('GRANT_REQUIRED');
@@ -2035,7 +2043,11 @@ describe('folder-assignment deck binding (NOT-562)', () => {
     await init.arrayBuffer();
 
     const names = await listToolNames(port, sessionId!, headers, 2);
-    expect(names.sort()).toEqual(['get_session_binding', 'get_session_context']);
+    expect(names.sort()).toEqual([
+      'get_session_binding',
+      'get_session_context',
+      'request_deck_assignment',
+    ]);
     const context = await callToolMcpResult(port, sessionId!, 'get_session_context', {}, 3, headers);
     expect(context.isError).toBe(true);
     expect(context.data.error_code).toBe('GRANT_REQUIRED');

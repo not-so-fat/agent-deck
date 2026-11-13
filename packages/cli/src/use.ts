@@ -5,18 +5,11 @@ import { ensureGitExcluded } from '@agent-deck/shared';
 import { createCollectionAdmin } from './backend-runtime';
 import { parseCliMcpPort } from './defaults';
 import {
-  buildAgentDeckEntry,
-  buildCodexAgentDeckEntry,
   buildMcpUrl,
-  formatCodexMcpSection,
   isMcpLaunchEntry,
-  mergeCodexTomlConfig,
-  mergeMcpServerConfig,
   readJsonFile,
-  readTextFile,
   resolveConfigPath,
-  writeJsonFile,
-  writeTextFile,
+  writePerFolderMcpEntries,
   type McpClient,
   type McpEndpoint,
 } from './mcp-config';
@@ -186,30 +179,16 @@ function writeProjectMcpConfigs(
   parsed: UseOptions,
   endpoint: McpEndpoint,
 ): Array<{ client: McpClient; path: string }> {
-  const mcpWritten: Array<{ client: McpClient; path: string }> = [];
   if (parsed.skipMcp) {
-    return mcpWritten;
+    return [];
   }
-  for (const client of clientsToWrite(parsed.clients)) {
-    const configPath = resolveConfigPath(client, 'project', parsed.workspaceRoot);
-    if (client === 'codex') {
-      const section = formatCodexMcpSection(
-        buildCodexAgentDeckEntry(endpoint, { workspaceRoot: parsed.workspaceRoot }),
-      );
-      writeTextFile(configPath, mergeCodexTomlConfig(readTextFile(configPath), section));
-      mcpWritten.push({ client, path: configPath });
-      continue;
-    }
-    // NOT-571: Muse takes the same headed per-folder HTTP entry as
-    // Claude — the same file, the same shape, no more collision.
-    const entry = buildAgentDeckEntry(client, endpoint, {
-      workspaceRoot: parsed.workspaceRoot,
-    });
-    const merged = mergeMcpServerConfig(readJsonFile(configPath), entry);
-    writeJsonFile(configPath, merged);
-    mcpWritten.push({ client, path: configPath });
-  }
-  return mcpWritten;
+  // NOT-597: shared writer (moved to @agent-deck/shared) so `use` and the
+  // daemon approval path write identical per-folder entries.
+  return writePerFolderMcpEntries(
+    parsed.workspaceRoot,
+    endpoint,
+    clientsToWrite(parsed.clients),
+  );
 }
 
 /** True when `folder` sits inside a git working tree (`.git` here or above). */

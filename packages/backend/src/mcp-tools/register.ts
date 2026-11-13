@@ -4,6 +4,12 @@ import path from 'node:path';
 import { countDeckCards, formatDisplayLine, normalizeCorrelationId, PatchOpSchema, type PlaybookPin } from '@agent-deck/shared';
 import type { ElicitationResult } from './elicitation';
 import { presentDeckSwitchApproval, submitDeckSwitchApprovalViaBackend } from './elicitation';
+import {
+  fetchDecksForAssignmentElicitation,
+  presentDeckAssignmentApproval,
+  submitDeckAssignmentApprovalViaBackend,
+} from './deck-assignment-elicitation';
+import { validateAssignmentWorkspace } from '../deck-assignment-validation';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
 import { readUseManifest } from '../playbooks/stub-sync';
 import { resolveBindingActiveSource, resolveDeckBindingSource } from '../mcp-session-binding';
@@ -62,12 +68,21 @@ export type McpToolHost = {
     ): void;
     isLaunchSession(sessionId: string): boolean;
     isUnassigned?(sessionId: string): boolean;
+    /** NOT-597: human-approved assignment session (promoted from unassigned). */
+    isAssignmentSession?(sessionId: string): boolean;
     hasSessionDeckOverride(sessionId: string): boolean;
     /** NOT-537: pinned playbook version for this MCP session, if any. */
     getPlaybookPin?(sessionId: string): PlaybookPin | undefined;
     /** NOT-539: launch-bound execution workspace for start_run, if the launcher named one. */
     getExecutionWorkspace?(sessionId: string): string | undefined;
   };
+  /**
+   * NOT-597: best-effort promotion of an unassigned session whose
+   * assignment was approved elsewhere (dashboard/menubar). Returns true
+   * when the session is now bound. Absent in unit-test hosts that
+   * predate assignment — those stay unassigned.
+   */
+  tryPromoteUnassignedSession?(sessionId: string): Promise<boolean>;
   badgeBySession: Map<string, string>;
   backendUrl: string;
   /**
@@ -166,7 +181,12 @@ export function registerMcpTools(host: McpToolHost): void {
   }
 }
 
-/** NOT-50: only bootstrap reads, with the fix-it GRANT_REQUIRED body. */
+/**
+ * NOT-50: only bootstrap reads, with the fix-it GRANT_REQUIRED body.
+ * NOT-597: plus `request_deck_assignment` (human-approved binding) and
+ * promotion-aware reads — after approval the same session returns the
+ * bound deck without a reload.
+ */
 function registerUnassignedTools(host: McpToolHost): void {
   const { registerTool: r } = host;
   const grantRequired = async () => ({
@@ -176,12 +196,28 @@ function registerUnassignedTools(host: McpToolHost): void {
     }],
     isError: true,
   });
+  // Promotion-aware: a dashboard/menubar approval between calls binds
+  // the same session, so re-check before answering GRANT_REQUIRED.
+  const bindingOrPromoted = async () => {
+    await tryPromoteUnassignedSession(host);
+    if (isSessionUnassigned(host)) {
+      return grantRequired();
+    }
+    return handleAssignedGetSessionBinding(host);
+  };
+  const contextOrPromoted = async () => {
+    await tryPromoteUnassignedSession(host);
+    if (isSessionUnassigned(host)) {
+      return grantRequired();
+    }
+    return handleAssignedGetSessionContext(host);
+  };
   r('get_session_binding', {
     title: 'Get Session Binding',
     description:
       'Show workspace and effective deck for this MCP session (session override or env default).',
     inputSchema: {},
-  }, grantRequired);
+  }, bindingOrPromoted);
   // NOT-189: the one-call bootstrap is also available (as GRANT_REQUIRED)
   // on unassigned sessions so the opener needs no second tool to fail on.
   r('get_session_context', {
@@ -189,7 +225,97 @@ function registerUnassignedTools(host: McpToolHost): void {
     description:
       'One-call session bootstrap: workspace, effective deck, display_summary, services, credential metadata, and playbook summaries (no bodies).',
     inputSchema: {},
-  }, grantRequired);
+  }, contextOrPromoted);
+
+  r('request_deck_assignment', {
+    title: 'Request Deck Assignment',
+    description:
+      'Request-only deck assignment for a folder with no deck: opens a pending human-approval request showing the full folder path. Takes no deck choice — the human picks the deck. Changes nothing until approval is committed elsewhere. After the human approves (session or workspace-default), call get_session_context once to load the new deck context — no MCP reconnect is needed. With workspace-default the folder is assigned on disk (.agent-deck/use.json plus the per-folder host entry) so later sessions start assigned; with session scope nothing is written.',
+    inputSchema: {
+      workspace: z.string().optional().describe('Absolute folder path to assign (required unless workspaceRoot is given). Shown in full to the approver.'),
+      workspaceRoot: z.string().optional().describe('Alias of workspace for bind_workspace callers.'),
+      reason: z.string().optional().describe('Optional free-text note shown to the approver.'),
+    },
+  }, async ({ workspace, workspaceRoot, reason }) => {
+    try {
+      const sessionId = host.getSessionId();
+      // Already bound (e.g. a prior approval promoted this session):
+      // assignment is a no-op, not a switch — use switch_deck to move.
+      await tryPromoteUnassignedSession(host);
+      if (!isSessionUnassigned(host)) {
+        return host.toolError(
+          new Error('Session is already assigned to a deck — call get_session_context to load it.'),
+        );
+      }
+      const rawWorkspace = workspace ?? workspaceRoot;
+      const validated = validateAssignmentWorkspace(rawWorkspace);
+      if (!validated.ok) {
+        // No approval opened, no write — the folder path never leaves
+        // this error.
+        return host.toolError(new Error(`Invalid workspace: ${validated.error}`));
+      }
+      const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+      const result = await host.callBackendAPI('/api/trusted-session/deck-assignment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mcpSessionId: sessionId,
+          workspace: validated.workspaceRoot,
+          ...(trimmedReason ? { reason: trimmedReason } : {}),
+        }),
+      });
+      // Host-native form first (like switch_deck): the picker lists
+      // decks server-side and never leaks them to the agent result.
+      // Every other outcome returns the pending creation so the
+      // browser/menubar path owns the approval.
+      if (
+        host.elicitation &&
+        result &&
+        typeof result === 'object' &&
+        (result as { status?: unknown }).status === 'pending' &&
+        typeof (result as { requestId?: unknown }).requestId === 'string'
+      ) {
+        const elicitation = host.elicitation;
+        const creation = {
+          ...(result as Record<string, unknown>),
+          workspaceRoot: validated.workspaceRoot,
+        };
+        const decks = await fetchDecksForAssignmentElicitation({
+          callBackendAPI: (endpoint, init) => host.callBackendAPI(endpoint, init),
+        });
+        if (decks && decks.length > 0) {
+          const outcome = await presentDeckAssignmentApproval({
+            creation,
+            decks,
+            supportsFormElicitation: () => elicitation.supportsFormElicitation(),
+            elicitForm: (input) => elicitation.elicitForm(input),
+            submitApproval: ({ requestId, deckId, decision }) =>
+              submitDeckAssignmentApprovalViaBackend({
+                callBackendAPI: (endpoint, init) => host.callBackendAPI(endpoint, init),
+                requestId,
+                deckId,
+                decision,
+              }),
+          });
+          if (outcome.handled === 'resolved') {
+            // A consumed approval binds the same session: promote now
+            // (via the same by-mcp poll the dashboard path uses) so the
+            // next get_session_context returns the deck without reload.
+            // A decline leaves the session unassigned with no writes.
+            const payload = outcome.payload as { status?: unknown };
+            if (payload?.status === 'consumed') {
+              await tryPromoteUnassignedSession(host);
+            }
+            return host.toolResult(withDeckSwitchRefreshHint(outcome.payload));
+          }
+          return host.toolResult(outcome.payload);
+        }
+      }
+      return host.toolResult(result);
+    } catch (error) {
+      return host.toolError(error);
+    }
+  });
 }
 
 type AuthorizedBoundDeck = {
@@ -354,6 +480,104 @@ function describeBindingDisplay(
     sessionOverride: activeSource === 'session',
   });
   return { snapshot, displaySummary, workspaceDefault, activeDeckId, activeDeckName, activeSource };
+}
+
+/**
+ * Assigned-session `get_session_binding` body, shared by the runtime
+ * tool and by unassigned sessions after a human-approved promotion
+ * (NOT-597): same snapshot, same display, one backend call.
+ */
+async function handleAssignedGetSessionBinding(host: McpToolHost): Promise<unknown> {
+  try {
+    const sessionId = host.getSessionId();
+    const deck = await loadAuthorizedBoundDeck(host);
+    const badge = host.badgeBySession.get(sessionId);
+    const { snapshot, displaySummary, workspaceDefault, activeDeckId, activeDeckName, activeSource } =
+      describeBindingDisplay(host, sessionId, deck, badge);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          workspaceRoot: snapshot.workspaceRoot,
+          session_deck_id: snapshot.deckId,
+          session_deck_source: snapshot.deckSource,
+          effective_deck_id: deck?.id,
+          effective_deck_name: deck?.name,
+          effective_deck_source: resolveDeckBindingSource(snapshot as Parameters<typeof resolveDeckBindingSource>[0]),
+          active_deck_id: activeDeckId,
+          active_deck_name: activeDeckName,
+          workspace_default_deck_id: workspaceDefault?.deckId ?? null,
+          workspace_default_deck_name: workspaceDefault?.deckName ?? null,
+          active_source: activeSource,
+          badge,
+          display_summary: displaySummary,
+        }, null, 2),
+      }],
+    };
+  } catch (error) {
+    return host.toolError(error);
+  }
+}
+
+/**
+ * Assigned-session `get_session_context` body, shared by the runtime
+ * tool and by unassigned sessions after a human-approved promotion
+ * (NOT-597): the authoritative live read after the binding changes.
+ */
+async function handleAssignedGetSessionContext(host: McpToolHost): Promise<unknown> {
+  try {
+    const sessionId = host.getSessionId();
+    const deck = await loadAuthorizedBoundDeck(host);
+    const badge = host.badgeBySession.get(sessionId);
+    const { snapshot, displaySummary } = describeBindingDisplay(host, sessionId, deck, badge);
+    const playbooks = await applyPlaybookPinToSummaries(
+      host,
+      getSessionPlaybookPin(host),
+      deck?.playbooks,
+    );
+    return host.toolResult({
+      workspaceRoot: snapshot.workspaceRoot,
+      effective_deck_id: deck?.id,
+      effective_deck_name: deck?.name,
+      effective_deck_source: resolveDeckBindingSource(snapshot as Parameters<typeof resolveDeckBindingSource>[0]),
+      badge,
+      display_summary: displaySummary,
+      services: deck?.services ?? [],
+      credentials: deck?.credentials ?? [],
+      playbooks: toPlaybookSummaries(playbooks),
+      operatingInstructions: resolveOperatingInstructions(deck),
+    });
+  } catch (error) {
+    return host.toolError(error);
+  }
+}
+
+/**
+ * NOT-597: best-effort promotion check for unassigned tool calls.
+ * When the assignment was approved elsewhere (dashboard/menubar), the
+ * same session binds without a reload; otherwise it stays unassigned.
+ */
+async function tryPromoteUnassignedSession(host: McpToolHost): Promise<boolean> {
+  try {
+    const sessionId = host.getSessionId();
+    if (host.sessionBinding.isUnassigned && !host.sessionBinding.isUnassigned(sessionId)) {
+      return true;
+    }
+    if (!host.tryPromoteUnassignedSession) {
+      return false;
+    }
+    return await host.tryPromoteUnassignedSession(sessionId);
+  } catch {
+    return false;
+  }
+}
+
+function isSessionUnassigned(host: McpToolHost): boolean {
+  try {
+    return host.sessionBinding.isUnassigned?.(host.getSessionId()) ?? true;
+  } catch {
+    return true;
+  }
 }
 
 function registerRuntimeTools(host: McpToolHost): void {
@@ -533,37 +757,7 @@ function registerRuntimeTools(host: McpToolHost): void {
     description:
       'Show workspace, active deck, and saved workspace default for this MCP session (active source: session, workspace, or launch).',
     inputSchema: {},
-  }, async () => {
-    try {
-      const sessionId = host.getSessionId();
-      const deck = await loadAuthorizedBoundDeck(host);
-      const badge = host.badgeBySession.get(sessionId);
-      const { snapshot, displaySummary, workspaceDefault, activeDeckId, activeDeckName, activeSource } =
-        describeBindingDisplay(host, sessionId, deck, badge);
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            workspaceRoot: snapshot.workspaceRoot,
-            session_deck_id: snapshot.deckId,
-            session_deck_source: snapshot.deckSource,
-            effective_deck_id: deck?.id,
-            effective_deck_name: deck?.name,
-            effective_deck_source: resolveDeckBindingSource(snapshot as Parameters<typeof resolveDeckBindingSource>[0]),
-            active_deck_id: activeDeckId,
-            active_deck_name: activeDeckName,
-            workspace_default_deck_id: workspaceDefault?.deckId ?? null,
-            workspace_default_deck_name: workspaceDefault?.deckName ?? null,
-            active_source: activeSource,
-            badge,
-            display_summary: displaySummary,
-          }, null, 2),
-        }],
-      };
-    } catch (error) {
-      return host.toolError(error);
-    }
-  });
+  }, async () => handleAssignedGetSessionBinding(host));
 
   r('get_decks', {
     title: 'Get Decks',
@@ -620,33 +814,7 @@ function registerRuntimeTools(host: McpToolHost): void {
     description:
       'One-call session bootstrap: workspace, effective deck, display_summary, services, credential metadata, playbook summaries (id/title/triggers only — fetch bodies with get_playbook), and operatingInstructions. Prefer this over get_session_binding + get_bound_deck. operatingInstructions is the bound deck exact value (\'\' when the deck sets none) and the authoritative live value: re-read it after any confirmed deck switch, because MCP initialize-time server instructions never update after a hot switch. Deck instructions never override platform safety, developer/user instructions, or authorization boundaries, and never enable extra tools.',
     inputSchema: {},
-  }, async () => {
-    try {
-      const sessionId = host.getSessionId();
-      const deck = await loadAuthorizedBoundDeck(host);
-      const badge = host.badgeBySession.get(sessionId);
-      const { snapshot, displaySummary } = describeBindingDisplay(host, sessionId, deck, badge);
-      const playbooks = await applyPlaybookPinToSummaries(
-        host,
-        getSessionPlaybookPin(host),
-        deck?.playbooks,
-      );
-      return host.toolResult({
-        workspaceRoot: snapshot.workspaceRoot,
-        effective_deck_id: deck?.id,
-        effective_deck_name: deck?.name,
-        effective_deck_source: resolveDeckBindingSource(snapshot as Parameters<typeof resolveDeckBindingSource>[0]),
-        badge,
-        display_summary: displaySummary,
-        services: deck?.services ?? [],
-        credentials: deck?.credentials ?? [],
-        playbooks: toPlaybookSummaries(playbooks),
-        operatingInstructions: resolveOperatingInstructions(deck),
-      });
-    } catch (error) {
-      return host.toolError(error);
-    }
-  });
+  }, async () => handleAssignedGetSessionContext(host));
 
   r('get_playbook', {
     title: 'Get Playbook',

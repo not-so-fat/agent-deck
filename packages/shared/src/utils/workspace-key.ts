@@ -42,7 +42,7 @@ export function digestCanonicalWorkspacePath(canonicalPath: string): string {
   return createHash('sha256').update(canonicalPath, 'utf8').digest('hex');
 }
 
-export type TrustedIdKind = 'wsp' | 'wgr' | 'ses' | 'adm' | 'enr' | 'authz' | 'req' | 'evt';
+export type TrustedIdKind = 'wsp' | 'wgr' | 'ses' | 'adm' | 'enr' | 'authz' | 'req' | 'evt' | 'asg';
 
 export function prefixTrustedId(kind: TrustedIdKind, rawId: string): string {
   return `${kind}_${rawId.replace(/-/g, '')}`;

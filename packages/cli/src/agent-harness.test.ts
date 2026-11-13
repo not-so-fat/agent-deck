@@ -139,16 +139,20 @@ describe('agent-harness templates', () => {
     const claude = buildClaudeHarnessBlock('project');
     for (const text of [cursor, claude]) {
       expect(text).toContain('agent-deck use');
-      expect(text).toContain('optional persistent folder-assignment');
+      // NOT-597: human-approved assignment first, CLI as the fallback.
+      expect(text).toContain('human-approved');
+      expect(text).toContain('request_deck_assignment');
       expect(text).toContain('launch-selected sessions can be bound without that file');
       expect(text).toContain('DECK_FIXED');
       expect(text).toContain('ADMIN_REQUIRED');
       expect(text).toContain('.agent-deck/use.json');
       // NOT-234: the opener branches on which GRANT_REQUIRED message came
       // back — the not-yet-bound retry names bind_workspace, while the
-      // unassigned-folder remedy keeps the `agent-deck use` CLI step.
+      // unassigned-folder remedy calls request_deck_assignment first and
+      // keeps `agent-deck use` as the fallback.
       expect(text).toContain('match the message before acting');
       expect(text).toContain('bind_workspace');
+      expect(text).toContain('request_deck_assignment');
     }
   });
 

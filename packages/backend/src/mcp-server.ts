@@ -55,6 +55,7 @@ import {
 } from './playbooks/stub-sync';
 import { RequestLimiter } from './auth/request-limiter';
 import { AuditStore, auditDeckTarget, type AuditActor } from './audit/store';
+import { validateAssignmentWorkspace } from './deck-assignment-validation';
 
 function readWorkspaceRootHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_WORKSPACE_HEADER];
@@ -1114,14 +1115,52 @@ export class AgentDeckMCPServer {
   }
 
   private setupTools(sessionId: string) {
-    // NOT-213: capture the session server while in the registration context;
-    // the closures below run later at tool-call time and must not touch
-    // `this.server` (registration-only getter).
-    const elicitingServer = this.server;
-    registerMcpTools({
-      registerTool: (name, config, handler) => this.registerTool(name, config, handler),
-      profile: this.toolProfile,
+    this.setupToolsOnServer(this.server, sessionId, {
       unassigned: this.sessionBinding.isUnassigned(sessionId),
+      skipExisting: false,
+    });
+  }
+
+  /**
+   * NOT-597: register tools on one session server. Initial registration
+   * (`skipExisting: false`) runs in the registration context; late
+   * promotion of an unassigned session reuses the same host with
+   * `skipExisting: true` so the already-registered bootstrap reads
+   * (promotion-aware) stay while the full tool list is added without a
+   * reload. `tools/list` reads the live registry, so the next list
+   * includes the newly registered tools.
+   */
+  private setupToolsOnServer(
+    elicitingServer: McpServer,
+    sessionId: string,
+    opts: { unassigned: boolean; skipExisting: boolean },
+  ): void {
+    const registerTool = (
+      name: string,
+      config: { title: string; description: string; inputSchema: McpToolInputSchema },
+      handler: (...args: any[]) => Promise<any>,
+    ): void => {
+      try {
+        (elicitingServer as { registerTool: (...args: unknown[]) => unknown }).registerTool(
+          name,
+          config,
+          handler,
+        );
+      } catch (error) {
+        if (
+          opts.skipExisting &&
+          error instanceof Error &&
+          error.message.includes('already registered')
+        ) {
+          return;
+        }
+        throw error;
+      }
+    };
+    registerMcpTools({
+      registerTool,
+      profile: this.toolProfile,
+      unassigned: opts.unassigned,
       getSessionId: () => sessionId,
       getMode: () => this.sessionBinding.getMode(sessionId) ?? 'normal',
       refreshRuntimeSession: () => this.refreshRuntimeSession(sessionId),
@@ -1138,6 +1177,7 @@ export class AgentDeckMCPServer {
       backendUrl: this.backendUrl,
       toolResult: (data) => this.toolResult(data),
       toolError: (error) => this.toolError(error),
+      tryPromoteUnassignedSession: (id) => this.tryPromoteUnassignedSession(id),
       // NOT-213: host-native approval form for this session. Capability
       // detection reads the capabilities the client reported at initialize;
       // elicitation itself goes through the session server so the host UI
@@ -1160,6 +1200,75 @@ export class AgentDeckMCPServer {
         },
       },
     });
+  }
+
+  /**
+   * NOT-597: promote an unassigned session whose assignment was approved
+   * elsewhere. Polls the consumed-assignment record by MCP session id;
+   * on a hit, validates the folder again, records the trusted binding,
+   * registers the full tool list on the live server, and registers the
+   * live display — the same session then serves the deck without a
+   * reload. Returns whether the session is now bound. Never throws for
+   * poll-level failures: those mean "still unassigned".
+   */
+  private async tryPromoteUnassignedSession(sessionId: string): Promise<boolean> {
+    try {
+      if (!this.sessionBinding.isUnassigned(sessionId)) {
+        return true;
+      }
+      const response = await fetch(
+        `${this.backendUrl}/api/trusted-session/deck-assignment/by-mcp/${encodeURIComponent(sessionId)}`,
+        { headers: { Accept: 'application/json' } },
+      );
+      if (!response.ok) {
+        return false;
+      }
+      const body = (await response.json()) as {
+        success?: boolean;
+        data?: {
+          runtimeSessionId?: unknown;
+          deckId?: unknown;
+          workspaceRoot?: unknown;
+        };
+      };
+      const data = body?.data;
+      if (!body?.success || !data) {
+        return false;
+      }
+      const runtimeSessionId =
+        typeof data.runtimeSessionId === 'string' ? data.runtimeSessionId.trim() : '';
+      const deckId = typeof data.deckId === 'string' ? data.deckId.trim() : '';
+      const validated = validateAssignmentWorkspace(data.workspaceRoot);
+      if (!runtimeSessionId || !deckId || !validated.ok) {
+        return false;
+      }
+      this.sessionBinding.promoteUnassignedToAssignment(sessionId, {
+        runtimeSessionId,
+        deckId,
+        workspaceRoot: validated.workspaceRoot,
+      });
+      const live = this.sessions.get(sessionId);
+      if (live) {
+        try {
+          this.setupToolsOnServer(live.server, sessionId, {
+            unassigned: false,
+            skipExisting: true,
+          });
+        } catch {
+          // Best effort: the binding is committed; the bootstrap reads
+          // are promotion-aware and return the deck even if the late
+          // tool registration partially failed.
+        }
+      }
+      try {
+        await this.registerLiveDisplay(sessionId);
+      } catch {
+        // Best effort; the binding is already committed.
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
 
@@ -1880,7 +1989,11 @@ export class AgentDeckMCPServer {
   }
 
   private async disconnectTrustedSession(sessionId: string, _req?: Request): Promise<void> {
-    if (this.sessionBinding.isLaunchSession(sessionId) || this.sessionBinding.isGrantSession(sessionId)) {
+    if (
+      this.sessionBinding.isLaunchSession(sessionId) ||
+      this.sessionBinding.isGrantSession(sessionId) ||
+      this.sessionBinding.isAssignmentSession(sessionId)
+    ) {
       try {
         await fetch(`${this.backendUrl}/api/trusted-session/mcp/disconnect-deck`, {
           method: 'POST',
@@ -1905,7 +2018,40 @@ export class AgentDeckMCPServer {
 
     // Unassigned sessions stay explain-only for their lifetime. A late deck header
     // must not promote them into a trusted launch session mid-flight (NOT-50).
+    // NOT-597: the one promotion path is a human-approved assignment —
+    // best-effort poll here so tools/list also sees the full list without
+    // waiting for the next bootstrap read.
     if (this.sessionBinding.isUnassigned(sessionId)) {
+      try {
+        await this.tryPromoteUnassignedSession(sessionId);
+      } catch {
+        // Still unassigned.
+      }
+      if (this.sessionBinding.isUnassigned(sessionId)) {
+        return true;
+      }
+    }
+
+    // NOT-597: assignment sessions (promoted from unassigned) carry no
+    // deck header on follow-ups — the headerless host never sends one.
+    // Re-validate through the runtime lease refresh instead, best-effort:
+    // an expired lease surfaces as a backend GRANT_REQUIRED on the next
+    // tool call, not as an HTTP 401 here.
+    if (this.sessionBinding.isAssignmentSession(sessionId)) {
+      try {
+        await this.refreshRuntimeSession(sessionId);
+      } catch {
+        // Best effort; the tool call surfaces the backend error.
+      }
+      const workspaceRoot = readWorkspaceRootHeader(req);
+      if (workspaceRoot) {
+        this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
+      }
+      const followUpCorrelation = readCorrelationIdHeader(req);
+      if (followUpCorrelation) {
+        this.sessionBinding.setCorrelationId(sessionId, followUpCorrelation);
+      }
+      this.adoptPlaybookPin(sessionId, req);
       return true;
     }
 
