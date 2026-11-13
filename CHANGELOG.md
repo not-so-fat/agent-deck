@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.5.1 — 2026-11-12
+
+### Change: `agent-deck upgrade --scan <dir>` migrates every assigned folder (NOT-577)
+
+- `agent-deck upgrade --scan <dir>` (repeatable) walks the directory for folders with a `.agent-deck/use.json` and converts their legacy `mcp-launch` entries to pure MCP in one command, including the Cursor project `.cursor/mcp.json` entry. `--scan <dir> --check` lists the planned changes and writes nothing. The Codex plugin step runs once per invocation. See `docs/MCP_LAUNCH_MIGRATION.md`.
+
+### Fix: `upgrade` no longer lets the Codex plugin step block the MCP migration (NOT-576)
+
+- The MCP config migration now runs and prints before the Codex plugin step.
+- Every `codex` subprocess has a timeout (60 seconds by default, `AGENT_DECK_CODEX_TIMEOUT_MS` to override), so a hung `codex` call cannot stall `upgrade`.
+- When `codex plugin add` fails after a successful `remove`, the output now includes the cache-clearing `rm -rf` and `codex plugin add` recovery commands. Agent Deck still never deletes the cache itself.
+
+### Change: `doctor` reports the real connection state per host (NOT-574, NOT-586)
+
+- `agent-deck doctor` prints a `Host connections` block for Codex, Claude Code, Cursor and Muse with one state and a one-line remedy each: `no-entry`, `entry-daemon-down`, `entry-daemon-up-no-session`, `connected`, `folder-not-trusted`, `folder-not-repository` (Muse) or `stale-conflicting-entry` (Muse). An installed entry alone is no longer reported as OK.
+- A stopped daemon is reported as `entry-daemon-down` for every host that has an entry, ahead of any trust remedy.
+
+### After upgrade
+
+- Upgrade the CLI, then `agent-deck stop && agent-deck start`. Run `agent-deck upgrade --scan <your projects directory>` once to migrate every assigned folder; restart each host afterwards.
+
 ## 2.5.0 — 2026-11-12
 
 ### Change: Codex, Claude Code, Cursor and Muse connect over plain MCP (NOT-561 to NOT-572)
