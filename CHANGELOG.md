@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fix: `agent-deck stop` never stops another home's daemon (NOT-605)
+
+- `runStop` now terminates only the supervisor and listeners recorded in the current home's `run.json`. The port-listener fallback runs only for listeners whose process environment or `/health` identity reports the same `AGENT_DECK_HOME`; otherwise it prints that the daemon on those ports belongs to another home and exits 0 without signalling it. This fixes an isolated-home `stop` SIGTERMing the production daemon on `:1110`/`:1111`.
+
 ### Feature: headerless sessions bind the user default deck (NOT-600)
 
 - A local MCP session that arrives with no deck header and no usable folder assignment now binds the user's default deck (`$AGENT_DECK_HOME/default-deck.json`) instead of landing in the explain-only session, so a missing pin or unapproved project server no longer makes Agent Deck unreachable. Precedence is strict: launch deck header, then folder assignment, then default deck; hosted and grant-bound sessions are unchanged.
