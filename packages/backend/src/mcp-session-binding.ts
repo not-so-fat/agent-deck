@@ -110,6 +110,13 @@ export class McpSessionBindingStore {
    * without requiring a deck header the headerless host never sends.
    */
   private defaultDeckByMcp = new Set<string>();
+  /**
+   * NOT-604: saved `deckName` from a folder assignment that named a deleted
+   * deck, held per unassigned session so the explain-only reply can name
+   * the missing deck. Set only after the bind fails with no usable
+   * default; cleared on any bind, promotion, or session teardown.
+   */
+  private missingDeckNameByMcp = new Map<string, string>();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -146,6 +153,7 @@ export class McpSessionBindingStore {
     },
   ): void {
     this.unassignedByMcp.delete(mcpSessionId);
+    this.missingDeckNameByMcp.delete(mcpSessionId);
     this.setTrustedSession(mcpSessionId, input);
     this.launchByMcp.add(mcpSessionId);
   }
@@ -223,6 +231,7 @@ export class McpSessionBindingStore {
     },
   ): void {
     this.unassignedByMcp.delete(mcpSessionId);
+    this.missingDeckNameByMcp.delete(mcpSessionId);
     this.setTrustedSession(mcpSessionId, input);
     this.grantByMcp.set(mcpSessionId, {
       grantId: input.grantId,
@@ -270,7 +279,27 @@ export class McpSessionBindingStore {
     this.pinByMcp.delete(mcpSessionId);
     this.executionWorkspaceByMcp.delete(mcpSessionId);
     this.assignmentByMcp.delete(mcpSessionId);
+    this.missingDeckNameByMcp.delete(mcpSessionId);
     this.unassignedByMcp.add(mcpSessionId);
+  }
+
+  /**
+   * NOT-604: record the saved `deckName` of a folder assignment that named
+   * a deleted deck, so the explain-only reply can name it. Called only
+   * after `markUnassigned`, when no usable default deck bound the session.
+   * Blank names are dropped, never stored.
+   */
+  setUnassignedMissingDeckName(mcpSessionId: string, deckName: string | undefined): void {
+    const trimmed = deckName?.trim();
+    if (!trimmed) {
+      this.missingDeckNameByMcp.delete(mcpSessionId);
+      return;
+    }
+    this.missingDeckNameByMcp.set(mcpSessionId, trimmed);
+  }
+
+  getUnassignedMissingDeckName(mcpSessionId: string): string | undefined {
+    return this.missingDeckNameByMcp.get(mcpSessionId);
   }
 
   /**
@@ -290,6 +319,7 @@ export class McpSessionBindingStore {
     },
   ): void {
     this.unassignedByMcp.delete(mcpSessionId);
+    this.missingDeckNameByMcp.delete(mcpSessionId);
     this.setTrustedSession(mcpSessionId, input);
     this.assignmentByMcp.add(mcpSessionId);
   }
@@ -398,6 +428,7 @@ export class McpSessionBindingStore {
     this.useManifestByMcp.delete(sessionId);
     this.assignmentByMcp.delete(sessionId);
     this.defaultDeckByMcp.delete(sessionId);
+    this.missingDeckNameByMcp.delete(sessionId);
   }
 
   getWorkspace(sessionId: string): string | undefined {

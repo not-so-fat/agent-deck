@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fix: a folder assignment to a deleted deck falls through to the default deck (NOT-604)
+
+- A local MCP session whose folder assignment (`.agent-deck/use.json`) names a deck that no longer exists now resolves as if the folder had no assignment: it binds the user default deck when one is set, instead of landing in the explain-only unassigned session. A launch deck header naming a deleted deck still fails closed, and the assignment file is never rewritten.
+- With no usable default deck, the session stays explain-only and the `GRANT_REQUIRED` reply names the missing deck by its saved `deckName`, so the user can see which assignment went stale.
+
+### Fix: `agent-deck stop` never stops another home's daemon (NOT-605)
+
+- `runStop` now terminates only the supervisor and listeners recorded in the current home's `run.json`. The port-listener fallback runs only for listeners whose process environment or `/health` identity reports the same `AGENT_DECK_HOME`; otherwise it prints that the daemon on those ports belongs to another home and exits 0 without signalling it. This fixes an isolated-home `stop` SIGTERMing the production daemon on `:1110`/`:1111`.
+
 ### Change: `doctor` says which deck source a folder would use (NOT-602)
 
 - `agent-deck doctor` prints `Deck source: <launch header | folder assignment | default deck | none> (<name>)` for the current folder, using the same precedence the daemon binds with (launch deck header, then the v3 folder assignment, then the user default deck). A folder with no assignment and no default says `none` and names the `agent-deck default <deck>` remedy instead of hiding behind `Issues: none`.

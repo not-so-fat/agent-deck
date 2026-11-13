@@ -418,3 +418,248 @@ describe('headerless sessions bind the user default deck (NOT-600)', () => {
     expect(readDefaultDeck()?.deckId).toBe(deckA.id);
   });
 });
+
+describe('deleted folder assignment falls through to the default deck (NOT-604)', () => {
+  const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
+  const tmpDirs: string[] = [];
+  let mcpServer: AgentDeckMCPServer | undefined;
+  let previousSkipDeckHeader: string | undefined;
+  let previousSkipAdmin: string | undefined;
+  let previousStubSync: string | undefined;
+  let previousHome: string | undefined;
+
+  const DELETED_DECK_ID = '99999999-9999-4999-8999-999999999999';
+
+  beforeEach(() => {
+    previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    previousHome = process.env.AGENT_DECK_HOME;
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
+    process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
+    process.env.AGENT_DECK_STUB_SYNC = 'off';
+  });
+
+  afterEach(async () => {
+    if (mcpServer) {
+      await mcpServer.stop();
+      mcpServer = undefined;
+    }
+    while (servers.length) {
+      await servers.pop()?.close();
+    }
+    while (tmpDirs.length) {
+      fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
+    }
+    if (previousSkipDeckHeader === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipDeckHeader;
+    }
+    if (previousSkipAdmin === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = previousSkipAdmin;
+    }
+    if (previousStubSync === undefined) {
+      delete process.env.AGENT_DECK_STUB_SYNC;
+    } else {
+      process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
+    }
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
+    }
+  });
+
+  function useIsolatedHome(): void {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not604-home-'));
+    tmpDirs.push(dir);
+    process.env.AGENT_DECK_HOME = dir;
+  }
+
+  function makeWorkspace(assignment?: { deckId: string; deckName: string }): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not604-ws-'));
+    tmpDirs.push(dir);
+    if (assignment) {
+      fs.mkdirSync(path.join(dir, '.agent-deck'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, '.agent-deck', 'use.json'),
+        JSON.stringify({ version: 3, deckId: assignment.deckId, deckName: assignment.deckName }),
+      );
+    }
+    return dir;
+  }
+
+  function readAssignment(dir: string): { deckId: string; deckName: string } {
+    return JSON.parse(fs.readFileSync(path.join(dir, '.agent-deck', 'use.json'), 'utf8'));
+  }
+
+  async function buildListeningBackend() {
+    const db = new DatabaseManager(':memory:');
+    const deckA = await db.createDeck({ name: 'alpha' });
+    const deckB = await db.createDeck({ name: 'beta' });
+
+    const store = new TrustedSessionStore(db.getSqliteDatabase());
+
+    const fastify = Fastify();
+    fastify.decorate('db', db);
+    fastify.decorate('trustedSessionStore', store);
+    fastify.decorate('serviceManager', {
+      discoverServiceTools: async () => [],
+      callServiceTool: async () => ({ success: true, result: {} }),
+      getAllServices: async () => [],
+      getService: async () => null,
+      updateToolSettings: async () => null,
+    } as unknown as ServiceManager);
+    fastify.decorate('credentialManager', {
+      get: async () => null,
+      listForDeck: async () => [],
+      isCredentialOnDeck: async () => false,
+      applySecretStatus: async (credentials: unknown[]) => credentials,
+    });
+    fastify.decorate('playbookManager', {
+      getWithDependencies: async () => null,
+      listSummariesForDeck: async () => [],
+      listForDeck: async () => [],
+      isPlaybookOnDeck: async () => false,
+    });
+    fastify.decorate('patchManager', {
+      listOpenPatchSummaries: async () => [],
+      snapshotVersion: async () => {},
+    });
+    fastify.decorate('broadcastServiceUpdate', () => {});
+    fastify.decorate('storeWriter', { writeDeck: async () => {} });
+
+    registerHttpPolicyHook(fastify);
+    await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
+    await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
+    await fastify.register(registerCredentialRoutes, { prefix: '/api/credentials' });
+    await fastify.register(registerDeckRoutes, {
+      prefix: '/api/decks',
+      storeWriter: { writeDeck: async () => {} },
+    });
+    await fastify.register(registerDefaultDeckRoutes, { prefix: '/api' });
+    await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+    await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
+    await fastify.listen({ port: 0, host: '127.0.0.1' });
+    servers.push(fastify);
+
+    const address = fastify.server.address();
+    const backendPort =
+      typeof address === 'object' && address && 'port' in address ? address.port : 0;
+
+    return {
+      backendUrl: `http://127.0.0.1:${backendPort}`,
+      db,
+      deckA,
+      deckB,
+      store,
+    };
+  }
+
+  async function setDefaultDeck(backendUrl: string, store: TrustedSessionStore, deckId: string) {
+    const response = await fetch(`${backendUrl}/api/default-deck`, {
+      method: 'PUT',
+      headers: {
+        ...dashboardAuthHeaders(store),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ deckId }),
+    });
+    expect(response.status).toBe(200);
+  }
+
+  it('binds the default deck when the folder assignment names a deleted deck', async () => {
+    const { backendUrl, deckA, store } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+    useIsolatedHome();
+
+    await setDefaultDeck(backendUrl, store, deckA.id);
+
+    const workspace = makeWorkspace({ deckId: DELETED_DECK_ID, deckName: 'gone' });
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: workspace };
+    const sessionId = await openSession(started.port, 1, headers);
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_context',
+      {},
+      2,
+      headers,
+    );
+    expect(context.isError).toBe(false);
+    expect(context.data.effective_deck_id).toBe(deckA.id);
+    expect(context.data.effective_deck_name).toBe('alpha');
+    expect(context.data.active_source).toBe('default-deck');
+
+    // Non-goal: the fallthrough never rewrites the folder assignment.
+    expect(readAssignment(workspace)).toMatchObject({ deckId: DELETED_DECK_ID, deckName: 'gone' });
+  });
+
+  it('stays explain-only and names the missing deck when no default deck is set', async () => {
+    const { backendUrl } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+    useIsolatedHome();
+    expect(readDefaultDeck()).toBeNull();
+
+    const workspace = makeWorkspace({ deckId: DELETED_DECK_ID, deckName: 'gone' });
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: workspace };
+    const init = await postInitialize(started.port, 1, 'vitest', headers);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const names = (await listTools(started.port, sessionId!, 2, headers)).map(
+      (tool) => tool.name,
+    );
+    expect(names.sort()).toEqual([
+      'get_session_binding',
+      'get_session_context',
+      'request_deck_assignment',
+    ]);
+
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId!,
+      'get_session_context',
+      {},
+      3,
+      headers,
+    );
+    expect(context.isError).toBe(true);
+    expect(context.data.error_code).toBe('GRANT_REQUIRED');
+    expect(String(context.data.message ?? '')).toContain('gone');
+
+    // The dangling assignment file is left in place.
+    expect(readAssignment(workspace)).toMatchObject({ deckId: DELETED_DECK_ID, deckName: 'gone' });
+  });
+
+  it('keeps the folder assignment when it names an existing deck', async () => {
+    const { backendUrl, deckA, deckB, store } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+    useIsolatedHome();
+
+    await setDefaultDeck(backendUrl, store, deckA.id);
+
+    const workspace = makeWorkspace({ deckId: deckB.id, deckName: deckB.name });
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: workspace };
+    const sessionId = await openSession(started.port, 1, headers);
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_context',
+      {},
+      2,
+      headers,
+    );
+    expect(context.isError).toBe(false);
+    expect(context.data.effective_deck_id).toBe(deckB.id);
+    expect(context.data.effective_deck_name).toBe('beta');
+    expect(context.data.active_source).not.toBe('default-deck');
+  });
+});

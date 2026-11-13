@@ -1818,14 +1818,19 @@ describe('folder-assignment deck binding (NOT-562)', () => {
   let previousSkipDeckHeader: string | undefined;
   let previousSkipAdmin: string | undefined;
   let previousStubSync: string | undefined;
+  let previousHome: string | undefined;
 
   beforeEach(() => {
     previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    previousHome = process.env.AGENT_DECK_HOME;
     process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
     process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     process.env.AGENT_DECK_STUB_SYNC = 'off';
+    // NOT-604: an ambient user default must not steer these folder-only cases.
+    process.env.AGENT_DECK_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'not562-nohome-'));
+    workspaces.push(process.env.AGENT_DECK_HOME);
   });
 
   afterEach(async () => {
@@ -1853,6 +1858,11 @@ describe('folder-assignment deck binding (NOT-562)', () => {
       delete process.env.AGENT_DECK_STUB_SYNC;
     } else {
       process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
+    }
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
     }
   });
 
@@ -2051,6 +2061,8 @@ describe('folder-assignment deck binding (NOT-562)', () => {
     const context = await callToolMcpResult(port, sessionId!, 'get_session_context', {}, 3, headers);
     expect(context.isError).toBe(true);
     expect(context.data.error_code).toBe('GRANT_REQUIRED');
+    // NOT-604: with no default deck to fall through to, the reply names the missing deck.
+    expect(String(context.data.message ?? '')).toContain('gone');
     // The failed bind leaves no partial runtime session behind.
     expect(runtimeSessionCount(db)).toBe(0);
   });
@@ -2161,6 +2173,7 @@ describe('stale session recovery (NOT-569)', () => {
   let previousStubSync: string | undefined;
   let previousBearerFlag: string | undefined;
   let previousHostedFlag: string | undefined;
+  let previousHome: string | undefined;
 
   beforeEach(() => {
     previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
@@ -2168,11 +2181,15 @@ describe('stale session recovery (NOT-569)', () => {
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
     previousBearerFlag = process.env[MCP_REQUIRE_BEARER_ENV_VAR];
     previousHostedFlag = process.env.AGENT_DECK_HOSTED_MODE;
+    previousHome = process.env.AGENT_DECK_HOME;
     process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
     process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     process.env.AGENT_DECK_STUB_SYNC = 'off';
     delete process.env[MCP_REQUIRE_BEARER_ENV_VAR];
     delete process.env.AGENT_DECK_HOSTED_MODE;
+    // NOT-604: an ambient user default must not steer recovery 404 cases.
+    process.env.AGENT_DECK_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'not569-nohome-'));
+    workspaces.push(process.env.AGENT_DECK_HOME);
   });
 
   afterEach(async () => {
@@ -2214,6 +2231,11 @@ describe('stale session recovery (NOT-569)', () => {
       delete process.env.AGENT_DECK_HOSTED_MODE;
     } else {
       process.env.AGENT_DECK_HOSTED_MODE = previousHostedFlag;
+    }
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
     }
   });
 
