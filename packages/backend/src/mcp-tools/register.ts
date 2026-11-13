@@ -476,11 +476,14 @@ function describeBindingDisplay(
   // names: use.json deckName goes stale after a deck rename (heal only
   // runs on bind/switch), and two decks can share a name. Passing the
   // explicit sessionOverride keeps display_summary and active_source from
-  // contradicting each other.
+  // contradicting each other. The default-deck marker (NOT-601) likewise
+  // follows the id-based source: a default-deck session names the silent
+  // fallback, every other source renders exactly as before.
   const displaySummary = formatDisplayLine(activeDeckName, cardCounts, {
     badge,
     workspaceDefaultName: workspaceDefault?.deckName ?? null,
     sessionOverride: activeSource === 'session',
+    defaultDeck: activeSource === 'default-deck',
   });
   return { snapshot, displaySummary, workspaceDefault, activeDeckId, activeDeckName, activeSource };
 }
