@@ -97,6 +97,7 @@ describe('get_session_binding active vs workspace default (NOT-211)', () => {
     expect(data.active_source).toBe('session');
     expect(String(data.display_summary)).toContain('beta');
     expect(String(data.display_summary)).toContain('session (default alpha)');
+    expect(String(data.display_summary)).not.toContain('default deck');
     // Legacy fields stay compatible.
     expect(data.effective_deck_id).toBe(DECK_B);
     expect(data.effective_deck_name).toBe('beta');
@@ -120,6 +121,7 @@ describe('get_session_binding active vs workspace default (NOT-211)', () => {
     expect(data.active_source).toBe('workspace');
     expect(data.workspace_default_deck_id).toBe(DECK_B);
     expect(String(data.display_summary)).not.toContain('session (default');
+    expect(String(data.display_summary)).not.toContain('default deck');
   });
 
   it('reports launch source with explicit null default and no assignment file', async () => {
@@ -141,6 +143,7 @@ describe('get_session_binding active vs workspace default (NOT-211)', () => {
     expect(data.workspace_default_deck_name).toBeNull();
     expect(data.active_source).toBe('launch');
     expect(String(data.display_summary)).not.toContain('session (default');
+    expect(String(data.display_summary)).not.toContain('default deck');
   });
 
   it('shows no marker when use.json deckName is stale but ids are equal', async () => {
@@ -184,5 +187,30 @@ describe('get_session_binding active vs workspace default (NOT-211)', () => {
     expect(data.active_source).toBe('session');
     expect(data.workspace_default_deck_id).toBe(DECK_A);
     expect(String(data.display_summary)).toContain('session (default beta)');
+  });
+
+  it('reports default-deck source with the no-folder-pin marker exactly once (NOT-601)', async () => {
+    const workspaceRoot = makeWorkspaceRoot();
+    const { handlers, sessionBinding } = setupHost({
+      scopeDeck: { id: DECK_B, name: 'beta' },
+      badge: 'fox',
+    });
+    sessionBinding.setLaunchSession('s1', {
+      runtimeSessionId: 'ses_default',
+      deckId: DECK_B,
+      workspaceRoot,
+      mode: 'normal',
+    });
+    sessionBinding.markDefaultDeckSession('s1');
+    expect(fs.existsSync(path.join(workspaceRoot, '.agent-deck', 'use.json'))).toBe(false);
+
+    const data = await callBinding(handlers);
+    expect(data.active_source).toBe('default-deck');
+    expect(data.workspace_default_deck_id).toBeNull();
+    const summary = String(data.display_summary);
+    expect(summary).toContain('beta');
+    expect(summary.endsWith('default deck, no folder pin')).toBe(true);
+    expect(summary.split('default deck, no folder pin')).toHaveLength(2);
+    expect(summary).not.toContain('session (default');
   });
 });

@@ -181,10 +181,25 @@ export type DisplayLineOptions = {
    * saved file name is stale after a deck rename.
    */
   sessionOverride?: boolean;
+  /**
+   * Default-deck marker (NOT-601): the session bound to the user default
+   * deck because no folder pin resolved. Rendered as the trailing
+   * ` · default deck, no folder pin` suffix so the silent fallback is
+   * distinguishable from a pinned folder on the first turn. Never combined
+   * with the session-override marker (a default-deck session has no saved
+   * workspace default to override against).
+   */
+  defaultDeck?: boolean;
 };
 
 export const SESSION_OVERRIDE_MARKER_PREFIX = ' · session (default ';
 export const SESSION_OVERRIDE_MARKER_SUFFIX = ')';
+
+/**
+ * Default-deck fallback marker (NOT-601), appended after the existing
+ * fields when the session bound to the user default deck with no folder pin.
+ */
+export const DEFAULT_DECK_MARKER_SUFFIX = ' · default deck, no folder pin';
 
 /**
  * Decide which workspace-default name to show in the session-override marker
@@ -242,6 +257,7 @@ export function formatDisplayLine(
   const sessionCount = options?.sessionCount ?? 0;
   const sessionsSuffix = sessionCount >= 2 ? ` · ${sessionCount} sessions` : '';
   const workspaceDefaultSuffix = options?.workspaceDefault ? ' · workspace default' : '';
+  const defaultDeckSuffix = options?.defaultDeck ? DEFAULT_DECK_MARKER_SUFFIX : '';
   // Room for the override marker is reserved before truncating the active
   // name, so a real session override stays visible within the budget.
   const overrideDefault = resolveSessionOverrideDefault(
@@ -260,7 +276,8 @@ export function formatDisplayLine(
       mcpSuffix.length +
       badgeSuffix.length +
       sessionsSuffix.length +
-      workspaceDefaultSuffix.length;
+      workspaceDefaultSuffix.length +
+      defaultDeckSuffix.length;
     const maxMarkerLength = DISPLAY_LINE_MAX_LENGTH - otherFixedLength - 1;
     if (fullMarker.length <= maxMarkerLength) {
       marker = fullMarker;
@@ -277,6 +294,7 @@ export function formatDisplayLine(
     badgeSuffix.length +
     sessionsSuffix.length +
     workspaceDefaultSuffix.length +
+    defaultDeckSuffix.length +
     marker.length;
   const fixedLength = prefix.length + separator.length + countsPart.length + suffixLength;
   const maxNameLength = DISPLAY_LINE_MAX_LENGTH - fixedLength;
@@ -285,7 +303,7 @@ export function formatDisplayLine(
   if (maxNameLength < 1) {
     // No room for the active name: drop it, then shrink the marker's default
     // name to fit rather than losing the override entirely.
-    const lineless = `${prefix}${countsPart}${badgeSuffix}${mcpSuffix}${sessionsSuffix}${workspaceDefaultSuffix}${updatedSuffix}`;
+    const lineless = `${prefix}${countsPart}${badgeSuffix}${mcpSuffix}${sessionsSuffix}${workspaceDefaultSuffix}${updatedSuffix}${defaultDeckSuffix}`;
     if (!marker) {
       return boundDisplayLine(lineless);
     }
@@ -306,7 +324,7 @@ export function formatDisplayLine(
         : name.slice(0, Math.max(0, maxNameLength));
   }
 
-  return `${prefix}${name}${separator}${countsPart}${badgeSuffix}${mcpSuffix}${sessionsSuffix}${workspaceDefaultSuffix}${updatedSuffix}${marker}`;
+  return `${prefix}${name}${separator}${countsPart}${badgeSuffix}${mcpSuffix}${sessionsSuffix}${workspaceDefaultSuffix}${updatedSuffix}${defaultDeckSuffix}${marker}`;
 }
 
 /**

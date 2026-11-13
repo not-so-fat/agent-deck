@@ -245,6 +245,51 @@ describe('deck-display', () => {
     });
   });
 
+  describe('formatDisplayLine default-deck marker (NOT-601)', () => {
+    const counts = { mcp: 1, credentials: 0, playbooks: 14 };
+
+    it('appends the marker exactly once after the existing fields', () => {
+      const line = formatDisplayLine('planner', counts, { badge: 's163', defaultDeck: true });
+      expect(line).toBe(
+        '◆ planner · 1 MCP · 0 keys · 14 playbooks · ⌘s163 · default deck, no folder pin',
+      );
+      expect(line.endsWith('default deck, no folder pin')).toBe(true);
+      expect(line.split('default deck, no folder pin')).toHaveLength(2);
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+      expect(line).not.toContain('\n');
+    });
+
+    it('omits the marker for folder-assigned, launch-selected and session-override receipts', () => {
+      // Folder assignment (workspace source) and launch header (launch
+      // source) render the plain receipt; a session override renders only
+      // the override marker. None names the default deck.
+      expect(formatDisplayLine('beta', counts)).not.toContain('default deck');
+      expect(formatDisplayLine('beta', counts, { badge: 'fox' })).not.toContain('default deck');
+      expect(
+        formatDisplayLine('beta', counts, { workspaceDefaultName: 'alpha' }),
+      ).not.toContain('default deck');
+      expect(
+        formatDisplayLine('beta', counts, { defaultDeck: false }),
+      ).not.toContain('default deck');
+    });
+
+    it('truncates a long deck name instead of dropping the marker', () => {
+      const line = formatDisplayLine('P'.repeat(200), counts, { defaultDeck: true });
+      expect(line.length).toBeLessThanOrEqual(DISPLAY_LINE_MAX_LENGTH);
+      expect(line.endsWith('default deck, no folder pin')).toBe(true);
+      expect(line.split('default deck, no folder pin')).toHaveLength(2);
+    });
+
+    it('omits the marker when unbound or offline even with the flag set', () => {
+      expect(
+        formatDisplayLine(null, counts, { defaultDeck: true }),
+      ).toBe('◆ Unbound — bind a deck to use Agent Deck');
+      expect(
+        formatDisplayLine('planner', counts, { offline: true, defaultDeck: true }),
+      ).toBe('◆ Agent Deck offline');
+    });
+  });
+
   describe('formatDisplayLine multi-session (NOT-296)', () => {
     const counts = { mcp: 1, credentials: 0, playbooks: 2 };
 
