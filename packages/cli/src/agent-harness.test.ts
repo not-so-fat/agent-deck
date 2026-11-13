@@ -47,9 +47,11 @@ describe('agent-harness templates', () => {
     expect(file).toContain('Checking for the optional assignment signal');
     expect(file).toContain('do not improvise without the deck');
     expect(file).toContain('for every match before taking task action');
-    expect(file).toContain('host transport, folder assignment, then session bootstrap');
+    expect(file).toContain('host transport, then session bootstrap');
+    expect(file).toContain('no per-folder setup');
     expect(file).toContain('pure MCP (streamable HTTP)');
-    expect(file).toContain('trust the folder, approve the project agent-deck entry');
+    expect(file).toContain('trust the folder');
+    expect(file).not.toContain('approve the project agent-deck entry');
     expect(file).not.toContain('mcp-launch');
     expect(file).toContain('agent-deck setup --client codex');
     expect(file).toContain('does not install the plugin');
@@ -66,7 +68,7 @@ describe('agent-harness templates', () => {
     expect(file).not.toContain('weekly priority');
   });
 
-  it('NOT-567: harness teaches the pure-MCP Cursor connection with the three recovery steps', () => {
+  it('NOT-567/NOT-603: harness teaches the pure-MCP connection with no per-folder setup', () => {
     const texts = [
       buildCursorHarnessFile('global'),
       buildCursorHarnessFile('project'),
@@ -75,8 +77,13 @@ describe('agent-harness templates', () => {
     for (const text of texts) {
       expect(text).toContain('Codex, Claude Code, and Cursor connect over pure MCP');
       expect(text).toContain('agent-deck setup --client codex|claude|cursor');
-      expect(text).toContain('approve the project agent-deck entry');
+      expect(text).toContain("binds to the user's default deck");
+      expect(text).toContain('stays valid and keeps precedence');
+      expect(text).toContain('no new pin is needed');
       expect(text).toContain('agent-deck use <deck>');
+      // NOT-603: pins are described as valid-but-unneeded, never as a connection step.
+      expect(text).not.toContain('approve the project agent-deck entry');
+      expect(text).not.toContain('tell the user to run `agent-deck use <deck>`');
       expect(text).not.toContain('Cursor users configure transport');
       expect(text).not.toContain('mcp-launch');
     }
@@ -97,7 +104,8 @@ describe('agent-harness templates', () => {
       expect(text).toContain('agent-deck setup --client codex|claude|cursor|muse');
       expect(text).toContain('trust the folder, then reload MCP (restart Muse)');
       expect(text).toContain('`/mcp` should show agent-deck');
-      expect(text).toContain('unassigned folders land in the explain-only session');
+      expect(text).toContain('no usable default deck lands in the explain-only session');
+      expect(text).toContain('set a default deck (`agent-deck default <deck>`)');
       expect(text).not.toContain('mcp-launch');
     }
   });
@@ -139,10 +147,11 @@ describe('agent-harness templates', () => {
     const claude = buildClaudeHarnessBlock('project');
     for (const text of [cursor, claude]) {
       expect(text).toContain('agent-deck use');
-      // NOT-597: human-approved assignment first, CLI as the fallback.
+      // NOT-603: existing pins stay valid (human-approved assignment or
+      // `agent-deck use`), but no new pin is needed for the connection.
       expect(text).toContain('human-approved');
       expect(text).toContain('request_deck_assignment');
-      expect(text).toContain('launch-selected sessions can be bound without that file');
+      expect(text).toContain('Launch-selected sessions can be bound without that file');
       expect(text).toContain('DECK_FIXED');
       expect(text).toContain('ADMIN_REQUIRED');
       expect(text).toContain('.agent-deck/use.json');
@@ -156,7 +165,7 @@ describe('agent-harness templates', () => {
     }
   });
 
-  it('NOT-234: GRANT_REQUIRED guidance names both messages with differing remedies', () => {
+  it('NOT-234/NOT-603: GRANT_REQUIRED guidance names both messages with differing remedies', () => {
     const texts = [
       buildCursorHarnessFile('global'),
       buildCursorHarnessFile('project'),
@@ -166,15 +175,43 @@ describe('agent-harness templates', () => {
     ];
     for (const text of texts) {
       expect(text).toContain('GRANT_REQUIRED');
-      // Unassigned folder keeps the CLI-and-reload remedy, then stop.
+      // Unassigned session: request_deck_assignment first; the CLI fallback
+      // sets a default deck (NOT-603), never a folder pin. `agent-deck use`
+      // stays only as the descriptive writer of existing pins.
       expect(text).toContain('No deck assigned to this folder');
+      expect(text).toContain('no usable default deck');
+      expect(text).toContain('request_deck_assignment');
+      expect(text).toContain('agent-deck default <deck>');
       expect(text).toContain('agent-deck use <deck>');
+      expect(text).not.toContain('tell the user to run `agent-deck use <deck>`');
+      // A default-bound session moves with switch_deck, never request_deck_assignment.
+      expect(text).toContain('moves with `switch_deck`, never `request_deck_assignment`');
       // Not-yet-bound session retries once via bind, with no CLI step.
       expect(text).toContain('has not bound yet');
       expect(text).toContain('get_session_binding');
       expect(text).toContain('then retry `switch_deck`');
       expect(text).toContain('no CLI step');
       expect(text).toContain('stop only if that retry also fails');
+    }
+  });
+
+  it('NOT-603: unpinned sessions bind to the default deck; pins stay valid but unneeded', () => {
+    const texts = [
+      buildCursorHarnessFile('global'),
+      buildCursorHarnessFile('project'),
+      buildClaudeHarnessBlock('global'),
+      buildClaudeHarnessBlock('project'),
+      buildCodexHarnessBlock('global'),
+      buildMuseHarnessBlock('project'),
+    ];
+    for (const text of texts) {
+      expect(text).toContain('no per-folder setup');
+      expect(text).toContain("binds to the user's default deck");
+      expect(text).toContain('stays valid and keeps precedence');
+      expect(text).toContain('no new pin is needed');
+      expect(text).toContain('default deck, no folder pin');
+      expect(text).not.toContain('assign the folder');
+      expect(text).not.toContain('tell the user to run `agent-deck use <deck>`');
     }
   });
 
@@ -219,7 +256,8 @@ describe('agent-harness templates', () => {
     expect(block).toContain('Checking for the optional assignment signal');
     expect(block).toContain('do not improvise without the deck');
     expect(block).toContain('pure MCP (streamable HTTP)');
-    expect(block).toContain('trust the folder, approve the project agent-deck entry');
+    expect(block).toContain('trust the folder');
+    expect(block).not.toContain('approve the project agent-deck entry');
     expect(block).not.toContain('mcp-launch');
     expect(block).toContain('agent-deck setup --client codex');
     expect(block).toContain('does not install the plugin');
