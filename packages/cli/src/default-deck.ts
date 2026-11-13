@@ -1,6 +1,7 @@
 import {
   clearDefaultDeck,
   readDefaultDeck,
+  readDefaultDeckState,
   writeDefaultDeck,
   type DefaultDeckFile,
 } from '@agent-deck/shared';
@@ -17,6 +18,17 @@ export type DefaultResult = {
   previous: DefaultDeckFile | null;
   current: DefaultDeckFile | null;
   cleared: boolean;
+  /**
+   * NOT-606, show only: `default-deck.json` exists but is corrupt or an
+   * unknown version. `current` stays null; this carries the path for the
+   * message. Exit code stays 0 — the file is reported, not an error.
+   */
+  unreadablePath?: string;
+  /**
+   * NOT-606, show only: the saved deck id is no longer in the store.
+   * `current` still carries the saved record (name is display-only).
+   */
+  currentMissing?: boolean;
 };
 
 export type DefaultDeps = {
@@ -66,7 +78,38 @@ export async function runDefault(
   }
 
   if (!parsed.deckRef) {
-    return { action: 'show', previous, current: previous, cleared: false };
+    // NOT-606: a saved default that is corrupt or names a deleted deck is
+    // reported, not silently treated as no default. The store check is
+    // show-only; set/clear keep their existing behaviour.
+    const state = readDefaultDeckState();
+    if (state.status === 'unreadable') {
+      return {
+        action: 'show',
+        previous: null,
+        current: null,
+        cleared: false,
+        unreadablePath: state.path,
+      };
+    }
+    if (state.status === 'none') {
+      return { action: 'show', previous: null, current: null, cleared: false };
+    }
+    const stored = await deps.resolveDeck(state.deck.deckId);
+    if (!stored) {
+      return {
+        action: 'show',
+        previous: state.deck,
+        current: state.deck,
+        cleared: false,
+        currentMissing: true,
+      };
+    }
+    return {
+      action: 'show',
+      previous: state.deck,
+      current: state.deck,
+      cleared: false,
+    };
   }
 
   const deck = await deps.resolveDeck(parsed.deckRef);
@@ -83,9 +126,15 @@ export function formatDefaultResult(result: DefaultResult): string {
       ? 'Default deck cleared.'
       : 'No default deck was set.';
   }
+  if (result.unreadablePath) {
+    return `Default deck file is unreadable: ${result.unreadablePath}`;
+  }
   const current = result.current;
   if (!current) {
     return 'No default deck set.';
+  }
+  if (result.currentMissing) {
+    return `Default deck: ${current.deckName} (deck no longer exists, run agent-deck default <deck>)`;
   }
   const prefix = result.action === 'set' ? 'Default deck set to' : 'Default deck:';
   return `${prefix} ${current.deckName} (${current.deckId})`;

@@ -27,34 +27,58 @@ export function resolveDefaultDeckPath(): string {
 }
 
 /**
- * Read the user default deck, or null when there is none. A missing file, an
- * unreadable file, corrupt JSON, or a wrong-shaped manifest all mean "no
- * default" — like `readUseManifest` returning null. Never throws for file
- * content (an unresolvable home still throws, as everywhere).
+ * NOT-606: three-state read of the user default deck, so callers can tell
+ * "never set" apart from "set but broken". `none` means no file; `ok`
+ * carries the validated record; `unreadable` means the file exists but
+ * cannot be used (read error, corrupt JSON, unknown version, or a
+ * wrong-shaped/blank record) and carries the path for the error message.
  */
-export function readDefaultDeck(): DefaultDeckFile | null {
+export type DefaultDeckReadState =
+  | { status: 'none' }
+  | { status: 'ok'; deck: DefaultDeckFile }
+  | { status: 'unreadable'; path: string };
+
+export function readDefaultDeckState(): DefaultDeckReadState {
+  const target = resolveDefaultDeckPath();
   let raw: string;
   try {
-    raw = fs.readFileSync(resolveDefaultDeckPath(), 'utf8');
-  } catch {
-    return null;
+    raw = fs.readFileSync(target, 'utf8');
+  } catch (error) {
+    // A missing file means "never set"; any other read failure means the
+    // default exists but cannot be read.
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return { status: 'none' };
+    }
+    return { status: 'unreadable', path: target };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null;
+    return { status: 'unreadable', path: target };
   }
   const validated = DefaultDeckFileSchema.safeParse(parsed);
   if (!validated.success) {
-    return null;
+    return { status: 'unreadable', path: target };
   }
   const deckId = validated.data.deckId.trim();
   const deckName = validated.data.deckName.trim();
   if (!deckId || !deckName) {
-    return null;
+    return { status: 'unreadable', path: target };
   }
-  return { ...validated.data, deckId, deckName };
+  return { status: 'ok', deck: { ...validated.data, deckId, deckName } };
+}
+
+/**
+ * Read the user default deck, or null when there is none. A missing file, an
+ * unreadable file, corrupt JSON, or a wrong-shaped manifest all mean "no
+ * default" — like `readUseManifest` returning null. Never throws for file
+ * content (an unresolvable home still throws, as everywhere). Callers that
+ * need to tell "never set" from "set but broken" use `readDefaultDeckState`.
+ */
+export function readDefaultDeck(): DefaultDeckFile | null {
+  const state = readDefaultDeckState();
+  return state.status === 'ok' ? state.deck : null;
 }
 
 /**

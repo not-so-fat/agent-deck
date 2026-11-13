@@ -12,6 +12,7 @@ import {
   type PlaybookPin,
 } from '@agent-deck/shared';
 import type { ClientPrincipal } from './auth/client-grants';
+import type { UnassignedDefaultDeckIssue } from './mcp-unassigned';
 
 export type DeckBindingSource =
   | 'session_override'
@@ -117,6 +118,13 @@ export class McpSessionBindingStore {
    * default; cleared on any bind, promotion, or session teardown.
    */
   private missingDeckNameByMcp = new Map<string, string>();
+  /**
+   * NOT-606: why the user default deck did not apply to an unassigned
+   * session (saved deck deleted, or `default-deck.json` unreadable), held
+   * per unassigned session so the explain-only reply can name it. Set only
+   * after `markUnassigned`; cleared on any bind, promotion, or teardown.
+   */
+  private defaultDeckIssueByMcp = new Map<string, UnassignedDefaultDeckIssue>();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -154,6 +162,7 @@ export class McpSessionBindingStore {
   ): void {
     this.unassignedByMcp.delete(mcpSessionId);
     this.missingDeckNameByMcp.delete(mcpSessionId);
+    this.defaultDeckIssueByMcp.delete(mcpSessionId);
     this.setTrustedSession(mcpSessionId, input);
     this.launchByMcp.add(mcpSessionId);
   }
@@ -232,6 +241,7 @@ export class McpSessionBindingStore {
   ): void {
     this.unassignedByMcp.delete(mcpSessionId);
     this.missingDeckNameByMcp.delete(mcpSessionId);
+    this.defaultDeckIssueByMcp.delete(mcpSessionId);
     this.setTrustedSession(mcpSessionId, input);
     this.grantByMcp.set(mcpSessionId, {
       grantId: input.grantId,
@@ -280,6 +290,7 @@ export class McpSessionBindingStore {
     this.executionWorkspaceByMcp.delete(mcpSessionId);
     this.assignmentByMcp.delete(mcpSessionId);
     this.missingDeckNameByMcp.delete(mcpSessionId);
+    this.defaultDeckIssueByMcp.delete(mcpSessionId);
     this.unassignedByMcp.add(mcpSessionId);
   }
 
@@ -303,6 +314,26 @@ export class McpSessionBindingStore {
   }
 
   /**
+   * NOT-606: record why the user default deck did not apply to an
+   * unassigned session, so the explain-only reply can name it. Called only
+   * after `markUnassigned`. An undefined issue clears any previous one.
+   */
+  setUnassignedDefaultDeckIssue(
+    mcpSessionId: string,
+    issue: UnassignedDefaultDeckIssue | undefined,
+  ): void {
+    if (!issue) {
+      this.defaultDeckIssueByMcp.delete(mcpSessionId);
+      return;
+    }
+    this.defaultDeckIssueByMcp.set(mcpSessionId, issue);
+  }
+
+  getUnassignedDefaultDeckIssue(mcpSessionId: string): UnassignedDefaultDeckIssue | undefined {
+    return this.defaultDeckIssueByMcp.get(mcpSessionId);
+  }
+
+  /**
    * NOT-597: promote an unassigned session to a human-approved assignment.
    * Clears the unassigned flag (a late deck header must still never
    * promote — only this approval path does) and records the trusted
@@ -320,6 +351,7 @@ export class McpSessionBindingStore {
   ): void {
     this.unassignedByMcp.delete(mcpSessionId);
     this.missingDeckNameByMcp.delete(mcpSessionId);
+    this.defaultDeckIssueByMcp.delete(mcpSessionId);
     this.setTrustedSession(mcpSessionId, input);
     this.assignmentByMcp.add(mcpSessionId);
   }
@@ -429,6 +461,7 @@ export class McpSessionBindingStore {
     this.assignmentByMcp.delete(sessionId);
     this.defaultDeckByMcp.delete(sessionId);
     this.missingDeckNameByMcp.delete(sessionId);
+    this.defaultDeckIssueByMcp.delete(sessionId);
   }
 
   getWorkspace(sessionId: string): string | undefined {
