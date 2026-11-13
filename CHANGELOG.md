@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fix: a deleted or unreadable default deck is reported, not silently treated as no default (NOT-606)
+
+- `agent-deck default` with no argument now says so when the saved default is broken: `Default deck: <name> (deck no longer exists, run agent-deck default <deck>)` when the saved deck id is no longer in the store, and `Default deck file is unreadable: <path>` when `default-deck.json` is corrupt or an unknown version. The exit code stays 0, and the file is never auto-cleared or rewritten.
+- A headerless session that lands in the explain-only unassigned session because no default applied now gets one sentence naming the reason: the missing default deck, or the unreadable `default-deck.json` path. Sessions with no default file see the unchanged message.
+- The shared reader gains `readDefaultDeckState` (`none` / `ok` / `unreadable`) so callers can tell "never set" from "set but broken"; `readDefaultDeck` keeps its null result.
+
 ### Fix: a folder assignment to a deleted deck falls through to the default deck (NOT-604)
 
 - A local MCP session whose folder assignment (`.agent-deck/use.json`) names a deck that no longer exists now resolves as if the folder had no assignment: it binds the user default deck when one is set, instead of landing in the explain-only unassigned session. A launch deck header naming a deleted deck still fails closed, and the assignment file is never rewritten.

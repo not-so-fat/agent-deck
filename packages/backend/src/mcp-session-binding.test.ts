@@ -153,6 +153,53 @@ describe('McpSessionBindingStore', () => {
     store.clearSession('s4');
     expect(store.getUnassignedMissingDeckName('s4')).toBeUndefined();
   });
+
+  it('holds the default-deck issue only on unassigned sessions (NOT-606)', () => {
+    const store = new McpSessionBindingStore();
+    expect(store.getUnassignedDefaultDeckIssue('s1')).toBeUndefined();
+
+    store.markUnassigned('s1');
+    store.setUnassignedDefaultDeckIssue('s1', { kind: 'missing', deckName: 'alpha' });
+    expect(store.getUnassignedDefaultDeckIssue('s1')).toEqual({
+      kind: 'missing',
+      deckName: 'alpha',
+    });
+
+    store.markUnassigned('s2');
+    store.setUnassignedDefaultDeckIssue('s2', { kind: 'unreadable', path: '/home/x/default-deck.json' });
+    expect(store.getUnassignedDefaultDeckIssue('s2')).toEqual({
+      kind: 'unreadable',
+      path: '/home/x/default-deck.json',
+    });
+
+    // An undefined issue clears.
+    store.setUnassignedDefaultDeckIssue('s2', undefined);
+    expect(store.getUnassignedDefaultDeckIssue('s2')).toBeUndefined();
+
+    // Any bind clears the issue: the session is no longer explain-only.
+    store.setLaunchSession('s1', { runtimeSessionId: 'ses_launch', deckId: 'deck-a' });
+    expect(store.getUnassignedDefaultDeckIssue('s1')).toBeUndefined();
+
+    store.markUnassigned('s3');
+    store.setUnassignedDefaultDeckIssue('s3', { kind: 'missing', deckName: 'alpha' });
+    store.promoteUnassignedToAssignment('s3', {
+      runtimeSessionId: 'ses_rt',
+      deckId: 'deck-a',
+      workspaceRoot: '/tmp/work',
+    });
+    expect(store.getUnassignedDefaultDeckIssue('s3')).toBeUndefined();
+
+    store.markUnassigned('s4');
+    store.setUnassignedDefaultDeckIssue('s4', { kind: 'missing', deckName: 'alpha' });
+    store.clearSession('s4');
+    expect(store.getUnassignedDefaultDeckIssue('s4')).toBeUndefined();
+
+    // Re-marking unassigned drops a stale issue until the new one is set.
+    store.markUnassigned('s5');
+    store.setUnassignedDefaultDeckIssue('s5', { kind: 'missing', deckName: 'alpha' });
+    store.markUnassigned('s5');
+    expect(store.getUnassignedDefaultDeckIssue('s5')).toBeUndefined();
+  });
 });
 
 describe('McpSessionBindingStore playbook pin (NOT-537)', () => {

@@ -17,7 +17,7 @@ import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
 import { SWITCH_BEFORE_BIND_MESSAGE, mcpPolicyError, mcpPolicyErrorWithMessage, requireMcpAdmin, requireMcpDashboard } from './policy';
 import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
-import { unassignedDeckBinding } from '../mcp-unassigned';
+import { unassignedDeckBinding, type UnassignedDefaultDeckIssue } from '../mcp-unassigned';
 import { registerRunTools } from './run-tools';
 
 /** A raw Zod shape, or a whole object schema (`.strict()` rejects unknown fields; NOT-539). */
@@ -79,6 +79,8 @@ export type McpToolHost = {
     getExecutionWorkspace?(sessionId: string): string | undefined;
     /** NOT-604: saved deckName of a folder assignment naming a deleted deck, if this unassigned session holds one. */
     getUnassignedMissingDeckName?(sessionId: string): string | undefined;
+    /** NOT-606: why the user default deck did not apply, if this unassigned session holds one. */
+    getUnassignedDefaultDeckIssue?(sessionId: string): UnassignedDefaultDeckIssue | undefined;
   };
   /**
    * NOT-597: best-effort promotion of an unassigned session whose
@@ -199,6 +201,7 @@ function registerUnassignedTools(host: McpToolHost): void {
       text: JSON.stringify(
         unassignedDeckBinding(
           host.sessionBinding.getUnassignedMissingDeckName?.(host.getSessionId()),
+          host.sessionBinding.getUnassignedDefaultDeckIssue?.(host.getSessionId()),
         ),
         null,
         2,

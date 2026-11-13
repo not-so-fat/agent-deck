@@ -13,7 +13,7 @@ import {
   countDeckCards,
   ensureGitExcluded,
   formatDisplayLine,
-  readDefaultDeck,
+  readDefaultDeckState,
 } from '@agent-deck/shared';
 import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
@@ -93,12 +93,27 @@ function resolveUseManifestDeck(workspaceRoot: string): { deckId: string; deckNa
 /**
  * NOT-600: the user default deck (`$AGENT_DECK_HOME/default-deck.json`),
  * consulted only when no launch deck header and no folder assignment
- * resolve. Returns undefined when no default is set or the file is
- * unusable — a dangling default (deck deleted) still resolves here and
- * degrades to the unassigned flow at bind time, like a dangling manifest.
+ * resolve. Empty when no default is set — a dangling default (deck
+ * deleted) still resolves here and degrades to the unassigned flow at
+ * bind time, like a dangling manifest.
+ *
+ * NOT-606: also surfaces the saved `deckName` and the unreadable-file
+ * path, so the unassigned reply can name a missing or unreadable default
+ * instead of behaving as if no default was ever set.
  */
-function resolveUserDefaultDeckId(): string | undefined {
-  return readDefaultDeck()?.deckId?.trim() || undefined;
+function resolveUserDefaultDeck(): {
+  deckId?: string;
+  deckName?: string;
+  unreadablePath?: string;
+} {
+  const state = readDefaultDeckState();
+  if (state.status === 'ok') {
+    return { deckId: state.deck.deckId, deckName: state.deck.deckName };
+  }
+  if (state.status === 'unreadable') {
+    return { unreadablePath: state.path };
+  }
+  return {};
 }
 
 /**
@@ -490,6 +505,7 @@ export class AgentDeckMCPServer {
     if (unassigned) {
       instructions = unassignedDeckMessage(
         this.sessionBinding.getUnassignedMissingDeckName(sessionId),
+        this.sessionBinding.getUnassignedDefaultDeckIssue(sessionId),
       );
     } else {
       instructions = await this.resolveInitializeInstructions(sessionId);
@@ -2152,6 +2168,10 @@ export class AgentDeckMCPServer {
    * deck falls through to the default at bind time instead of dead-ending
    * in the unassigned flow. `manifestDeckName` carries the saved display
    * name for the unassigned reply when no usable default binds.
+   *
+   * NOT-606: `defaultDeckName` and `defaultUnreadablePath` carry the saved
+   * default display name and the unreadable-file path for the same reply,
+   * so a missing or unreadable default is named when no default applied.
    */
   private resolveHeaderDeck(req: Request): {
     launchDeck: string | undefined;
@@ -2159,6 +2179,8 @@ export class AgentDeckMCPServer {
     manifestDeck: string | undefined;
     manifestDeckName: string | undefined;
     defaultDeck: string | undefined;
+    defaultDeckName: string | undefined;
+    defaultUnreadablePath: string | undefined;
     effectiveDeck: string | undefined;
   } {
     const launchDeck = readLaunchDeckHeader(req);
@@ -2167,13 +2189,18 @@ export class AgentDeckMCPServer {
       !launchDeck && workspaceRoot ? resolveUseManifestDeck(workspaceRoot) : undefined;
     const manifestDeck = manifest?.deckId;
     const manifestDeckName = manifest?.deckName || undefined;
-    const defaultDeck = !launchDeck ? resolveUserDefaultDeckId() : undefined;
+    const userDefault = !launchDeck ? resolveUserDefaultDeck() : undefined;
+    const defaultDeck = userDefault?.deckId;
+    const defaultDeckName = userDefault?.deckName || undefined;
+    const defaultUnreadablePath = userDefault?.unreadablePath;
     return {
       launchDeck,
       workspaceRoot,
       manifestDeck,
       manifestDeckName,
       defaultDeck,
+      defaultDeckName,
+      defaultUnreadablePath,
       effectiveDeck: launchDeck ?? manifestDeck ?? defaultDeck,
     };
   }
@@ -2461,8 +2488,16 @@ export class AgentDeckMCPServer {
     // wins; the manifest is consulted only when it is absent. NOT-600 adds
     // the user default deck as the last resort. Shared with NOT-569
     // recovery so both paths resolve identically.
-    const { launchDeck, workspaceRoot, manifestDeck, manifestDeckName, defaultDeck, effectiveDeck } =
-      this.resolveHeaderDeck(req);
+    const {
+      launchDeck,
+      workspaceRoot,
+      manifestDeck,
+      manifestDeckName,
+      defaultDeck,
+      defaultDeckName,
+      defaultUnreadablePath,
+      effectiveDeck,
+    } = this.resolveHeaderDeck(req);
     const skipDeckHeader = skipDeckHeaderAuth();
     const unassigned = !effectiveDeck && !skipDeckHeader;
 
@@ -2484,8 +2519,10 @@ export class AgentDeckMCPServer {
         // missing deck). NOT-562: the assignment is an opportunistic hint,
         // not a credential, so a bind failure never errors. NOT-600: a
         // dangling user default degrades the same way; the file is left in
-        // place and revalidated on every initialize. The header path below
-        // keeps its fail-closed 401.
+        // place and revalidated on every initialize. NOT-606: the unassigned
+        // reply also names the missing or unreadable default when that is
+        // the reason no default applied. The header path below keeps its
+        // fail-closed 401.
         const canFallThroughToDefault =
           manifestDeck && !launchDeck && defaultDeck && defaultDeck !== manifestDeck;
         if (canFallThroughToDefault) {
@@ -2498,6 +2535,12 @@ export class AgentDeckMCPServer {
               this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
             }
             this.sessionBinding.setUnassignedMissingDeckName(sessionId, manifestDeckName);
+            if (defaultDeckName) {
+              this.sessionBinding.setUnassignedDefaultDeckIssue(sessionId, {
+                kind: 'missing',
+                deckName: defaultDeckName,
+              });
+            }
           }
         } else if ((manifestDeck || defaultDeck) && !launchDeck) {
           this.sessionBinding.markUnassigned(sessionId);
@@ -2506,6 +2549,17 @@ export class AgentDeckMCPServer {
           }
           if (manifestDeck) {
             this.sessionBinding.setUnassignedMissingDeckName(sessionId, manifestDeckName);
+            if (defaultUnreadablePath) {
+              this.sessionBinding.setUnassignedDefaultDeckIssue(sessionId, {
+                kind: 'unreadable',
+                path: defaultUnreadablePath,
+              });
+            }
+          } else if (defaultDeckName) {
+            this.sessionBinding.setUnassignedDefaultDeckIssue(sessionId, {
+              kind: 'missing',
+              deckName: defaultDeckName,
+            });
           }
         } else {
           this.getAuditStore()?.append({
@@ -2530,6 +2584,15 @@ export class AgentDeckMCPServer {
       this.sessionBinding.markUnassigned(sessionId);
       if (workspaceRoot) {
         this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
+      }
+      // NOT-606: no deck resolved at all, but a default-deck.json exists
+      // that cannot be used — name it instead of behaving as if no default
+      // was ever set. With no default file the plain message is unchanged.
+      if (defaultUnreadablePath) {
+        this.sessionBinding.setUnassignedDefaultDeckIssue(sessionId, {
+          kind: 'unreadable',
+          path: defaultUnreadablePath,
+        });
       }
     }
 

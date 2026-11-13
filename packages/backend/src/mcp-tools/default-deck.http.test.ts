@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AGENT_DECK_WORKSPACE_HEADER,
   readDefaultDeck,
+  resolveDefaultDeckPath,
 } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
@@ -414,7 +415,12 @@ describe('headerless sessions bind the user default deck (NOT-600)', () => {
       headers,
     );
     expect(context.isError).toBe(true);
-    expect(context.data).toEqual(unassignedDeckBinding());
+    // NOT-606: still explain-only with the file left in place, but the
+    // reply now names the missing default instead of behaving as if no
+    // default was ever set.
+    expect(context.data).toEqual(
+      unassignedDeckBinding(undefined, { kind: 'missing', deckName: 'alpha' }),
+    );
     expect(readDefaultDeck()?.deckId).toBe(deckA.id);
   });
 });
@@ -661,5 +667,211 @@ describe('deleted folder assignment falls through to the default deck (NOT-604)'
     expect(context.data.effective_deck_id).toBe(deckB.id);
     expect(context.data.effective_deck_name).toBe('beta');
     expect(context.data.active_source).not.toBe('default-deck');
+  });
+});
+
+describe('broken user default deck is named in the unassigned reply (NOT-606)', () => {
+  const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
+  const tmpDirs: string[] = [];
+  let mcpServer: AgentDeckMCPServer | undefined;
+  let previousSkipDeckHeader: string | undefined;
+  let previousSkipAdmin: string | undefined;
+  let previousStubSync: string | undefined;
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    previousHome = process.env.AGENT_DECK_HOME;
+    process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
+    process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
+    process.env.AGENT_DECK_STUB_SYNC = 'off';
+  });
+
+  afterEach(async () => {
+    if (mcpServer) {
+      await mcpServer.stop();
+      mcpServer = undefined;
+    }
+    while (servers.length) {
+      await servers.pop()?.close();
+    }
+    while (tmpDirs.length) {
+      fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
+    }
+    if (previousSkipDeckHeader === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = previousSkipDeckHeader;
+    }
+    if (previousSkipAdmin === undefined) {
+      delete process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
+    } else {
+      process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = previousSkipAdmin;
+    }
+    if (previousStubSync === undefined) {
+      delete process.env.AGENT_DECK_STUB_SYNC;
+    } else {
+      process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
+    }
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
+    }
+  });
+
+  function useIsolatedHome(): void {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not606-home-'));
+    tmpDirs.push(dir);
+    process.env.AGENT_DECK_HOME = dir;
+  }
+
+  function makeWorkspace(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not606-ws-'));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  async function buildListeningBackend() {
+    const db = new DatabaseManager(':memory:');
+    const deckA = await db.createDeck({ name: 'alpha' });
+    const deckB = await db.createDeck({ name: 'beta' });
+
+    const store = new TrustedSessionStore(db.getSqliteDatabase());
+
+    const fastify = Fastify();
+    fastify.decorate('db', db);
+    fastify.decorate('trustedSessionStore', store);
+    fastify.decorate('serviceManager', {
+      discoverServiceTools: async () => [],
+      callServiceTool: async () => ({ success: true, result: {} }),
+      getAllServices: async () => [],
+      getService: async () => null,
+      updateToolSettings: async () => null,
+    } as unknown as ServiceManager);
+    fastify.decorate('credentialManager', {
+      get: async () => null,
+      listForDeck: async () => [],
+      isCredentialOnDeck: async () => false,
+      applySecretStatus: async (credentials: unknown[]) => credentials,
+    });
+    fastify.decorate('playbookManager', {
+      getWithDependencies: async () => null,
+      listSummariesForDeck: async () => [],
+      listForDeck: async () => [],
+      isPlaybookOnDeck: async () => false,
+    });
+    fastify.decorate('patchManager', {
+      listOpenPatchSummaries: async () => [],
+      snapshotVersion: async () => {},
+    });
+    fastify.decorate('broadcastServiceUpdate', () => {});
+    fastify.decorate('storeWriter', { writeDeck: async () => {} });
+
+    registerHttpPolicyHook(fastify);
+    await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
+    await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });
+    await fastify.register(registerCredentialRoutes, { prefix: '/api/credentials' });
+    await fastify.register(registerDeckRoutes, {
+      prefix: '/api/decks',
+      storeWriter: { writeDeck: async () => {} },
+    });
+    await fastify.register(registerDefaultDeckRoutes, { prefix: '/api' });
+    await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+    await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
+    await fastify.listen({ port: 0, host: '127.0.0.1' });
+    servers.push(fastify);
+
+    const address = fastify.server.address();
+    const backendPort =
+      typeof address === 'object' && address && 'port' in address ? address.port : 0;
+
+    return {
+      backendUrl: `http://127.0.0.1:${backendPort}`,
+      db,
+      deckA,
+      deckB,
+      store,
+    };
+  }
+
+  async function setDefaultDeck(backendUrl: string, store: TrustedSessionStore, deckId: string) {
+    const response = await fetch(`${backendUrl}/api/default-deck`, {
+      method: 'PUT',
+      headers: {
+        ...dashboardAuthHeaders(store),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ deckId }),
+    });
+    expect(response.status).toBe(200);
+  }
+
+  it('pure headerless session names a deleted default deck in get_session_context', async () => {
+    const { backendUrl, db, deckA, store } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+    useIsolatedHome();
+
+    await setDefaultDeck(backendUrl, store, deckA.id);
+    expect(await db.deleteDeck(deckA.id)).toBe(true);
+
+    const init = await postInitialize(started.port, 1);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId!,
+      'get_session_context',
+      {},
+      2,
+    );
+    expect(context.isError).toBe(true);
+    expect(context.data.error_code).toBe('GRANT_REQUIRED');
+    expect(String(context.data.message ?? '')).toContain(
+      'The default deck "alpha" no longer exists.',
+    );
+    // The broken record is reported, never auto-cleared.
+    expect(readDefaultDeck()?.deckId).toBe(deckA.id);
+  });
+
+  it.each([
+    ['corrupt JSON', '{not json'],
+    [
+      'unknown version',
+      JSON.stringify({ version: 99, deckId: 'd', deckName: 'n', updatedAt: 't' }),
+    ],
+  ])('headerless session names an unreadable default-deck.json: %s', async (_label, content) => {
+    const { backendUrl } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+    useIsolatedHome();
+
+    const target = resolveDefaultDeckPath();
+    fs.writeFileSync(target, content, 'utf8');
+
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: makeWorkspace() };
+    const init = await postInitialize(started.port, 1, 'vitest', headers);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId!,
+      'get_session_context',
+      {},
+      2,
+      headers,
+    );
+    expect(context.isError).toBe(true);
+    expect(context.data.error_code).toBe('GRANT_REQUIRED');
+    const message = String(context.data.message ?? '');
+    expect(message).toContain('unreadable');
+    expect(message).toContain(target);
   });
 });

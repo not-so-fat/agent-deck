@@ -15,26 +15,51 @@ export type UnassignedDeckBinding = {
 };
 
 /**
+ * NOT-606: why the user default deck did not apply to an unassigned
+ * session. `missing` names a saved default deck that no longer exists;
+ * `unreadable` names a `default-deck.json` that cannot be used (corrupt or
+ * unknown version). Held per unassigned session, like the missing folder
+ * deck name.
+ */
+export type UnassignedDefaultDeckIssue =
+  | { kind: 'missing'; deckName: string }
+  | { kind: 'unreadable'; path: string };
+
+/**
  * NOT-604: the unassigned message, naming the deleted deck when the folder
  * assignment named one. The saved `deckName` is display-only (the id is
  * what failed to bind), but it is what the user recognizes.
+ *
+ * NOT-606: adds one sentence naming the missing or unreadable default deck
+ * when that is the reason no default applied, instead of behaving as if no
+ * default was ever set.
  */
-export function unassignedDeckMessage(missingDeckName?: string): string {
+export function unassignedDeckMessage(
+  missingDeckName?: string,
+  defaultIssue?: UnassignedDefaultDeckIssue,
+): string {
+  const parts: string[] = [];
   const trimmed = missingDeckName?.trim();
-  if (!trimmed) {
-    return UNASSIGNED_DECK_MESSAGE;
+  if (trimmed) {
+    parts.push(`The folder was assigned to deck "${trimmed}", which no longer exists.`);
   }
-  return (
-    `The folder was assigned to deck "${trimmed}", which no longer exists. ` +
-    UNASSIGNED_DECK_MESSAGE
-  );
+  if (defaultIssue?.kind === 'missing' && defaultIssue.deckName.trim()) {
+    parts.push(`The default deck "${defaultIssue.deckName.trim()}" no longer exists.`);
+  } else if (defaultIssue?.kind === 'unreadable' && defaultIssue.path.trim()) {
+    parts.push(`The default deck file is unreadable: ${defaultIssue.path.trim()}.`);
+  }
+  parts.push(UNASSIGNED_DECK_MESSAGE);
+  return parts.join(' ');
 }
 
-export function unassignedDeckBinding(missingDeckName?: string): UnassignedDeckBinding {
+export function unassignedDeckBinding(
+  missingDeckName?: string,
+  defaultIssue?: UnassignedDefaultDeckIssue,
+): UnassignedDeckBinding {
   return {
     deck: null,
     error_code: 'GRANT_REQUIRED',
-    message: unassignedDeckMessage(missingDeckName),
+    message: unassignedDeckMessage(missingDeckName, defaultIssue),
   };
 }
 
