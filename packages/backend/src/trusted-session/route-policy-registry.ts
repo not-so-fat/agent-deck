@@ -103,6 +103,10 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   { methods: ['POST'], pattern: /^\/api\/decks$/, policy: 'requireDeckAdmin' },
 
   // Dashboard-only
+  // NOT-600: user default deck (headerless-session fallback).
+  { methods: ['GET'], pattern: /^\/api\/default-deck$/, policy: 'requireDashboard' },
+  { methods: ['PUT'], pattern: /^\/api\/default-deck$/, policy: 'requireDashboard' },
+  { methods: ['DELETE'], pattern: /^\/api\/default-deck$/, policy: 'requireDashboard' },
   { methods: ['GET'], pattern: /^\/api\/decks\/active$/, policy: 'requireDashboard' },
   { methods: ['PUT'], pattern: /^\/api\/decks\/[^/]+$/, policy: 'requireDashboard' },
   { methods: ['DELETE'], pattern: /^\/api\/decks\/[^/]+$/, policy: 'requireDashboard' },

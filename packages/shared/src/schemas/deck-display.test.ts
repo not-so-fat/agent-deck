@@ -278,8 +278,8 @@ describe('deck-display', () => {
   });
 
   describe('BindingActiveSourceSchema', () => {
-    it('accepts session, workspace, and launch', () => {
-      for (const source of ['session', 'workspace', 'launch'] as const) {
+    it('accepts session, workspace, launch, and default-deck', () => {
+      for (const source of ['session', 'workspace', 'launch', 'default-deck'] as const) {
         expect(BindingActiveSourceSchema.parse(source)).toBe(source);
       }
       expect(BindingActiveSourceSchema.safeParse('session_override').success).toBe(false);

@@ -10,6 +10,7 @@ import { MCPClientManager } from '../services/mcp-client-manager';
 import { OAuthManager } from '../services/oauth-manager';
 import { registerServiceRoutes } from '../routes/services';
 import { registerDeckRoutes } from '../routes/decks';
+import { registerDefaultDeckRoutes } from '../routes/default-deck';
 import { registerOAuthRoutes } from '../routes/oauth';
 import { installWebSocketBroadcasting, registerWebSocketRoutes } from '../routes/websocket';
 import mcpRoutes from '../routes/mcp';
@@ -165,6 +166,7 @@ export async function createServer() {
   await fastify.register(registerWebSocketRoutes, { prefix: '/api/ws', hub: webSocketHub });
   await fastify.register(registerServiceRoutes, { prefix: '/api/services' });
   await fastify.register(registerDeckRoutes, { prefix: '/api/decks', storeWriter });
+  await fastify.register(registerDefaultDeckRoutes, { prefix: '/api' });
   await fastify.register(registerCredentialRoutes, { prefix: '/api/credentials' });
   await fastify.register(registerScopeRoutes, { prefix: '/api/scope' });
   await fastify.register(registerPlaybookRoutes, { prefix: '/api/playbooks' });

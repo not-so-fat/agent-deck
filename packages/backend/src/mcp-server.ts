@@ -13,6 +13,7 @@ import {
   countDeckCards,
   ensureGitExcluded,
   formatDisplayLine,
+  readDefaultDeck,
 } from '@agent-deck/shared';
 import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
@@ -80,6 +81,17 @@ function readLaunchDeckHeader(req: Request): string | undefined {
 function resolveUseManifestDeckId(workspaceRoot: string): string | undefined {
   const deckId = readUseManifest(workspaceRoot)?.deckId?.trim();
   return deckId || undefined;
+}
+
+/**
+ * NOT-600: the user default deck (`$AGENT_DECK_HOME/default-deck.json`),
+ * consulted only when no launch deck header and no folder assignment
+ * resolve. Returns undefined when no default is set or the file is
+ * unusable — a dangling default (deck deleted) still resolves here and
+ * degrades to the unassigned flow at bind time, like a dangling manifest.
+ */
+function resolveUserDefaultDeckId(): string | undefined {
+  return readDefaultDeck()?.deckId?.trim() || undefined;
 }
 
 /**
@@ -2067,7 +2079,17 @@ export class AgentDeckMCPServer {
       !launchDeck &&
       this.sessionBinding.isLaunchSession(sessionId) &&
       this.sessionBinding.isUseManifestSession(sessionId);
-    if (launchDeck || useManifestFollowUp) {
+    // NOT-600: sessions bound from the user default deck carry no deck
+    // header on follow-ups either — re-validate through the same launch
+    // follow-up instead of demanding the header. The default file is
+    // authoritative only at initialize: like a changed deck header, a
+    // later default change is sticky for the session lifetime and takes
+    // effect when the client re-initializes.
+    const defaultDeckFollowUp =
+      !launchDeck &&
+      this.sessionBinding.isLaunchSession(sessionId) &&
+      this.sessionBinding.isDefaultDeckSession(sessionId);
+    if (launchDeck || useManifestFollowUp || defaultDeckFollowUp) {
       try {
         await this.authenticateLaunchDeck(
           sessionId,
@@ -2110,22 +2132,32 @@ export class AgentDeckMCPServer {
 
   /**
    * Resolve the deck a bearer-free request binds (NOT-562, shared by the
-   * initialize path and NOT-569 recovery so the two resolve identically):
-   * an explicit deck header wins, else the folder assignment from
-   * `<workspace>/.agent-deck/use.json`. Anything else is not a deck —
-   * recovery refuses it and initialize takes the unassigned flow.
+   * initialize path and NOT-569 recovery so the two resolve identically).
+   * Strict precedence (NOT-600): an explicit deck header wins, else the
+   * folder assignment from `<workspace>/.agent-deck/use.json`, else the
+   * user default deck. Anything else is not a deck — recovery refuses it
+   * and initialize takes the unassigned flow.
    */
   private resolveHeaderDeck(req: Request): {
     launchDeck: string | undefined;
     workspaceRoot: string | undefined;
     manifestDeck: string | undefined;
+    defaultDeck: string | undefined;
     effectiveDeck: string | undefined;
   } {
     const launchDeck = readLaunchDeckHeader(req);
     const workspaceRoot = readWorkspaceRootHeader(req);
     const manifestDeck =
       !launchDeck && workspaceRoot ? resolveUseManifestDeckId(workspaceRoot) : undefined;
-    return { launchDeck, workspaceRoot, manifestDeck, effectiveDeck: launchDeck ?? manifestDeck };
+    const defaultDeck =
+      !launchDeck && !manifestDeck ? resolveUserDefaultDeckId() : undefined;
+    return {
+      launchDeck,
+      workspaceRoot,
+      manifestDeck,
+      defaultDeck,
+      effectiveDeck: launchDeck ?? manifestDeck ?? defaultDeck,
+    };
   }
 
   /**
@@ -2408,9 +2440,10 @@ export class AgentDeckMCPServer {
 
     // NOT-562: workspace-header-only hosts (pure MCP, no launcher) resolve
     // the deck from the folder assignment. An explicit deck header still
-    // wins; the manifest is consulted only when it is absent. Shared with
-    // NOT-569 recovery so both paths resolve identically.
-    const { launchDeck, workspaceRoot, manifestDeck, effectiveDeck } =
+    // wins; the manifest is consulted only when it is absent. NOT-600 adds
+    // the user default deck as the last resort. Shared with NOT-569
+    // recovery so both paths resolve identically.
+    const { launchDeck, workspaceRoot, manifestDeck, defaultDeck, effectiveDeck } =
       this.resolveHeaderDeck(req);
     const skipDeckHeader = skipDeckHeaderAuth();
     const unassigned = !effectiveDeck && !skipDeckHeader;
@@ -2422,14 +2455,18 @@ export class AgentDeckMCPServer {
         await this.authenticateLaunchDeck(sessionId, req, effectiveDeck);
         if (manifestDeck && !launchDeck) {
           this.sessionBinding.markUseManifestSession(sessionId);
+        } else if (defaultDeck && !launchDeck && !manifestDeck) {
+          this.sessionBinding.markDefaultDeckSession(sessionId);
         }
       } catch (error) {
         // NOT-562: the assignment names a deck the backend cannot bind
         // (deleted deck) or the bind itself failed — the file is an
         // opportunistic hint, not a credential, so degrade to the existing
-        // unassigned flow rather than erroring. The header path below keeps
+        // unassigned flow rather than erroring. NOT-600: a dangling user
+        // default degrades the same way; the file is left in place and
+        // revalidated on every initialize. The header path below keeps
         // its fail-closed 401.
-        if (manifestDeck && !launchDeck) {
+        if ((manifestDeck || defaultDeck) && !launchDeck) {
           this.sessionBinding.markUnassigned(sessionId);
           if (workspaceRoot) {
             this.sessionBinding.setWorkspace(sessionId, workspaceRoot);
@@ -2499,7 +2536,7 @@ export class AgentDeckMCPServer {
     if (this.closedSessionIds.has(staleSessionId)) {
       return false;
     }
-    const { launchDeck, manifestDeck, effectiveDeck } = this.resolveHeaderDeck(req);
+    const { launchDeck, manifestDeck, defaultDeck, effectiveDeck } = this.resolveHeaderDeck(req);
     if (!effectiveDeck) {
       return false;
     }
@@ -2513,6 +2550,8 @@ export class AgentDeckMCPServer {
       await this.authenticateLaunchDeck(freshSessionId, req, effectiveDeck);
       if (manifestDeck && !launchDeck) {
         this.sessionBinding.markUseManifestSession(freshSessionId);
+      } else if (defaultDeck && !launchDeck && !manifestDeck) {
+        this.sessionBinding.markDefaultDeckSession(freshSessionId);
       }
     } catch {
       // Opportunistic: a bind failure falls back to the NOT-101 404 the

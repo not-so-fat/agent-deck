@@ -102,6 +102,14 @@ export class McpSessionBindingStore {
    * session-held rather than file-held (session scope writes nothing).
    */
   private assignmentByMcp = new Set<string>();
+  /**
+   * NOT-600: launch sessions whose deck came from the user default deck
+   * (`$AGENT_DECK_HOME/default-deck.json`) instead of the deck header or
+   * the folder assignment. A subset of `launchByMcp`: like a use-manifest
+   * session, follow-up auth re-validates through the launch refresh
+   * without requiring a deck header the headerless host never sends.
+   */
+  private defaultDeckByMcp = new Set<string>();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -157,6 +165,19 @@ export class McpSessionBindingStore {
 
   isUseManifestSession(mcpSessionId: string): boolean {
     return this.useManifestByMcp.has(mcpSessionId);
+  }
+
+  /**
+   * NOT-600: record that a launch session's deck came from the user
+   * default deck rather than the deck header or folder assignment. Called
+   * only after the bind succeeds, so the marker implies `launchByMcp`.
+   */
+  markDefaultDeckSession(mcpSessionId: string): void {
+    this.defaultDeckByMcp.add(mcpSessionId);
+  }
+
+  isDefaultDeckSession(mcpSessionId: string): boolean {
+    return this.defaultDeckByMcp.has(mcpSessionId);
   }
 
   /**
@@ -376,6 +397,7 @@ export class McpSessionBindingStore {
     this.unassignedByMcp.delete(sessionId);
     this.useManifestByMcp.delete(sessionId);
     this.assignmentByMcp.delete(sessionId);
+    this.defaultDeckByMcp.delete(sessionId);
   }
 
   getWorkspace(sessionId: string): string | undefined {
@@ -457,7 +479,8 @@ export class McpSessionBindingStore {
 }
 
 /**
- * Resolve the NOT-211 active source reported by `get_session_binding`.
+ * Resolve the NOT-211 active source reported by `get_session_binding` (and
+ * `get_session_context`).
  *
  * The saved workspace default (`.agent-deck/use.json` assignment) wins the
  * comparison, and the comparison is by deck id — never by display name, which
@@ -465,14 +488,20 @@ export class McpSessionBindingStore {
  * only if the active deck id differs from it, otherwise `workspace`, so an
  * active deck that equals the default never implies an override. A
  * launch-selected deck with no assignment file reports `launch` with the
- * missing default left explicit. Without any saved default, a bound active
+ * missing default left explicit. A session bound from the user default deck
+ * (NOT-600) reports `default-deck`. Without any saved default, a bound active
  * deck is session-held (`session`).
  */
 export function resolveBindingActiveSource(input: {
   isLaunchSession: boolean;
   activeDeckId?: string | null;
   workspaceDefaultDeckId?: string | null;
+  /** NOT-600: the session bound from `$AGENT_DECK_HOME/default-deck.json`. */
+  isDefaultDeckSession?: boolean;
 }): BindingActiveSource {
+  if (input.isDefaultDeckSession) {
+    return 'default-deck';
+  }
   if (input.workspaceDefaultDeckId) {
     if (input.activeDeckId && input.activeDeckId !== input.workspaceDefaultDeckId) {
       return 'session';
