@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { writeDefaultDeck } from '@agent-deck/shared';
 import { cursorProjectSlug, type HostId, type HostLiveSession } from './host-connection';
 import { runDoctor } from './start';
 
@@ -33,6 +34,7 @@ describe('doctor host connections (NOT-574)', () => {
   let savedCodexHome: string | undefined;
   let savedCodexBin: string | undefined;
   let savedXdg: string | undefined;
+  let savedAgentDeckHome: string | undefined;
 
   beforeEach(() => {
     output = [];
@@ -51,6 +53,7 @@ describe('doctor host connections (NOT-574)', () => {
     savedCodexHome = process.env.CODEX_HOME;
     savedCodexBin = process.env.CODEX_BIN;
     savedXdg = process.env.XDG_CONFIG_HOME;
+    savedAgentDeckHome = process.env.AGENT_DECK_HOME;
   });
 
   afterEach(() => {
@@ -72,6 +75,11 @@ describe('doctor host connections (NOT-574)', () => {
       delete process.env.XDG_CONFIG_HOME;
     } else {
       process.env.XDG_CONFIG_HOME = savedXdg;
+    }
+    if (savedAgentDeckHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = savedAgentDeckHome;
     }
     for (const dir of tmpDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -100,6 +108,16 @@ describe('doctor host connections (NOT-574)', () => {
 
   function connectionLines(): string[] {
     return output.join('\n').split('\n').filter((line) => line.includes('connection:'));
+  }
+
+  function useIsolatedStore(): void {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-doc-store-'));
+    tmpDirs.push(store);
+    process.env.AGENT_DECK_HOME = store;
+  }
+
+  function deckSourceLines(): string[] {
+    return output.join('\n').split('\n').filter((line) => line.includes('Deck source:'));
   }
 
   it('prints the state and remedy for every host, never OK for install state', async () => {
@@ -349,5 +367,44 @@ describe('doctor host connections (NOT-574)', () => {
     text = connectionLines().join('\n');
     expect(text).toContain('Codex connection: connected (global entry, 1 live session)');
     expect(text).toContain('No action needed');
+  });
+
+  it('NOT-602: reports the folder assignment over the default deck', async () => {
+    const { workspace } = makeRoots();
+    useIsolatedStore();
+    writeDefaultDeck({ deckId: 'default-id', deckName: 'd1' });
+    writeJson(path.join(workspace, '.agent-deck', 'use.json'), {
+      version: 3,
+      deckId: 'assign-id',
+      deckName: 'd2',
+      mcpUrl: 'http://127.0.0.1:1110/mcp',
+    });
+
+    await runDoctor({ daemonHealth: { up: false, sessions: [] } });
+    const lines = deckSourceLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Deck source: folder assignment (d2)');
+  });
+
+  it('NOT-602: reports the default deck for a folder with no assignment', async () => {
+    makeRoots();
+    useIsolatedStore();
+    writeDefaultDeck({ deckId: 'default-id', deckName: 'd1' });
+
+    await runDoctor({ daemonHealth: { up: false, sessions: [] } });
+    const lines = deckSourceLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Deck source: default deck (d1)');
+  });
+
+  it('NOT-602: reports none with the set-default remedy when unbound', async () => {
+    makeRoots();
+    useIsolatedStore();
+
+    await runDoctor({ daemonHealth: { up: false, sessions: [] } });
+    const lines = deckSourceLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Deck source: none');
+    expect(lines[0]).toContain('agent-deck default <deck>');
   });
 });

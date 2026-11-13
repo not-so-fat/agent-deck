@@ -2,7 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { codexTomlHasAgentDeckEntry, isHttpAgentDeckEntry } from './mcp-config';
+import {
+  codexTomlHasAgentDeckEntry,
+  isHttpAgentDeckEntry,
+  readDefaultDeck,
+} from './mcp-config';
+import { readUseManifest } from './playbook-stubs';
 
 /**
  * Pure-MCP host connection classifier (NOT-574).
@@ -672,4 +677,96 @@ export function inspectAllHostConnections(
 ): HostConnectionResult[] {
   const hosts: HostId[] = ['codex', 'claude', 'cursor', 'muse'];
   return hosts.map((host) => inspectHostConnection(host, folder, options));
+}
+
+/**
+ * Which deck source a new session in a folder would use (NOT-602).
+ *
+ * Same strict precedence the daemon resolves in `resolveHeaderDeck`
+ * (`packages/backend/src/mcp-server.ts`): an explicit launch deck
+ * header wins, else the folder assignment, else the user default deck,
+ * else the session lands unassigned (`none`). The assignment read is
+ * the same v3-only `readUseManifest` the daemon uses, so a legacy v1
+ * or grant-based v2 `use.json` does not count as an assignment here
+ * either — a folder carrying only one is effectively unbound for a new
+ * headerless session.
+ */
+export type DeckSourceKind = 'launch-header' | 'folder-assignment' | 'default-deck' | 'none';
+
+export interface DeckSourceDeck {
+  deckId: string;
+  deckName?: string;
+}
+
+export interface DeckSourceInput {
+  /** Explicit launch deck (`x-agent-deck-deck-id`) the new session would send, if known. */
+  launchDeck?: DeckSourceDeck | null;
+  /** v3 folder assignment (`<folder>/.agent-deck/use.json`), if present. */
+  assignment?: DeckSourceDeck | null;
+  /** User default deck (`$AGENT_DECK_HOME/default-deck.json`), if set. */
+  defaultDeck?: DeckSourceDeck | null;
+}
+
+export interface DeckSourceResult {
+  source: DeckSourceKind;
+  deck?: DeckSourceDeck;
+}
+
+/** A deck ref counts only with a non-blank id, like the daemon's `?.trim() || undefined`. */
+function normalizeDeckRef(ref: DeckSourceDeck | null | undefined): DeckSourceDeck | undefined {
+  const deckId = ref?.deckId?.trim();
+  if (!deckId) {
+    return undefined;
+  }
+  const deckName = ref?.deckName?.trim();
+  return deckName ? { deckId, deckName } : { deckId };
+}
+
+/** Pure precedence: launch header, then folder assignment, then default deck, then none. */
+export function resolveDeckSource(input: DeckSourceInput): DeckSourceResult {
+  const launchDeck = normalizeDeckRef(input.launchDeck);
+  if (launchDeck) {
+    return { source: 'launch-header', deck: launchDeck };
+  }
+  const assignment = normalizeDeckRef(input.assignment);
+  if (assignment) {
+    return { source: 'folder-assignment', deck: assignment };
+  }
+  const defaultDeck = normalizeDeckRef(input.defaultDeck);
+  if (defaultDeck) {
+    return { source: 'default-deck', deck: defaultDeck };
+  }
+  return { source: 'none' };
+}
+
+/**
+ * Read-only deck-source inspection for one folder: the v3 assignment on
+ * disk plus the user default deck through the pure precedence above. A
+ * new interactive session sends no deck header, so doctor never reports
+ * `launch-header` — the branch exists so the precedence stays complete
+ * and unit-testable.
+ */
+export function inspectFolderDeckSource(folder: string): DeckSourceResult {
+  const assignment = readUseManifest(folder);
+  const defaultDeck = readDefaultDeck();
+  return resolveDeckSource({
+    assignment: assignment ? { deckId: assignment.deckId, deckName: assignment.deckName } : null,
+    defaultDeck: defaultDeck ? { deckId: defaultDeck.deckId, deckName: defaultDeck.deckName } : null,
+  });
+}
+
+const DECK_SOURCE_LABELS: Record<DeckSourceKind, string> = {
+  'launch-header': 'launch header',
+  'folder-assignment': 'folder assignment',
+  'default-deck': 'default deck',
+  none: 'none',
+};
+
+export function formatDeckSourceLine(resolved: DeckSourceResult): string {
+  const label = DECK_SOURCE_LABELS[resolved.source];
+  const name = resolved.deck?.deckName?.trim() || resolved.deck?.deckId?.trim();
+  if (resolved.source === 'none' || !name) {
+    return 'Deck source: none (no folder assignment, no default deck). Remedy: run `agent-deck default <deck>` to set a default deck.';
+  }
+  return `Deck source: ${label} (${name})`;
 }

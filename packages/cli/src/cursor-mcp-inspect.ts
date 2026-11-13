@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { canonicalFolder } from './host-connection';
 import {
   CURSOR_MCP_RECOVERY_HINT,
   buildMcpUrl,
@@ -348,8 +349,27 @@ export function inspectCursorMcpConfig(options: {
 
   const globalPath = resolveConfigPath('cursor', 'global');
   const projectPath = resolveConfigPath('cursor', 'project', cwd);
+  // NOT-602: from the home folder the project path IS the global path,
+  // so classifying the same file twice prints it as both Global and
+  // Project and misreads the healthy headerless global fallback as a
+  // project entry missing its workspace header. There is no project
+  // config here — suppress the project side entirely. Compared
+  // canonically: process.cwd() is physical while os.homedir() may name
+  // the same folder through a symlink (`/tmp` vs `/private/tmp`).
+  const projectIsGlobal = canonicalFolder(projectPath) === canonicalFolder(globalPath);
   const global = classifyEntry('global', globalPath, options.endpoint);
-  const project = classifyEntry('project', projectPath, options.endpoint, { projectRoot: cwd });
+  const project: CursorMcpEntryReport = projectIsGlobal
+    ? {
+        source: 'project',
+        path: projectPath,
+        fileExists: false,
+        shape: 'missing',
+        transport: 'none',
+        endpoint: {},
+        workspacePin: null,
+        issues: [],
+      }
+    : classifyEntry('project', projectPath, options.endpoint, { projectRoot: cwd });
 
   const preferredSource: CursorMcpInspection['preferredSource'] =
     project.shape !== 'missing' ? 'project' : global.shape !== 'missing' ? 'global' : 'none';
@@ -405,6 +425,11 @@ export function formatCursorMcpRecoveryLines(report: CursorMcpInspection): strin
 }
 
 export function formatCursorMcpInspection(report: CursorMcpInspection): string {
+  // NOT-602: matches the suppression in inspectCursorMcpConfig — when the
+  // project path equals the global path (cwd is the home folder), print
+  // the path once as Global and point at a project folder for Project.
+  const projectIsGlobal =
+    canonicalFolder(report.project.path) === canonicalFolder(report.global.path);
   const lines: string[] = [
     'Cursor MCP inspection (read-only):',
     `  Expected precedence: project over global`,
@@ -412,9 +437,13 @@ export function formatCursorMcpInspection(report: CursorMcpInspection): string {
     `  Global  ${report.global.path}`,
     `    shape=${report.global.shape} transport=${report.global.transport}` +
       (report.global.workspacePin ? ` pin=${report.global.workspacePin}` : ''),
-    `  Project ${report.project.path}`,
-    `    shape=${report.project.shape} transport=${report.project.transport}` +
-      (report.project.workspacePin ? ` pin=${report.project.workspacePin}` : ''),
+    ...(projectIsGlobal
+      ? ['  Project: none (run doctor inside a project folder)']
+      : [
+          `  Project ${report.project.path}`,
+          `    shape=${report.project.shape} transport=${report.project.transport}` +
+            (report.project.workspacePin ? ` pin=${report.project.workspacePin}` : ''),
+        ]),
     `  Assignment ${report.assignment.present ? 'present' : 'missing'} @ ${report.assignment.checkedRoot}` +
       (report.assignment.deckName || report.assignment.deckId
         ? ` (${report.assignment.deckName ?? report.assignment.deckId})`

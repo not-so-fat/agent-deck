@@ -8,10 +8,12 @@ import {
   classifyHostConnection,
   countMatchingSessions,
   cursorProjectSlug,
+  formatDeckSourceLine,
   formatHostConnectionLine,
   hasMuseStaleConflict,
   hostIdForClientName,
   inspectAllHostConnections,
+  inspectFolderDeckSource,
   inspectHostConnection,
   isClaudeProjectApproved,
   isCodexFolderTrusted,
@@ -22,11 +24,13 @@ import {
   parseCodexTrustedProjects,
   readJsonAgentDeckEntry,
   remedyFor,
+  resolveDeckSource,
   sessionMatchesHostFolder,
   type DaemonHealth,
   type HostId,
   type HostLiveSession,
 } from './host-connection';
+import { writeDefaultDeck } from '@agent-deck/shared';
 import { codexTomlHasAgentDeckEntry } from './mcp-config';
 
 const DAEMON_DOWN: DaemonHealth = { up: false, sessions: [] };
@@ -889,5 +893,154 @@ describe('inspectHostConnection fixtures (NOT-574)', () => {
       expect(results.every((r) => r.state === 'no-entry')).toBe(true);
       expect(fs.readdirSync(home)).toEqual(before);
     });
+  });
+});
+
+describe('deck source (NOT-602)', () => {
+  const tmpDirs: string[] = [];
+  let savedAgentDeckHome: string | undefined;
+
+  beforeEach(() => {
+    savedAgentDeckHome = process.env.AGENT_DECK_HOME;
+  });
+
+  afterEach(() => {
+    if (savedAgentDeckHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = savedAgentDeckHome;
+    }
+    for (const dir of tmpDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function useIsolatedStore(): void {
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-decksrc-store-'));
+    tmpDirs.push(store);
+    process.env.AGENT_DECK_HOME = store;
+  }
+
+  function makeWorkspace(): string {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ad-decksrc-ws-'));
+    tmpDirs.push(workspace);
+    return workspace;
+  }
+
+  function writeV3Assignment(workspace: string, deckId: string, deckName: string): void {
+    writeJson(path.join(workspace, '.agent-deck', 'use.json'), {
+      version: 3,
+      deckId,
+      deckName,
+      mcpUrl: 'http://127.0.0.1:1110/mcp',
+    });
+  }
+
+  it('resolves launch header over folder assignment over default deck', () => {
+    const launch = { deckId: 'launch-id', deckName: 'launched' };
+    const assignment = { deckId: 'assign-id', deckName: 'assigned' };
+    const def = { deckId: 'default-id', deckName: 'd1' };
+    expect(resolveDeckSource({ launchDeck: launch, assignment, defaultDeck: def })).toEqual({
+      source: 'launch-header',
+      deck: launch,
+    });
+    expect(resolveDeckSource({ assignment, defaultDeck: def })).toEqual({
+      source: 'folder-assignment',
+      deck: assignment,
+    });
+    expect(resolveDeckSource({ defaultDeck: def })).toEqual({
+      source: 'default-deck',
+      deck: def,
+    });
+    expect(resolveDeckSource({})).toEqual({ source: 'none' });
+  });
+
+  it('ignores blank deck ids like the daemon', () => {
+    expect(
+      resolveDeckSource({
+        launchDeck: { deckId: '   ', deckName: 'blank' },
+        assignment: { deckId: '', deckName: 'empty' },
+        defaultDeck: { deckId: 'default-id', deckName: 'd1' },
+      }),
+    ).toEqual({ source: 'default-deck', deck: { deckId: 'default-id', deckName: 'd1' } });
+    expect(resolveDeckSource({ defaultDeck: { deckId: '  ' } })).toEqual({ source: 'none' });
+  });
+
+  it('formats each source with the deck name', () => {
+    expect(
+      formatDeckSourceLine({
+        source: 'launch-header',
+        deck: { deckId: 'launch-id', deckName: 'launched' },
+      }),
+    ).toBe('Deck source: launch header (launched)');
+    expect(
+      formatDeckSourceLine({
+        source: 'folder-assignment',
+        deck: { deckId: 'assign-id', deckName: 'd2' },
+      }),
+    ).toBe('Deck source: folder assignment (d2)');
+    expect(
+      formatDeckSourceLine({ source: 'default-deck', deck: { deckId: 'default-id', deckName: 'd1' } }),
+    ).toBe('Deck source: default deck (d1)');
+  });
+
+  it('falls back to the deck id when no name is known', () => {
+    expect(
+      formatDeckSourceLine({ source: 'launch-header', deck: { deckId: 'launch-id' } }),
+    ).toBe('Deck source: launch header (launch-id)');
+  });
+
+  it('names the set-default command when nothing resolves', () => {
+    const line = formatDeckSourceLine({ source: 'none' });
+    expect(line).toContain('Deck source: none');
+    expect(line).toContain('agent-deck default <deck>');
+  });
+
+  it('reports the default deck for a folder with no assignment', () => {
+    useIsolatedStore();
+    writeDefaultDeck({ deckId: 'default-id', deckName: 'd1' });
+    const workspace = makeWorkspace();
+    expect(formatDeckSourceLine(inspectFolderDeckSource(workspace))).toBe(
+      'Deck source: default deck (d1)',
+    );
+  });
+
+  it('prefers the folder assignment over the default deck', () => {
+    useIsolatedStore();
+    writeDefaultDeck({ deckId: 'default-id', deckName: 'd1' });
+    const workspace = makeWorkspace();
+    writeV3Assignment(workspace, 'assign-id', 'd2');
+    expect(formatDeckSourceLine(inspectFolderDeckSource(workspace))).toBe(
+      'Deck source: folder assignment (d2)',
+    );
+  });
+
+  it('does not count a grant-based v2 use.json as an assignment', () => {
+    // Daemon parity: resolveUseManifestDeckId reads v3 only, so a folder
+    // carrying just a v2 manifest is effectively unbound for a new
+    // headerless session — the default deck (or none) wins.
+    useIsolatedStore();
+    writeDefaultDeck({ deckId: 'default-id', deckName: 'd1' });
+    const workspace = makeWorkspace();
+    writeJson(path.join(workspace, '.agent-deck', 'use.json'), {
+      version: 2,
+      workspaceKey: 'wsp_test',
+      grantId: 'wgr_test',
+      secret: 'super-secret-value-at-least-32-chars!!',
+      deckId: 'v2-deck',
+      deckName: 'v2',
+      updatedAt: new Date().toISOString(),
+    });
+    expect(formatDeckSourceLine(inspectFolderDeckSource(workspace))).toBe(
+      'Deck source: default deck (d1)',
+    );
+  });
+
+  it('reports none with the set-default remedy when unbound', () => {
+    useIsolatedStore();
+    const workspace = makeWorkspace();
+    const line = formatDeckSourceLine(inspectFolderDeckSource(workspace));
+    expect(line).toContain('Deck source: none');
+    expect(line).toContain('agent-deck default <deck>');
   });
 });
