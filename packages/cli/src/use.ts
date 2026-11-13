@@ -7,6 +7,8 @@ import { parseCliMcpPort } from './defaults';
 import {
   buildMcpUrl,
   isMcpLaunchEntry,
+  readJsonFile,
+  resolveConfigPath,
   writePerFolderMcpEntries,
   type McpClient,
   type McpEndpoint,

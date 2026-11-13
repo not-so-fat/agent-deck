@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {
   LiveBinding,
   PendingAdminChallenge,
+  PendingDeckAssignmentRequest,
   PendingDeckSwitchRequest,
 } from '@agent-deck/shared';
 import { resolveBackendPorts } from './statusline';
@@ -97,6 +98,29 @@ export function buildDeckSwitchApprovalLine(pending: PendingDeckSwitchRequest, n
   return `⧉ ${current} → ${requested} — ${meta} | ${href} terminal=false`;
 }
 
+/** NOT-597: reopen one pending deck-assignment request in the trusted browser flow. */
+export function buildDeckAssignmentApprovalHref(
+  pending: PendingDeckAssignmentRequest,
+  _dashboardBaseUrl: string,
+): string {
+  const pathPart = pending.approvalPath.startsWith('/')
+    ? pending.approvalPath
+    : `/${pending.approvalPath}`;
+  return `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent(pathPart)}`;
+}
+
+/** NOT-597: one inbox row naming the folder so the human knows what they approve. */
+export function buildDeckAssignmentApprovalLine(
+  pending: PendingDeckAssignmentRequest,
+  now: Date,
+): string {
+  const folder = truncateName(path.basename(pending.workspaceRoot) || pending.workspaceRoot);
+  const age = formatTimeUntil(pending.expiresAt, now);
+  const meta = age ? `expires in ${age}` : 'pending';
+  const href = buildDeckAssignmentApprovalHref(pending, resolveDashboardBaseUrl());
+  return `⧉ Assign deck to ${folder}/ — ${meta} | ${href} terminal=false`;
+}
+
 /** How the menu bar names itself when it stops the deck. */
 export const MENUBAR_STOP_SOURCE = 'menubar';
 
@@ -127,12 +151,14 @@ export function renderMenubar(
   pendingApprovals: PendingAdminChallenge[] = [],
   dashboardBaseUrl = resolveDashboardBaseUrl(),
   pendingDeckSwitches: PendingDeckSwitchRequest[] = [],
+  pendingDeckAssignments: PendingDeckAssignmentRequest[] = [],
 ): string {
   if (bindings === null) {
     return ['◆ off | color=gray', '---', 'Agent Deck offline | color=gray', ''].join('\n');
   }
 
-  const pendingCount = pendingApprovals.length + pendingDeckSwitches.length;
+  const pendingCount =
+    pendingApprovals.length + pendingDeckSwitches.length + pendingDeckAssignments.length;
   const title =
     pendingCount > 0
       ? `◆ ⚠ ${pendingCount}`
@@ -171,6 +197,17 @@ export function renderMenubar(
     lines.push(`Pending approvals (${pendingDeckSwitches.length}) | size=11 color=orange`);
     for (const pending of pendingDeckSwitches) {
       lines.push(buildDeckSwitchApprovalLine(pending, now));
+    }
+    lines.push('---');
+  }
+
+  // NOT-597: deck-assignment approval inbox. Same recovery contract as
+  // the switch inbox: each row reopens its approval page with the full
+  // folder path for the human to verify.
+  if (pendingDeckAssignments.length > 0) {
+    lines.push(`Pending assignments (${pendingDeckAssignments.length}) | size=11 color=orange`);
+    for (const pending of pendingDeckAssignments) {
+      lines.push(buildDeckAssignmentApprovalLine(pending, now));
     }
     lines.push('---');
   }
@@ -269,6 +306,12 @@ export async function runMenubar(): Promise<number> {
           '/api/trusted-session/deck-switch/pending',
           timeoutMs,
         )) ?? [];
+      const pendingDeckAssignments =
+        (await fetchJson<PendingDeckAssignmentRequest[]>(
+          backendUrl,
+          '/api/trusted-session/deck-assignment/pending',
+          timeoutMs,
+        )) ?? [];
       process.stdout.write(
         renderMenubar(
           bindings,
@@ -276,6 +319,7 @@ export async function runMenubar(): Promise<number> {
           pendingApprovals,
           resolveDashboardBaseUrl(),
           pendingDeckSwitches,
+          pendingDeckAssignments,
         ),
       );
       return 0;

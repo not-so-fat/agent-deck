@@ -104,6 +104,23 @@ export const PendingDeckSwitchRequestSchema = z.object({
 });
 
 export type PendingDeckSwitchRequest = z.infer<typeof PendingDeckSwitchRequestSchema>;
+
+/**
+ * NOT-597: a pending deck-assignment request as the local menubar inbox
+ * sees it. The full folder path is display-safe (the human verifies it);
+ * the approval still commits through the dashboard-only resolve route.
+ */
+export const PendingDeckAssignmentRequestSchema = z.object({
+  requestId: z.string().min(1),
+  mcpSessionId: z.string().min(1),
+  workspaceRoot: z.string().min(1),
+  reason: z.string().optional(),
+  status: z.literal('pending'),
+  expiresAt: z.string().datetime(),
+  approvalPath: z.string().min(1),
+});
+
+export type PendingDeckAssignmentRequest = z.infer<typeof PendingDeckAssignmentRequestSchema>;
 export type DeckDisplay = z.infer<typeof DeckDisplaySchema>;
 export type StatusLinePayload = z.infer<typeof StatusLinePayloadSchema>;
 
