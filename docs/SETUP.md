@@ -127,7 +127,7 @@ agent-deck setup --client muse
 
 See [PUBLISHING.md](./PUBLISHING.md) and [README](../README.md). Design: [managed CLI auto-upgrade](./superpowers/specs/2026-07-30-managed-cli-auto-upgrade-design.md).
 
-Upgrading an older install? Codex, Claude Code, and Muse now connect over pure MCP; `agent-deck upgrade` rewrites any legacy `mcp-launch` entries automatically (Cursor migrates when `setup`/`use` re-runs). Details: [mcp-launch migration](./MCP_LAUNCH_MIGRATION.md).
+Upgrading an older install? Codex, Claude Code, Cursor, and Muse now connect over pure MCP; `agent-deck upgrade` rewrites any legacy `mcp-launch` entries automatically, and `agent-deck upgrade --scan <projects dir>` also migrates each assigned folder's `.cursor/mcp.json`. For the user-level Cursor entry, run `agent-deck setup --client cursor`. A legacy Cursor entry (`command: agent-deck`) fails to start when Cursor is launched from the Dock, because it gets a minimal `PATH`; migrating fixes that. `agent-deck doctor` shows the Cursor state under `Host connections`. Details: [mcp-launch migration](./MCP_LAUNCH_MIGRATION.md).
 
 ### IDE deck indicator (optional)
 
@@ -278,10 +278,12 @@ Sessions that die without a clean disconnect (killed terminal, `kill -9`, crashe
 
 Codex, Claude Code, Cursor, and Muse connect over pure MCP (streamable HTTP) with no `agent-deck` executable lookup. The plugins carry skills and guidance only — they declare no MCP server (Muse has no plugin; it uses native bootstrap skills). The connection is plain host MCP config: `agent-deck setup --client codex|claude|cursor|muse` writes one **global headerless fallback** entry (`http://127.0.0.1:1110/mcp`, no headers — `~/.codex/config.toml`, `~/.claude.json`, `~/.cursor/mcp.json`, `$XDG_CONFIG_HOME/muse/settings.json`), so folders with no assignment still connect and land in the explain-only unassigned session. `agent-deck use <deck>` writes a same-name **per-folder entry** carrying the workspace header (`.codex/config.toml`, `.mcp.json`, `.cursor/mcp.json`); it shadows the fallback where an assignment exists, and the daemon resolves the deck from `.agent-deck/use.json`. Cursor sends header values literally, so `use` writes the absolute folder path into the header (`${workspaceFolder}` would arrive uninterpolated). For Muse the per-folder entry lands in the same `.mcp.json` Claude uses (identical shape, written by plain `use` or `use --client muse`): run `agent-deck use <deck>` in the folder, trust the folder, then reload MCP (restart Muse), and `/mcp` should show agent-deck.
 
+> **Direction (planned, not yet shipped):** folder pins and per-project approvals will stop being required for a working connection. A session with no pin will bind to the default deck, and `doctor` will report `using default deck (no folder pin)` instead of an unassigned session. See [optional folder binding](./design/optional-folder-binding.md). Until then, the steps below apply.
+
 If the host shows no Agent Deck tools, first run `agent-deck start --daemon` and `agent-deck setup --client codex|claude|cursor|muse` (with the host plugin installed where one exists), then work the three recovery steps in order:
 
 1. **Trust the folder** so the host loads the project entry (Codex needs the canonical path trusted; Claude Code loads `.mcp.json` after trust; Cursor loads `.cursor/mcp.json` after trust; Muse loads the project entry and `AGENTS.md` after trust — restart Muse so the user entry reloads).
-2. **Approve the project agent-deck entry** when the host prompts (Claude Code project entries start as Pending approval; Cursor likewise asks to approve the project server).
+2. **Approve the project agent-deck entry** when the host prompts (Claude Code project entries start as Pending approval). Cursor shows no prompt: enable the project `agent-deck` server in Cursor Settings (Tools & MCP). Cursor records the approval in `~/.cursor/projects/<slug>/mcp-approvals.json`.
 3. **Assign the folder** when its assignment is missing or legacy: call `request_deck_assignment` with the absolute folder path from the unassigned session and approve the deck in the dashboard/menubar (no terminal step, no reload for the current session), or run `agent-deck use <deck>` in the folder as the fallback, then reload MCP (start a new task / restart the session).
 
 The daemon must be running (`agent-deck start --daemon`); a refused connection at the HTTP entry means the entry is present but the daemon is down.

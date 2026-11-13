@@ -4,6 +4,8 @@
 **Tickets:** NOT-54, NOT-52  
 **ADR:** [cursor-mcp-config-resolution.md](../../decisions/cursor-mcp-config-resolution.md)
 
+> **Superseded (2.5.0):** this describes the launcher-era inspector (`mcp-launch`, `legacy-bare-url`, `mcp_auth_dead_end`). Cursor now connects over pure MCP and `agent-deck doctor` reports host connection states; see [cursor-mcp-config-resolution](../../decisions/cursor-mcp-config-resolution.md) and [optional folder binding](../../design/optional-folder-binding.md). Kept for history only.
+
 ## Outcome
 
 Ship a product release that (1) publishes the Cursor MCP resolution contract and (2) adds a read-only, machine-testable inspector consumed by `agent-deck status` and `agent-deck use --refresh`, without writing MCP config.
