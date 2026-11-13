@@ -552,11 +552,16 @@ describe('inspectCursorMcpConfig', () => {
       )}\n`,
     );
 
-    const report = inspectCursorMcpConfig({ cwd: home, endpoint: { host: '127.0.0.1', mcpPort: 1110 } });
+    // Pass the physical cwd like process.cwd() does: under a symlinked
+    // parent (`/tmp` → `/private/tmp`) it differs lexically from the
+    // mocked homedir while naming the same folder.
+    const report = inspectCursorMcpConfig({
+      cwd: fs.realpathSync(home),
+      endpoint: { host: '127.0.0.1', mcpPort: 1110 },
+    });
 
     // The same file must not read as a project entry: the headerless
     // global fallback is healthy, not a project missing its header.
-    expect(report.project.path).toBe(globalPath);
     expect(report.project.shape).toBe('missing');
     expect(report.project.issues).toEqual([]);
     expect(report.preferredSource).toBe('global');
@@ -564,7 +569,8 @@ describe('inspectCursorMcpConfig', () => {
 
     const formatted = formatCursorMcpInspection(report);
     expect(formatted).toContain('Project: none (run doctor inside a project folder)');
-    expect(formatted.split(globalPath).length - 1).toBe(1);
+    const configRows = formatted.split('\n').filter((line) => line.includes('.cursor/mcp.json'));
+    expect(configRows).toEqual([`  Global  ${globalPath}`]);
   });
 
   it('NOT-602: from the home folder with no entries still has no Project row', () => {

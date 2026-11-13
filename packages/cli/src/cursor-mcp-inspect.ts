@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { canonicalFolder } from './host-connection';
 import {
   CURSOR_MCP_RECOVERY_HINT,
   buildMcpUrl,
@@ -352,8 +353,10 @@ export function inspectCursorMcpConfig(options: {
   // so classifying the same file twice prints it as both Global and
   // Project and misreads the healthy headerless global fallback as a
   // project entry missing its workspace header. There is no project
-  // config here — suppress the project side entirely.
-  const projectIsGlobal = path.resolve(projectPath) === path.resolve(globalPath);
+  // config here — suppress the project side entirely. Compared
+  // canonically: process.cwd() is physical while os.homedir() may name
+  // the same folder through a symlink (`/tmp` vs `/private/tmp`).
+  const projectIsGlobal = canonicalFolder(projectPath) === canonicalFolder(globalPath);
   const global = classifyEntry('global', globalPath, options.endpoint);
   const project: CursorMcpEntryReport = projectIsGlobal
     ? {
@@ -426,7 +429,7 @@ export function formatCursorMcpInspection(report: CursorMcpInspection): string {
   // project path equals the global path (cwd is the home folder), print
   // the path once as Global and point at a project folder for Project.
   const projectIsGlobal =
-    path.resolve(report.project.path) === path.resolve(report.global.path);
+    canonicalFolder(report.project.path) === canonicalFolder(report.global.path);
   const lines: string[] = [
     'Cursor MCP inspection (read-only):',
     `  Expected precedence: project over global`,
