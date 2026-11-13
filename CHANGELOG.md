@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.5.2 — 2026-11-13
+
+### Change: folder binding is optional — headerless sessions use your default deck (NOT-598, NOT-600 to NOT-606)
+
+- The connection no longer needs a per-folder pin. Set a default deck once with `agent-deck default <deck>`; any Cursor, Codex, Claude Code or Muse chat without a pin binds to it. Existing pins keep working and keep precedence. Shipped agent text, skills and docs (NOT-603) now describe this behaviour.
 
 ### Fix: a deleted or unreadable default deck is reported, not silently treated as no default (NOT-606)
 
@@ -31,6 +35,10 @@
 - A local MCP session that arrives with no deck header and no usable folder assignment now binds the user's default deck (`$AGENT_DECK_HOME/default-deck.json`) instead of landing in the explain-only session, so a missing pin or unapproved project server no longer makes Agent Deck unreachable. Precedence is strict: launch deck header, then folder assignment, then default deck; hosted and grant-bound sessions are unchanged.
 - Set, show, or clear the default with `agent-deck default [<deck>] [--clear]`, or from the dashboard decks panel (per-deck "Set as default", current-default row with Clear). No default is ever auto-selected.
 - Such sessions report binding source `default-deck` in `get_session_context` and `get_session_binding`. With no default set, or a default naming a deleted deck, behaviour is unchanged (explain-only session, `GRANT_REQUIRED`).
+
+### After upgrade
+
+- Upgrade the CLI, then restart the daemon (`agent-deck start --daemon --no-open` after it stops), run `agent-deck default <deck>` once, and reload each host. Existing folder pins need no change.
 
 ## 2.5.1 — 2026-11-12
 
