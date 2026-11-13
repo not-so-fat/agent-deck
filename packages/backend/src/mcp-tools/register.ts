@@ -77,6 +77,8 @@ export type McpToolHost = {
     getPlaybookPin?(sessionId: string): PlaybookPin | undefined;
     /** NOT-539: launch-bound execution workspace for start_run, if the launcher named one. */
     getExecutionWorkspace?(sessionId: string): string | undefined;
+    /** NOT-604: saved deckName of a folder assignment naming a deleted deck, if this unassigned session holds one. */
+    getUnassignedMissingDeckName?(sessionId: string): string | undefined;
   };
   /**
    * NOT-597: best-effort promotion of an unassigned session whose
@@ -194,7 +196,13 @@ function registerUnassignedTools(host: McpToolHost): void {
   const grantRequired = async () => ({
     content: [{
       type: 'text',
-      text: JSON.stringify(unassignedDeckBinding(), null, 2),
+      text: JSON.stringify(
+        unassignedDeckBinding(
+          host.sessionBinding.getUnassignedMissingDeckName?.(host.getSessionId()),
+        ),
+        null,
+        2,
+      ),
     }],
     isError: true,
   });
