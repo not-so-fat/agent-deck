@@ -7,6 +7,10 @@
 - A local MCP session whose folder assignment (`.agent-deck/use.json`) names a deck that no longer exists now resolves as if the folder had no assignment: it binds the user default deck when one is set, instead of landing in the explain-only unassigned session. A launch deck header naming a deleted deck still fails closed, and the assignment file is never rewritten.
 - With no usable default deck, the session stays explain-only and the `GRANT_REQUIRED` reply names the missing deck by its saved `deckName`, so the user can see which assignment went stale.
 
+### Fix: `agent-deck stop` never stops another home's daemon (NOT-605)
+
+- `runStop` now terminates only the supervisor and listeners recorded in the current home's `run.json`. The port-listener fallback runs only for listeners whose process environment or `/health` identity reports the same `AGENT_DECK_HOME`; otherwise it prints that the daemon on those ports belongs to another home and exits 0 without signalling it. This fixes an isolated-home `stop` SIGTERMing the production daemon on `:1110`/`:1111`.
+
 ### Feature: session receipt marks the default-deck fallback (NOT-601)
 
 - When a session is bound to the user default deck because no folder pin resolved, `display_summary` in `get_session_context` and `get_session_binding` ends with `default deck, no folder pin`, so the silent fallback is distinguishable from a pinned folder on the first turn. Folder-assigned, launch-selected and session-override receipts are unchanged, as are the status line and menubar text.
