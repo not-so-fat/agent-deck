@@ -14,11 +14,27 @@ export type UnassignedDeckBinding = {
   message: string;
 };
 
-export function unassignedDeckBinding(): UnassignedDeckBinding {
+/**
+ * NOT-604: the unassigned message, naming the deleted deck when the folder
+ * assignment named one. The saved `deckName` is display-only (the id is
+ * what failed to bind), but it is what the user recognizes.
+ */
+export function unassignedDeckMessage(missingDeckName?: string): string {
+  const trimmed = missingDeckName?.trim();
+  if (!trimmed) {
+    return UNASSIGNED_DECK_MESSAGE;
+  }
+  return (
+    `The folder was assigned to deck "${trimmed}", which no longer exists. ` +
+    UNASSIGNED_DECK_MESSAGE
+  );
+}
+
+export function unassignedDeckBinding(missingDeckName?: string): UnassignedDeckBinding {
   return {
     deck: null,
     error_code: 'GRANT_REQUIRED',
-    message: UNASSIGNED_DECK_MESSAGE,
+    message: unassignedDeckMessage(missingDeckName),
   };
 }
 

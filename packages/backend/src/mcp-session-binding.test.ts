@@ -121,6 +121,38 @@ describe('McpSessionBindingStore', () => {
     store.clearSession('s1');
     expect(store.isDefaultDeckSession('s1')).toBe(false);
   });
+
+  it('holds the missing deck name only on unassigned sessions (NOT-604)', () => {
+    const store = new McpSessionBindingStore();
+    expect(store.getUnassignedMissingDeckName('s1')).toBeUndefined();
+
+    store.markUnassigned('s1');
+    store.setUnassignedMissingDeckName('s1', 'gone');
+    expect(store.getUnassignedMissingDeckName('s1')).toBe('gone');
+
+    // Blank names never stick.
+    store.markUnassigned('s2');
+    store.setUnassignedMissingDeckName('s2', '  ');
+    expect(store.getUnassignedMissingDeckName('s2')).toBeUndefined();
+
+    // Any bind clears the name: the session is no longer explain-only.
+    store.setLaunchSession('s1', { runtimeSessionId: 'ses_launch', deckId: 'deck-a' });
+    expect(store.getUnassignedMissingDeckName('s1')).toBeUndefined();
+
+    store.markUnassigned('s3');
+    store.setUnassignedMissingDeckName('s3', 'gone');
+    store.promoteUnassignedToAssignment('s3', {
+      runtimeSessionId: 'ses_rt',
+      deckId: 'deck-a',
+      workspaceRoot: '/tmp/work',
+    });
+    expect(store.getUnassignedMissingDeckName('s3')).toBeUndefined();
+
+    store.markUnassigned('s4');
+    store.setUnassignedMissingDeckName('s4', 'gone');
+    store.clearSession('s4');
+    expect(store.getUnassignedMissingDeckName('s4')).toBeUndefined();
+  });
 });
 
 describe('McpSessionBindingStore playbook pin (NOT-537)', () => {
