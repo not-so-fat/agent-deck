@@ -10,7 +10,7 @@ shipped: 1.7.0
 
 > **Switching contract:** deck-switching behavior in this PRD (admin-elevation / C4 switch rule) is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204).
 
-> **Folder binding direction:** the folder assignment file (C1–C2) is becoming an optional override. A session with no workspace pin will bind to the user's default deck instead of landing in the explain-only session; see [optional folder binding](./design/optional-folder-binding.md). Planned, not yet shipped.
+> **Folder binding direction:** the folder assignment file (C1–C2) stops being required. A session with no workspace pin will bind to the user's default deck instead of landing in the explain-only session, and existing assignments keep precedence; see [one default deck](./design/optional-folder-binding.md). Planned, not yet shipped.
 
 Every MCP session receives a bound deck selected at connect via `x-agent-deck-deck-id` (launch session). For IDE folders, that deck comes from the folder assignment file (`<folder>/.agent-deck/use.json`); for unattended workers it comes from the launch config. Normal agents can use that deck and preserve the feedback-to-playbook suggestion loop; temporary admin mode adds narrowly scoped deck administration without becoming persistent authority.
 

@@ -11,7 +11,7 @@ Agent Deck scopes MCP to the **deck the user assigned** for a folder (`agent-dec
 
 If Agent Deck tools are missing in Cursor, don't use `mcp_auth` — run `agent-deck setup --client cursor` (global headerless HTTP fallback) and `agent-deck use <deck>` in the project folder (per-folder entry with the workspace header), then approve the project server and reload Cursor MCP. `agent-deck doctor` reports the Cursor connection state.
 
-> **Direction:** folder pins are becoming optional; see [optional folder binding](../design/optional-folder-binding.md).
+> **Direction:** folder pins are being phased out in favour of one default deck; see [one default deck](../design/optional-folder-binding.md).
 
 > **Superseded since 2.5.0 (stdio launcher):** the `command: agent-deck` / `mcp-launch` / `AGENT_DECK_WORKSPACE` mechanics described in this ADR (D1, D3, D4 and the evidence table) are legacy. A stdio launcher fails to start in Cursor when launched from the Dock (minimal `PATH`, so `agent-deck`/`node` are not found). Upgrade with `agent-deck setup --client cursor`, or `agent-deck upgrade --scan <dir>` for project entries; see [mcp-launch migration](../MCP_LAUNCH_MIGRATION.md).
 
