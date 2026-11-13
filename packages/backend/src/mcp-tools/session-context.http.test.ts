@@ -582,6 +582,9 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     expect(context.data.effective_deck_id).toBe(deckAlpha.id);
     expect(context.data.effective_deck_name).toBe('alpha');
     expect(context.data.active_source).toBe('default-deck');
+    // NOT-601: the receipt names the silent default-deck fallback.
+    expect(String(context.data.display_summary).endsWith('default deck, no folder pin')).toBe(true);
+    expect(String(context.data.display_summary).split('default deck, no folder pin')).toHaveLength(2);
 
     const binding = await callToolMcpResult(
       started.port,
@@ -594,6 +597,7 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     expect(binding.isError).toBe(false);
     expect(binding.data.active_deck_id).toBe(deckAlpha.id);
     expect(binding.data.active_source).toBe('default-deck');
+    expect(String(binding.data.display_summary).endsWith('default deck, no folder pin')).toBe(true);
   });
 
   it('NOT-600: no default set stays explain-only with GRANT_REQUIRED unchanged', async () => {
