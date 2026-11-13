@@ -651,7 +651,12 @@ describe('MCP session context bootstrap (NOT-189)', () => {
       headers,
     );
     expect(context.isError).toBe(true);
-    expect(context.data).toEqual(unassignedDeckBinding());
+    // NOT-606: still explain-only with the file left in place, but the
+    // reply now names the missing default instead of behaving as if no
+    // default was ever set.
+    expect(context.data).toEqual(
+      unassignedDeckBinding(undefined, { kind: 'missing', deckName: deckAlpha.name }),
+    );
     expect(context.data.error_code).toBe('GRANT_REQUIRED');
     // No delete-time cascade: the file stays and is revalidated per initialize.
     expect(readDefaultDeck()?.deckId).toBe(deckAlpha.id);
