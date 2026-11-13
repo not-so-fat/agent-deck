@@ -120,9 +120,9 @@ Skill format is the standard Agent Skills `SKILL.md` (name/description frontmatt
 The plugin declares no MCP server: no `mcpServers` key in the manifest, no `.mcp.json` in the bundle. The connection is plain host MCP config — pure MCP with no `agent-deck` executable lookup, so desktop-launched hosts (minimal `PATH`) connect:
 
 - `agent-deck setup --client codex|claude` writes the **global headerless fallback** (`http://127.0.0.1:1110/mcp`, no headers — `~/.codex/config.toml`, `~/.claude.json`). Folders with no assignment connect through this entry and land in the explain-only unassigned session.
-- `agent-deck use <deck>` is an optional override. It writes a same-name **per-folder entry** carrying the workspace header (`.codex/config.toml`, `.mcp.json`); it shadows the fallback where an assignment exists, and the daemon resolves the deck from `.agent-deck/use.json`.
+- `agent-deck use <deck>` is no longer recommended as a connection step (see the direction note below). It writes a same-name **per-folder entry** carrying the workspace header (`.codex/config.toml`, `.mcp.json`); it shadows the fallback where an assignment exists, and the daemon resolves the deck from `.agent-deck/use.json`.
 
-> **Direction (planned, not yet shipped):** the global fallback entry will bind to the user's default deck, so a folder with no pin still works; the per-folder entry stays as an optional override. See [optional folder binding](./design/optional-folder-binding.md).
+> **Direction (planned, not yet shipped):** the global fallback entry will bind to the user's default deck, so a folder with no pin still works; existing per-folder entries keep working and keep precedence, but no new pin tooling is planned. See [one default deck](./design/optional-folder-binding.md).
 
 When the host shows no tools, first run `agent-deck start --daemon` and `agent-deck setup --client codex|claude` (with the plugin installed), then: trust the folder, approve the project entry, assign the folder (`request_deck_assignment`, or `agent-deck use <deck>` as the fallback), then reload MCP.
 

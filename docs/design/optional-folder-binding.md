@@ -1,7 +1,7 @@
-# Design note — Folder binding is optional; the connection always works
+# Design note — One default deck, no folder pins needed
 
-**Status:** Accepted direction (2026-11-13). Not yet implemented; implementation is tracked in Linear tickets filed after this note merged.
-**Related:** `docs/decisions/cursor-mcp-config-resolution.md`, `docs/SETUP.md` (pure-MCP connection), NOT-50 (explain-only session), NOT-597 (approve assignment from the unassigned session)
+**Status:** Accepted direction (2026-11-13), revised the same day to the simplest mechanism. Not yet implemented; work is tracked in Linear (NOT-598, NOT-600, NOT-601, NOT-602, NOT-603).
+**Related:** `docs/decisions/cursor-mcp-config-resolution.md`, `docs/SETUP.md` (pure-MCP connection), `docs/superpowers/specs/2026-09-20-session-deck-switching-redesign.md`
 
 ## Problem
 
@@ -9,35 +9,46 @@ Folder binding exists for UX: the right deck follows the folder. In practice it 
 
 1. `.agent-deck/use.json` exists in the folder.
 2. `.cursor/mcp.json` exists in the folder with an `x-agent-deck-workspace` header (Cursor sends no folder information on its own).
-3. The user approved that project server in Cursor, once per folder.
+3. The user enabled that project server in Cursor Settings (Cursor shows no prompt).
 4. The folder is opened as the first root (Cursor often does not load project MCP for other roots).
 
-If any one is missing, the chat lands in the explain-only unassigned session and every task tool fails with `GRANT_REQUIRED`. A convenience feature can therefore take down the whole connection. Observed on 2026-11-13: a legacy launcher entry in one folder, and a missing pin in another. `doctor` reported "Issues: none" for the second.
+If any one is missing, the chat lands in the explain-only unassigned session and every task tool fails with `GRANT_REQUIRED`. Observed on 2026-11-13: a legacy launcher entry in one folder, a missing pin in another, and `doctor` reporting "Issues: none" for the second.
 
 ## Principle
 
-The connection must always work. Folder binding refines the deck choice; it must never be required for a deck to be reachable.
+The connection must always work, with nothing to write or approve per folder.
 
-## Proposal
+## Mechanism (the simplest one)
 
-1. **Default deck for headerless sessions.** A session with no workspace header (the global fallback entry alone) binds to the user's default deck instead of the explain-only session. The user chooses the default; it is not guessed by the agent.
-2. **Folder pin is optional.** `agent-deck use <deck>` still writes `.agent-deck/use.json` and the per-folder entry for folders that need a different deck. A missing or unapproved pin falls back to the default deck.
-3. **The session receipt is the safety net.** The first-turn `display_summary` line already names the deck and the `session (default …)` suffix, so a wrong deck is visible on the first turn. Add a source marker (for example `default deck, no folder pin`) so a silent fallback is distinguishable from a pinned folder.
-4. **`doctor` reports the real state.** Per host and folder: `pinned`, `using default deck (no folder pin)`, `pin present, not approved`, `assignment present, pin missing`. Each with one repair command.
-5. **`agent-deck use --repair-all`.** Writes missing pins for every folder that has a `use.json`. Replaces finding broken folders one at a time.
+1. The **global headerless entry** (`~/.cursor/mcp.json` and the equivalents for other hosts, written by `agent-deck setup`) is the whole connection.
+2. A session with no deck header binds to the **user's default deck**.
+3. To use another deck, the user approves the existing `switch_deck` request (this session only, or as the new default). Nothing else changes the deck.
+4. The first-turn receipt line says when the deck came from the default (`default deck, no folder pin`), so a wrong deck is visible on turn one.
+
+That is all. There is no per-folder file to write, no per-project approval, no repair command and no pin-specific `doctor` states.
+
+## What happens to existing folder pins
+
+- **Phase 1 (this work):** existing `use.json` assignments and per-folder entries keep working and keep precedence, so nothing already set up breaks. Docs, setup output and agent text stop recommending `agent-deck use` as a connection step. No new pin tooling is built.
+- **Phase 2 (decided on evidence):** run the default-deck mechanism for a while, then decide whether to remove pin writing and approval handling entirely. The decision depends on whether per-folder decks turn out to be needed in daily use.
+
+## Precedence
+
+Launch deck header, then folder assignment (an existing `use.json`), then default deck. The investigation ticket confirms this and settles storage and the set/clear surface.
 
 ## Keeps unchanged
 
 - Only the user changes the deck; `switch_deck` still needs human approval.
-- A folder with an explicit assignment keeps it. The default deck applies only when no workspace is identified.
 - Remote and grant-bound sessions keep their grants; this note covers local MCP sessions only.
+- A launch-selected deck (unattended workers) is untouched.
 
 ## Open questions
 
-- Does a user-level default deck already exist as a setting, or does it need adding? (Today the default is per workspace.)
-- Should an assigned folder whose pin is broken warn loudly (receipt marker plus `doctor`) or block until repaired? This note recommends warn, because blocking is the behaviour being removed.
-- How does NOT-597 (approve an assignment from the explain-only session) interact? If the unassigned session stops being the common landing place, NOT-597 mostly serves no-default setups.
+- Where the default deck is stored and how it is set (the investigation ticket, NOT-598).
+- Whether "this workspace by default" in `switch_deck` should keep writing a folder assignment in phase 1, or write the default deck instead.
+- How the explain-only session and its approval flow (shipped for unassigned folders) behave once most sessions are bound to the default deck.
 
 ## Not in scope
 
-Changing Cursor's per-project server approval. That is host behaviour; Agent Deck can only detect it (`~/.cursor/projects/<slug>/mcp-approvals.json`) and say so.
+- Cursor's per-project server approval. That is host behaviour; it only matters while a project entry exists.
+- A `use --repair-all` command and pin-specific `doctor` states. They only repair or diagnose pins, which this design stops requiring.
