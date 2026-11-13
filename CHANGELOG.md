@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fix: `agent-deck stop` never stops another home's daemon (NOT-605)
+
+- `runStop` now terminates only the supervisor and listeners recorded in the current home's `run.json`. The port-listener fallback runs only for listeners whose process environment or `/health` identity reports the same `AGENT_DECK_HOME`; otherwise it prints that the daemon on those ports belongs to another home and exits 0 without signalling it. This fixes an isolated-home `stop` SIGTERMing the production daemon on `:1110`/`:1111`.
+
 ### Feature: session receipt marks the default-deck fallback (NOT-601)
 
 - When a session is bound to the user default deck because no folder pin resolved, `display_summary` in `get_session_context` and `get_session_binding` ends with `default deck, no folder pin`, so the silent fallback is distinguishable from a pinned folder on the first turn. Folder-assigned, launch-selected and session-override receipts are unchanged, as are the status line and menubar text.
