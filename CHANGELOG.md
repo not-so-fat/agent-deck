@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Feature: headerless sessions bind the user default deck (NOT-600)
+
+- A local MCP session that arrives with no deck header and no usable folder assignment now binds the user's default deck (`$AGENT_DECK_HOME/default-deck.json`) instead of landing in the explain-only session, so a missing pin or unapproved project server no longer makes Agent Deck unreachable. Precedence is strict: launch deck header, then folder assignment, then default deck; hosted and grant-bound sessions are unchanged.
+- Set, show, or clear the default with `agent-deck default [<deck>] [--clear]`, or from the dashboard decks panel (per-deck "Set as default", current-default row with Clear). No default is ever auto-selected.
+- Such sessions report binding source `default-deck` in `get_session_context` and `get_session_binding`. With no default set, or a default naming a deleted deck, behaviour is unchanged (explain-only session, `GRANT_REQUIRED`).
+
 ## 2.5.1 — 2026-11-12
 
 ### Change: `agent-deck upgrade --scan <dir>` migrates every assigned folder (NOT-577)

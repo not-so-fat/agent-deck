@@ -5,9 +5,17 @@
  * cards that previously required get_session_binding + get_bound_deck.
  */
 import Fastify from 'fastify';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { AGENT_DECK_DECK_ID_HEADER } from '@agent-deck/shared';
+import {
+  AGENT_DECK_DECK_ID_HEADER,
+  AGENT_DECK_WORKSPACE_HEADER,
+  readDefaultDeck,
+  writeDefaultDeck,
+} from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
 import type { AgentDeckMCPServer } from '../mcp-server';
@@ -39,6 +47,7 @@ const REQUIRED_CONTEXT_FIELDS = [
   'effective_deck_id',
   'effective_deck_name',
   'effective_deck_source',
+  'active_source',
   'badge',
   'display_summary',
   'services',
@@ -49,15 +58,18 @@ const REQUIRED_CONTEXT_FIELDS = [
 
 describe('MCP session context bootstrap (NOT-189)', () => {
   const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
+  const tmpDirs: string[] = [];
   let mcpServer: AgentDeckMCPServer | undefined;
   let previousSkipDeckHeader: string | undefined;
   let previousSkipAdmin: string | undefined;
   let previousStubSync: string | undefined;
+  let previousHome: string | undefined;
 
   beforeEach(() => {
     previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    previousHome = process.env.AGENT_DECK_HOME;
     process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
     process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     process.env.AGENT_DECK_STUB_SYNC = 'off';
@@ -70,6 +82,14 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     }
     while (servers.length) {
       await servers.pop()?.close();
+    }
+    while (tmpDirs.length) {
+      fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
+    }
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
     }
     if (previousSkipDeckHeader === undefined) {
       delete process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
@@ -173,7 +193,7 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     };
   }
 
-  it('one call returns all ten fields with values equal to the two-call results', async () => {
+  it('one call returns all eleven fields with values equal to the two-call results', async () => {
     const { backendUrl, deckAlpha } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');
     mcpServer = started.server;
@@ -228,6 +248,7 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     expect(context.data.effective_deck_id).toBe(binding.data.effective_deck_id);
     expect(context.data.effective_deck_name).toBe(binding.data.effective_deck_name);
     expect(context.data.effective_deck_source).toBe(binding.data.effective_deck_source);
+    expect(context.data.active_source).toBe(binding.data.active_source);
     expect(context.data.badge).toBe(binding.data.badge);
     expect(context.data.display_summary).toBe(binding.data.display_summary);
 
@@ -523,5 +544,112 @@ describe('MCP session context bootstrap (NOT-189)', () => {
     }
     expect(JSON.stringify(context.data)).not.toContain(deckAlpha.id);
     expect(JSON.stringify(context.data)).not.toContain('alpha');
+  });
+
+  function useIsolatedHome(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not600-home-'));
+    tmpDirs.push(dir);
+    process.env.AGENT_DECK_HOME = dir;
+    return dir;
+  }
+
+  function makeWorkspace(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not600-ws-'));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  it('NOT-600: unassigned folder falls back to the user default deck', async () => {
+    const { backendUrl, deckAlpha } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    useIsolatedHome();
+    writeDefaultDeck({ deckId: deckAlpha.id, deckName: deckAlpha.name });
+
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: makeWorkspace() };
+    const sessionId = await openSession(started.port, 1, headers);
+
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_context',
+      {},
+      2,
+      headers,
+    );
+    expect(context.isError).toBe(false);
+    expect(context.data.effective_deck_id).toBe(deckAlpha.id);
+    expect(context.data.effective_deck_name).toBe('alpha');
+    expect(context.data.active_source).toBe('default-deck');
+
+    const binding = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_binding',
+      {},
+      3,
+      headers,
+    );
+    expect(binding.isError).toBe(false);
+    expect(binding.data.active_deck_id).toBe(deckAlpha.id);
+    expect(binding.data.active_source).toBe('default-deck');
+  });
+
+  it('NOT-600: no default set stays explain-only with GRANT_REQUIRED unchanged', async () => {
+    const { backendUrl } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    useIsolatedHome();
+    expect(readDefaultDeck()).toBeNull();
+
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: makeWorkspace() };
+    const init = await postInitialize(started.port, 1, 'vitest', headers);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId!,
+      'get_session_context',
+      {},
+      2,
+      headers,
+    );
+    expect(context.isError).toBe(true);
+    expect(context.data).toEqual(unassignedDeckBinding());
+    expect(context.data.error_code).toBe('GRANT_REQUIRED');
+  });
+
+  it('NOT-600: a default deck that no longer exists stays explain-only', async () => {
+    const { backendUrl, db, deckAlpha } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    useIsolatedHome();
+    writeDefaultDeck({ deckId: deckAlpha.id, deckName: deckAlpha.name });
+    expect(await db.deleteDeck(deckAlpha.id)).toBe(true);
+
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: makeWorkspace() };
+    const init = await postInitialize(started.port, 1, 'vitest', headers);
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId!,
+      'get_session_context',
+      {},
+      2,
+      headers,
+    );
+    expect(context.isError).toBe(true);
+    expect(context.data).toEqual(unassignedDeckBinding());
+    expect(context.data.error_code).toBe('GRANT_REQUIRED');
+    // No delete-time cascade: the file stays and is revalidated per initialize.
+    expect(readDefaultDeck()?.deckId).toBe(deckAlpha.id);
   });
 });

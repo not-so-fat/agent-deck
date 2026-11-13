@@ -8,7 +8,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { generateId } from '@agent-deck/shared';
+import {
+  AGENT_DECK_WORKSPACE_HEADER,
+  generateId,
+  writeDefaultDeck,
+} from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
 import type { AgentDeckMCPServer } from '../mcp-server';
@@ -39,11 +43,13 @@ describe('MCP human-approved deck assignment (NOT-597)', () => {
   let previousSkipDeckHeader: string | undefined;
   let previousSkipAdmin: string | undefined;
   let previousStubSync: string | undefined;
+  let previousHome: string | undefined;
 
   beforeEach(() => {
     previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    previousHome = process.env.AGENT_DECK_HOME;
     process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
     process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     process.env.AGENT_DECK_STUB_SYNC = 'off';
@@ -80,11 +86,23 @@ describe('MCP human-approved deck assignment (NOT-597)', () => {
     } else {
       process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
     }
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
+    }
   });
 
   function makeWorkspace(): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-assign-'));
     tmpDirs.push(dir);
+    return dir;
+  }
+
+  function useIsolatedHome(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not600-home-'));
+    tmpDirs.push(dir);
+    process.env.AGENT_DECK_HOME = dir;
     return dir;
   }
 
@@ -395,5 +413,47 @@ describe('MCP human-approved deck assignment (NOT-597)', () => {
     const fresh = await callToolMcpResult(started.port, freshId, 'get_session_context', {}, 21);
     expect(fresh.isError).toBe(true);
     expect(fresh.data.error_code).toBe('GRANT_REQUIRED');
+  });
+
+  it('NOT-600: folder assignment wins over the user default deck', async () => {
+    const { backendUrl, deckA, deckB } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    useIsolatedHome();
+    writeDefaultDeck({ deckId: deckA.id, deckName: deckA.name });
+
+    const workspace = makeWorkspace();
+    fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, '.agent-deck', 'use.json'),
+      JSON.stringify({ version: 3, deckId: deckB.id, deckName: deckB.name }),
+    );
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: workspace };
+
+    const sessionId = await openSession(started.port, 1, headers);
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_context',
+      {},
+      2,
+      headers,
+    );
+    expect(context.isError).toBe(false);
+    expect(context.data.effective_deck_id).toBe(deckB.id);
+    expect(context.data.active_source).not.toBe('default-deck');
+
+    const binding = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_binding',
+      {},
+      3,
+      headers,
+    );
+    expect(binding.isError).toBe(false);
+    expect(binding.data.active_deck_id).toBe(deckB.id);
+    expect(binding.data.active_source).toBe('workspace');
   });
 });

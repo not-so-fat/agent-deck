@@ -70,6 +70,8 @@ export type McpToolHost = {
     isUnassigned?(sessionId: string): boolean;
     /** NOT-597: human-approved assignment session (promoted from unassigned). */
     isAssignmentSession?(sessionId: string): boolean;
+    /** NOT-600: session bound from the user default deck. */
+    isDefaultDeckSession?(sessionId: string): boolean;
     hasSessionDeckOverride(sessionId: string): boolean;
     /** NOT-537: pinned playbook version for this MCP session, if any. */
     getPlaybookPin?(sessionId: string): PlaybookPin | undefined;
@@ -468,6 +470,7 @@ function describeBindingDisplay(
     isLaunchSession: host.sessionBinding.isLaunchSession(sessionId),
     activeDeckId,
     workspaceDefaultDeckId: workspaceDefault?.deckId ?? null,
+    isDefaultDeckSession: host.sessionBinding.isDefaultDeckSession?.(sessionId) ?? false,
   });
   // The override marker follows the id-based source, never the display
   // names: use.json deckName goes stale after a deck rename (heal only
@@ -529,7 +532,7 @@ async function handleAssignedGetSessionContext(host: McpToolHost): Promise<unkno
     const sessionId = host.getSessionId();
     const deck = await loadAuthorizedBoundDeck(host);
     const badge = host.badgeBySession.get(sessionId);
-    const { snapshot, displaySummary } = describeBindingDisplay(host, sessionId, deck, badge);
+    const { snapshot, displaySummary, activeSource } = describeBindingDisplay(host, sessionId, deck, badge);
     const playbooks = await applyPlaybookPinToSummaries(
       host,
       getSessionPlaybookPin(host),
@@ -540,6 +543,7 @@ async function handleAssignedGetSessionContext(host: McpToolHost): Promise<unkno
       effective_deck_id: deck?.id,
       effective_deck_name: deck?.name,
       effective_deck_source: resolveDeckBindingSource(snapshot as Parameters<typeof resolveDeckBindingSource>[0]),
+      active_source: activeSource,
       badge,
       display_summary: displaySummary,
       services: deck?.services ?? [],
@@ -755,7 +759,7 @@ function registerRuntimeTools(host: McpToolHost): void {
   r('get_session_binding', {
     title: 'Get Session Binding',
     description:
-      'Show workspace, active deck, and saved workspace default for this MCP session (active source: session, workspace, or launch).',
+      'Show workspace, active deck, and saved workspace default for this MCP session (active source: session, workspace, launch, or default-deck).',
     inputSchema: {},
   }, async () => handleAssignedGetSessionBinding(host));
 

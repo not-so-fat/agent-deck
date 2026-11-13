@@ -8,6 +8,7 @@ export * from './collection-warnings';
 export * from './oauth-session';
 export * from './local-mcp-manifest';
 export * from './agent-deck-home';
+export * from './default-deck';
 export * from './trigger-hygiene';
 export * from './workspace-key';
 export * from './git-exclude';

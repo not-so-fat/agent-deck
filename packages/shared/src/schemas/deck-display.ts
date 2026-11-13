@@ -60,9 +60,10 @@ export type DeckCardCounts = z.infer<typeof DeckCardCountsSchema>;
  * `session` = session-only override that differs from the saved workspace
  * default (compared by deck id); `workspace` = following the saved workspace
  * default (or nothing overriding it); `launch` = launch-selected deck with no
- * saved default.
+ * saved default; `default-deck` = following the user default deck
+ * (`$AGENT_DECK_HOME/default-deck.json`, NOT-600).
  */
-export const BindingActiveSourceSchema = z.enum(['session', 'workspace', 'launch']);
+export const BindingActiveSourceSchema = z.enum(['session', 'workspace', 'launch', 'default-deck']);
 
 export type BindingActiveSource = z.infer<typeof BindingActiveSourceSchema>;
 

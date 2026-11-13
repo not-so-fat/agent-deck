@@ -1,7 +1,7 @@
 import { Deck } from "@agent-deck/shared";
 import type { LiveBinding } from "@agent-deck/shared";
 import { Button } from "@/components/ui/button";
-import { Layers, Plus, Trash2, Copy, Download } from "lucide-react";
+import { Layers, Plus, Trash2, Copy, Download, Star, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { createDeckErrorToast } from "@/lib/create-deck-error";
@@ -27,6 +27,11 @@ interface DeckManagementPanelProps {
   isLoading: boolean;
 }
 
+type DefaultDeckResponse = {
+  success: boolean;
+  data: { version: number; deckId: string; deckName: string; updatedAt: string } | null;
+};
+
 export default function DeckManagementPanel({
   decks,
   editingDeckId,
@@ -48,6 +53,63 @@ export default function DeckManagementPanel({
     () => countSessionsByDeckId(bindingsData?.data ?? []),
     [bindingsData],
   );
+
+  // NOT-600: user default deck — headerless local sessions bind to it when
+  // no launch deck header and no folder assignment resolve.
+  const { data: defaultDeckData } = useQuery<DefaultDeckResponse>({
+    queryKey: ['/api/default-deck'],
+  });
+  const defaultDeckId = defaultDeckData?.data?.deckId ?? null;
+
+  const setDefaultDeckMutation = useMutation({
+    mutationFn: async (deck: Deck) => {
+      return apiRequest("PUT", "/api/default-deck", { deckId: deck.id });
+    },
+    onSuccess: async (_response, deck) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/default-deck"] });
+      toast({
+        title: "Default deck set",
+        description: `${deck.name} is now the default deck for headerless sessions.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to set default deck",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const clearDefaultDeckMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest("DELETE", "/api/default-deck", {});
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/default-deck"] });
+      toast({
+        title: "Default deck cleared",
+        description: "Headerless sessions return to the explain-only session.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to clear default deck",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSetDefaultDeck = (e: React.MouseEvent, deck: Deck) => {
+    e.stopPropagation();
+    setDefaultDeckMutation.mutate(deck);
+  };
+
+  const handleClearDefaultDeck = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    clearDefaultDeckMutation.mutate();
+  };
 
   const createDeckMutation = useMutation({
     mutationFn: async (name: string) => {
@@ -210,6 +272,31 @@ export default function DeckManagementPanel({
           </Button>
         </div>
 
+        <div
+          className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5"
+          data-testid="default-deck-row"
+        >
+          <p className="truncate text-xs text-gray-400">
+            Default deck:{" "}
+            <span className="text-white">
+              {defaultDeckData?.data ? defaultDeckData.data.deckName : "none"}
+            </span>
+          </p>
+          {defaultDeckData?.data && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 px-1 text-xs text-gray-400 hover:text-white"
+              onClick={handleClearDefaultDeck}
+              title="Clear the default deck"
+              data-testid="clear-default-deck"
+            >
+              <X className="w-3 h-3 mr-1" />
+              Clear
+            </Button>
+          )}
+        </div>
+
         <div className="flex-1 overflow-y-auto">
           <div className="space-y-2">
             {decks.map((deck) => {
@@ -230,6 +317,18 @@ export default function DeckManagementPanel({
                   data-testid={`deck-item-${deck.id}`}
                 >
                   <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                    {deck.id !== defaultDeckId && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="h-5 w-5 p-0"
+                        onClick={(e) => handleSetDefaultDeck(e, deck)}
+                        title="Set as default deck"
+                        data-testid={`set-default-deck-${deck.id}`}
+                      >
+                        <Star className="w-2 h-2" />
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="secondary"
@@ -265,6 +364,11 @@ export default function DeckManagementPanel({
                       className={`font-semibold text-sm pr-16 ${isEditing ? "text-yellow-300" : "text-white"}`}
                     >
                       {deck.name}
+                      {deck.id === defaultDeckId && (
+                        <span className="ml-2 rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-px text-[10px] font-normal text-yellow-300">
+                          Default
+                        </span>
+                      )}
                     </h3>
                     <p className="text-xs text-gray-400 select-none pointer-events-none">
                       {subtitle}

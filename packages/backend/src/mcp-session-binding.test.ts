@@ -101,6 +101,26 @@ describe('McpSessionBindingStore', () => {
     store.clearSession('s1');
     expect(store.isLaunchSession('s1')).toBe(false);
   });
+
+  it('tracks the user-default marker per session (NOT-600)', () => {
+    const store = new McpSessionBindingStore();
+    store.setLaunchSession('s1', {
+      runtimeSessionId: 'ses_launch',
+      deckId: '11111111-1111-4111-8111-111111111111',
+    });
+    store.setLaunchSession('s2', {
+      runtimeSessionId: 'ses_launch_2',
+      deckId: '22222222-2222-4222-8222-222222222222',
+    });
+    expect(store.isDefaultDeckSession('s1')).toBe(false);
+
+    store.markDefaultDeckSession('s1');
+    expect(store.isDefaultDeckSession('s1')).toBe(true);
+    expect(store.isDefaultDeckSession('s2')).toBe(false);
+
+    store.clearSession('s1');
+    expect(store.isDefaultDeckSession('s1')).toBe(false);
+  });
 });
 
 describe('McpSessionBindingStore playbook pin (NOT-537)', () => {
@@ -266,6 +286,40 @@ describe('resolveBindingActiveSource (NOT-211)', () => {
         workspaceDefaultDeckId: null,
       }),
     ).toBe('workspace');
+  });
+
+  it('returns default-deck for a user-default-bound session (NOT-600)', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckA,
+        workspaceDefaultDeckId: null,
+        isDefaultDeckSession: true,
+      }),
+    ).toBe('default-deck');
+  });
+
+  it('keeps default-deck even when a folder assignment drifts in later (NOT-600)', () => {
+    // The marker describes how this session bound; a use.json written after
+    // initialize never moves the live session, so the source stays put.
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckA,
+        workspaceDefaultDeckId: deckB,
+        isDefaultDeckSession: true,
+      }),
+    ).toBe('default-deck');
+  });
+
+  it('keeps launch for a header-bound session when the flag is absent (NOT-600)', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckB,
+        workspaceDefaultDeckId: null,
+      }),
+    ).toBe('launch');
   });
 });
 

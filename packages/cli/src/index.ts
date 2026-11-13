@@ -26,6 +26,7 @@ import { runReindexCommand, runStoreCommand } from './store';
 import { runUpgrade } from './upgrade';
 import { runInstall } from './install';
 import { runUseCommand } from './use';
+import { runDefaultCommand } from './default-deck';
 import { runRunCommand } from './run';
 import { runMcpLaunch } from './mcp-launcher';
 import { runExperimentCommand } from './experiment';
@@ -56,6 +57,7 @@ function printUsage() {
   agent-deck menubar
   agent-deck setup --client codex|cursor|claude|claude-desktop|muse [--scope global|project] [--start]
   agent-deck use <deck> [--client cursor|claude|codex|muse|both] [--refresh] [--mcp-port PORT]
+  agent-deck default [<deck>] [--clear]
   agent-deck run <deck> --client claude|codex|cursor|muse --cwd <dir> (--prompt <text>|--prompt-file <path>) [--tools readonly|edit] [--log <path>] [--resume <sessionId>] [--detach]
   agent-deck run status <runId> [--json]
   agent-deck run log <runId> [--tail <n>] [--follow] [--json]
@@ -93,6 +95,7 @@ const TOP_LEVEL_COMMANDS = [
   'menubar',
   'setup',
   'use',
+  'default',
   'run',
   'install',
   'upgrade',
@@ -434,6 +437,8 @@ export async function runCli(argv: string[]): Promise<number> {
     }
     case 'use':
       return runUseCommand(rest);
+    case 'default':
+      return runDefaultCommand(rest);
     case 'run':
       return runRunCommand(rest);
     // NOT-566/567/572: retained stdio launcher for Claude Desktop
