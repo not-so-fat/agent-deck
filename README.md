@@ -53,7 +53,7 @@ Per-client details, restart and verify steps, and what `setup` installs: [Agent 
 
 **5. Add external MCP servers and API keys** (Linear, Notion, Slack, …) in the dashboard — OAuth in the browser, API keys pasted once into Keychain — then drag the cards onto your deck.
 
-**6. Pick a deck each session.** Tell the agent which deck — *“use the dev deck”*, or mid-session *“switch to my personal deck”* — and approve the switch as This session only or This workspace by default. Or run `agent-deck use <deck>` in a repo so the deck binds on session open without naming it.
+**6. Pick a deck each session.** Tell the agent which deck — *“use the dev deck”*, or mid-session *“switch to my personal deck”* — and approve the switch as This session only or This workspace by default. Optionally, run `agent-deck use <deck>` in a repo so that repo always opens on a different deck than your default. Folder binding is an override, not a requirement for the connection to work (direction: [optional folder binding](docs/design/optional-folder-binding.md); the default-deck fallback is planned, not yet shipped).
 
 Same decks on another machine: keep `~/.agent-deck/` in a private Git repository you own, push and pull it yourself, then run `agent-deck reindex` — see [Store format](docs/STORE_FORMAT.md).
 
@@ -92,7 +92,7 @@ Skills are never copied by hand: the muse copies come from root `skills/` via `s
 
 1. Install agent-deck and start it (Quick Start above): `npx @agent-deck/cli@latest install`, `agent-deck start --daemon`, then `agent-deck doctor`.
 2. Install the **agent-deck** plugin from the Cursor Marketplace (or, for local testing, copy this repo to `~/.cursor/plugins/local/agent-deck` and run **Developer: Reload Window**). The plugin adds the four skills and declares no MCP server — Cursor connects over plain HTTP MCP (global fallback from `agent-deck setup --client cursor`, per-folder entry from `agent-deck use <deck>`), with no `agent-deck` CLI on `PATH`; the plugin stores no secrets.
-3. Create a deck in the dashboard (`agent-deck open`), then bind a project folder: `agent-deck use <deck> --client cursor`, and reload Cursor.
+3. Create a deck in the dashboard (`agent-deck open`), then reload Cursor. To pin a project folder to a specific deck, run `agent-deck use <deck> --client cursor` in it and enable the project `agent-deck` server in Cursor Settings (Tools & MCP). Folder pinning is optional; see [optional folder binding](docs/design/optional-folder-binding.md).
 4. **Test task:** open that folder and ask the agent: *"Use the agent-deck-setup skill to check my Agent Deck setup and tell me what is missing."* Expected: it runs read-only checks (`agent-deck --version`, `agent-deck status`, `agent-deck deck list`) and reports the result. Then try delegation: *"Use agent-deck-run to have a read-only claude session on deck <deck> list the files in this folder, and report its answer."* Expected: it calls `start_run` with `client: "claude"` and `tools: "readonly"`, polls `get_run` until the run is terminal, and reports the session's answer with the `runId`, `sessionId`, tool profile, and terminal state.
 
 ## Everyday commands
@@ -100,7 +100,7 @@ Skills are never copied by hand: the muse copies come from root `skills/` via `s
 ```bash
 agent-deck start --daemon
 agent-deck open             # re-open dashboard with a fresh auth cookie
-agent-deck use <deck>       # bind this folder to a deck
+agent-deck use <deck>       # optional: pin this folder to a deck (override)
 agent-deck export all -o backup.agent-deck.json
 agent-deck credential list
 agent-deck exec --connections cred_id -- <command>

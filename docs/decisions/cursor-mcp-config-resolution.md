@@ -1,6 +1,6 @@
 # ADR — Cursor MCP config resolution (Agent Deck contract)
 
-**Status:** Accepted (updated NOT-50)  
+**Status:** Accepted (updated NOT-50); **connection mechanics superseded in 2.5.0** — Cursor now connects over pure MCP (HTTP, no `mcp-launch`, no `agent-deck` on `PATH`). See the note below. The precedence and fail-closed rules still apply.  
 **Date:** 2026-09-09  
 **Linear:** NOT-54 (decision), NOT-52 (diagnostics consumer), NOT-50 (no-deck explain session)  
 **Related:** [PRD_TRUSTED_AGENT_SESSIONS.md](../PRD_TRUSTED_AGENT_SESSIONS.md), shipped folder assignment (`agent-deck use` → `.agent-deck/use.json` v3)
@@ -9,7 +9,11 @@
 
 Agent Deck scopes MCP to the **deck the user assigned** for a folder (`agent-deck use` → `.agent-deck/use.json` + `mcp-launch` with `x-agent-deck-deck-id`). Cursor loads MCP from two files and may start a user-level stdio launcher with a cwd that is **not** the bound workspace. Without an explicit contract, agents hit `GRANT_REQUIRED`, bare-URL connections with no assignment, or Cursor’s `mcp_auth` dead end.
 
-If Agent Deck tools are missing in Cursor, don't use `mcp_auth` — run `agent-deck use <deck> --client cursor` in the project folder, then reload Cursor MCP.
+If Agent Deck tools are missing in Cursor, don't use `mcp_auth` — run `agent-deck setup --client cursor` (global headerless HTTP fallback) and `agent-deck use <deck>` in the project folder (per-folder entry with the workspace header), then approve the project server and reload Cursor MCP. `agent-deck doctor` reports the Cursor connection state.
+
+> **Direction:** folder pins are becoming optional; see [optional folder binding](../design/optional-folder-binding.md).
+
+> **Superseded since 2.5.0 (stdio launcher):** the `command: agent-deck` / `mcp-launch` / `AGENT_DECK_WORKSPACE` mechanics described in this ADR (D1, D3, D4 and the evidence table) are legacy. A stdio launcher fails to start in Cursor when launched from the Dock (minimal `PATH`, so `agent-deck`/`node` are not found). Upgrade with `agent-deck setup --client cursor`, or `agent-deck upgrade --scan <dir>` for project entries; see [mcp-launch migration](../MCP_LAUNCH_MIGRATION.md).
 
 > **Switching contract note:** the `use` + MCP reload step above is missing-tools config repair, not the deck-switch approval path. Deck switching follows [Session/default deck-switching redesign](../superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204), which excludes IDE reload from the switch path.
 
