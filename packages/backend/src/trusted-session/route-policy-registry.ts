@@ -62,6 +62,25 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+$/,
     policy: 'requireAgentOrDashboard',
   },
+  // NOT-597: static assignment paths must win over the :requestId
+  // pattern below ("pending" would otherwise parse as a request id).
+  // The MCP promotion poll (`by-mcp`) is loopback-public: the MCP
+  // session id is unguessable and the poll binds nothing by itself.
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/trusted-session\/deck-assignment\/pending$/,
+    policy: 'allowPublic',
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/trusted-session\/deck-assignment\/by-mcp\/[^/]+$/,
+    policy: 'allowPublic',
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/trusted-session\/deck-assignment\/[^/]+$/,
+    policy: 'requireAgentOrDashboard',
+  },
   // NOT-539: MCP start_run / get_run / cancel_run on the session's own deck and launch workspace.
   { methods: ['POST'], pattern: /^\/api\/trusted-session\/agent-runs$/, policy: 'requireAgentResource' },
   { methods: ['GET'], pattern: /^\/api\/trusted-session\/agent-runs\/[^/]+$/, policy: 'requireAgentResource' },
@@ -149,6 +168,18 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   {
     methods: ['POST'],
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+\/resolve$/,
+    policy: 'requireDashboard',
+  },
+  // NOT-597: human-approved assignment for unassigned folders. Creation
+  // is loopback-public (creation binds nothing); resolve is dashboard-only.
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/trusted-session\/deck-assignment$/,
+    policy: 'allowPublic',
+  },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/trusted-session\/deck-assignment\/[^/]+\/resolve$/,
     policy: 'requireDashboard',
   },
 

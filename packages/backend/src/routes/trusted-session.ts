@@ -789,6 +789,276 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
     },
   );
 
+  // NOT-597: human-approved assignment for unassigned (headerless)
+  // folders. Creation is request-only and binds nothing; the deck is
+  // chosen by the human at resolve time. The folder path comes from the
+  // agent's `workspace` argument, is validated here, and is displayed in
+  // full to the approver — it is only trusted after approval.
+  fastify.post<{ Body: { mcpSessionId?: string; workspace?: string; workspaceRoot?: string; reason?: string } }>(
+    '/deck-assignment',
+    async (request, reply) => {
+      try {
+        const { validateAssignmentWorkspace } = await import('../deck-assignment-validation');
+        const mcpSessionId = request.body?.mcpSessionId?.trim();
+        if (!mcpSessionId) {
+          return reply.status(400).send({ success: false, error: 'mcpSessionId required' });
+        }
+        const rawWorkspace = request.body?.workspaceRoot ?? request.body?.workspace;
+        const validated = validateAssignmentWorkspace(rawWorkspace);
+        if (!validated.ok) {
+          return reply.status(400).send({ success: false, error: validated.error });
+        }
+        const reason = typeof request.body?.reason === 'string' ? request.body.reason.trim() : '';
+        const record = store.createDeckAssignmentRequest({
+          mcpSessionId,
+          workspaceRoot: validated.workspaceRoot,
+          ...(reason ? { reason } : {}),
+        });
+        return reply.send({
+          success: true,
+          data: {
+            requestId: record.requestId,
+            status: record.status,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            workspaceRoot: validated.workspaceRoot,
+            presentation: {
+              kind: 'deck_assignment_request',
+              title: 'Assign a deck to this folder?',
+              body:
+                `Agent requested a deck assignment for folder "${validated.workspaceRoot}". ` +
+                `No deck is assigned yet; a human must pick the deck. The session stays unassigned until approval.`,
+              status: record.status,
+              expiresAt: record.expiresAt,
+              channels: ['host-elicitation', 'browser'],
+            },
+          },
+        });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  // NOT-597: menubar/dashboard pending inbox for assignment requests.
+  // Mirrors the deck-switch pending endpoint: display-safe labels plus
+  // the full folder path (the human verifies it) and a secret-free
+  // approval path.
+  fastify.get('/deck-assignment/pending', async (_request, reply) => {
+    const pending = store.listPendingDeckAssignmentRequests();
+    const data = pending.map((record) => {
+      const approvalPath = `/deck-assignment/approve?request=${encodeURIComponent(record.requestId)}`;
+      return {
+        requestId: record.requestId,
+        mcpSessionId: record.mcpSessionId,
+        workspaceRoot: record.workspaceRoot,
+        ...(record.reason ? { reason: record.reason } : {}),
+        status: record.status,
+        createdAt: record.createdAt,
+        expiresAt: record.expiresAt,
+        approvalPath,
+      };
+    });
+    return reply.send({ success: true, data });
+  });
+
+  // NOT-597: MCP promotion poll. The MCP server calls this after a
+  // dashboard approval to bind the same session without a reload.
+  // Returns the consumed assignment (with runtime session + deck) or
+  // 404 when nothing is consumed for the session.
+  fastify.get<{ Params: { mcpSessionId: string } }>(
+    '/deck-assignment/by-mcp/:mcpSessionId',
+    async (request, reply) => {
+      const mcpSessionId = request.params.mcpSessionId?.trim();
+      if (!mcpSessionId) {
+        return reply.status(400).send({ success: false, error: 'mcpSessionId required' });
+      }
+      const record = store.getConsumedDeckAssignmentByMcp(mcpSessionId);
+      if (!record || !record.runtimeSessionId || !record.deckId) {
+        return reply.status(404).send({ success: false, error: 'No consumed assignment for session' });
+      }
+      const deck = await fastify.db.getDeck(record.deckId);
+      return reply.send({
+        success: true,
+        data: {
+          requestId: record.requestId,
+          status: record.status,
+          mcpSessionId: record.mcpSessionId,
+          workspaceRoot: record.workspaceRoot,
+          runtimeSessionId: record.runtimeSessionId,
+          deckId: record.deckId,
+          ...(deck ? { deckName: deck.name } : {}),
+          ...(record.decision ? { decision: record.decision } : {}),
+        },
+      });
+    },
+  );
+
+  fastify.get<{ Params: { requestId: string } }>(
+    '/deck-assignment/:requestId',
+    async (request, reply) => {
+      try {
+        const requestId = request.params.requestId?.trim();
+        if (!requestId) {
+          return reply.status(400).send({ success: false, error: 'requestId required' });
+        }
+        const record = store.getDeckAssignmentRequest(requestId);
+        if (!record) {
+          return reply.status(404).send({ success: false, error: 'Deck-assignment request not found' });
+        }
+        const principal = request.requestPrincipal;
+        if (principal?.kind !== 'dashboard') {
+          // Agent view: lifecycle only, no folder path beyond what the
+          // agent supplied and no deck (the human picks it).
+          return reply.send({
+            success: true,
+            data: {
+              requestId: record.requestId,
+              status: record.status,
+              createdAt: record.createdAt,
+              expiresAt: record.expiresAt,
+            },
+          });
+        }
+        const deck = record.deckId ? await fastify.db.getDeck(record.deckId) : null;
+        return reply.send({
+          success: true,
+          data: {
+            requestId: record.requestId,
+            status: record.status,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            resolvedAt: record.resolvedAt,
+            mcpSessionId: record.mcpSessionId,
+            workspaceRoot: record.workspaceRoot,
+            ...(record.reason ? { reason: record.reason } : {}),
+            ...(record.runtimeSessionId ? { runtimeSessionId: record.runtimeSessionId } : {}),
+            ...(record.deckId ? { deckId: record.deckId } : {}),
+            ...(deck ? { deckName: deck.name } : {}),
+            ...(record.decision ? { decision: record.decision } : {}),
+          },
+        });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.post<{ Params: { requestId: string } }>(
+    '/deck-assignment/:requestId/resolve',
+    async (request, reply) => {
+      try {
+        const requestId = request.params.requestId?.trim();
+        if (!requestId) {
+          return reply.status(400).send({ success: false, error: 'requestId required' });
+        }
+        const body = (request.body ?? {}) as { deckId?: unknown; decision?: unknown };
+        const decision = typeof body.decision === 'string' ? body.decision.trim() : '';
+        if (decision !== 'session' && decision !== 'workspace-default' && decision !== 'decline') {
+          return reply.status(400).send({
+            success: false,
+            error: 'decision must be one of: session, workspace-default, decline',
+          });
+        }
+        const deckId = typeof body.deckId === 'string' ? body.deckId.trim() : '';
+        if (decision !== 'decline' && !deckId) {
+          return reply.status(400).send({ success: false, error: 'deckId required' });
+        }
+        if (decision !== 'decline') {
+          const target = await fastify.db.getDeck(deckId);
+          if (!target) {
+            return reply.status(404).send({ success: false, error: 'Deck not found' });
+          }
+        }
+        const { validateAssignmentWorkspace } = await import('../deck-assignment-validation');
+        const result = store.applyDeckAssignmentResolution(
+          requestId,
+          decision === 'decline' ? { decision } : { deckId, decision },
+          {
+            validateWorkspace: (workspaceRoot) => {
+              const validated = validateAssignmentWorkspace(workspaceRoot);
+              return validated.ok ? { ok: true } : { ok: false, error: validated.error };
+            },
+          },
+        );
+        switch (result.outcome) {
+          case 'not-found':
+            return reply.status(404).send({ success: false, error: 'Deck-assignment request not found' });
+          case 'expired':
+            throw new TrustedAuthError('DECK_SWITCH_EXPIRED', 'Deck-assignment request expired');
+          case 'already-resolved':
+            return reply.status(409).send({
+              success: false,
+              error: `Deck-assignment request already resolved (status=${result.request.status})`,
+              error_code: 'DECK_SWITCH_CONSUMED',
+              status: result.request.status,
+            });
+          case 'target-missing':
+            return reply.status(404).send({ success: false, error: 'Deck not found' });
+          case 'workspace-invalid':
+            return reply.status(400).send({ success: false, error: result.error });
+          case 'assignment-failed':
+            return reply.status(500).send({
+              success: false,
+              error: `Workspace assignment write failed: ${result.error}`,
+            });
+          case 'declined':
+            return reply.send({
+              success: true,
+              data: { requestId, decision, status: 'declined' },
+            });
+          case 'resolved': {
+            const deck = await fastify.db.getDeck(result.deckId);
+            const liveRegistry = fastify.liveDisplayRegistry as LiveDisplayRegistry | undefined;
+            if (deck && liveRegistry && result.request.mcpSessionId) {
+              // The commit created the runtime session; upsert the live
+              // entry so the statusline names the new deck without reload.
+              // Session scope still leaves use.json untouched — only the
+              // in-memory live entry moves.
+              try {
+                liveRegistry.upsert({
+                  mcpSessionId: result.request.mcpSessionId,
+                  workspaceRoot: result.workspaceRoot,
+                  deckId: deck.id,
+                  deckName: deck.name,
+                  source: 'session_override',
+                  cardCounts: countDeckCards(deck),
+                  updatedAt: new Date().toISOString(),
+                });
+              } catch {
+                // Best effort; the binding is already committed.
+              }
+            }
+            return reply.send({
+              success: true,
+              data: {
+                requestId,
+                decision: result.decision,
+                status: 'consumed',
+                deckId: result.deckId,
+                ...(deck ? { deckName: deck.name } : {}),
+                workspaceRoot: result.workspaceRoot,
+                runtimeSessionId: result.runtimeSessionId,
+                mcpSessionId: result.request.mcpSessionId,
+              },
+            });
+          }
+        }
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
   fastify.post<{ Body: { mcpSessionId: string } }>(
     '/mcp/disconnect-deck',
     async (request, reply) => {

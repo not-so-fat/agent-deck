@@ -9,6 +9,7 @@ import {
   RUNTIME_SESSION_LEASE_MS,
   ensureGitExcluded,
   prefixTrustedId,
+  writePerFolderMcpEntries,
   type AgentSessionMode,
   type DeckSwitchDecision,
   type RuntimeSession,
@@ -146,6 +147,63 @@ export type TrustedSessionStoreOptions = {
   deckExists?: (deckId: string) => boolean;
   now?: () => Date;
 };
+
+/** Default validity of a deck-assignment request (NOT-597, same as switch). */
+export const DECK_ASSIGNMENT_REQUEST_TTL_MS = 30 * 60 * 1000;
+
+export type DeckAssignmentRequestStatus = 'pending' | 'approved' | 'declined' | 'expired' | 'consumed';
+
+export type DeckAssignmentRequestRow = {
+  id: string;
+  mcp_session_id: string;
+  workspace_root: string;
+  reason: string | null;
+  status: DeckAssignmentRequestStatus;
+  created_at: string;
+  expires_at: string;
+  resolved_at: string | null;
+  runtime_session_id: string | null;
+  deck_id: string | null;
+  decision: string | null;
+};
+
+/**
+ * NOT-597: human-approved assignment for an unassigned (headerless) folder.
+ * The agent supplies only the folder (`workspaceRoot`, displayed in full
+ * to the approver) and an optional free-text reason. The deck is chosen
+ * by the human at resolve time — creation never carries a deck.
+ */
+export type DeckAssignmentRequest = {
+  requestId: string;
+  mcpSessionId: string;
+  workspaceRoot: string;
+  reason?: string;
+  status: DeckAssignmentRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+  resolvedAt: string | null;
+  runtimeSessionId?: string;
+  deckId?: string;
+  decision?: string;
+};
+
+/** Result of the atomic assignment approval commit (NOT-597). */
+export type DeckAssignmentResolutionOutcome =
+  | { outcome: 'not-found' }
+  | { outcome: 'expired'; request: DeckAssignmentRequest }
+  | { outcome: 'already-resolved'; request: DeckAssignmentRequest }
+  | { outcome: 'declined'; request: DeckAssignmentRequest }
+  | {
+      outcome: 'resolved';
+      request: DeckAssignmentRequest;
+      runtimeSessionId: string;
+      deckId: string;
+      workspaceRoot: string;
+      decision: 'session' | 'workspace-default';
+    }
+  | { outcome: 'target-missing' }
+  | { outcome: 'workspace-invalid'; error: string }
+  | { outcome: 'assignment-failed'; error: string };
 
 function useJsonPath(workspaceRoot: string): string {
   return path.join(workspaceRoot, '.agent-deck', 'use.json');
@@ -343,6 +401,23 @@ export class TrustedSessionStore {
 
       CREATE INDEX IF NOT EXISTS deck_switch_requests_pending_idx
         ON deck_switch_requests (runtime_session_id, requested_deck_id, status, expires_at);
+
+      CREATE TABLE IF NOT EXISTS deck_assignment_requests (
+        id TEXT PRIMARY KEY,
+        mcp_session_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL,
+        reason TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'declined', 'expired', 'consumed')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        resolved_at TEXT,
+        runtime_session_id TEXT,
+        deck_id TEXT,
+        decision TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS deck_assignment_requests_pending_idx
+        ON deck_assignment_requests (mcp_session_id, status, expires_at);
     `);
     this.ensureGrantColumn();
     this.ensureExecutionWorkspaceColumn();
@@ -1247,6 +1322,392 @@ export class TrustedSessionStore {
       expiresAt: row.expires_at,
       resolvedAt: row.resolved_at,
     };
+  }
+
+  /**
+   * NOT-597: record a human-decision deck-assignment request for an
+   * unassigned (headerless) session. Never creates a runtime session —
+   * the session stays unassigned until a human approves with a deck.
+   * Idempotent per MCP session: one pending request per session, so a
+   * retry returns the existing pending request as-is.
+   */
+  createDeckAssignmentRequest(input: {
+    mcpSessionId: string;
+    workspaceRoot: string;
+    reason?: string;
+    ttlMs?: number;
+  }): DeckAssignmentRequest {
+    const ttlMs = input.ttlMs ?? DECK_ASSIGNMENT_REQUEST_TTL_MS;
+    let result: DeckAssignmentRequest | null = null;
+    const tx = this.db.transaction(() => {
+      this.expireDeckAssignmentRequests();
+      const existing = this.db
+        .prepare(
+          `SELECT id, mcp_session_id, workspace_root, reason, status,
+                  created_at, expires_at, resolved_at,
+                  runtime_session_id, deck_id, decision
+           FROM deck_assignment_requests
+           WHERE mcp_session_id = ? AND status = 'pending' AND expires_at > ?
+           ORDER BY created_at ASC
+           LIMIT 1`,
+        )
+        .get(input.mcpSessionId, nowIso()) as DeckAssignmentRequestRow | undefined;
+      if (existing) {
+        result = this.toDeckAssignmentRequest(existing);
+        return;
+      }
+
+      const id = prefixTrustedId('asg', randomUUID());
+      const createdAt = nowIso();
+      const expiresAt = addMs(createdAt, ttlMs);
+      this.db
+        .prepare(
+          `INSERT INTO deck_assignment_requests
+           (id, mcp_session_id, workspace_root, reason, status,
+            created_at, expires_at, resolved_at,
+            runtime_session_id, deck_id, decision)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL)`,
+        )
+        .run(
+          id,
+          input.mcpSessionId,
+          input.workspaceRoot,
+          input.reason ?? null,
+          createdAt,
+          expiresAt,
+        );
+      result = this.toDeckAssignmentRequest(this.getDeckAssignmentRequestRow(id)!);
+    });
+    tx();
+    return result!;
+  }
+
+  private getDeckAssignmentRequestRow(requestId: string): DeckAssignmentRequestRow | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT id, mcp_session_id, workspace_root, reason, status,
+                  created_at, expires_at, resolved_at,
+                  runtime_session_id, deck_id, decision
+           FROM deck_assignment_requests WHERE id = ?`,
+        )
+        .get(requestId) as DeckAssignmentRequestRow | undefined) ?? null
+    );
+  }
+
+  /**
+   * Read an assignment request, lazily marking it expired past TTL.
+   * An expired request is returned with status `expired` and can never
+   * be approved afterwards.
+   */
+  getDeckAssignmentRequest(requestId: string): DeckAssignmentRequest | null {
+    const row = this.getDeckAssignmentRequestRow(requestId);
+    if (!row) {
+      return null;
+    }
+    if (row.status === 'pending' && Date.parse(row.expires_at) <= Date.now()) {
+      this.markDeckAssignmentRequestExpired(requestId);
+      return this.toDeckAssignmentRequest(this.getDeckAssignmentRequestRow(requestId)!);
+    }
+    return this.toDeckAssignmentRequest(row);
+  }
+
+  listPendingDeckAssignmentRequests(): DeckAssignmentRequest[] {
+    this.expireDeckAssignmentRequests();
+    const rows = this.db
+      .prepare(
+        `SELECT id, mcp_session_id, workspace_root, reason, status,
+                created_at, expires_at, resolved_at,
+                runtime_session_id, deck_id, decision
+         FROM deck_assignment_requests
+         WHERE status = 'pending' AND expires_at > ?
+         ORDER BY created_at ASC`,
+      )
+      .all(nowIso()) as DeckAssignmentRequestRow[];
+    return rows.map((row) => this.toDeckAssignmentRequest(row));
+  }
+
+  /**
+   * Latest consumed assignment for one MCP session, if any. The MCP
+   * server polls this after a dashboard approval to bind the same
+   * session without a reload.
+   */
+  getConsumedDeckAssignmentByMcp(mcpSessionId: string): DeckAssignmentRequest | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, mcp_session_id, workspace_root, reason, status,
+                created_at, expires_at, resolved_at,
+                runtime_session_id, deck_id, decision
+         FROM deck_assignment_requests
+         WHERE mcp_session_id = ? AND status = 'consumed'
+         ORDER BY resolved_at DESC
+         LIMIT 1`,
+      )
+      .get(mcpSessionId) as DeckAssignmentRequestRow | undefined;
+    return row ? this.toDeckAssignmentRequest(row) : null;
+  }
+
+  /**
+   * NOT-597: approval commit for a deck-assignment request.
+   *
+   * The only commit point that binds an unassigned session. The human
+   * picks the deck (`deckId`) and the scope; the agent never does.
+   *
+   * Ordering mirrors the switch commit (file-first): for
+   * `workspace-default` the v3 `use.json` plus the per-folder host
+   * entries are written *before* the database transaction, so a failed
+   * write leaves no session and no database mutation. The transaction
+   * then creates the runtime session and marks the request consumed
+   * atomically. `session` writes nothing to disk. `decline` marks
+   * declined with no session and no writes.
+   */
+  applyDeckAssignmentResolution(
+    requestId: string,
+    input: { deckId?: string; decision: 'session' | 'workspace-default' | 'decline' },
+    deps?: {
+      deckExists?: (deckId: string) => boolean;
+      validateWorkspace?: (workspaceRoot: string) => { ok: true } | { ok: false; error: string };
+      writeWorkspaceAssignment?: (workspaceRoot: string, deckId: string, nowIso: string) => void;
+    },
+  ): DeckAssignmentResolutionOutcome {
+    const row = this.getDeckAssignmentRequestRow(requestId);
+    if (!row) {
+      return { outcome: 'not-found' };
+    }
+    if (row.status !== 'pending') {
+      if (row.status === 'expired') {
+        return { outcome: 'expired', request: this.toDeckAssignmentRequest(row) };
+      }
+      return { outcome: 'already-resolved', request: this.toDeckAssignmentRequest(row) };
+    }
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      this.markDeckAssignmentRequestExpired(requestId);
+      return {
+        outcome: 'expired',
+        request: this.toDeckAssignmentRequest(this.getDeckAssignmentRequestRow(requestId)!),
+      };
+    }
+
+    const now = nowIso();
+    if (input.decision === 'decline') {
+      this.db
+        .prepare(
+          `UPDATE deck_assignment_requests
+           SET status = 'declined', resolved_at = ?, decision = 'decline'
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .run(now, requestId);
+      return {
+        outcome: 'declined',
+        request: this.toDeckAssignmentRequest(this.getDeckAssignmentRequestRow(requestId)!),
+      };
+    }
+
+    const deckId = input.deckId?.trim();
+    if (!deckId) {
+      return { outcome: 'target-missing' };
+    }
+    const deckExists =
+      deps?.deckExists ??
+      this.options?.deckExists ??
+      ((id: string) => {
+        const found = this.db.prepare(`SELECT 1 AS ok FROM decks WHERE id = ?`).get(id) as
+          | { ok: number }
+          | undefined;
+        return found !== undefined;
+      });
+    if (!deckExists(deckId)) {
+      return { outcome: 'target-missing' };
+    }
+
+    const workspaceRoot = row.workspace_root?.trim() ? row.workspace_root.trim() : '';
+    if (!workspaceRoot) {
+      return { outcome: 'workspace-invalid', error: 'assignment request has no workspace' };
+    }
+    if (deps?.validateWorkspace) {
+      const validated = deps.validateWorkspace(workspaceRoot);
+      if (!validated.ok) {
+        return { outcome: 'workspace-invalid', error: validated.error };
+      }
+    }
+
+    // File-first (see doc comment): workspace-default writes before the
+    // transaction; session writes nothing.
+    let assignmentRollback: { workspaceRoot: string; priorRaw: string | null } | null = null;
+    if (input.decision === 'workspace-default') {
+      const customWriter = deps?.writeWorkspaceAssignment ?? this.options?.workspaceAssignmentWriter;
+      const writeAssignment: WorkspaceAssignmentWriter = customWriter
+        ? (root, id, at) => customWriter(root, id, at)
+        : (root, id) => this.writeWorkspaceAssignmentFile(root, id);
+      if (!customWriter) {
+        try {
+          assignmentRollback = { workspaceRoot, priorRaw: readRawUseJson(workspaceRoot) };
+        } catch (error) {
+          return {
+            outcome: 'assignment-failed',
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      try {
+        writeAssignment(workspaceRoot, deckId, now);
+      } catch (error) {
+        return {
+          outcome: 'assignment-failed',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      // Per-folder host entries so later sessions start assigned (same
+      // writer `agent-deck use` uses, via the shared module). Best-effort
+      // after use.json: a failure here still leaves a usable assignment
+      // (the folder resolves via use.json once the host sends the
+      // workspace header), but report it so the approval surfaces it.
+      try {
+        this.writeAssignmentHostEntries(workspaceRoot);
+      } catch (error) {
+        if (assignmentRollback) {
+          try {
+            restoreRawUseJson(assignmentRollback.workspaceRoot, assignmentRollback.priorRaw);
+          } catch {
+            // Best effort; surface the host-entry error below.
+          }
+        }
+        return {
+          outcome: 'assignment-failed',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+
+    // Create the runtime session and consume the request atomically.
+    // The session id is minted inside the transaction so a concurrent
+    // resolver cannot double-create: only the pending→approved winner
+    // proceeds to session creation.
+    let outcome: DeckAssignmentResolutionOutcome = { outcome: 'not-found' };
+    let lostRace = false;
+    const tx = this.db.transaction(() => {
+      const approved = this.db
+        .prepare(
+          `UPDATE deck_assignment_requests
+           SET status = 'approved', resolved_at = ?, decision = ?
+           WHERE id = ? AND status = 'pending'`,
+        )
+        .run(now, input.decision, requestId);
+      if (approved.changes === 0) {
+        lostRace = true;
+        outcome = {
+          outcome: 'already-resolved',
+          request: this.toDeckAssignmentRequest(this.getDeckAssignmentRequestRow(requestId)!),
+        };
+        return;
+      }
+
+      const sessionId = prefixTrustedId('ses', randomUUID());
+      const expiresAt = addMs(now, RUNTIME_SESSION_LEASE_MS);
+      this.db
+        .prepare(
+          `INSERT INTO runtime_sessions
+           (id, mcp_session_id, deck_id, mode, last_seen_at, expires_at, admin_expires_at, grant_id,
+            execution_workspace)
+           VALUES (?, ?, ?, 'normal', ?, ?, NULL, NULL, NULL)`,
+        )
+        .run(sessionId, row.mcp_session_id, deckId, now, expiresAt);
+
+      this.db
+        .prepare(
+          `UPDATE deck_assignment_requests
+           SET status = 'consumed', runtime_session_id = ?, deck_id = ?
+           WHERE id = ? AND status = 'approved'`,
+        )
+        .run(sessionId, deckId, requestId);
+      outcome = {
+        outcome: 'resolved',
+        request: this.toDeckAssignmentRequest(this.getDeckAssignmentRequestRow(requestId)!),
+        runtimeSessionId: sessionId,
+        deckId,
+        workspaceRoot,
+        decision: input.decision as 'session' | 'workspace-default',
+      };
+    });
+
+    try {
+      tx();
+    } catch (error) {
+      if (assignmentRollback) {
+        try {
+          restoreRawUseJson(assignmentRollback.workspaceRoot, assignmentRollback.priorRaw);
+        } catch {
+          // Best effort; the database already rolled back.
+        }
+      }
+      throw error;
+    }
+    // A lost race after a workspace-default file write must not leave a
+    // partial commit (file on the new deck, no session). Restore.
+    if (lostRace && assignmentRollback) {
+      try {
+        restoreRawUseJson(assignmentRollback.workspaceRoot, assignmentRollback.priorRaw);
+      } catch {
+        // Best effort.
+      }
+    }
+    return outcome;
+  }
+
+  /**
+   * Sweep pending assignment requests past TTL to `expired`.
+   */
+  expireDeckAssignmentRequests(): number {
+    const now = nowIso();
+    const result = this.db
+      .prepare(
+        `UPDATE deck_assignment_requests
+         SET status = 'expired', resolved_at = ?
+         WHERE status = 'pending' AND expires_at <= ?`,
+      )
+      .run(now, now);
+    return result.changes;
+  }
+
+  private markDeckAssignmentRequestExpired(requestId: string): void {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `UPDATE deck_assignment_requests
+         SET status = 'expired', resolved_at = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(now, requestId);
+  }
+
+  private toDeckAssignmentRequest(row: DeckAssignmentRequestRow): DeckAssignmentRequest {
+    return {
+      requestId: row.id,
+      mcpSessionId: row.mcp_session_id,
+      workspaceRoot: row.workspace_root,
+      ...(row.reason ? { reason: row.reason } : {}),
+      status: row.status,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      resolvedAt: row.resolved_at,
+      ...(row.runtime_session_id ? { runtimeSessionId: row.runtime_session_id } : {}),
+      ...(row.deck_id ? { deckId: row.deck_id } : {}),
+      ...(row.decision ? { decision: row.decision } : {}),
+    };
+  }
+
+  /**
+   * NOT-597: per-folder host entries for an approved workspace-default
+   * assignment, through the same shared writer `agent-deck use` uses.
+   * Writes cursor+claude+codex entries inside the folder so later
+   * sessions start assigned regardless of host. Never writes outside
+   * the folder and never touches the global fallback.
+   */
+  private writeAssignmentHostEntries(workspaceRoot: string): void {
+    const host = process.env.AGENT_DECK_HOST?.trim() || '127.0.0.1';
+    const parsed = Number.parseInt(process.env.AGENT_DECK_MCP_PORT ?? '', 10);
+    const mcpPort = Number.isFinite(parsed) ? parsed : 1110;
+    writePerFolderMcpEntries(workspaceRoot, { host, mcpPort }, ['cursor', 'claude', 'codex']);
   }
 
   expireStaleSessions(): number {
