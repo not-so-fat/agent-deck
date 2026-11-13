@@ -94,6 +94,14 @@ export class McpSessionBindingStore {
    * never sends.
    */
   private useManifestByMcp = new Set<string>();
+  /**
+   * NOT-597: sessions bound by human-approved deck assignment (from an
+   * unassigned session, without a launch deck header). Follow-up auth
+   * refreshes the runtime lease without requiring a deck header the
+   * headerless host never sends — like a use-manifest session, but
+   * session-held rather than file-held (session scope writes nothing).
+   */
+  private assignmentByMcp = new Set<string>();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -240,7 +248,33 @@ export class McpSessionBindingStore {
     this.correlationByMcp.delete(mcpSessionId);
     this.pinByMcp.delete(mcpSessionId);
     this.executionWorkspaceByMcp.delete(mcpSessionId);
+    this.assignmentByMcp.delete(mcpSessionId);
     this.unassignedByMcp.add(mcpSessionId);
+  }
+
+  /**
+   * NOT-597: promote an unassigned session to a human-approved assignment.
+   * Clears the unassigned flag (a late deck header must still never
+   * promote — only this approval path does) and records the trusted
+   * binding. Marks the session as an assignment session so follow-up
+   * auth refreshes without a deck header.
+   */
+  promoteUnassignedToAssignment(
+    mcpSessionId: string,
+    input: {
+      runtimeSessionId: string;
+      deckId: string;
+      workspaceRoot: string;
+      mode?: 'normal' | 'agent-admin';
+    },
+  ): void {
+    this.unassignedByMcp.delete(mcpSessionId);
+    this.setTrustedSession(mcpSessionId, input);
+    this.assignmentByMcp.add(mcpSessionId);
+  }
+
+  isAssignmentSession(mcpSessionId: string): boolean {
+    return this.assignmentByMcp.has(mcpSessionId);
   }
 
   /**
@@ -341,6 +375,7 @@ export class McpSessionBindingStore {
     this.grantByMcp.delete(sessionId);
     this.unassignedByMcp.delete(sessionId);
     this.useManifestByMcp.delete(sessionId);
+    this.assignmentByMcp.delete(sessionId);
   }
 
   getWorkspace(sessionId: string): string | undefined {

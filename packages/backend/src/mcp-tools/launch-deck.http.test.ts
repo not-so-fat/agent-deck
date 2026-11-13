@@ -281,7 +281,11 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     expect(initBody.result?.instructions).toBe(UNASSIGNED_DECK_MESSAGE);
 
     const tools = await listTools(started.port, sessionId!, 2);
-    expect(tools.map((t) => t.name)).toEqual(['get_session_binding', 'get_session_context']);
+    expect(tools.map((t) => t.name)).toEqual([
+      'get_session_binding',
+      'get_session_context',
+      'request_deck_assignment',
+    ]);
 
     const binding = await callToolMcpResult(
       started.port,

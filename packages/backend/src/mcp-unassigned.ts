@@ -1,10 +1,12 @@
 /**
  * NOT-50: MCP connections with no launch deck header become an unassigned
  * session instead of HTTP 401 (which Cursor misreads as OAuth / mcp_auth).
+ * NOT-597: the first remedy is the human-approved `request_deck_assignment`
+ * tool (no terminal step); the CLI stays as the fallback.
  */
 
 export const UNASSIGNED_DECK_MESSAGE =
-  'No deck assigned to this folder. Run `agent-deck use <deck>` in the project folder, then reload MCP.';
+  'No deck assigned to this folder. Call `request_deck_assignment` with the absolute folder path to ask the user to pick a deck (no terminal step), then call `get_session_context` again after approval. Fallback: run `agent-deck use <deck>` in the project folder, then reload MCP.';
 
 export type UnassignedDeckBinding = {
   deck: null;
