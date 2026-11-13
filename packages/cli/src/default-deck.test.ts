@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readDefaultDeck } from '@agent-deck/shared';
+import {
+  readDefaultDeck,
+  resolveDefaultDeckPath,
+  writeDefaultDeck,
+} from '@agent-deck/shared';
 
 import {
   formatDefaultResult,
@@ -93,6 +97,63 @@ describe('agent-deck default (NOT-600)', () => {
     if ('error' in again) throw new Error('unexpected error');
     expect(again.cleared).toBe(false);
     expect(formatDefaultResult(again)).toBe('No default deck was set.');
+  });
+
+  it('bare reports a saved deck that no longer exists, still exit 0 (NOT-606)', async () => {
+    await runDefault({ deckRef: 'alpha', clear: false }, deps);
+    // The default deck is deleted from the store afterwards: its id no
+    // longer resolves, but the default-deck.json record is left in place.
+    const withoutAlpha: DefaultDeps = {
+      resolveDeck: async (ref: string) => {
+        const trimmed = ref.trim();
+        return (
+          DECKS.filter((deck) => deck.id !== DECKS[0].id).find(
+            (deck) => deck.id === trimmed || deck.name === trimmed,
+          ) ?? null
+        );
+      },
+    };
+    const result = await runDefault({ clear: false }, withoutAlpha);
+    // No error: runDefaultCommand prints this to stdout and returns 0.
+    if ('error' in result) throw new Error('unexpected error');
+    expect(result).toMatchObject({ action: 'show', currentMissing: true });
+    expect(formatDefaultResult(result)).toBe(
+      'Default deck: alpha (deck no longer exists, run agent-deck default <deck>)',
+    );
+    // The broken record is reported, never auto-cleared.
+    expect(readDefaultDeck()?.deckId).toBe(DECKS[0].id);
+  });
+
+  it('bare reports a corrupt default-deck.json with its path, still exit 0 (NOT-606)', async () => {
+    const target = resolveDefaultDeckPath();
+    fs.writeFileSync(target, '{not json', 'utf8');
+    const result = await runDefault({ clear: false }, deps);
+    // No error: runDefaultCommand prints this to stdout and returns 0.
+    if ('error' in result) throw new Error('unexpected error');
+    expect(result).toMatchObject({ action: 'show', current: null, unreadablePath: target });
+    const message = formatDefaultResult(result);
+    expect(message).toContain('unreadable');
+    expect(message).toContain(target);
+  });
+
+  it('bare reports an unknown-version default-deck.json as unreadable (NOT-606)', async () => {
+    const target = resolveDefaultDeckPath();
+    fs.writeFileSync(
+      target,
+      JSON.stringify({ version: 99, deckId: DECKS[0].id, deckName: 'alpha', updatedAt: 't' }),
+      'utf8',
+    );
+    const result = await runDefault({ clear: false }, deps);
+    if ('error' in result) throw new Error('unexpected error');
+    expect(formatDefaultResult(result)).toBe(`Default deck file is unreadable: ${target}`);
+  });
+
+  it('show keeps resolving a saved deck that still exists (NOT-606)', async () => {
+    writeDefaultDeck({ deckId: DECKS[1].id, deckName: 'beta' });
+    const result = await runDefault({ clear: false }, deps);
+    if ('error' in result) throw new Error('unexpected error');
+    expect(result).not.toHaveProperty('currentMissing');
+    expect(formatDefaultResult(result)).toBe(`Default deck: beta (${DECKS[1].id})`);
   });
 
   it('rejects a deck plus --clear and unknown options', () => {
