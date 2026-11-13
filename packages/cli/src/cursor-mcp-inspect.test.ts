@@ -538,4 +538,45 @@ describe('inspectCursorMcpConfig', () => {
       unresolved: false,
     });
   });
+
+  it('NOT-602: from the home folder prints the config once as Global and no Project row', () => {
+    const { home } = makeHomeAndWorkspace();
+    const globalPath = path.join(home, '.cursor', 'mcp.json');
+    fs.mkdirSync(path.dirname(globalPath), { recursive: true });
+    fs.writeFileSync(
+      globalPath,
+      `${JSON.stringify(
+        { mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:1110/mcp' } } },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const report = inspectCursorMcpConfig({ cwd: home, endpoint: { host: '127.0.0.1', mcpPort: 1110 } });
+
+    // The same file must not read as a project entry: the headerless
+    // global fallback is healthy, not a project missing its header.
+    expect(report.project.path).toBe(globalPath);
+    expect(report.project.shape).toBe('missing');
+    expect(report.project.issues).toEqual([]);
+    expect(report.preferredSource).toBe('global');
+    expect(report.issues.map((i) => i.code)).not.toContain('missing-workspace-header');
+
+    const formatted = formatCursorMcpInspection(report);
+    expect(formatted).toContain('Project: none (run doctor inside a project folder)');
+    expect(formatted.split(globalPath).length - 1).toBe(1);
+  });
+
+  it('NOT-602: from the home folder with no entries still has no Project row', () => {
+    const { home } = makeHomeAndWorkspace();
+    const report = inspectCursorMcpConfig({ cwd: home, endpoint: { host: '127.0.0.1', mcpPort: 1110 } });
+
+    expect(report.preferredSource).toBe('none');
+    expect(report.project.issues).toEqual([]);
+    const formatted = formatCursorMcpInspection(report);
+    expect(formatted).toContain('Project: none (run doctor inside a project folder)');
+    // Only the single global side reports missing — the suppressed
+    // project side must not add a duplicate missing issue.
+    expect(report.issues.filter((i) => i.code === 'missing')).toHaveLength(1);
+  });
 });

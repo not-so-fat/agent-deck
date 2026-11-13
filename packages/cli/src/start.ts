@@ -50,8 +50,10 @@ import { formatLastReindex } from './store';
 import { formatCursorMcpInspection, inspectCursorMcpConfig } from './cursor-mcp-inspect';
 import { runCodexPluginDoctor } from './codex-plugin';
 import {
+  formatDeckSourceLine,
   formatHostConnectionLine,
   inspectAllHostConnections,
+  inspectFolderDeckSource,
   type DaemonHealth,
 } from './host-connection';
 import { fetchLiveBindings } from './menubar';
@@ -955,6 +957,13 @@ export async function runDoctor(options: { daemonHealth?: DaemonHealth } = {}): 
   });
   console.log('');
   console.log(formatCursorMcpInspection(inspection));
+
+  // NOT-602: which deck source a new session in this folder would use.
+  // A healthy global entry prints `Issues: none` above even when the
+  // folder is effectively unbound (no assignment, no default deck), so
+  // this line says so explicitly instead of staying quiet.
+  console.log('');
+  console.log(formatDeckSourceLine(inspectFolderDeckSource(process.cwd())));
 
   // NOT-295: read-only harness freshness (missing/stale managed block) with
   // the exact setup recovery command per client. Never writes.
