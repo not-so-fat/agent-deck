@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { AGENT_DECK_DECK_ID_HEADER } from '@agent-deck/shared';
+import { AGENT_DECK_DECK_ID_HEADER, writeDefaultDeck } from '@agent-deck/shared';
 
 import { DatabaseManager } from '../models/database';
 import type { AgentDeckMCPServer } from '../mcp-server';
@@ -36,15 +36,18 @@ import { UNASSIGNED_DECK_MESSAGE } from '../mcp-unassigned';
 
 describe('MCP launch-selected deck (NOT-105)', () => {
   const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
+  const tmpDirs: string[] = [];
   let mcpServer: AgentDeckMCPServer | undefined;
   let previousSkipDeckHeader: string | undefined;
   let previousSkipAdmin: string | undefined;
   let previousStubSync: string | undefined;
+  let previousHome: string | undefined;
 
   beforeEach(() => {
     previousSkipDeckHeader = process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER;
     previousSkipAdmin = process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK;
     previousStubSync = process.env.AGENT_DECK_STUB_SYNC;
+    previousHome = process.env.AGENT_DECK_HOME;
     process.env.AGENT_DECK_MCP_SKIP_DECK_HEADER = '0';
         process.env.AGENT_DECK_MCP_SKIP_ADMIN_CHECK = '0';
     // Stub sync enabled — launch bind must still leave worktree empty.
@@ -74,7 +77,22 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     } else {
       process.env.AGENT_DECK_STUB_SYNC = previousStubSync;
     }
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
+    }
+    while (tmpDirs.length) {
+      fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
+    }
   });
+
+  function useIsolatedHome(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-not600-home-'));
+    tmpDirs.push(dir);
+    process.env.AGENT_DECK_HOME = dir;
+    return dir;
+  }
 
   async function buildListeningBackend() {
     const db = new DatabaseManager(':memory:');
@@ -479,5 +497,30 @@ describe('MCP launch-selected deck (NOT-105)', () => {
     });
     expect(porcelain.trim()).toBe('');
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('NOT-600: launch deck header wins over the user default deck', async () => {
+    const { backendUrl, deckAlpha, deckBeta } = await buildListeningBackend();
+    const started = await startMcpServer(backendUrl, 'standard');
+    mcpServer = started.server;
+
+    useIsolatedHome();
+    writeDefaultDeck({ deckId: deckAlpha.id, deckName: deckAlpha.name });
+
+    const deckHeaders = { [AGENT_DECK_DECK_ID_HEADER]: deckBeta.id };
+    const sessionId = await openSession(started.port, 1, deckHeaders);
+    const context = await callToolMcpResult(
+      started.port,
+      sessionId,
+      'get_session_context',
+      {},
+      2,
+      deckHeaders,
+    );
+
+    expect(context.isError).toBe(false);
+    expect(context.data.effective_deck_id).toBe(deckBeta.id);
+    expect(context.data.effective_deck_name).toBe('beta');
+    expect(context.data.active_source).toBe('launch');
   });
 });
