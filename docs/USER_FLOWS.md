@@ -46,7 +46,7 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 | 2 | `agent-deck open` | Dashboard opens showing **My Decks** and **My Collection** |
 | 3 | In the dashboard: **My Decks → create a deck**, drag cards on | Deck appears under **My Decks** |
 | 4 | `agent-deck setup` for your client ([SETUP.md](./SETUP.md)), restart the host | Host lists `agent-deck` as connected |
-| 5 | Optional and being phased out: `agent-deck use <deck>` in a repo | `.agent-deck/use.json` written; next session in that folder opens on that deck (continues in F2). Planned: sessions without a pin bind to your default deck, so this step is not needed; see [one default deck](./design/optional-folder-binding.md) |
+| 5 | Not needed: sessions without a pin bind to your default deck (`agent-deck default <deck>` sets it); see [one default deck](./design/optional-folder-binding.md) | Session opens on the default deck (continues in F2). An existing `agent-deck use <deck>` pin stays valid and keeps precedence |
 
 - **Success:** the host shows the deck badge, or the agent names the bound deck when asked.
 - **Common failures:** dashboard shows a recovery view, or MCP says no deck is selected: see [SETUP.md](./SETUP.md) Dashboard and troubleshooting.

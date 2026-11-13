@@ -344,7 +344,9 @@ describe('setup statusline defaults', () => {
       expect(written).toContain('Keep this section.');
       expect(written).toContain('<!-- agent-deck:harness:start -->');
       expect(written).toContain('pure MCP (streamable HTTP)');
-      expect(written).toContain('trust the folder, approve the project agent-deck entry');
+      expect(written).toContain('trust the folder');
+      expect(written).toContain("binds to the user's default deck");
+      expect(written).not.toContain('approve the project agent-deck entry');
       expect(written).not.toContain('mcp-launch');
       expect(written).toContain('<!-- agent-deck:harness:end -->');
     } finally {
