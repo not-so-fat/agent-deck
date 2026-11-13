@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   clearDefaultDeck,
   readDefaultDeck,
+  readDefaultDeckState,
   resolveDefaultDeckPath,
   writeDefaultDeck,
 } from './default-deck';
@@ -84,5 +85,59 @@ describe('user default deck store (NOT-600)', () => {
   it('trims id and name on read and write', () => {
     writeDefaultDeck({ deckId: '  deck-1 ', deckName: ' alpha  ' });
     expect(readDefaultDeck()).toMatchObject({ deckId: 'deck-1', deckName: 'alpha' });
+  });
+});
+
+describe('three-state default deck read (NOT-606)', () => {
+  const tmpDirs: string[] = [];
+  let previousHome: string | undefined;
+
+  beforeEach(() => {
+    previousHome = process.env.AGENT_DECK_HOME;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-default-state-'));
+    tmpDirs.push(dir);
+    process.env.AGENT_DECK_HOME = dir;
+  });
+
+  afterEach(() => {
+    if (previousHome === undefined) {
+      delete process.env.AGENT_DECK_HOME;
+    } else {
+      process.env.AGENT_DECK_HOME = previousHome;
+    }
+    while (tmpDirs.length) {
+      fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true });
+    }
+  });
+
+  it('reports none when the file is missing', () => {
+    expect(readDefaultDeckState()).toEqual({ status: 'none' });
+  });
+
+  it('reports ok with the trimmed record for a valid file', () => {
+    writeDefaultDeck({ deckId: '  deck-1 ', deckName: ' alpha  ' });
+    expect(readDefaultDeckState()).toEqual({
+      status: 'ok',
+      deck: expect.objectContaining({ version: 1, deckId: 'deck-1', deckName: 'alpha' }),
+    });
+  });
+
+  it('reports unreadable with the path for corrupt, unknown-version, or wrong-shaped content', () => {
+    const target = resolveDefaultDeckPath();
+    for (const content of [
+      '{not json',
+      JSON.stringify({ version: 2, deckId: 'd', deckName: 'n', updatedAt: 't' }),
+      JSON.stringify({ version: 1, deckId: '  ', deckName: 'n', updatedAt: 't' }),
+      JSON.stringify({ version: 1, deckName: 'n', updatedAt: 't' }),
+      JSON.stringify({ version: 1, deckId: 'd', deckName: 'n' }),
+    ]) {
+      fs.writeFileSync(target, content, 'utf8');
+      expect(readDefaultDeckState(), `content: ${content}`).toEqual({
+        status: 'unreadable',
+        path: target,
+      });
+      // The legacy null reader keeps collapsing every broken state to null.
+      expect(readDefaultDeck(), `content: ${content}`).toBeNull();
+    }
   });
 });
