@@ -3,7 +3,40 @@ import { describe, expect, it } from 'vitest';
 import {
   hasSavedOAuthCredentials,
   resolveOAuthClientCredentials,
+  shouldReuseStoredOAuthClient,
 } from './oauth-connect-service';
+
+describe('shouldReuseStoredOAuthClient', () => {
+  const macRedirect = 'http://127.0.0.1:1111/api/oauth/callback';
+  const hostRedirect = 'https://host.example.ts.net/api/oauth/callback';
+  const base = {
+    enteredClientId: '',
+    storedClientId: 'mac-registered-client',
+    storedRedirectUri: macRedirect,
+    currentRedirectUri: hostRedirect,
+    supportsDynamicRegistration: true,
+  };
+
+  it('re-registers when a dynamically registered client was bound to another redirect URI', () => {
+    expect(shouldReuseStoredOAuthClient(base)).toBe(false);
+  });
+
+  it('reuses the client when the redirect URI matches', () => {
+    expect(shouldReuseStoredOAuthClient({ ...base, currentRedirectUri: macRedirect })).toBe(true);
+  });
+
+  it('reuses the client when no redirect URI is stored', () => {
+    expect(shouldReuseStoredOAuthClient({ ...base, storedRedirectUri: null })).toBe(true);
+  });
+
+  it('reuses the client when the user entered one', () => {
+    expect(shouldReuseStoredOAuthClient({ ...base, enteredClientId: 'manual-id' })).toBe(true);
+  });
+
+  it('reuses the client when the provider has no dynamic registration', () => {
+    expect(shouldReuseStoredOAuthClient({ ...base, supportsDynamicRegistration: false })).toBe(true);
+  });
+});
 
 describe('resolveOAuthClientCredentials', () => {
   it('reuses stored secret when reconnect field is left blank', () => {
