@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.3 — 2026-11-16
+
+### Fix: connecting an OAuth card works on a second host that shares the deck store (NOT-631)
+
+- A card synced from another machine (deck store shared via git) carries an automatically registered OAuth client bound to that machine's redirect URI. On a host with a different redirect URI (for example a cloud host with `AGENT_DECK_PUBLIC_URL`), Connect reused that client and the provider (e.g. Linear) rejected the sign-in. Connect now registers a fresh client for the current redirect URI when the stored one was registered for a different address and the provider supports dynamic registration, and clears any secret left by the previous client. Clients you entered yourself, and providers without dynamic registration (e.g. a Slack app), are unchanged.
+
 ## 2.5.2 — 2026-11-13
 
 ### Change: folder binding is optional — headerless sessions use your default deck (NOT-598, NOT-600 to NOT-606)
