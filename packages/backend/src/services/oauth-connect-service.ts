@@ -36,6 +36,30 @@ export function resolveOAuthClientCredentials(
   };
 }
 
+/**
+ * A dynamically registered client is bound to the redirect URI it was registered with. When the
+ * card was registered on another host (the store is shared via git) and this host's redirect URI
+ * differs, reusing that client makes the provider reject the authorization request. In that case
+ * the caller re-registers for the current redirect URI. Manually entered or non-DCR clients are
+ * always reused, as before.
+ */
+export function shouldReuseStoredOAuthClient(input: {
+  enteredClientId?: string | null;
+  storedClientId?: string | null;
+  storedRedirectUri?: string | null;
+  currentRedirectUri: string;
+  supportsDynamicRegistration?: boolean | null;
+}): boolean {
+  const storedRedirectUri = input.storedRedirectUri?.trim();
+  const redirectChanged = Boolean(storedRedirectUri) && storedRedirectUri !== input.currentRedirectUri;
+  const reRegister =
+    !input.enteredClientId?.trim() &&
+    Boolean(input.storedClientId?.trim()) &&
+    Boolean(input.supportsDynamicRegistration) &&
+    redirectChanged;
+  return !reRegister;
+}
+
 export function hasSavedOAuthCredentials(stored: StoredOAuthCredentials): boolean {
   return Boolean(stored.oauthClientId?.trim() && stored.oauthClientSecret?.trim());
 }
@@ -161,9 +185,18 @@ export async function startOAuthConnect(
     };
   }
 
-  const storedSecret = await clientSecrets.get(serviceId, service.oauthClientSecret);
+  const reuseStoredClient = shouldReuseStoredOAuthClient({
+    enteredClientId: input.clientId,
+    storedClientId: service.oauthClientId,
+    storedRedirectUri: service.oauthRedirectUri,
+    currentRedirectUri: redirectUri,
+    supportsDynamicRegistration: mcpDiscovery.oauth.supportsDynamicRegistration,
+  });
+  const storedSecret = reuseStoredClient
+    ? await clientSecrets.get(serviceId, service.oauthClientSecret)
+    : undefined;
   const resolved = resolveOAuthClientCredentials(input, {
-    oauthClientId: service.oauthClientId,
+    oauthClientId: reuseStoredClient ? service.oauthClientId : null,
     oauthClientSecret: storedSecret,
   });
   let clientId = resolved.clientId;
@@ -211,6 +244,10 @@ export async function startOAuthConnect(
 
   if (clientSecret) {
     await clientSecrets.set(serviceId, clientSecret);
+  } else if (mode === 'dynamic') {
+    // A freshly registered public client must not inherit a secret left by a previous client;
+    // the callback and refresh would send it alongside the new client_id.
+    await clientSecrets.delete(serviceId);
   }
 
   await db.updateService(serviceId, {
