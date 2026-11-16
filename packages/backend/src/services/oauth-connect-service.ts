@@ -244,6 +244,10 @@ export async function startOAuthConnect(
 
   if (clientSecret) {
     await clientSecrets.set(serviceId, clientSecret);
+  } else if (mode === 'dynamic') {
+    // A freshly registered public client must not inherit a secret left by a previous client;
+    // the callback and refresh would send it alongside the new client_id.
+    await clientSecrets.delete(serviceId);
   }
 
   await db.updateService(serviceId, {

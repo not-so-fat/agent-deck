@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+import { getOAuthRedirectUri } from '../config/oauth-redirect';
 
 import {
   hasSavedOAuthCredentials,
   resolveOAuthClientCredentials,
   shouldReuseStoredOAuthClient,
+  startOAuthConnect,
 } from './oauth-connect-service';
 
 describe('shouldReuseStoredOAuthClient', () => {
@@ -83,5 +86,68 @@ describe('hasSavedOAuthCredentials', () => {
         oauthClientSecret: '',
       }),
     ).toBe(false);
+  });
+});
+
+vi.mock('./mcp-discovery-service', () => ({
+  MCPDiscoveryService: class {
+    async discoverService() {
+      return {
+        oauth: {
+          required: true,
+          supportsDynamicRegistration: true,
+          authorizationUrl: 'https://auth.example.com/authorize',
+          tokenUrl: 'https://auth.example.com/token',
+          scopesSupported: ['read'],
+        },
+      };
+    }
+  },
+}));
+
+describe('startOAuthConnect re-registration', () => {
+  it('re-registers for this host and clears the previous client secret', async () => {
+    const hostRedirect = getOAuthRedirectUri();
+    const service = {
+      id: 'svc-1',
+      name: 'Example',
+      url: 'https://mcp.example.com/mcp',
+      oauthClientId: 'other-host-client',
+      oauthClientSecret: '',
+      oauthRedirectUri: 'http://other-host.invalid:1111/api/oauth/callback',
+    };
+    const updates: Record<string, unknown>[] = [];
+    const db = {
+      getService: async () => service,
+      updateService: async (_id: string, patch: Record<string, unknown>) => {
+        updates.push(patch);
+      },
+    };
+    const autoRegisterOAuthApp = vi.fn(async () => ({ success: true, clientId: 'this-host-client' }));
+    const oauthManager = {
+      autoRegisterOAuthApp,
+      initiateOAuthFlow: async () => ({ authorizationUrl: 'https://auth.example.com/authorize?x', state: 's' }),
+    };
+    const vault = new Map<string, string>([['svc-1', 'stale-secret']]);
+    const clientSecrets = {
+      get: async (id: string) => vault.get(id) ?? null,
+      set: async (id: string, secret: string) => void vault.set(id, secret),
+      delete: async (id: string) => void vault.delete(id),
+    };
+
+    const result = await startOAuthConnect(
+      db as never,
+      oauthManager as never,
+      clientSecrets as never,
+      'svc-1',
+    );
+
+    expect(result.success).toBe(true);
+    expect(autoRegisterOAuthApp).toHaveBeenCalledTimes(1);
+    expect(updates.at(-1)).toMatchObject({
+      oauthClientId: 'this-host-client',
+      oauthRedirectUri: hostRedirect,
+    });
+    expect(vault.has('svc-1')).toBe(false);
   });
 });
