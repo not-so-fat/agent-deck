@@ -290,6 +290,36 @@ describe('resolveBindingActiveSource (NOT-211)', () => {
   const deckA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const deckB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
+  it('NOT-634: an approved session deck reports session even for a default-deck session', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckB,
+        isDefaultDeckSession: true,
+        hasApprovedSessionOverride: true,
+      }),
+    ).toBe('session');
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckB,
+        workspaceDefaultDeckId: deckA,
+        hasApprovedSessionOverride: true,
+      }),
+    ).toBe('session');
+  });
+
+  it('NOT-634: an approved session deck equal to the workspace default reports workspace', () => {
+    expect(
+      resolveBindingActiveSource({
+        isLaunchSession: true,
+        activeDeckId: deckA,
+        workspaceDefaultDeckId: deckA,
+        hasApprovedSessionOverride: true,
+      }),
+    ).toBe('workspace');
+  });
+
   it('returns session when the active deck differs from the workspace default', () => {
     expect(
       resolveBindingActiveSource({

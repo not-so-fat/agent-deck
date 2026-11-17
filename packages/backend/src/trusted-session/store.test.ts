@@ -523,3 +523,94 @@ describe('TrustedSessionStore deck-switch requests (NOT-205)', () => {
     expect(store.getDeckSwitchRequestSummary('req_missing')).toBeNull();
   });
 });
+
+describe('TrustedSessionStore session deck overrides (NOT-634)', () => {
+  const deckExists = () => true;
+
+  function approve(
+    store: TrustedSessionStore,
+    session: { sessionId: string; deckId: string },
+    requestedDeckId: string,
+    decision: 'session' | 'workspace-default' | 'decline',
+  ) {
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      mcpSessionId: store.getRuntimeSessionRow(session.sessionId)?.mcp_session_id ?? undefined,
+      currentDeckId: session.deckId,
+      requestedDeckId,
+      workspaceRoot: '/work/ws',
+    });
+    return store.applyDeckSwitchResolution(request.requestId, session.sessionId, decision, {
+      deckExists,
+      writeWorkspaceAssignment: () => {},
+    });
+  }
+
+  it('records a session approval durably, independent of runtime-session lifetime', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-1' });
+    expect(approve(store, session, 'deck-b', 'session').outcome).toBe('resolved');
+
+    expect(store.findSessionDeckOverride('mcp-1')).toMatchObject({
+      originMcpSessionId: 'mcp-1',
+      deckId: 'deck-b',
+      grantId: null,
+    });
+    expect(store.isRuntimeSessionOnSessionDeckOverride(session.sessionId)).toBe(true);
+
+    store.revokeRuntimeSession(session.sessionId);
+    store.expireStaleSessions();
+    // A fresh store instance on the same database (daemon restart).
+    expect(new TrustedSessionStore(db).findSessionDeckOverride('mcp-1')?.deckId).toBe('deck-b');
+  });
+
+  it('keeps flat aliases so any recovered id resolves to the original lineage', () => {
+    const store = new TrustedSessionStore(new Database(':memory:'));
+    const first = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-1' });
+    approve(store, first, 'deck-b', 'session');
+
+    store.recordSessionDeckOverrideAlias('mcp-2', 'mcp-1');
+    store.recordSessionDeckOverrideAlias('mcp-3', 'mcp-2');
+    expect(store.resolveSessionDeckOverrideOrigin('mcp-3')).toBe('mcp-1');
+    expect(store.findSessionDeckOverride('mcp-3')?.deckId).toBe('deck-b');
+
+    // A switch approved on a recovered id updates the original lineage.
+    const recovered = store.createRuntimeSession({ deckId: 'deck-b', mcpSessionId: 'mcp-3' });
+    approve(store, recovered, 'deck-c', 'session');
+    expect(store.findSessionDeckOverride('mcp-1')?.deckId).toBe('deck-c');
+    expect(store.findSessionDeckOverride('mcp-2')?.deckId).toBe('deck-c');
+  });
+
+  it('decline leaves the override; workspace-default clears it', () => {
+    const store = new TrustedSessionStore(new Database(':memory:'));
+    const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-1' });
+    approve(store, session, 'deck-b', 'session');
+    expect(approve(store, { ...session, deckId: 'deck-b' }, 'deck-c', 'decline').outcome).toBe('declined');
+    expect(store.findSessionDeckOverride('mcp-1')?.deckId).toBe('deck-b');
+
+    expect(approve(store, { ...session, deckId: 'deck-b' }, 'deck-c', 'workspace-default').outcome).toBe(
+      'resolved',
+    );
+    expect(store.findSessionDeckOverride('mcp-1')).toBeNull();
+    expect(store.isRuntimeSessionOnSessionDeckOverride(session.sessionId)).toBe(false);
+  });
+
+  it('keeps sessions isolated and records the owning grant', () => {
+    const store = new TrustedSessionStore(new Database(':memory:'));
+    const local = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-local' });
+    const granted = store.createRuntimeSession({
+      deckId: 'deck-a',
+      mcpSessionId: 'mcp-grant',
+      grantId: 'grant-1',
+    });
+    approve(store, local, 'deck-b', 'session');
+    approve(store, granted, 'deck-c', 'session');
+    expect(store.findSessionDeckOverride('mcp-local')).toMatchObject({ deckId: 'deck-b', grantId: null });
+    expect(store.findSessionDeckOverride('mcp-grant')).toMatchObject({
+      deckId: 'deck-c',
+      grantId: 'grant-1',
+    });
+    expect(store.findSessionDeckOverride('mcp-unknown')).toBeNull();
+  });
+});
