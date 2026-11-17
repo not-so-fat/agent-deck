@@ -10,6 +10,8 @@ import {
   generateId,
 } from '@agent-deck/shared';
 
+import { AuditStore } from '../audit/store';
+import { deckSwitchApprovalUrl } from '../lib/deck-switch-approval-url';
 import { DatabaseManager } from '../models/database';
 import type { AgentDeckMCPServer } from '../mcp-server';
 import { registerCredentialRoutes } from '../routes/credentials';
@@ -90,9 +92,12 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
 
     const store = new TrustedSessionStore(db.getSqliteDatabase());
 
+    const audit = new AuditStore(db.getSqliteDatabase());
+
     const fastify = Fastify();
     fastify.decorate('db', db);
     fastify.decorate('trustedSessionStore', store);
+    fastify.decorate('auditStore', audit);
     fastify.decorate('serviceManager', {
       discoverServiceTools: async () => [{ name: 'ping', description: 'Ping' }],
       callServiceTool: async () => ({ success: true, result: { ok: true } }),
@@ -153,6 +158,7 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
       serviceOnA,
       serviceOnB,
       store,
+      audit,
     };
   }
 
@@ -355,7 +361,7 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
     });
 
     it('commits a local session-only switch at once: the client prompt was the approval', async () => {
-      const { backendUrl, deckA, deckB, store } = await buildListeningBackend();
+      const { backendUrl, deckA, deckB, store, audit } = await buildListeningBackend();
       const started = await startMcpServer(backendUrl, 'standard');
       mcpServer = started.server;
 
@@ -371,11 +377,22 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
         headersA,
       );
       expect(switched.isError).toBe(false);
-      expect(switched.data).toMatchObject({ decision: 'session', status: 'consumed' });
+      expect(switched.data).toMatchObject({ decision: 'session', status: 'consumed', approvedVia: 'client' });
       expect(switched.data.refresh).toMatchObject({ tool: 'get_session_context' });
+      expect(switched.data.message).toContain('get_session_context');
+      expect(switched.data).not.toHaveProperty('approvalUrl');
 
       const runtimeSessionId = store.findActiveRuntimeSessionByMcpSessionId(sessionId)?.sessionId;
       expect(store.listPendingDeckSwitchRequests(runtimeSessionId!)).toHaveLength(0);
+      // NOT-632: the audit ledger records the commit as client-approved.
+      expect(audit.list({ limit: 20 }).filter((entry) => entry.event === 'deck_switch.approved')).toEqual([
+        expect.objectContaining({
+          actor: 'local-launch',
+          targetId: deckB.id,
+          outcome: 'succeeded',
+          reasonCode: 'client_approved',
+        }),
+      ]);
 
       const after = await callToolMcpResult(started.port, sessionId, 'get_session_context', {}, 3, headersA);
       expect(after.data.effective_deck_id).toBe(deckB.id);
@@ -384,7 +401,7 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
 
     it('is off unless set: the request stays pending for human approval', async () => {
       delete process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
-      const { backendUrl, deckA } = await buildListeningBackend();
+      const { backendUrl, deckA, store } = await buildListeningBackend();
       const started = await startMcpServer(backendUrl, 'standard');
       mcpServer = started.server;
 
@@ -399,6 +416,10 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
         headersA,
       );
       expect(requested.data.status).toBe('pending');
+      // NOT-632: the pending payload names an absolute approval link.
+      const runtimeSessionId = store.findActiveRuntimeSessionByMcpSessionId(sessionId)?.sessionId;
+      expect(requested.data.approvalUrl).toBe(deckSwitchApprovalUrl(requested.data.requestId, runtimeSessionId!));
+      expect(requested.data.message).toContain(requested.data.approvalUrl);
       const after = await callToolMcpResult(started.port, sessionId, 'get_session_context', {}, 3, headersA);
       expect(after.data.effective_deck_id).toBe(deckA.id);
     });
@@ -422,7 +443,16 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
     );
     expect(requested.isError).toBe(false);
 
-    const serialized = JSON.stringify(requested.data).toLowerCase();
+    // NOT-632: the absolute approval page is the one link; everything else
+    // stays free of approval capability and credentials.
+    const { approvalUrl, message, ...rest } = requested.data;
+    expect(['http:', 'https:']).toContain(new URL(approvalUrl).protocol);
+    expect(new URL(approvalUrl).pathname).toBe('/deck-switch/approve');
+    expect(message).toContain(approvalUrl);
+    for (const forbidden of ['resolve', 'commit', 'token', 'secret', 'cookie', 'bearer', 'authoriz', 'credential', 'challenge']) {
+      expect(String(message).replace(approvalUrl, '').toLowerCase()).not.toContain(forbidden);
+    }
+    const serialized = JSON.stringify(rest).toLowerCase();
     for (const forbidden of [
       'approv',
       'resolve',

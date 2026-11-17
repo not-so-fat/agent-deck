@@ -218,6 +218,69 @@ describe('deck-switch client approval and approval links (NOT-632)', () => {
     });
   });
 
+  describe('with AGENT_DECK_DECK_SWITCH_APPROVAL=client, fixed/admin rules still hold', () => {
+    let savedMode: string | undefined;
+    beforeEach(() => {
+      savedMode = process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
+      process.env.AGENT_DECK_DECK_SWITCH_APPROVAL = 'client';
+    });
+    afterEach(() => {
+      if (savedMode === undefined) {
+        delete process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
+      } else {
+        process.env.AGENT_DECK_DECK_SWITCH_APPROVAL = savedMode;
+      }
+    });
+
+    function bindWorkspace(
+      fastify: Awaited<ReturnType<typeof buildApp>>['fastify'],
+      sessionId: string,
+      payload: Record<string, unknown>,
+    ) {
+      return fastify.inject({
+        method: 'POST',
+        url: '/api/trusted-session/bind-workspace',
+        headers: { [AGENT_DECK_SESSION_HEADER]: sessionId },
+        payload,
+      });
+    }
+
+    it('DECK_FIXED: a launch session cannot rebind itself to another deck', async () => {
+      const { fastify, store, deckA, deckB } = await buildApp();
+      const session = store.createRuntimeSession({ deckId: deckA.id });
+      const response = await bindWorkspace(fastify, session.sessionId, { workspaceRoot: '/nope/x', deckId: deckB.id });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ error_code: 'DECK_FIXED' });
+      expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+    });
+
+    it('ADMIN_REQUIRED: an assignment update still needs elevation', async () => {
+      const { fastify, store, deckA, deckB } = await buildApp();
+      const session = store.createRuntimeSession({ deckId: deckA.id });
+      const response = await bindWorkspace(fastify, session.sessionId, {
+        workspaceRoot: '/nope/x',
+        deckId: deckB.id,
+        updateAssignment: true,
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ error_code: 'ADMIN_REQUIRED' });
+      expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+    });
+
+    it('creation still opens only a pending request (the commit is a separate dashboard call)', async () => {
+      const { fastify, store, deckA } = await buildApp();
+      const session = store.createRuntimeSession({ deckId: deckA.id });
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/api/trusted-session/deck-switch',
+        headers: { [AGENT_DECK_SESSION_HEADER]: session.sessionId },
+        payload: { target: 'deck-b' },
+      });
+      expect(response.json().data.status).toBe('pending');
+      expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+    });
+  });
+
   describe('approvalUrl on pending creation', () => {
     async function createPending(headers: Record<string, string> = {}) {
       const app = await buildApp();

@@ -32,6 +32,8 @@ import {
 } from './elicitation';
 import { registerMcpTools, type McpToolHost } from './register';
 
+const APPROVAL_URL = 'https://deck.example.test/deck-switch/approve?request=req_1&session=rs_owner';
+
 const CREATION: DeckSwitchCreationResult = {
   requestId: 'req_1',
   status: 'pending',
@@ -41,6 +43,7 @@ const CREATION: DeckSwitchCreationResult = {
   currentDeckName: 'alpha',
   requestedDeckId: 'deck_b',
   requestedDeckName: 'beta',
+  approvalUrl: APPROVAL_URL,
   presentation: {
     kind: 'deck_switch_request',
     title: 'Switch deck to "beta"?',
@@ -230,8 +233,9 @@ describe('presentDeckSwitchApproval orchestration (NOT-213)', () => {
     expect(text).toContain('still pending');
     expect(text).toContain('menubar');
     expect(text).toContain('browser approval');
-    expect(text).not.toContain('http://');
-    expect(text).not.toContain('https://');
+    // NOT-632: the absolute approval link travels with the cancel payload.
+    expect(outcome.payload).toMatchObject({ approvalUrl: APPROVAL_URL });
+    expect(String((outcome.payload as { message: string }).message)).toContain(APPROVAL_URL);
   });
 
   it('falls back without eliciting when the capability is unsupported', async () => {
@@ -318,14 +322,26 @@ describe('presentDeckSwitchApproval orchestration (NOT-213)', () => {
     expect(submitCalls).toHaveLength(1);
   });
 
-  it('builds a secret-free, link-free cancel payload', () => {
+  it('builds a secret-free cancel payload whose only link is the absolute approval page', () => {
     const payload = buildCancelRecoveryPayload({ ...CREATION, workspaceRoot: '/work/ws' });
-    expect(payload).toMatchObject({ requestId: 'req_1', status: 'pending' });
+    expect(payload).toMatchObject({ requestId: 'req_1', status: 'pending', approvalUrl: APPROVAL_URL });
+    expect(String(payload.message)).toContain(APPROVAL_URL);
     const text = JSON.stringify(payload).toLowerCase();
-    for (const forbidden of ['http://', 'https://', 'bearer', 'token', 'secret', 'cookie']) {
+    for (const forbidden of ['bearer', 'token', 'secret', 'cookie']) {
       expect(text, `cancel payload must not contain ${forbidden}`).not.toContain(forbidden);
     }
+    // No link other than the approval page.
+    const withoutLink = JSON.stringify(payload).split(APPROVAL_URL).join('');
+    expect(withoutLink).not.toMatch(/https?:\/\//);
     expect(String(payload.message)).toContain('This workspace by default');
+  });
+
+  it('cancel payload without a creation link stays link-free and names the surfaces', () => {
+    const { approvalUrl: _omit, ...legacy } = CREATION;
+    const payload = buildCancelRecoveryPayload(legacy);
+    expect(payload).not.toHaveProperty('approvalUrl');
+    expect(String(payload.message)).toContain('browser approval page');
+    expect(JSON.stringify(payload)).not.toMatch(/https?:\/\//);
   });
 
   it('NOT-298: cancel recovery omits workspace-default when there is no workspaceRoot', () => {
@@ -539,11 +555,25 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
       const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
       const payload = JSON.parse(result.content[0].text);
 
-      expect(payload).toMatchObject({ status: 'consumed', refresh: { tool: 'get_session_context' } });
+      expect(payload).toMatchObject({
+        status: 'consumed',
+        approvedVia: 'client',
+        refresh: { tool: 'get_session_context' },
+      });
+      // The response says the switch is already active and names the next call.
+      expect(payload.message).toContain('active now');
+      expect(payload.message).toContain('get_session_context');
       expect(elicitForm).not.toHaveBeenCalled();
       const resolved = resolveCalls(calls);
       expect(resolved).toHaveLength(1);
-      expect(JSON.parse(String(resolved[0].init?.body))).toEqual({ runtimeSessionId: 'rs_owner', decision: 'session' });
+      // Always "This session only", even though this session has a bound
+      // workspace (/work/test) a workspace-default approval could write.
+      expect(JSON.parse(String(resolved[0].init?.body))).toEqual({
+        runtimeSessionId: 'rs_owner',
+        decision: 'session',
+        approvedVia: 'client',
+      });
+      expect(calls.filter((call) => call.endpoint.includes('/pending'))).toHaveLength(0);
     });
 
     it('behaves as registered even if the env changes later', async () => {
@@ -560,7 +590,7 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
         const { host, tools, calls } = buildStubHost({ elicitation: null });
         registerMcpTools(withGrantStatus(host, isGrant));
         const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
-        expect(JSON.parse(result.content[0].text)).toMatchObject({ status: 'pending' });
+        expect(JSON.parse(result.content[0].text)).toMatchObject({ status: 'pending', approvalUrl: APPROVAL_URL });
         expect(resolveCalls(calls)).toHaveLength(0);
       }
     });
@@ -620,7 +650,8 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
     const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
     const payload = JSON.parse(result.content[0].text);
 
-    expect(payload).toMatchObject({ requestId: 'req_1', status: 'pending' });
+    expect(payload).toMatchObject({ requestId: 'req_1', status: 'pending', approvalUrl: APPROVAL_URL });
+    expect(payload.message).toContain(APPROVAL_URL);
     expect(JSON.stringify(payload).toLowerCase()).toContain('menubar');
     expect(resolveCalls(calls)).toHaveLength(0);
   });
