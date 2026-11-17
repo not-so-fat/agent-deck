@@ -26,6 +26,7 @@ const targets = [
   '.codex-plugin/plugin.json',
   '.claude-plugin/plugin.json',
   '.claude-plugin/marketplace.json',
+  '.cursor-plugin/plugin.json',
 ];
 
 for (const relativePath of targets) {
@@ -49,7 +50,8 @@ for (const relativePath of targets) {
 
   if (
     relativePath === '.codex-plugin/plugin.json' ||
-    relativePath === '.claude-plugin/plugin.json'
+    relativePath === '.claude-plugin/plugin.json' ||
+    relativePath === '.cursor-plugin/plugin.json'
   ) {
     const pluginJson = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     pluginJson.version = version;
