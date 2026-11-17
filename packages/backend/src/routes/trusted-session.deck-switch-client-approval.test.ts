@@ -328,6 +328,84 @@ describe('deck-switch client approval and approval links (NOT-632)', () => {
     });
   });
 
+  describe('approvalUrl on pending reads', () => {
+    async function seedPending() {
+      const app = await buildApp();
+      const session = app.store.createRuntimeSession({ deckId: app.deckA.id });
+      const record = app.store.createDeckSwitchRequest({
+        runtimeSessionId: session.sessionId,
+        currentDeckId: app.deckA.id,
+        requestedDeckId: app.deckB.id,
+      });
+      const approvalPath = `/deck-switch/approve?request=${encodeURIComponent(record.requestId)}&session=${encodeURIComponent(session.sessionId)}`;
+      return { ...app, sessionId: session.sessionId, requestId: record.requestId, approvalPath };
+    }
+
+    function getPendingList(app: Awaited<ReturnType<typeof seedPending>>) {
+      return app.fastify.inject({ method: 'GET', url: '/api/trusted-session/deck-switch/pending' });
+    }
+
+    function getOne(app: Awaited<ReturnType<typeof seedPending>>, headers: Record<string, string>) {
+      return app.fastify.inject({
+        method: 'GET',
+        url: `/api/trusted-session/deck-switch/${app.requestId}`,
+        headers,
+      });
+    }
+
+    it('GET /deck-switch/pending: uses AGENT_DECK_PUBLIC_URL and keeps approvalPath', async () => {
+      process.env.AGENT_DECK_PUBLIC_URL = 'https://deck.example.test/';
+      const app = await seedPending();
+      const response = await getPendingList(app);
+      expect(response.statusCode).toBe(200);
+      const [entry] = response.json().data;
+      expect(entry.approvalPath).toBe(app.approvalPath);
+      expect(entry.approvalUrl).toBe(`https://deck.example.test${app.approvalPath}`);
+      expect(entry.message).toContain(entry.approvalUrl);
+    });
+
+    it('GET /deck-switch/pending: falls back to the local dashboard origin', async () => {
+      const app = await seedPending();
+      const [entry] = (await getPendingList(app)).json().data;
+      expect(entry.approvalUrl).toBe(`http://localhost:3000${app.approvalPath}`);
+      expect(entry.message).toContain(entry.approvalUrl);
+    });
+
+    it('GET /deck-switch/:id (agent caller): pending status carries the absolute link', async () => {
+      process.env.AGENT_DECK_PUBLIC_URL = 'https://deck.example.test';
+      const app = await seedPending();
+      const response = await getOne(app, { [AGENT_DECK_SESSION_HEADER]: app.sessionId });
+      expect(response.statusCode).toBe(200);
+      const data = response.json().data;
+      expect(data.status).toBe('pending');
+      expect(data.approvalUrl).toBe(`https://deck.example.test${app.approvalPath}`);
+      expect(data.message).toContain(data.approvalUrl);
+    });
+
+    it('GET /deck-switch/:id (dashboard caller): pending status carries the local-fallback link', async () => {
+      const app = await seedPending();
+      const response = await getOne(app, dashboardAuthHeaders(app.store));
+      expect(response.statusCode).toBe(200);
+      const data = response.json().data;
+      expect(data.status).toBe('pending');
+      expect(data.requestedDeckName).toBe('deck-b');
+      expect(data.approvalUrl).toBe(`http://localhost:3000${app.approvalPath}`);
+      expect(data.message).toContain(data.approvalUrl);
+    });
+
+    it('GET /deck-switch/:id: a resolved request carries no approval link', async () => {
+      const app = await seedPending();
+      const resolved = await resolve(app.fastify, app.store, app.requestId, {
+        runtimeSessionId: app.sessionId,
+        decision: 'session',
+      });
+      expect(resolved.statusCode).toBe(200);
+      const data = (await getOne(app, { [AGENT_DECK_SESSION_HEADER]: app.sessionId })).json().data;
+      expect(data.status).not.toBe('pending');
+      expect(data).not.toHaveProperty('approvalUrl');
+    });
+  });
+
   describe('resolveApprovalBaseUrl', () => {
     it('prefers a valid public URL, keeping a path prefix', () => {
       expect(resolveApprovalBaseUrl({ AGENT_DECK_PUBLIC_URL: 'https://host.example/deck/' })).toBe(

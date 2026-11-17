@@ -20,7 +20,11 @@ import type { ClientGrantStore } from '../auth/client-grants';
 import { refreshLiveDisplayAfterDeckSwitch } from '../scope/display';
 import type { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { parseBearerToken } from '../lib/http-auth';
-import { deckSwitchApprovalPath, deckSwitchApprovalUrl } from '../lib/deck-switch-approval-url';
+import {
+  deckSwitchApprovalPath,
+  deckSwitchApprovalUrl,
+  deckSwitchPendingMessage,
+} from '../lib/deck-switch-approval-url';
 import {
   requireTrustedWriterBearer,
   sendTrustedAuthError,
@@ -273,6 +277,9 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         const current = await fastify.db.getDeck(record.currentDeckId);
         const requested = await fastify.db.getDeck(record.requestedDeckId);
         const approvalPath = deckSwitchApprovalPath(record.requestId, record.runtimeSessionId);
+        // NOT-632: absolute link alongside the relative path the menubar
+        // already opens, so a remote reader can use it directly.
+        const approvalUrl = deckSwitchApprovalUrl(record.requestId, record.runtimeSessionId);
         return {
           requestId: record.requestId,
           runtimeSessionId: record.runtimeSessionId,
@@ -282,6 +289,8 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           ...(current ? { currentDeckName: current.name } : {}),
           ...(requested ? { requestedDeckName: requested.name } : {}),
           approvalPath,
+          approvalUrl,
+          message: deckSwitchPendingMessage(approvalUrl),
         };
       }),
     );
@@ -621,6 +630,17 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           );
         }
 
+        // NOT-632: while the request is still pending, every reader gets the
+        // absolute approval link (and a message naming it). Resolved or
+        // expired requests carry none — there is nothing left to approve.
+        const pendingLink =
+          record.status === 'pending'
+            ? (() => {
+                const approvalUrl = deckSwitchApprovalUrl(record.requestId, record.runtimeSessionId);
+                return { approvalUrl, message: deckSwitchPendingMessage(approvalUrl) };
+              })()
+            : {};
+
         if (principal?.kind !== 'dashboard') {
           return reply.send({
             success: true,
@@ -629,6 +649,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
               status: record.status,
               createdAt: record.createdAt,
               expiresAt: record.expiresAt,
+              ...pendingLink,
             },
           });
         }
@@ -649,6 +670,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             requestedDeckId: record.requestedDeckId,
             ...(requestedDeck ? { requestedDeckName: requestedDeck.name } : {}),
             ...(record.workspaceRoot ? { workspaceRoot: record.workspaceRoot } : {}),
+            ...pendingLink,
           },
         });
       } catch (error) {

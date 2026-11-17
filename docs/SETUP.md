@@ -225,7 +225,7 @@ agent-deck start --daemon --force  # restart
 | Variable | Purpose |
 |----------|---------|
 | `AGENT_DECK_OAUTH_REDIRECT_URI` | Full callback URL override |
-| `AGENT_DECK_PUBLIC_URL` | HTTPS origin → `{url}/api/oauth/callback`. Also the base of the absolute `approvalUrl` (`{url}/deck-switch/approve?request=…&session=…`) in `switch_deck` pending and cancel responses. Unset: the local dashboard origin (`AGENT_DECK_DASHBOARD_URL`, else the bundled UI's `HOST:PORT`, with `0.0.0.0` shown as `127.0.0.1`). |
+| `AGENT_DECK_PUBLIC_URL` | HTTPS origin → `{url}/api/oauth/callback`. Also the base of the absolute `approvalUrl` (`{url}/deck-switch/approve?request=…&session=…`) in `switch_deck` pending and cancel responses, and in the pending-request reads (`GET /api/trusted-session/deck-switch/pending` and `GET /api/trusted-session/deck-switch/:requestId` while the request is still pending). Unset: the local dashboard origin (`AGENT_DECK_DASHBOARD_URL`, else the bundled UI's `HOST:PORT`, with `0.0.0.0` shown as `127.0.0.1`). |
 | `AGENT_DECK_DASHBOARD_URL` | Where to send browser after OAuth |
 
 ### Hosted-mode destination security

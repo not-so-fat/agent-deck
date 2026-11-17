@@ -53,3 +53,11 @@ export function deckSwitchApprovalUrl(
 ): string {
   return `${resolveApprovalBaseUrl(env)}${deckSwitchApprovalPath(requestId, runtimeSessionId)}`;
 }
+
+/** Human-readable pointer to the approval link for a still-pending request. */
+export function deckSwitchPendingMessage(approvalUrl: string): string {
+  return (
+    `Deck switch is pending human approval; the active deck is unchanged. ` +
+    `The human can approve or decline it at ${approvalUrl} or from the menubar pending-requests inbox.`
+  );
+}
