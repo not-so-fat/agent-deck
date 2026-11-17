@@ -546,6 +546,15 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
       expect(JSON.parse(String(resolved[0].init?.body))).toEqual({ runtimeSessionId: 'rs_owner', decision: 'session' });
     });
 
+    it('behaves as registered even if the env changes later', async () => {
+      const { host, tools, calls } = buildStubHost({ elicitation: null });
+      registerMcpTools(withGrantStatus(host, false));
+      delete process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
+      const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ status: 'consumed' });
+      expect(resolveCalls(calls)).toHaveLength(1);
+    });
+
     it('never commits a remote-grant session or one whose grant status is unknown', async () => {
       for (const isGrant of [true, undefined]) {
         const { host, tools, calls } = buildStubHost({ elicitation: null });

@@ -745,7 +745,9 @@ function registerRuntimeTools(host: McpToolHost): void {
       // session commits as "This session only" right away. Workspace-default
       // writes and remote-grant sessions keep the human approval flow.
       if (
-        deckSwitchClientApprovalEnabled() &&
+        // The value captured at registration, so the behavior always matches
+        // the description the client showed the human.
+        clientApproval &&
         // Unknown grant status fails closed (no auto-commit).
         host.sessionBinding.isGrantSession?.(sessionId) === false &&
         result &&
