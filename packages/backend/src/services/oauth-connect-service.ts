@@ -194,7 +194,10 @@ export async function startOAuthConnect(
     currentRedirectUri: redirectUri,
     supportsDynamicRegistration: mcpDiscovery.oauth.supportsDynamicRegistration,
   });
-  const storedSecret = reuseStoredClient
+  // The saved secret belongs to the saved client: never pair it with a newly entered Client ID.
+  const enteredClientId = input.clientId?.trim();
+  const secretMatchesClient = !enteredClientId || enteredClientId === effective.clientId;
+  const storedSecret = reuseStoredClient && secretMatchesClient
     ? await clientSecrets.get(serviceId, service.oauthClientSecret)
     : undefined;
   const resolved = resolveOAuthClientCredentials(input, {
@@ -246,9 +249,10 @@ export async function startOAuthConnect(
 
   if (clientSecret) {
     await clientSecrets.set(serviceId, clientSecret);
-  } else if (mode === 'dynamic') {
-    // A freshly registered public client must not inherit a secret left by a previous client;
-    // the callback and refresh would send it alongside the new client_id.
+  } else if (mode === 'dynamic' || !secretMatchesClient) {
+    // A freshly registered public client, or a newly entered Client ID without a secret, must not
+    // inherit a secret left by a previous client; the callback and refresh would send it alongside
+    // the new client_id.
     await clientSecrets.delete(serviceId);
   }
 

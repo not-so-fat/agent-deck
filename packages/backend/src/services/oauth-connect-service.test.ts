@@ -187,6 +187,50 @@ describe('startOAuthConnect host-local client', () => {
     expect(await h.clientSecrets.getHostClient('svc-1')).toMatchObject({ clientId: 'this-host-client' });
   });
 
+  it('never pairs a newly entered Client ID with the previous client\'s secret', async () => {
+    const h = harness({ oauthClientId: 'card-client', oauthRedirectUri: getOAuthRedirectUri() });
+    await h.store.set(oauthClientSecretAccount('svc-1'), 'card-client-secret');
+    const result = await startOAuthConnect(
+      {
+        getService: async () => h.service,
+        updateService: async (_id: string, patch: Record<string, unknown>) => {
+          h.updates.push(patch);
+          Object.assign(h.service, patch);
+        },
+      } as never,
+      { autoRegisterOAuthApp: vi.fn(), initiateOAuthFlow: async () => ({ authorizationUrl: 'x', state: 's' }) } as never,
+      h.clientSecrets,
+      'svc-1',
+      { clientId: 'new-manual-client' },
+    );
+    // Either the flow asks for the new client's secret, or it proceeds without the old one.
+    if (result.success) {
+      expect(await h.store.get(oauthClientSecretAccount('svc-1'))).not.toBe('card-client-secret');
+    } else {
+      expect(result.needsCredentials).toBe(true);
+    }
+  });
+
+  it('a manual client clears this host\'s registered client record', async () => {
+    const h = harness({ oauthClientId: 'other-host-client', oauthRedirectUri: 'http://other-host.invalid:1111/api/oauth/callback' });
+    await h.connect();
+    expect(await h.clientSecrets.getHostClient('svc-1')).not.toBeNull();
+    await startOAuthConnect(
+      {
+        getService: async () => h.service,
+        updateService: async (_id: string, patch: Record<string, unknown>) => {
+          Object.assign(h.service, patch);
+        },
+      } as never,
+      { autoRegisterOAuthApp: vi.fn(), initiateOAuthFlow: async () => ({ authorizationUrl: 'x', state: 's' }) } as never,
+      h.clientSecrets,
+      'svc-1',
+      { clientId: 'manual-client', clientSecret: 'manual-secret' },
+    );
+    expect(await h.clientSecrets.getHostClient('svc-1')).toBeNull();
+    expect(h.service.oauthClientId).toBe('manual-client');
+  });
+
   it('ignores a host record registered for another redirect URI', async () => {
     const h = harness({ oauthClientId: 'card-client', oauthRedirectUri: getOAuthRedirectUri() });
     await h.clientSecrets.setHostClient('svc-1', { clientId: 'old-client', redirectUri: otherHostRedirect });

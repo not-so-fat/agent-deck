@@ -216,6 +216,32 @@ describe('OAuthManager PKCE', () => {
     vi.unstubAllGlobals();
   });
 
+  it('exchanges the code with this host\'s own client and redirect', async () => {
+    const services = await db.getAllServices();
+    const serviceId = services[0]!.id;
+    await clientSecrets.setHostClient(serviceId, {
+      clientId: 'this-host-client',
+      redirectUri: getOAuthRedirectUri(),
+    });
+    const { state } = await oauthManager.initiateOAuthFlow({ serviceId, redirectUri: getOAuthRedirectUri() });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      text: async () => JSON.stringify({ access_token: 'a', token_type: 'Bearer' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await oauthManager.handleOAuthCallback({ serviceId, code: 'code', state });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = new URLSearchParams(String(init.body));
+    expect(body.get('client_id')).toBe('this-host-client');
+    expect(body.get('redirect_uri')).toBe(getOAuthRedirectUri());
+    vi.unstubAllGlobals();
+  });
+
   it('refreshes with this host\'s own client when the card names another host\'s client', async () => {
     const services = await db.getAllServices();
     const serviceId = services[0]!.id;
