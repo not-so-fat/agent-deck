@@ -5,6 +5,7 @@ import { OAuthManager } from './oauth-manager';
 import { MemorySecretStore } from '../vault/secret-store';
 import { OAuthClientSecretVault } from '../vault/oauth-client-secret-vault';
 import { OAuthTokenVault } from '../vault/oauth-token-vault';
+import { getOAuthRedirectUri } from '../config/oauth-redirect';
 
 describe('OAuthManager PKCE', () => {
   let db: DatabaseManager;
@@ -211,6 +212,58 @@ describe('OAuthManager PKCE', () => {
     const bundle = await tokens.get(serviceId);
     expect(bundle?.accessToken).toBe('new-access');
     expect(bundle?.refreshToken).toBe('keep-this-refresh');
+
+    vi.unstubAllGlobals();
+  });
+
+  it('exchanges the code with this host\'s own client and redirect', async () => {
+    const services = await db.getAllServices();
+    const serviceId = services[0]!.id;
+    await clientSecrets.setHostClient(serviceId, {
+      clientId: 'this-host-client',
+      redirectUri: getOAuthRedirectUri(),
+    });
+    const { state } = await oauthManager.initiateOAuthFlow({ serviceId, redirectUri: getOAuthRedirectUri() });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      text: async () => JSON.stringify({ access_token: 'a', token_type: 'Bearer' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await oauthManager.handleOAuthCallback({ serviceId, code: 'code', state });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = new URLSearchParams(String(init.body));
+    expect(body.get('client_id')).toBe('this-host-client');
+    expect(body.get('redirect_uri')).toBe(getOAuthRedirectUri());
+    vi.unstubAllGlobals();
+  });
+
+  it('refreshes with this host\'s own client when the card names another host\'s client', async () => {
+    const services = await db.getAllServices();
+    const serviceId = services[0]!.id;
+    await tokens.set(serviceId, 'access-token', 'host-refresh');
+    await clientSecrets.setHostClient(serviceId, {
+      clientId: 'this-host-client',
+      redirectUri: getOAuthRedirectUri(),
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      text: async () => JSON.stringify({ access_token: 'new-access', token_type: 'Bearer' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await oauthManager.refreshOAuthToken({ serviceId, refreshToken: 'host-refresh' });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new URLSearchParams(String(init.body)).get('client_id')).toBe('this-host-client');
 
     vi.unstubAllGlobals();
   });
