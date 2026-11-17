@@ -663,7 +663,7 @@ describe('pre-publish release sync (NOT-188)', () => {
       path.join(dir, 'package.json'),
       `${JSON.stringify({ name: 'agent-deck', version: rootPkg.version }, null, 2)}\n`,
     );
-    for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']) {
+    for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json']) {
       fs.mkdirSync(path.join(dir, path.dirname(manifest)), { recursive: true });
       const body: Record<string, unknown> = {
         name: 'agent-deck',
