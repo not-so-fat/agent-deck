@@ -393,6 +393,28 @@ function withDeckSwitchRefreshHint(payload: unknown): unknown {
 }
 
 /**
+ * NOT-632: a client-approved switch is already active when the call returns;
+ * say so in plain words and name the one next step.
+ */
+function withClientApprovalMessage(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return payload;
+  }
+  const record = payload as Record<string, unknown>;
+  if (record.status !== 'consumed') {
+    return payload;
+  }
+  const deck = typeof record.deckName === 'string' ? `"${record.deckName}"` : 'the requested deck';
+  return {
+    ...record,
+    approvedVia: 'client',
+    message:
+      `Switched: this session is now on ${deck} (This session only), approved through your client's permission prompt. ` +
+      'The switch is active now. Call get_session_context next to load the new deck context.',
+  };
+}
+
+/**
  * NOT-189: the single authorization path for session bootstrap.
  * Every bootstrap read resolves deck authority through GET /api/scope/deck,
  * so launch-deck errors (invalid/revoked deck, missing grant) surface here —
@@ -761,8 +783,9 @@ function registerRuntimeTools(host: McpToolHost): void {
             requestId: (result as { requestId: string }).requestId,
             runtimeSessionId: snapshot.runtimeSessionId,
             decision: 'session',
+            approvedVia: 'client',
           });
-          return host.toolResult(withDeckSwitchRefreshHint(resolved));
+          return host.toolResult(withClientApprovalMessage(withDeckSwitchRefreshHint(resolved)));
         } catch (error) {
           // No commit secret on this host: the request stays pending and the
           // normal approval surfaces below take over.

@@ -31,6 +31,9 @@ export const AUDIT_EVENTS = [
   'agent_run.finalization_prepared',
   'agent_run.changes_read',
   'agent_run.finalized',
+  // NOT-632: a deck switch committed without a server-side approval surface
+  // (reasonCode client_approved: the MCP client's permission prompt).
+  'deck_switch.approved',
 ] as const;
 
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
@@ -76,7 +79,9 @@ export type AuditReasonCode =
   | 'ref_race'
   | 'finalization_canceled'
   | 'finalization_failed'
-  | 'replayed';
+  | 'replayed'
+  // NOT-632: the MCP client's own permission prompt was the human approval.
+  | 'client_approved';
 
 /**
  * NOT-486: typed, identifier-only finalization facts. Every field is an

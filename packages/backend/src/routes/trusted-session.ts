@@ -20,6 +20,7 @@ import type { ClientGrantStore } from '../auth/client-grants';
 import { refreshLiveDisplayAfterDeckSwitch } from '../scope/display';
 import type { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { parseBearerToken } from '../lib/http-auth';
+import { deckSwitchApprovalPath, deckSwitchApprovalUrl } from '../lib/deck-switch-approval-url';
 import {
   requireTrustedWriterBearer,
   sendTrustedAuthError,
@@ -271,7 +272,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
       pending.map(async (record) => {
         const current = await fastify.db.getDeck(record.currentDeckId);
         const requested = await fastify.db.getDeck(record.requestedDeckId);
-        const approvalPath = `/deck-switch/approve?request=${encodeURIComponent(record.requestId)}&session=${encodeURIComponent(record.runtimeSessionId)}`;
+        const approvalPath = deckSwitchApprovalPath(record.requestId, record.runtimeSessionId);
         return {
           requestId: record.requestId,
           runtimeSessionId: record.runtimeSessionId,
@@ -556,6 +557,11 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           ...(workspaceRoot ? { workspaceRoot } : {}),
         });
 
+        // NOT-632: an absolute link to the browser approval page, so a human
+        // who cannot see the host form (or dismissed it) can still decide.
+        // The page itself requires dashboard sign-in; the link carries no
+        // credential.
+        const approvalUrl = deckSwitchApprovalUrl(record.requestId, session.sessionId);
         return reply.send({
           success: true,
           data: {
@@ -567,6 +573,11 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             ...(current ? { currentDeckName: current.name } : {}),
             requestedDeckId: requested.id,
             requestedDeckName: requested.name,
+            approvalUrl,
+            message:
+              `Switch to "${requested.name}" is pending human approval; the active deck ` +
+              `("${current?.name ?? session.deckId}") is unchanged. The human can approve or decline it at ` +
+              `${approvalUrl} or from the menubar pending-requests inbox.`,
             presentation: {
               kind: 'deck_switch_request',
               title: `Switch deck to "${requested.name}"?`,
@@ -666,7 +677,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             error: parsed.error.issues.map((issue) => issue.message).join('; '),
           });
         }
-        const { runtimeSessionId, decision } = parsed.data;
+        const { runtimeSessionId, decision, approvedVia } = parsed.data;
 
         // NOT-207: approval is the only commit point. Session rebind and
         // workspace-default assignment commit atomically inside the store;
@@ -684,6 +695,24 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         const grants = grantStoreOf(fastify);
         const sessionRow = store.getRuntimeSessionRow(runtimeSessionId.trim());
         const grantId = sessionRow?.grant_id ?? null;
+        // NOT-632: a client-approved commit (AGENT_DECK_DECK_SWITCH_APPROVAL=
+        // client) is only ever "This session only" for a local, bearer-less
+        // session. Workspace-default writes and grant sessions keep the
+        // human approval surfaces, whatever the caller claims.
+        if (approvedVia === 'client') {
+          if (decision !== 'session') {
+            return reply.status(400).send({
+              success: false,
+              error: 'Client approval only commits a session-scope deck switch',
+            });
+          }
+          if (!sessionRow || grantId) {
+            throw new TrustedAuthError(
+              'RESOURCE_OUT_OF_SCOPE',
+              'Client approval is only available to local sessions',
+            );
+          }
+        }
         const grant = grantId && grants ? grants.getGrant(grantId) : null;
         if (grantId && grants) {
           if (
@@ -746,6 +775,25 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             });
           case 'resolved': {
             const deck = await fastify.db.getDeck(result.request.requestedDeckId);
+            if (approvedVia === 'client') {
+              // The MCP client's permission prompt was the human approval.
+              fastify.auditStore?.append({
+                actor: 'local-launch',
+                event: 'deck_switch.approved',
+                targetId: auditDeckTarget(result.request.requestedDeckId),
+                outcome: 'succeeded',
+                reasonCode: 'client_approved',
+              });
+              fastify.log.info(
+                {
+                  requestId,
+                  runtimeSessionId: result.request.runtimeSessionId,
+                  deckId: result.request.requestedDeckId,
+                  approvedVia: 'client',
+                },
+                'deck switch committed as This session only: client-approved (AGENT_DECK_DECK_SWITCH_APPROVAL=client)',
+              );
+            }
             // NOT-233: the commit rebound the runtime session, but the
             // live-display entry the statusline reads still names the prior
             // deck. Refresh it to the newly-active deck (both session and
@@ -776,6 +824,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
                 deckId: result.request.requestedDeckId,
                 ...(deck ? { deckName: deck.name } : {}),
                 ...(result.workspaceRoot ? { workspaceRoot: result.workspaceRoot } : {}),
+                ...(approvedVia === 'client' ? { approvedVia } : {}),
               },
             });
           }

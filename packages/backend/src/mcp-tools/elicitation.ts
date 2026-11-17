@@ -174,16 +174,21 @@ export function buildDeckSwitchElicitationInput(creation: DeckSwitchCreationResu
 
 /**
  * Cancel payload: the request is still pending, the deck is unchanged,
- * and the agent gets a secret-free, URL-free note explaining where the
- * human can reopen the decision (browser approval page, menubar inbox).
+ * and the agent gets a secret-free note explaining where the human can
+ * reopen the decision: the absolute browser approval link (NOT-632, carried
+ * from the creation response) or the menubar inbox.
  */
 export function buildCancelRecoveryPayload(creation: DeckSwitchCreationResult): Record<string, unknown> {
   const requestId = String(creation.requestId ?? '');
   const current = typeof creation.currentDeckName === 'string' ? creation.currentDeckName : 'current deck';
   const requested = typeof creation.requestedDeckName === 'string' ? creation.requestedDeckName : 'requested deck';
+  const approvalUrl = typeof creation.approvalUrl === 'string' && creation.approvalUrl ? creation.approvalUrl : null;
   const scopeHint = deckSwitchHasWorkspaceRoot(creation)
     ? '"This session only" or "This workspace by default"'
     : '"This session only"';
+  const where = approvalUrl
+    ? `at ${approvalUrl} (browser approval page) or from the menubar pending-requests inbox`
+    : 'from the browser approval page or the menubar pending-requests inbox';
   return {
     requestId,
     status: 'pending',
@@ -191,10 +196,11 @@ export function buildCancelRecoveryPayload(creation: DeckSwitchCreationResult): 
     requestedDeckName: creation.requestedDeckName,
     expiresAt: creation.expiresAt,
     channel: 'browser',
+    ...(approvalUrl ? { approvalUrl } : {}),
     message:
       `Approval dismissed with no decision. Request ${requestId} is still pending and the active deck ` +
       `("${current}") is unchanged. Approve the switch to "${requested}" (${scopeHint}) or decline it ` +
-      `from the browser approval page or the menubar pending-requests inbox.`,
+      `${where}.`,
   };
 }
 
@@ -299,6 +305,8 @@ export async function submitDeckSwitchApprovalViaBackend(deps: {
   runtimeSessionId: string;
   decision: DeckSwitchApprovalScope;
   readSecret?: () => Promise<string | null>;
+  /** NOT-632: the client's permission prompt was the human approval. */
+  approvedVia?: 'client';
 }): Promise<unknown> {
   const secret = await (deps.readSecret ?? readAdminSecretFromEnvOrFile)();
   if (!secret) {
@@ -312,7 +320,11 @@ export async function submitDeckSwitchApprovalViaBackend(deps: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${secret}`,
       },
-      body: JSON.stringify({ runtimeSessionId: deps.runtimeSessionId, decision: deps.decision }),
+      body: JSON.stringify({
+        runtimeSessionId: deps.runtimeSessionId,
+        decision: deps.decision,
+        ...(deps.approvedVia ? { approvedVia: deps.approvedVia } : {}),
+      }),
     },
   );
 }
