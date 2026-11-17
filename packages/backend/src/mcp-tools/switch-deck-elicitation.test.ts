@@ -500,6 +500,63 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
     return calls.filter((call) => call.endpoint.includes('/resolve'));
   }
 
+  describe('AGENT_DECK_DECK_SWITCH_APPROVAL=client', () => {
+    let savedMode: string | undefined;
+    beforeEach(() => {
+      savedMode = process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
+      process.env.AGENT_DECK_DECK_SWITCH_APPROVAL = 'client';
+    });
+    afterEach(() => {
+      if (savedMode === undefined) {
+        delete process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
+      } else {
+        process.env.AGENT_DECK_DECK_SWITCH_APPROVAL = savedMode;
+      }
+    });
+
+    function withGrantStatus(host: McpToolHost, isGrant?: boolean): McpToolHost {
+      if (isGrant !== undefined) {
+        (host.sessionBinding as { isGrantSession?: () => boolean }).isGrantSession = () => isGrant;
+      }
+      return host;
+    }
+
+    it('commits a local session as session-only with no elicitation', async () => {
+      const elicitForm = vi.fn();
+      const { host, tools, calls } = buildStubHost();
+      (host as { elicitation?: unknown }).elicitation = { supportsFormElicitation: () => true, elicitForm };
+      registerMcpTools(withGrantStatus(host, false));
+
+      const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
+      const payload = JSON.parse(result.content[0].text);
+
+      expect(payload).toMatchObject({ status: 'consumed', refresh: { tool: 'get_session_context' } });
+      expect(elicitForm).not.toHaveBeenCalled();
+      const resolved = resolveCalls(calls);
+      expect(resolved).toHaveLength(1);
+      expect(JSON.parse(String(resolved[0].init?.body))).toEqual({ runtimeSessionId: 'rs_owner', decision: 'session' });
+    });
+
+    it('never commits a remote-grant session or one whose grant status is unknown', async () => {
+      for (const isGrant of [true, undefined]) {
+        const { host, tools, calls } = buildStubHost({ elicitation: null });
+        registerMcpTools(withGrantStatus(host, isGrant));
+        const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
+        expect(JSON.parse(result.content[0].text)).toMatchObject({ status: 'pending' });
+        expect(resolveCalls(calls)).toHaveLength(0);
+      }
+    });
+
+    it('leaves the request pending when this host has no commit secret', async () => {
+      delete process.env.AGENT_DECK_ADMIN_SECRET;
+      const { host, tools, calls } = buildStubHost({ elicitation: null });
+      registerMcpTools(withGrantStatus(host, false));
+      const result = await tools.get('switch_deck')!.handler({ target: 'beta' });
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ status: 'pending' });
+      expect(resolveCalls(calls)).toHaveLength(0);
+    });
+  });
+
   it('elicits after creating a pending request and resolves once on accept', async () => {
     const { host, tools, calls } = buildStubHost({
       elicitation: { action: 'accept', content: { requestId: 'req_1', scope: 'workspace-default' } },

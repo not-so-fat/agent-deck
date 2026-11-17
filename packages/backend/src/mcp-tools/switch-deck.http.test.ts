@@ -329,6 +329,81 @@ describe('MCP request-only switch_deck (NOT-209)', () => {
     expect(store.listPendingDeckSwitchRequests(runtimeSessionId!)).toHaveLength(0);
   });
 
+  describe('AGENT_DECK_DECK_SWITCH_APPROVAL=client', () => {
+    const SECRET = 'test-admin-secret-0123456789abcdef';
+    let savedMode: string | undefined;
+    let savedSecret: string | undefined;
+
+    beforeEach(() => {
+      savedMode = process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
+      savedSecret = process.env.AGENT_DECK_ADMIN_SECRET;
+      process.env.AGENT_DECK_DECK_SWITCH_APPROVAL = 'client';
+      process.env.AGENT_DECK_ADMIN_SECRET = SECRET;
+    });
+
+    afterEach(() => {
+      for (const [key, value] of [
+        ['AGENT_DECK_DECK_SWITCH_APPROVAL', savedMode],
+        ['AGENT_DECK_ADMIN_SECRET', savedSecret],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    });
+
+    it('commits a local session-only switch at once: the client prompt was the approval', async () => {
+      const { backendUrl, deckA, deckB, store } = await buildListeningBackend();
+      const started = await startMcpServer(backendUrl, 'standard');
+      mcpServer = started.server;
+
+      const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckA.id };
+      const sessionId = await openSession(started.port, 1, headersA);
+
+      const switched = await callToolMcpResult(
+        started.port,
+        sessionId,
+        'switch_deck',
+        { target: 'beta' },
+        2,
+        headersA,
+      );
+      expect(switched.isError).toBe(false);
+      expect(switched.data).toMatchObject({ decision: 'session', status: 'consumed' });
+      expect(switched.data.refresh).toMatchObject({ tool: 'get_session_context' });
+
+      const runtimeSessionId = store.findActiveRuntimeSessionByMcpSessionId(sessionId)?.sessionId;
+      expect(store.listPendingDeckSwitchRequests(runtimeSessionId!)).toHaveLength(0);
+
+      const after = await callToolMcpResult(started.port, sessionId, 'get_session_context', {}, 3, headersA);
+      expect(after.data.effective_deck_id).toBe(deckB.id);
+      expect(after.data.operatingInstructions).toBe('SWITCH-MARKER-BETA\n');
+    });
+
+    it('is off unless set: the request stays pending for human approval', async () => {
+      delete process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
+      const { backendUrl, deckA } = await buildListeningBackend();
+      const started = await startMcpServer(backendUrl, 'standard');
+      mcpServer = started.server;
+
+      const headersA = { [AGENT_DECK_DECK_ID_HEADER]: deckA.id };
+      const sessionId = await openSession(started.port, 1, headersA);
+      const requested = await callToolMcpResult(
+        started.port,
+        sessionId,
+        'switch_deck',
+        { target: 'beta' },
+        2,
+        headersA,
+      );
+      expect(requested.data.status).toBe('pending');
+      const after = await callToolMcpResult(started.port, sessionId, 'get_session_context', {}, 3, headersA);
+      expect(after.data.effective_deck_id).toBe(deckA.id);
+    });
+  });
+
   it('embeds no approval capability or commit credential in the tool response', async () => {
     const { backendUrl, deckA } = await buildListeningBackend();
     const started = await startMcpServer(backendUrl, 'standard');

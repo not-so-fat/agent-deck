@@ -218,6 +218,7 @@ agent-deck start --daemon --force  # restart
 | `AGENT_DECK_DEV` | `1` → data under `~/.agent-deck/dev` (monorepo `npm run dev:all` sets this). `0` → production home even if `NODE_ENV=development`. |
 | `AGENT_DECK_HOME` | Data root override (DB, credentials yaml, secrets dir) |
 | `AGENT_DECK_DB_PATH` | SQLite file override (smoke tests use `.temporal/logs/smoke-agent_deck.db`) |
+| `AGENT_DECK_DECK_SWITCH_APPROVAL` | Unset (default): `switch_deck` waits for a human decision in the host form, the browser approval page, or the menubar inbox. `client`: for single-owner hosts whose MCP client asks the human before every `switch_deck` call (for example a Claude Code `ask` permission rule, relayed to the Claude app by Remote Control, which does not show MCP form elicitation). A local session's `switch_deck` then commits as **This session only** at once. Remote-grant sessions and **This workspace by default** keep the human approval flow. Only set it when every client of this host asks the human before `switch_deck`; a client that auto-allows the tool would switch decks unattended. |
 
 ### OAuth redirect (see [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md))
 
