@@ -32,7 +32,7 @@ function checkReleaseSync() {
   const rootPkg = readJson('package.json');
   const expected = rootPkg.version;
 
-  for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json']) {
+  for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json']) {
     let manifestVersion = null;
     try {
       manifestVersion = readJson(manifest).version;
