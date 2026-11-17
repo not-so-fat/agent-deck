@@ -701,10 +701,15 @@ function registerRuntimeTools(host: McpToolHost): void {
     }
   });
 
+  // The client's permission prompt shows this description, and under
+  // AGENT_DECK_DECK_SWITCH_APPROVAL=client that prompt is the human approval,
+  // so it must say the call switches the deck.
+  const clientApproval = deckSwitchClientApprovalEnabled();
   r('switch_deck', {
-    title: 'Request Deck Switch',
-    description:
-      'Request-only deck switch: resolves the target server-side and opens a pending human-approval request. Changes nothing — the active deck and all service/playbook routing stay on the current deck until approval is committed elsewhere. Target accepts a deck UUID or exact deck name. When the connected host supports MCP form elicitation, the pending request is presented there for human approval; otherwise the browser fallback hint is returned. After the human approves (session or workspace-default), call get_session_context once before more task work to load the new deck context — no MCP reconnect is needed, and the previous deck instructions stop applying immediately.',
+    title: clientApproval ? 'Switch Deck (This session only)' : 'Request Deck Switch',
+    description: clientApproval
+      ? 'Switches this session to another deck immediately ("This session only"): on this host, approving this tool call in your client IS the human approval. The active deck and all service/playbook routing move to the target as soon as the call returns. Target accepts a deck UUID or exact deck name. Remote-grant sessions and hosts without a commit credential still get a pending request for human approval instead. After the switch, call get_session_context once before more task work to load the new deck context — no MCP reconnect is needed, and the previous deck instructions stop applying immediately.'
+      : 'Request-only deck switch: resolves the target server-side and opens a pending human-approval request. Changes nothing — the active deck and all service/playbook routing stay on the current deck until approval is committed elsewhere. Target accepts a deck UUID or exact deck name. When the connected host supports MCP form elicitation, the pending request is presented there for human approval; otherwise the browser fallback hint is returned. After the human approves (session or workspace-default), call get_session_context once before more task work to load the new deck context — no MCP reconnect is needed, and the previous deck instructions stop applying immediately.',
     inputSchema: {
       target: z.string().min(1),
     },

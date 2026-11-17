@@ -521,6 +521,15 @@ describe('switch_deck elicitation wiring (NOT-213)', () => {
       return host;
     }
 
+    it('tells the human the call switches the deck, since their client prompt is the approval', () => {
+      const { host, tools } = buildStubHost({ elicitation: null });
+      registerMcpTools(withGrantStatus(host, false));
+      const config = tools.get('switch_deck')!.config;
+      expect(config.title).toContain('Switch Deck');
+      expect(config.description).toContain('Switches this session to another deck immediately');
+      expect(config.description).not.toContain('Changes nothing');
+    });
+
     it('commits a local session as session-only with no elicitation', async () => {
       const elicitForm = vi.fn();
       const { host, tools, calls } = buildStubHost();
