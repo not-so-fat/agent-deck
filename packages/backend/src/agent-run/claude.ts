@@ -57,6 +57,8 @@ export type RunQueryOptions = {
  */
 export const CLAUDE_PIN_WORKSPACE_HEADER = 'x-agent-deck-workspace';
 export const CLAUDE_PIN_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
+/** Must match `AGENT_DECK_DECK_ID_HEADER`. */
+export const CLAUDE_LAUNCH_DECK_HEADER = 'x-agent-deck-deck-id';
 
 /**
  * Inline `agent-deck` MCP server carrying the run's playbook pin (NOT-537),
@@ -69,14 +71,30 @@ export function buildClaudePinMcpServer(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): RunPinHttpMcpServer {
+  return buildClaudeRunMcpServer({ cwd, playbookPin: pin }, env);
+}
+
+/**
+ * The run's inline `agent-deck` server: the workspace header, plus the
+ * playbook pin and/or the launch deck header when the run has them. The
+ * launch deck header makes the daemon bind the run's deck directly instead
+ * of re-resolving it from the folder assignment or the user default.
+ */
+export function buildClaudeRunMcpServer(
+  input: { cwd: string; playbookPin?: RunPlaybookPin; launchDeckId?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): RunPinHttpMcpServer {
   const port = env.AGENT_DECK_MCP_PORT?.trim() || '1110';
   const host = env.AGENT_DECK_HOST?.trim() || '127.0.0.1';
   return {
     type: 'http',
     url: `http://${host}:${port}/mcp`,
     headers: {
-      [CLAUDE_PIN_WORKSPACE_HEADER]: cwd,
-      [CLAUDE_PIN_PLAYBOOK_PIN_HEADER]: formatRunPlaybookPin(pin),
+      [CLAUDE_PIN_WORKSPACE_HEADER]: input.cwd,
+      ...(input.playbookPin
+        ? { [CLAUDE_PIN_PLAYBOOK_PIN_HEADER]: formatRunPlaybookPin(input.playbookPin) }
+        : {}),
+      ...(input.launchDeckId ? { [CLAUDE_LAUNCH_DECK_HEADER]: input.launchDeckId } : {}),
     },
   };
 }
@@ -173,10 +191,14 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
           permissionMode: RUN_PERMISSION_MODE,
           allowedTools: [...allowedToolsForProfile(args.tools)],
           ...(abortController ? { abortController } : {}),
-          ...(args.playbookPin
+          ...(args.playbookPin || args.launchDeckId
             ? {
                 mcpServers: {
-                  'agent-deck': buildClaudePinMcpServer(args.playbookPin, args.cwd),
+                  'agent-deck': buildClaudeRunMcpServer({
+                    cwd: args.cwd,
+                    ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+                    ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+                  }),
                 },
                 strictMcpConfig: true,
               }

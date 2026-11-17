@@ -796,6 +796,40 @@ describe('codex resume provenance (NOT-484)', () => {
       versionId: '123e4567-e89b-42d3-a456-426614174000',
     });
   });
+
+  it('carries the trusted deck as the launch deck only when a headerless worker would bind another deck', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const trusted = { trustedBinding: { deckId: DECK.id } };
+
+    // Session switched to DECK, but the folder/default resolves elsewhere.
+    const switched = fixtureAdapter('codex', { events: successEvents() });
+    await makeService(home, switched, {
+      resolveHeaderlessDeck: async () => 'deck-default',
+    }).service.start(request(cwd, trusted));
+    expect(switched.starts[0].launchDeckId).toBe(DECK.id);
+
+    // No folder pin and no default deck: still carried.
+    const unpinned = fixtureAdapter('codex', { events: successEvents() });
+    await makeService(home, unpinned, {
+      resolveHeaderlessDeck: async () => undefined,
+    }).service.start(request(cwd, trusted));
+    expect(unpinned.starts[0].launchDeckId).toBe(DECK.id);
+
+    // Headerless resolution already lands on the run's deck: unchanged launch.
+    const same = fixtureAdapter('codex', { events: successEvents() });
+    await makeService(home, same, {
+      resolveHeaderlessDeck: async () => DECK.id,
+    }).service.start(request(cwd, trusted));
+    expect(same.starts[0]).not.toHaveProperty('launchDeckId');
+
+    // CLI runs (no trusted caller) keep the folder-assignment launch.
+    const cli = fixtureAdapter('codex', { events: successEvents() });
+    await makeService(home, cli, {
+      resolveHeaderlessDeck: async () => 'deck-default',
+    }).service.start(request(cwd));
+    expect(cli.starts[0]).not.toHaveProperty('launchDeckId');
+  });
 });
 
 describe('agent-run module boundary (NOT-479)', () => {

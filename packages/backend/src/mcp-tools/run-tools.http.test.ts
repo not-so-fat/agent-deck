@@ -356,6 +356,9 @@ describe('MCP agent run tools (NOT-539)', () => {
     expect(ctx.launch.mock.calls[0][0]).toMatchObject({ deckRef: ctx.deckB.id, cwd: wt, trustedBinding: { deckId: ctx.deckB.id } });
     expect(ctx.starts).toHaveLength(1);
     expect(ctx.starts[0].cwd).toBe(wt);
+    // The worker's own MCP connection binds the switched deck, not the
+    // folder assignment or the default deck.
+    expect(ctx.starts[0].launchDeckId).toBe(ctx.deckB.id);
     expect(fs.existsSync(path.join(wt, '.agent-deck'))).toBe(false);
     expect(snapshotTree(wt)).toEqual(before);
   });

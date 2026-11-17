@@ -538,6 +538,17 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
             '--playbook-version is not supported with --client muse: muse has no per-run MCP env override, so the pin would never reach the session. Re-run with --client codex or --client claude.',
         };
       }
+      // The run's deck came from an MCP session and a headerless connection
+      // from this folder would bind another deck; muse has no per-run MCP
+      // override to carry the launch deck header, so fail closed instead of
+      // running on the wrong deck.
+      if (args.launchDeckId) {
+        return {
+          ok: false,
+          remedy:
+            'This session\'s deck differs from the folder\'s deck (or the default deck), and --client muse cannot carry the session deck to its MCP connection. Re-run with --client codex or --client claude.',
+        };
+      }
       // Never trust the workspace from run: no --trust-workspace/--yolo, so
       // trustOverride stays false and the untrusted warning surfaces as a
       // notice (agent delegation unavailable is a known limit).
