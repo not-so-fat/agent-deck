@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.5.4 — 2026-11-16
+
+### Fix: delegated runs bind the session's deck
+
+- `start_run` ran on the session's live deck, but the worker's own MCP connection resolved its deck again from the folder assignment or the default deck. After a **This session only** `switch_deck`, or on a host with no folder pins, workers landed on the wrong deck. Codex and Claude runs now always carry the run's deck to the worker's MCP connection. Cursor and Muse cannot carry it; they fail closed when the workspace resolves to another deck.
+
+### Fix: an OAuth client a host registered for itself survives restarts and store syncs
+
+- After Connect registered a client for this host's redirect URI (2.5.3), a restart or `agent-deck reindex` restored the shared card's client while this host's token stayed, and refresh failed with `Client ID mismatch`. The host's own client now lives in its secret store next to its token, and is used for sign-in, callback and refresh. The shared card is left alone when it belongs to another host. A newly entered Client ID is never paired with the previous client's saved secret. Hosts affected before this release need one reconnect of the service.
+
+### New: opt-in `AGENT_DECK_DECK_SWITCH_APPROVAL=client`
+
+- For single-owner hosts whose MCP client asks the human before every `switch_deck` call (for example a Claude Code `ask` rule relayed to the Claude app by Remote Control, which does not show MCP form elicitation). A local session's `switch_deck` then commits as **This session only** right away, and the tool's title and description say so. Remote-grant sessions and **This workspace by default** keep the human approval flow. Off by default.
+
 ## 2.5.3 — 2026-11-16
 
 ### Fix: connecting an OAuth card works on a second host that shares the deck store (NOT-631)
