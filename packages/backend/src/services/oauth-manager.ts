@@ -135,9 +135,10 @@ export class OAuthManager {
       codeVerifier,
     });
 
+    const client = await this.clientSecrets.resolveClient(service, getOAuthRedirectUri());
     const url = new URL(service.oauthAuthorizationUrl);
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('client_id', service.oauthClientId || '');
+    url.searchParams.set('client_id', client.clientId);
     url.searchParams.set('redirect_uri', input.redirectUri);
     url.searchParams.set('scope', service.oauthScope || 'read write');
     url.searchParams.set('state', state);
@@ -170,18 +171,20 @@ export class OAuthManager {
 
     // Use the exact same redirect URI that was used in the authorization request
     // This should match the redirect URI stored in the service configuration
-    const redirectUri = service.oauthRedirectUri || 'http://localhost:3000/oauth/callback';
-    
+    // (this host's own registered client and its redirect, when it has one).
+    const client = await this.clientSecrets.resolveClient(service, getOAuthRedirectUri());
+    const redirectUri = client.redirectUri || 'http://localhost:3000/oauth/callback';
+
     console.log('OAuth callback debug:', {
       serviceId: input.serviceId,
-      clientId: service.oauthClientId,
+      clientId: client.clientId,
       redirectUri,
       tokenUrl: service.oauthTokenUrl,
     });
 
     const tokenBody = new URLSearchParams({
       grant_type: 'authorization_code',
-      client_id: service.oauthClientId || '',
+      client_id: client.clientId,
       code: input.code,
       redirect_uri: redirectUri,
       code_verifier: codeVerifier,
@@ -253,9 +256,10 @@ export class OAuthManager {
       throw new Error('Service does not have OAuth token URL configured');
     }
 
+    const client = await this.clientSecrets.resolveClient(service, getOAuthRedirectUri());
     const refreshBody = new URLSearchParams({
       grant_type: 'refresh_token',
-      client_id: service.oauthClientId || '',
+      client_id: client.clientId,
       refresh_token: input.refreshToken,
     });
     const clientSecret = await this.clientSecrets.get(input.serviceId, service.oauthClientSecret);

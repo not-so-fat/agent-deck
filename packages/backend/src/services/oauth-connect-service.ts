@@ -185,10 +185,12 @@ export async function startOAuthConnect(
     };
   }
 
+  // This host's own registered client (kept next to its tokens) wins over the shared card's.
+  const effective = await clientSecrets.resolveClient(service, redirectUri);
   const reuseStoredClient = shouldReuseStoredOAuthClient({
     enteredClientId: input.clientId,
-    storedClientId: service.oauthClientId,
-    storedRedirectUri: service.oauthRedirectUri,
+    storedClientId: effective.clientId,
+    storedRedirectUri: effective.redirectUri,
     currentRedirectUri: redirectUri,
     supportsDynamicRegistration: mcpDiscovery.oauth.supportsDynamicRegistration,
   });
@@ -196,7 +198,7 @@ export async function startOAuthConnect(
     ? await clientSecrets.get(serviceId, service.oauthClientSecret)
     : undefined;
   const resolved = resolveOAuthClientCredentials(input, {
-    oauthClientId: reuseStoredClient ? service.oauthClientId : null,
+    oauthClientId: reuseStoredClient ? effective.clientId : null,
     oauthClientSecret: storedSecret,
   });
   let clientId = resolved.clientId;
@@ -250,12 +252,28 @@ export async function startOAuthConnect(
     await clientSecrets.delete(serviceId);
   }
 
+  // A dynamically registered client belongs to this host: keep it next to this host's tokens so a
+  // reindex (restart, store sync) cannot swap it back to the card's client. That covers a fresh
+  // registration and a reuse of this host's earlier one. When the card names another host's client
+  // (registered for another redirect URI), leave the card's client fields alone so the shared card
+  // keeps working there. Entered, managed, or card clients clear the host record.
+  const hostClient =
+    mode === 'dynamic' || (reuseStoredClient && effective.hostRegistered && !input.clientId?.trim() && !shared);
+  const cardHasOtherHostClient =
+    Boolean(service.oauthClientId?.trim()) &&
+    Boolean(service.oauthRedirectUri?.trim()) &&
+    service.oauthRedirectUri !== redirectUri;
+  if (hostClient && clientId) {
+    await clientSecrets.setHostClient(serviceId, { clientId, redirectUri });
+  } else {
+    await clientSecrets.deleteHostClient(serviceId);
+  }
+  const keepCardClient = hostClient && cardHasOtherHostClient;
   await db.updateService(serviceId, {
-    oauthClientId: clientId,
+    ...(keepCardClient ? {} : { oauthClientId: clientId, oauthRedirectUri: redirectUri }),
     oauthClientSecret: '',
     oauthAuthorizationUrl: oauthConfig.authorizationUrl,
     oauthTokenUrl: oauthConfig.tokenUrl,
-    oauthRedirectUri: redirectUri,
     oauthScope: scope,
   });
 

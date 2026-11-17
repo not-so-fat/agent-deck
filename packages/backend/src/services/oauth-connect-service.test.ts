@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { getOAuthRedirectUri } from '../config/oauth-redirect';
+import { oauthClientSecretAccount, OAuthClientSecretVault } from '../vault/oauth-client-secret-vault';
+import { MemorySecretStore } from '../vault/secret-store';
 
 import {
   hasSavedOAuthCredentials,
@@ -105,22 +107,23 @@ vi.mock('./mcp-discovery-service', () => ({
   },
 }));
 
-describe('startOAuthConnect re-registration', () => {
-  it('re-registers for this host and clears the previous client secret', async () => {
-    const hostRedirect = getOAuthRedirectUri();
-    const service = {
+describe('startOAuthConnect host-local client', () => {
+  const otherHostRedirect = 'http://other-host.invalid:1111/api/oauth/callback';
+
+  function harness(card: { oauthClientId?: string; oauthRedirectUri?: string }) {
+    const service: Record<string, unknown> = {
       id: 'svc-1',
       name: 'Example',
       url: 'https://mcp.example.com/mcp',
-      oauthClientId: 'other-host-client',
       oauthClientSecret: '',
-      oauthRedirectUri: 'http://other-host.invalid:1111/api/oauth/callback',
+      ...card,
     };
     const updates: Record<string, unknown>[] = [];
     const db = {
       getService: async () => service,
       updateService: async (_id: string, patch: Record<string, unknown>) => {
         updates.push(patch);
+        Object.assign(service, patch);
       },
     };
     const autoRegisterOAuthApp = vi.fn(async () => ({ success: true, clientId: 'this-host-client' }));
@@ -128,26 +131,69 @@ describe('startOAuthConnect re-registration', () => {
       autoRegisterOAuthApp,
       initiateOAuthFlow: async () => ({ authorizationUrl: 'https://auth.example.com/authorize?x', state: 's' }),
     };
-    const vault = new Map<string, string>([['svc-1', 'stale-secret']]);
-    const clientSecrets = {
-      get: async (id: string) => vault.get(id) ?? null,
-      set: async (id: string, secret: string) => void vault.set(id, secret),
-      delete: async (id: string) => void vault.delete(id),
-    };
+    const store = new MemorySecretStore();
+    const clientSecrets = new OAuthClientSecretVault(store, db as never);
+    const connect = () =>
+      startOAuthConnect(db as never, oauthManager as never, clientSecrets, 'svc-1');
+    return { service, updates, autoRegisterOAuthApp, store, clientSecrets, connect };
+  }
 
-    const result = await startOAuthConnect(
-      db as never,
-      oauthManager as never,
-      clientSecrets as never,
-      'svc-1',
-    );
+  it('re-registers for this host, keeps the client next to its tokens, and leaves the shared card alone', async () => {
+    const h = harness({ oauthClientId: 'other-host-client', oauthRedirectUri: otherHostRedirect });
+    await h.store.set(oauthClientSecretAccount('svc-1'), 'stale-secret');
+
+    const result = await h.connect();
 
     expect(result.success).toBe(true);
-    expect(autoRegisterOAuthApp).toHaveBeenCalledTimes(1);
-    expect(updates.at(-1)).toMatchObject({
-      oauthClientId: 'this-host-client',
-      oauthRedirectUri: hostRedirect,
+    expect(h.autoRegisterOAuthApp).toHaveBeenCalledTimes(1);
+    expect(await h.clientSecrets.getHostClient('svc-1')).toEqual({
+      clientId: 'this-host-client',
+      redirectUri: getOAuthRedirectUri(),
     });
-    expect(vault.has('svc-1')).toBe(false);
+    for (const patch of h.updates) {
+      expect(patch).not.toHaveProperty('oauthClientId');
+      expect(patch).not.toHaveProperty('oauthRedirectUri');
+    }
+    expect(h.service.oauthClientId).toBe('other-host-client');
+    expect(await h.store.get(oauthClientSecretAccount('svc-1'))).toBeNull();
+  });
+
+  it('survives a reindex: the card still names the other host, yet this host resolves and reuses its own client', async () => {
+    const h = harness({ oauthClientId: 'other-host-client', oauthRedirectUri: otherHostRedirect });
+    await h.connect();
+
+    // Restart: SQLite is rebuilt from the shared card; the secret store keeps this host's record.
+    h.service.oauthClientId = 'other-host-client';
+    h.service.oauthRedirectUri = otherHostRedirect;
+    const resolved = await h.clientSecrets.resolveClient(
+      h.service as { id: string },
+      getOAuthRedirectUri(),
+    );
+    expect(resolved).toMatchObject({ clientId: 'this-host-client', hostRegistered: true });
+
+    await h.connect();
+    expect(h.autoRegisterOAuthApp).toHaveBeenCalledTimes(1);
+    expect(await h.clientSecrets.getHostClient('svc-1')).toMatchObject({ clientId: 'this-host-client' });
+    expect(h.service.oauthClientId).toBe('other-host-client');
+  });
+
+  it('writes the card on a host with no other host client, as before', async () => {
+    const h = harness({});
+    await h.connect();
+    expect(h.updates.at(-1)).toMatchObject({
+      oauthClientId: 'this-host-client',
+      oauthRedirectUri: getOAuthRedirectUri(),
+    });
+    expect(await h.clientSecrets.getHostClient('svc-1')).toMatchObject({ clientId: 'this-host-client' });
+  });
+
+  it('ignores a host record registered for another redirect URI', async () => {
+    const h = harness({ oauthClientId: 'card-client', oauthRedirectUri: getOAuthRedirectUri() });
+    await h.clientSecrets.setHostClient('svc-1', { clientId: 'old-client', redirectUri: otherHostRedirect });
+    const resolved = await h.clientSecrets.resolveClient(
+      h.service as { id: string },
+      getOAuthRedirectUri(),
+    );
+    expect(resolved).toMatchObject({ clientId: 'card-client', hostRegistered: false });
   });
 });
