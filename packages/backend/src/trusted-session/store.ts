@@ -29,6 +29,14 @@ export type RuntimeSessionRow = {
   grant_id: string | null;
 };
 
+/** NOT-634: durable approved "This session only" deck for one MCP session lineage. */
+export type SessionDeckOverride = {
+  originMcpSessionId: string;
+  deckId: string;
+  grantId: string | null;
+  approvedAt: string;
+};
+
 export type AdminChallengeRow = {
   id: string;
   runtime_session_id: string;
@@ -418,6 +426,19 @@ export class TrustedSessionStore {
 
       CREATE INDEX IF NOT EXISTS deck_assignment_requests_pending_idx
         ON deck_assignment_requests (mcp_session_id, status, expires_at);
+
+      CREATE TABLE IF NOT EXISTS session_deck_overrides (
+        origin_mcp_session_id TEXT PRIMARY KEY,
+        deck_id TEXT NOT NULL,
+        grant_id TEXT,
+        approved_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS session_deck_override_aliases (
+        mcp_session_id TEXT PRIMARY KEY,
+        origin_mcp_session_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
     this.ensureGrantColumn();
     this.ensureExecutionWorkspaceColumn();
@@ -608,6 +629,108 @@ export class TrustedSessionStore {
       .all(...uniqueIds, now) as Array<{ mcp_session_id: string; mode: AgentSessionMode }>;
 
     return new Map(rows.map((row) => [row.mcp_session_id, row.mode]));
+  }
+
+  /**
+   * NOT-634: the original MCP session id a (possibly recovered) id descends
+   * from. Recovery records `fresh id → origin` aliases, so a client that
+   * presents either its first id or any id minted for it after a restart
+   * resolves to the same approved session deck. Aliases are flat: every
+   * alias points straight at the origin, never at another alias.
+   */
+  resolveSessionDeckOverrideOrigin(mcpSessionId: string): string {
+    const row = this.db
+      .prepare(
+        `SELECT origin_mcp_session_id FROM session_deck_override_aliases WHERE mcp_session_id = ?`,
+      )
+      .get(mcpSessionId) as { origin_mcp_session_id: string } | undefined;
+    return row?.origin_mcp_session_id ?? mcpSessionId;
+  }
+
+  /**
+   * NOT-634: the approved "This session only" deck for an MCP session id
+   * (direct or via a recovery alias). Independent of runtime-session rows,
+   * so lease expiry, admin-mode exit, and transport teardown never erase it.
+   * Carries the owning grant (if any) so recovery never hands a grant
+   * session's deck to a bearer-free caller.
+   */
+  findSessionDeckOverride(mcpSessionId: string): SessionDeckOverride | null {
+    const origin = this.resolveSessionDeckOverrideOrigin(mcpSessionId);
+    const row = this.db
+      .prepare(
+        `SELECT origin_mcp_session_id, deck_id, grant_id, approved_at
+         FROM session_deck_overrides WHERE origin_mcp_session_id = ?`,
+      )
+      .get(origin) as
+      | { origin_mcp_session_id: string; deck_id: string; grant_id: string | null; approved_at: string }
+      | undefined;
+    return row
+      ? {
+          originMcpSessionId: row.origin_mcp_session_id,
+          deckId: row.deck_id,
+          grantId: row.grant_id,
+          approvedAt: row.approved_at,
+        }
+      : null;
+  }
+
+  /**
+   * NOT-634: record that `freshMcpSessionId` was minted to recover
+   * `presentedMcpSessionId` after a restart. The alias points at the
+   * presented id's origin so continuity survives repeated restarts.
+   * Idempotent; an id that is its own origin is never aliased.
+   */
+  recordSessionDeckOverrideAlias(freshMcpSessionId: string, presentedMcpSessionId: string): void {
+    const origin = this.resolveSessionDeckOverrideOrigin(presentedMcpSessionId);
+    if (origin === freshMcpSessionId) {
+      return;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO session_deck_override_aliases (mcp_session_id, origin_mcp_session_id, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT (mcp_session_id) DO UPDATE SET origin_mcp_session_id = excluded.origin_mcp_session_id`,
+      )
+      .run(freshMcpSessionId, origin, nowIso());
+  }
+
+  private upsertSessionDeckOverride(
+    mcpSessionId: string,
+    deckId: string,
+    grantId: string | null,
+    now: string,
+  ): void {
+    const origin = this.resolveSessionDeckOverrideOrigin(mcpSessionId);
+    this.db
+      .prepare(
+        `INSERT INTO session_deck_overrides (origin_mcp_session_id, deck_id, grant_id, approved_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (origin_mcp_session_id) DO UPDATE
+           SET deck_id = excluded.deck_id, grant_id = excluded.grant_id,
+               approved_at = excluded.approved_at`,
+      )
+      .run(origin, deckId, grantId, now);
+  }
+
+  private clearSessionDeckOverride(mcpSessionId: string): void {
+    const origin = this.resolveSessionDeckOverrideOrigin(mcpSessionId);
+    this.db
+      .prepare(`DELETE FROM session_deck_overrides WHERE origin_mcp_session_id = ?`)
+      .run(origin);
+  }
+
+  /**
+   * NOT-634: whether a runtime session currently sits on its approved
+   * session deck — the `active_source: "session"` signal. False when the
+   * session has no MCP id, no override, or has since moved elsewhere.
+   */
+  isRuntimeSessionOnSessionDeckOverride(sessionId: string): boolean {
+    const row = this.getRuntimeSessionRow(sessionId);
+    if (!row?.mcp_session_id) {
+      return false;
+    }
+    const override = this.findSessionDeckOverride(row.mcp_session_id);
+    return override !== null && override.deckId === row.deck_id;
   }
 
   createDashboardNonce(nonce: string, expiresAtIso: string): void {
@@ -1245,6 +1368,25 @@ export class TrustedSessionStore {
 
       if (!this.rebindRuntimeSessionDeck(row.runtime_session_id, row.requested_deck_id, now)) {
         throw new DeckSwitchCommitFailed('session-invalid');
+      }
+
+      // NOT-634: a "This session only" approval is also recorded durably
+      // against the session's MCP id lineage, so it survives lease expiry,
+      // transport teardown, and a daemon restart. A workspace-default
+      // approval hands the session back to normal workspace resolution, so
+      // any earlier session override is dropped. Neither touches use.json.
+      const mcpSessionId = row.mcp_session_id ?? sessionRow.mcp_session_id;
+      if (mcpSessionId) {
+        if (decision === 'session') {
+          this.upsertSessionDeckOverride(
+            mcpSessionId,
+            row.requested_deck_id,
+            sessionRow.grant_id ?? null,
+            now,
+          );
+        } else {
+          this.clearSessionDeckOverride(mcpSessionId);
+        }
       }
 
       this.db

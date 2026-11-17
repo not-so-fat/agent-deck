@@ -169,6 +169,48 @@ type McpSession = {
   server: McpServer;
 };
 
+/** Backend `/mcp/connect-deck` reply for local launch binds. */
+type LaunchConnectResponseBody = {
+  success?: boolean;
+  error?: string;
+  error_code?: string;
+  data?: {
+    sessionId: string;
+    deckId: string;
+    deckName?: string;
+    mode: 'normal' | 'agent-admin';
+    /** NOT-634: present when the bind named a recovered session id. */
+    sessionOverride?: boolean;
+  };
+};
+
+/** NOT-634: `clientInfo.name` from an initialize body, for recovery logs only. */
+function readInitializeClientName(body: unknown): string | undefined {
+  const messages = Array.isArray(body) ? body : [body];
+  for (const message of messages) {
+    if (!message || typeof message !== 'object' || !isInitializeRequest(message)) {
+      continue;
+    }
+    const name = (message.params as { clientInfo?: { name?: unknown } }).clientInfo?.name;
+    if (typeof name === 'string' && name.trim()) {
+      return name.trim().slice(0, 80);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * NOT-634: the approved session deck of a presented pre-restart session id
+ * was deleted. Answered explicitly — never a silent header / folder pin /
+ * default-deck fallback.
+ */
+class SessionDeckMissingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SessionDeckMissingError';
+  }
+}
+
 /**
  * NOT-318: hosted-mode flag. When `AGENT_DECK_MCP_REQUIRE_BEARER=1`, every
  * `/mcp` request requires a valid per-agent grant secret, regardless of
@@ -1751,6 +1793,11 @@ export class AgentDeckMCPServer {
       workspaceRoot: binding.workspaceRoot,
       mode,
     });
+    // NOT-634: whether the session sits on its approved session deck
+    // (reported as `active_source: "session"`). Display only.
+    if (typeof data?.sessionOverride === 'boolean') {
+      this.sessionBinding.setApprovedSessionOverride(sessionId, data.sessionOverride);
+    }
 
     return { mode, deckId };
   }
@@ -1944,6 +1991,12 @@ export class AgentDeckMCPServer {
     sessionId: string,
     req: Request,
     deckIdOverride?: string,
+    /**
+     * NOT-634: the pre-restart session id the client presented. The fresh
+     * session is aliased to its lineage so a later restart still finds an
+     * approved session deck approved on this fresh session.
+     */
+    recoverFromMcpSessionId?: string,
   ): Promise<void> {
     const deckId = deckIdOverride ?? readLaunchDeckHeader(req);
     if (!deckId) {
@@ -1982,34 +2035,97 @@ export class AgentDeckMCPServer {
         deckId,
         mcpSessionId: sessionId,
         ...(executionWorkspace ? { executionWorkspace } : {}),
+        ...(recoverFromMcpSessionId ? { recoverFromMcpSessionId } : {}),
       }),
     });
 
-    const body = (await response.json()) as {
-      success?: boolean;
-      error?: string;
-      data?: {
-        sessionId: string;
-        deckId: string;
-        deckName?: string;
-        mode: 'normal' | 'agent-admin';
-      };
-    };
+    const body = (await response.json()) as LaunchConnectResponseBody;
 
     if (!response.ok || !body.success || !body.data) {
+      if (body.error_code === 'SESSION_DECK_MISSING') {
+        throw new SessionDeckMissingError(body.error ?? 'SESSION_DECK_MISSING');
+      }
       throw new Error(body.error ?? 'LAUNCH_DECK_INVALID');
     }
 
+    this.adoptLaunchConnect(sessionId, req, body.data, executionWorkspace);
+    if (body.data.sessionOverride) {
+      this.sessionBinding.markSessionOverrideRecovery(sessionId);
+    }
+  }
+
+  /**
+   * NOT-634: bind a fresh session to the approved session deck of the
+   * pre-restart id the client presented, before any header / folder pin /
+   * default-deck resolution. Local bearer-free callers only (the call
+   * site gates). Returns the recovered deck id, or undefined when that id
+   * has no approved session deck (the caller resolves as before). Throws
+   * {@link SessionDeckMissingError} when the approved deck was deleted —
+   * the caller answers it explicitly instead of falling back.
+   */
+  private async bindRecoveredSessionOverride(
+    sessionId: string,
+    req: Request,
+    presentedSessionId: string,
+  ): Promise<string | undefined> {
+    const executionWorkspace = this.readLaunchExecutionWorkspace(req);
+    const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        mcpSessionId: sessionId,
+        recoverFromMcpSessionId: presentedSessionId,
+        ...(executionWorkspace ? { executionWorkspace } : {}),
+      }),
+    });
+    const body = (await response.json()) as LaunchConnectResponseBody;
+    if (!response.ok || !body.success || !body.data) {
+      if (body.error_code === 'SESSION_DECK_MISSING') {
+        throw new SessionDeckMissingError(body.error ?? 'SESSION_DECK_MISSING');
+      }
+      if (body.error_code === 'NO_SESSION_OVERRIDE') {
+        return undefined;
+      }
+      throw new Error(body.error ?? 'LAUNCH_DECK_INVALID');
+    }
+    if (!body.data.sessionOverride) {
+      return undefined;
+    }
+    this.adoptLaunchConnect(sessionId, req, body.data, executionWorkspace);
+    this.sessionBinding.markSessionOverrideRecovery(sessionId);
+    return body.data.deckId;
+  }
+
+  /** NOT-634: answer a recovered id whose approved session deck was deleted. */
+  private sendSessionDeckMissing(res: Response, message: string): void {
+    res.status(409).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: `SESSION_DECK_MISSING: ${message}` },
+      id: null,
+    });
+  }
+
+  /**
+   * Record a successful launch connect on the MCP session binding (shared by
+   * `authenticateLaunchDeck` and NOT-634 override recovery).
+   */
+  private adoptLaunchConnect(
+    sessionId: string,
+    req: Request,
+    data: NonNullable<LaunchConnectResponseBody['data']>,
+    executionWorkspace: string | undefined,
+  ): void {
+    const existing = this.sessionBinding.getBinding(sessionId);
     const workspaceRoot =
       readWorkspaceRootHeader(req) ??
       existing.workspaceRoot ??
       (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
 
     this.sessionBinding.setLaunchSession(sessionId, {
-      runtimeSessionId: body.data.sessionId,
-      deckId: body.data.deckId,
+      runtimeSessionId: data.sessionId,
+      deckId: data.deckId,
       workspaceRoot,
-      mode: body.data.mode,
+      mode: data.mode,
     });
     // Freezes presence and absence alike: a launch without workspace metadata
     // keeps returning WORKSPACE_REQUIRED for the session lifetime.
@@ -2114,7 +2230,13 @@ export class AgentDeckMCPServer {
       !launchDeck &&
       this.sessionBinding.isLaunchSession(sessionId) &&
       this.sessionBinding.isDefaultDeckSession(sessionId);
-    if (launchDeck || useManifestFollowUp || defaultDeckFollowUp) {
+    // NOT-634: sessions bound by recovering an approved session deck carry
+    // no deck header for it either — same launch follow-up refresh.
+    const sessionOverrideFollowUp =
+      !launchDeck &&
+      this.sessionBinding.isLaunchSession(sessionId) &&
+      this.sessionBinding.isSessionOverrideRecovery(sessionId);
+    if (launchDeck || useManifestFollowUp || defaultDeckFollowUp || sessionOverrideFollowUp) {
       try {
         await this.authenticateLaunchDeck(
           sessionId,
@@ -2483,6 +2605,51 @@ export class AgentDeckMCPServer {
       return;
     }
 
+    // NOT-634: an initialize presenting a pre-restart session id first
+    // recovers that id's approved session deck, ahead of header → folder
+    // pin → default deck. Without an approved deck it resolves exactly as
+    // before (the fresh id is still aliased to the presented lineage).
+    // An initialize without a session id never reaches this branch.
+    const presentedSessionId =
+      sessionIdHeader && !this.closedSessionIds.has(sessionIdHeader) ? sessionIdHeader : undefined;
+    if (presentedSessionId) {
+      const recoveredSessionId = randomUUID();
+      let recoveredDeck: string | undefined;
+      try {
+        recoveredDeck = await this.bindRecoveredSessionOverride(
+          recoveredSessionId,
+          req,
+          presentedSessionId,
+        );
+      } catch (error) {
+        this.sessionBinding.clearSession(recoveredSessionId);
+        if (error instanceof SessionDeckMissingError) {
+          console.warn(
+            `[agent-deck] MCP initialize presented pre-restart session ${presentedSessionId} ` +
+              `(client ${readInitializeClientName(body) ?? 'unknown'}); its approved session deck is gone:`,
+            error.message,
+          );
+          this.sendSessionDeckMissing(res, error.message);
+          return;
+        }
+        // Any other failure: resolve as an initialize without an override.
+      }
+      if (recoveredDeck) {
+        console.warn(
+          `[agent-deck] MCP initialize presented pre-restart session ${presentedSessionId} ` +
+            `(client ${readInitializeClientName(body) ?? 'unknown'}); recovered approved session deck ` +
+            `${recoveredDeck} as ${recoveredSessionId}.`,
+        );
+        await this.establishTransportSession(req, res, recoveredSessionId);
+        return;
+      }
+      console.warn(
+        `[agent-deck] MCP initialize presented pre-restart session ${presentedSessionId} ` +
+          `(client ${readInitializeClientName(body) ?? 'unknown'}); no approved session deck — ` +
+          'resolving from deck header, folder pin, or default deck.',
+      );
+    }
+
     // NOT-562: workspace-header-only hosts (pure MCP, no launcher) resolve
     // the deck from the folder assignment. An explicit deck header still
     // wins; the manifest is consulted only when it is absent. NOT-600 adds
@@ -2505,7 +2672,7 @@ export class AgentDeckMCPServer {
     const sessionId = randomUUID();
     if (effectiveDeck) {
       try {
-        await this.authenticateLaunchDeck(sessionId, req, effectiveDeck);
+        await this.authenticateLaunchDeck(sessionId, req, effectiveDeck, presentedSessionId);
         if (manifestDeck && !launchDeck && effectiveDeck === manifestDeck) {
           this.sessionBinding.markUseManifestSession(sessionId);
         } else if (defaultDeck && !launchDeck && effectiveDeck === defaultDeck) {
@@ -2527,7 +2694,7 @@ export class AgentDeckMCPServer {
           manifestDeck && !launchDeck && defaultDeck && defaultDeck !== manifestDeck;
         if (canFallThroughToDefault) {
           try {
-            await this.authenticateLaunchDeck(sessionId, req, defaultDeck);
+            await this.authenticateLaunchDeck(sessionId, req, defaultDeck, presentedSessionId);
             this.sessionBinding.markDefaultDeckSession(sessionId);
           } catch {
             this.sessionBinding.markUnassigned(sessionId);
@@ -2635,45 +2802,75 @@ export class AgentDeckMCPServer {
     if (this.closedSessionIds.has(staleSessionId)) {
       return false;
     }
-    const { launchDeck, manifestDeck, defaultDeck, effectiveDeck } = this.resolveHeaderDeck(req);
-    if (!effectiveDeck) {
-      return false;
-    }
-    // A racing recovery may have installed an alias while headers resolved.
-    if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
-      return true;
-    }
 
     const freshSessionId = randomUUID();
-    let recoveredDeck = effectiveDeck;
+    // NOT-634: the presented id's approved session deck wins over header →
+    // folder pin → default deck. A deleted approved deck is answered
+    // explicitly (served, so the call site does not 404 into a silent
+    // fallback); any other lookup failure resolves from headers as before.
+    let overrideDeck: string | undefined;
     try {
-      await this.authenticateLaunchDeck(freshSessionId, req, effectiveDeck);
-      if (manifestDeck && !launchDeck && effectiveDeck === manifestDeck) {
-        this.sessionBinding.markUseManifestSession(freshSessionId);
-      } else if (defaultDeck && !launchDeck && effectiveDeck === defaultDeck) {
-        this.sessionBinding.markDefaultDeckSession(freshSessionId);
-      }
-    } catch {
-      // NOT-604: like initialize, a manifest naming a deleted deck falls
-      // through to the user default deck before recovery gives up.
-      const canFallThroughToDefault =
-        manifestDeck && !launchDeck && defaultDeck && defaultDeck !== manifestDeck;
-      if (!canFallThroughToDefault) {
-        // Opportunistic: a bind failure falls back to the NOT-101 404 the
-        // call site answers — silently, so a retrying host cannot spam one
-        // line per request (the 404 path logs first-seen ids already).
-        this.sessionBinding.clearSession(freshSessionId);
-        return false;
-      }
-      try {
-        await this.authenticateLaunchDeck(freshSessionId, req, defaultDeck);
-        this.sessionBinding.markDefaultDeckSession(freshSessionId);
-        recoveredDeck = defaultDeck;
-      } catch {
-        this.sessionBinding.clearSession(freshSessionId);
-        return false;
+      overrideDeck = await this.bindRecoveredSessionOverride(freshSessionId, req, staleSessionId);
+    } catch (error) {
+      this.sessionBinding.clearSession(freshSessionId);
+      if (error instanceof SessionDeckMissingError) {
+        if (!this.staleSessionsById.get(staleSessionId)?.recovered) {
+          console.warn(
+            `[agent-deck] MCP session ${staleSessionId} presented after restart; its approved session deck is gone:`,
+            error.message,
+          );
+        }
+        this.sendSessionDeckMissing(res, error.message);
+        return true;
       }
     }
+
+    let recoveredDeck: string;
+    if (overrideDeck) {
+      recoveredDeck = overrideDeck;
+    } else {
+      const { launchDeck, manifestDeck, defaultDeck, effectiveDeck } = this.resolveHeaderDeck(req);
+      if (!effectiveDeck) {
+        return false;
+      }
+      // A racing recovery may have installed an alias while headers resolved.
+      if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
+        return true;
+      }
+
+      recoveredDeck = effectiveDeck;
+      try {
+        await this.authenticateLaunchDeck(freshSessionId, req, effectiveDeck, staleSessionId);
+        if (manifestDeck && !launchDeck && effectiveDeck === manifestDeck) {
+          this.sessionBinding.markUseManifestSession(freshSessionId);
+        } else if (defaultDeck && !launchDeck && effectiveDeck === defaultDeck) {
+          this.sessionBinding.markDefaultDeckSession(freshSessionId);
+        }
+      } catch {
+        // NOT-604: like initialize, a manifest naming a deleted deck falls
+        // through to the user default deck before recovery gives up.
+        const canFallThroughToDefault =
+          manifestDeck && !launchDeck && defaultDeck && defaultDeck !== manifestDeck;
+        if (!canFallThroughToDefault) {
+          // Opportunistic: a bind failure falls back to the NOT-101 404 the
+          // call site answers — silently, so a retrying host cannot spam one
+          // line per request (the 404 path logs first-seen ids already).
+          this.sessionBinding.clearSession(freshSessionId);
+          return false;
+        }
+        try {
+          await this.authenticateLaunchDeck(freshSessionId, req, defaultDeck, staleSessionId);
+          this.sessionBinding.markDefaultDeckSession(freshSessionId);
+          recoveredDeck = defaultDeck;
+        } catch {
+          this.sessionBinding.clearSession(freshSessionId);
+          return false;
+        }
+      }
+    }
+    const recoveredFrom = this.sessionBinding.isSessionOverrideRecovery(freshSessionId)
+      ? 'its approved session deck'
+      : 'headers';
 
     // Adopt a concurrent winner instead of minting a second session.
     if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
@@ -2726,7 +2923,7 @@ export class AgentDeckMCPServer {
     // One line per recovered session id, not per request — the host keeps
     // sending the stale id on every later call.
     console.warn(
-      `[agent-deck] MCP session ${staleSessionId} recovered from headers as ${freshSessionId} ` +
+      `[agent-deck] MCP session ${staleSessionId} recovered from ${recoveredFrom} as ${freshSessionId} ` +
         `(deck ${recoveredDeck}); the client never re-initialized after the restart.`,
     );
     // NOT-513: adopt the host-side session id before the first live-display
