@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { countDeckCards, formatDisplayLine, normalizeCorrelationId, PatchOpSchema, type PlaybookPin } from '@agent-deck/shared';
 import type { ElicitationResult } from './elicitation';
-import { presentDeckSwitchApproval, submitDeckSwitchApprovalViaBackend } from './elicitation';
+import {
+  DeckSwitchApprovalCommitUnavailable,
+  presentDeckSwitchApproval,
+  submitDeckSwitchApprovalViaBackend,
+} from './elicitation';
 import {
   fetchDecksForAssignmentElicitation,
   presentDeckAssignmentApproval,
@@ -67,6 +71,8 @@ export type McpToolHost = {
       },
     ): void;
     isLaunchSession(sessionId: string): boolean;
+    /** NOT-318: session authenticated through a remote bearer grant. */
+    isGrantSession?(sessionId: string): boolean;
     isUnassigned?(sessionId: string): boolean;
     /** NOT-597: human-approved assignment session (promoted from unassigned). */
     isAssignmentSession?(sessionId: string): boolean;
@@ -349,6 +355,15 @@ type AuthorizedBoundDeck = {
  */
 function resolveOperatingInstructions(deck: AuthorizedBoundDeck | null | undefined): string {
   return typeof deck?.operatingInstructions === 'string' ? deck.operatingInstructions : '';
+}
+
+/**
+ * `AGENT_DECK_DECK_SWITCH_APPROVAL=client`: the connecting client's own
+ * permission prompt is the human approval for session-only deck switches.
+ * Unset (default) keeps host elicitation, then browser/menubar approval.
+ */
+export function deckSwitchClientApprovalEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AGENT_DECK_DECK_SWITCH_APPROVAL?.trim().toLowerCase() === 'client';
 }
 
 /**
@@ -686,10 +701,15 @@ function registerRuntimeTools(host: McpToolHost): void {
     }
   });
 
+  // The client's permission prompt shows this description, and under
+  // AGENT_DECK_DECK_SWITCH_APPROVAL=client that prompt is the human approval,
+  // so it must say the call switches the deck.
+  const clientApproval = deckSwitchClientApprovalEnabled();
   r('switch_deck', {
-    title: 'Request Deck Switch',
-    description:
-      'Request-only deck switch: resolves the target server-side and opens a pending human-approval request. Changes nothing — the active deck and all service/playbook routing stay on the current deck until approval is committed elsewhere. Target accepts a deck UUID or exact deck name. When the connected host supports MCP form elicitation, the pending request is presented there for human approval; otherwise the browser fallback hint is returned. After the human approves (session or workspace-default), call get_session_context once before more task work to load the new deck context — no MCP reconnect is needed, and the previous deck instructions stop applying immediately.',
+    title: clientApproval ? 'Switch Deck (This session only)' : 'Request Deck Switch',
+    description: clientApproval
+      ? 'Switches this session to another deck immediately ("This session only"): on this host, approving this tool call in your client IS the human approval. The active deck and all service/playbook routing move to the target as soon as the call returns. Target accepts a deck UUID or exact deck name. Remote-grant sessions and hosts without a commit credential still get a pending request for human approval instead. After the switch, call get_session_context once before more task work to load the new deck context — no MCP reconnect is needed, and the previous deck instructions stop applying immediately.'
+      : 'Request-only deck switch: resolves the target server-side and opens a pending human-approval request. Changes nothing — the active deck and all service/playbook routing stay on the current deck until approval is committed elsewhere. Target accepts a deck UUID or exact deck name. When the connected host supports MCP form elicitation, the pending request is presented there for human approval; otherwise the browser fallback hint is returned. After the human approves (session or workspace-default), call get_session_context once before more task work to load the new deck context — no MCP reconnect is needed, and the previous deck instructions stop applying immediately.',
     inputSchema: {
       target: z.string().min(1),
     },
@@ -717,6 +737,40 @@ function registerRuntimeTools(host: McpToolHost): void {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target }),
       });
+      // Opt-in host setting for single-owner hosts reached through a client
+      // whose own permission prompt already asked the human (for example a
+      // Claude Code `ask` rule on switch_deck relayed to the Claude app,
+      // where MCP form elicitation is not shown). The caller's approval is
+      // the human approval: a pending request from a local (non-grant)
+      // session commits as "This session only" right away. Workspace-default
+      // writes and remote-grant sessions keep the human approval flow.
+      if (
+        // The value captured at registration, so the behavior always matches
+        // the description the client showed the human.
+        clientApproval &&
+        // Unknown grant status fails closed (no auto-commit).
+        host.sessionBinding.isGrantSession?.(sessionId) === false &&
+        result &&
+        typeof result === 'object' &&
+        (result as { status?: unknown }).status === 'pending' &&
+        typeof (result as { requestId?: unknown }).requestId === 'string'
+      ) {
+        try {
+          const resolved = await submitDeckSwitchApprovalViaBackend({
+            callBackendAPI: (endpoint, init) => host.callBackendAPI(endpoint, init),
+            requestId: (result as { requestId: string }).requestId,
+            runtimeSessionId: snapshot.runtimeSessionId,
+            decision: 'session',
+          });
+          return host.toolResult(withDeckSwitchRefreshHint(resolved));
+        } catch (error) {
+          // No commit secret on this host: the request stays pending and the
+          // normal approval surfaces below take over.
+          if (!(error instanceof DeckSwitchApprovalCommitUnavailable)) {
+            throw error;
+          }
+        }
+      }
       // NOT-213: first supported surface wins. A freshly created pending
       // request goes to the host-native form when the client advertises
       // form elicitation; every other outcome (already on deck, no
