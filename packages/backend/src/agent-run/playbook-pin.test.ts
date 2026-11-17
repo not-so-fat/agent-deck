@@ -13,6 +13,8 @@ import { describe, expect, it } from 'vitest';
 import { formatRunPlaybookPin, PLAYBOOK_PIN_ENV_VAR } from './adapter';
 import {
   buildClaudePinMcpServer,
+  buildClaudeRunMcpServer,
+  CLAUDE_LAUNCH_DECK_HEADER,
   CLAUDE_PIN_PLAYBOOK_PIN_HEADER,
   CLAUDE_PIN_WORKSPACE_HEADER,
   createClaudeAdapter,
@@ -21,6 +23,7 @@ import {
 import {
   buildCodexArgv,
   buildCodexPinConfigOverride,
+  CODEX_LAUNCH_DECK_HEADER,
   CODEX_PIN_PLAYBOOK_PIN_HEADER,
   CODEX_PIN_WORKSPACE_HEADER,
   createCodexAdapter,
@@ -216,5 +219,99 @@ describe('playbook pin carriage (NOT-537)', () => {
       expect(plan.remedy).toContain('--playbook-version is not supported with --client muse');
     }
     expect(adapter.planStart({ cwd: '/tmp', prompt: 'hi', tools: 'readonly' }).ok).toBe(true);
+  });
+});
+
+describe('launch deck carriage for runs started from an MCP session', () => {
+  const DECK_ID = '6f1c2d3e-4a5b-4c6d-8e7f-90a1b2c3d4e5';
+
+  it('header names match the shared contract', () => {
+    expect(CODEX_LAUNCH_DECK_HEADER).toBe('x-agent-deck-deck-id');
+    expect(CLAUDE_LAUNCH_DECK_HEADER).toBe('x-agent-deck-deck-id');
+  });
+
+  it('codex adds the -c override with the deck header, with or without a pin', () => {
+    const deckOnly = buildCodexArgv({
+      prompt: 'hi',
+      tools: 'readonly',
+      insideGitRepo: true,
+      launchDeckId: DECK_ID,
+      workspaceRoot: '/work',
+    });
+    const override = deckOnly[deckOnly.indexOf('-c') + 1];
+    expect(override).toContain(`"x-agent-deck-deck-id"="${DECK_ID}"`);
+    expect(override).toContain('"x-agent-deck-workspace"="/work"');
+    expect(override).not.toContain('x-agent-deck-playbook-pin');
+
+    const both = buildCodexArgv({
+      prompt: 'hi',
+      tools: 'readonly',
+      insideGitRepo: true,
+      playbookPin: PIN,
+      launchDeckId: DECK_ID,
+      workspaceRoot: '/work',
+    });
+    expect(both.filter((arg) => arg === '-c')).toHaveLength(1);
+    expect(both[both.indexOf('-c') + 1]).toContain(PIN_VALUE);
+    expect(both[both.indexOf('-c') + 1]).toContain(DECK_ID);
+  });
+
+  it('codex start passes the deck override for the run cwd', async () => {
+    const calls: string[][] = [];
+    const adapter = createCodexAdapter({
+      spawn: (_bin, argv) => {
+        calls.push(argv);
+        return { stdout: emptyLines(), wait: async () => ({ code: 0, stderrTail: '' }) };
+      },
+      isGitRepo: () => true,
+    });
+    await drain(adapter.start({ cwd: '/work', prompt: 'hi', tools: 'readonly', launchDeckId: DECK_ID }));
+    expect(calls).toHaveLength(1);
+    expect(calls[0][calls[0].indexOf('-c') + 1]).toContain(DECK_ID);
+  });
+
+  it('claude builds an inline server with the deck header', () => {
+    const server = buildClaudeRunMcpServer({ cwd: '/work', launchDeckId: DECK_ID }, {});
+    expect(server.headers).toEqual({
+      [CLAUDE_PIN_WORKSPACE_HEADER]: '/work',
+      [CLAUDE_LAUNCH_DECK_HEADER]: DECK_ID,
+    });
+  });
+
+  it('codex resume carries the deck-only override after exec resume', () => {
+    const resume = buildCodexArgv({
+      prompt: 'hi',
+      tools: 'readonly',
+      insideGitRepo: true,
+      resumeId: '0199a213-81c0-7800-8aa1-bbab2a035a53',
+      launchDeckId: DECK_ID,
+      workspaceRoot: '/work',
+    });
+    expect(resume.slice(0, 3)).toEqual(['exec', 'resume', '-c']);
+    expect(resume[3]).toContain(`"x-agent-deck-deck-id"="${DECK_ID}"`);
+    expect(resume.indexOf('-c')).toBeLessThan(resume.indexOf('--'));
+  });
+
+  it('cursor and muse fail closed only on a headerless deck mismatch', () => {
+    const muse = createMuseAdapter({
+      readFile: (candidate) =>
+        candidate.endsWith('settings.json')
+          ? JSON.stringify({ mcpServers: { 'agent-deck': { command: 'agent-deck' } } })
+          : null,
+      probe: () => ({ code: 0, stdout: '--disable-write --disable-shell', stderr: '' }),
+    });
+    for (const adapter of [createCursorAdapter(), muse]) {
+      const plan = adapter.planStart({
+        cwd: '/work',
+        prompt: 'hi',
+        tools: 'readonly',
+        launchDeckId: DECK_ID,
+        headerlessDeckMismatch: true,
+      });
+      expect(plan.ok).toBe(false);
+      expect(
+        adapter.planStart({ cwd: '/work', prompt: 'hi', tools: 'readonly', launchDeckId: DECK_ID }).ok,
+      ).toBe(true);
+    }
   });
 });

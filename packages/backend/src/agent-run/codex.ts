@@ -60,6 +60,8 @@ export type CodexArgvArgs = {
    * resolve the folder assignment — there is no launcher to read it.
    */
   workspaceRoot?: string;
+  /** Launch deck header for the run's MCP session (see `AdapterStartArgs.launchDeckId`). */
+  launchDeckId?: string;
 };
 
 /** Escape one TOML basic-string value (the pin is `id=uuid`; belt and suspenders). */
@@ -91,6 +93,8 @@ export function codexPinEndpoint(
  */
 export const CODEX_PIN_WORKSPACE_HEADER = 'x-agent-deck-workspace';
 export const CODEX_PIN_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
+/** Must match `AGENT_DECK_DECK_ID_HEADER`. */
+export const CODEX_LAUNCH_DECK_HEADER = 'x-agent-deck-deck-id';
 
 /**
  * The `-c` override value carrying the run's playbook pin (NOT-537). A full
@@ -106,9 +110,27 @@ export function buildCodexPinConfigOverride(
   workspaceRoot: string,
   endpoint: { port: string; host: string } = codexPinEndpoint(),
 ): string {
+  return buildCodexMcpConfigOverride({ workspaceRoot, playbookPin: pin }, endpoint);
+}
+
+/**
+ * The run's `mcp_servers.agent-deck` override: the workspace header, plus
+ * the playbook pin and/or the launch deck header when the run has them. The
+ * launch deck header makes the daemon bind the run's deck directly instead
+ * of re-resolving it from the folder assignment or the user default.
+ */
+export function buildCodexMcpConfigOverride(
+  input: { workspaceRoot: string; playbookPin?: RunPlaybookPin; launchDeckId?: string },
+  endpoint: { port: string; host: string } = codexPinEndpoint(),
+): string {
   const headers = [
-    `"${CODEX_PIN_WORKSPACE_HEADER}"="${tomlEscape(workspaceRoot)}"`,
-    `"${CODEX_PIN_PLAYBOOK_PIN_HEADER}"="${tomlEscape(formatRunPlaybookPin(pin))}"`,
+    `"${CODEX_PIN_WORKSPACE_HEADER}"="${tomlEscape(input.workspaceRoot)}"`,
+    ...(input.playbookPin
+      ? [`"${CODEX_PIN_PLAYBOOK_PIN_HEADER}"="${tomlEscape(formatRunPlaybookPin(input.playbookPin))}"`]
+      : []),
+    ...(input.launchDeckId
+      ? [`"${CODEX_LAUNCH_DECK_HEADER}"="${tomlEscape(input.launchDeckId)}"`]
+      : []),
   ].join(',');
   return (
     `mcp_servers.agent-deck={url="http://${tomlEscape(endpoint.host)}:${tomlEscape(endpoint.port)}/mcp",` +
@@ -157,14 +179,21 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
     assertSafeResumeId(args.resumeId as string);
     argv.push('resume');
   }
-  if (args.playbookPin) {
+  if (args.playbookPin || args.launchDeckId) {
     if (!args.workspaceRoot) {
       throw new Error(
-        'Cannot build a pinned codex run without workspaceRoot: the pure-MCP pin override ' +
+        'Cannot build a pinned or deck-carrying codex run without workspaceRoot: the pure-MCP override ' +
           'needs the run directory for the x-agent-deck-workspace header.',
       );
     }
-    argv.push('-c', buildCodexPinConfigOverride(args.playbookPin, args.workspaceRoot));
+    argv.push(
+      '-c',
+      buildCodexMcpConfigOverride({
+        workspaceRoot: args.workspaceRoot,
+        ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+        ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+      }),
+    );
   }
   argv.push('--json');
   if (!args.insideGitRepo) {
@@ -473,9 +502,9 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
         tools: args.tools,
         ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
         insideGitRepo,
-        ...(args.playbookPin
-          ? { playbookPin: args.playbookPin, workspaceRoot: args.cwd }
-          : {}),
+        ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+        ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+        ...(args.playbookPin || args.launchDeckId ? { workspaceRoot: args.cwd } : {}),
       });
       // planStart rejects a resume without a matching resumedFrom.
       if (args.resumeId !== undefined && args.resumedFrom) {

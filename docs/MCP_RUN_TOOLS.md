@@ -37,9 +37,19 @@ sandbox.
 - The backend run routes take the cwd and the run scope from that stored
   value only. They ignore any workspace a caller sends with a run request.
 - The host directory must still exist (`WORKSPACE_INVALID` otherwise).
-- The folder's `.agent-deck/use.json` is neither required nor read nor written
-  for this entry point. The CLI and the grant-authenticated HTTP API keep
-  their folder-assignment check unchanged.
+- The folder's `.agent-deck/use.json` is neither required nor written for
+  this entry point. The CLI and the grant-authenticated HTTP API keep their
+  folder-assignment check unchanged.
+- The worker binds the run's deck. Its own MCP connection would otherwise
+  resolve a deck again from the workspace (folder assignment, then the user
+  default deck), which is wrong after a *This session only* switch or on a
+  host with no folder pins. Codex and Claude runs always send the run's deck
+  as the launch deck header (`x-agent-deck-deck-id`): Codex through its
+  `-c mcp_servers.agent-deck` override, Claude through an inline MCP
+  server. Cursor and Muse have no per-run MCP override: when the workspace
+  resolves to another deck at start, the run fails closed before any model
+  work. That check is point-in-time; a folder assignment or default deck
+  changed after it is not caught.
 - Remote-grant MCP sessions carry no trusted host workspace.
 
 Without a launch-bound workspace every run tool fails with

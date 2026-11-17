@@ -796,6 +796,41 @@ describe('codex resume provenance (NOT-484)', () => {
       versionId: '123e4567-e89b-42d3-a456-426614174000',
     });
   });
+
+  it('always carries the trusted deck for codex/claude; cursor/muse get a mismatch check instead', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const trusted = { trustedBinding: { deckId: DECK.id } };
+    const resolveHeaderlessDeck = vi.fn(async () => DECK.id);
+
+    // Codex/Claude: carried even when the headerless deck matches today; no lookup.
+    for (const client of ['codex', 'claude'] as const) {
+      const adapter = fixtureAdapter(client, { events: successEvents() });
+      await makeService(home, adapter, { resolveHeaderlessDeck }).service.start(request(cwd, { client, ...trusted }));
+      expect(adapter.starts[0].launchDeckId).toBe(DECK.id);
+      expect(adapter.starts[0]).not.toHaveProperty('headerlessDeckMismatch');
+    }
+    expect(resolveHeaderlessDeck).not.toHaveBeenCalled();
+
+    // Cursor: headerless resolution matches -> no mismatch flag.
+    const same = fixtureAdapter('cursor', { events: successEvents() });
+    await makeService(home, same, { resolveHeaderlessDeck }).service.start(request(cwd, { client: 'cursor', ...trusted }));
+    expect(same.starts[0]).not.toHaveProperty('headerlessDeckMismatch');
+
+    // Cursor: headerless resolution names another deck (or none) -> mismatch flag.
+    for (const headerless of ['deck-default', undefined]) {
+      const other = fixtureAdapter('cursor', { events: successEvents() });
+      await makeService(home, other, {
+        resolveHeaderlessDeck: async () => headerless,
+      }).service.start(request(cwd, { client: 'cursor', ...trusted }));
+      expect(other.starts[0].headerlessDeckMismatch).toBe(true);
+    }
+
+    // CLI runs (no trusted caller) keep the folder-assignment launch.
+    const cli = fixtureAdapter('codex', { events: successEvents() });
+    await makeService(home, cli, { resolveHeaderlessDeck }).service.start(request(cwd));
+    expect(cli.starts[0]).not.toHaveProperty('launchDeckId');
+  });
 });
 
 describe('agent-run module boundary (NOT-479)', () => {

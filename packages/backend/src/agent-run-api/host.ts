@@ -5,6 +5,7 @@ import {
 } from '../agent-run';
 import { resolveDeckRef } from '../lib/deck-resolve';
 import type { DatabaseManager } from '../models/database';
+import { readDefaultDeckState } from '@agent-deck/shared';
 import { readUseManifest } from '../playbooks/stub-sync';
 
 /**
@@ -18,7 +19,12 @@ export function createBackendAgentRunService(
   homeDir: string,
   overrides: Partial<AgentRunServiceDeps> = {},
 ): AgentRunService {
-  return createAgentRunService({
+  return createAgentRunService({ ...backendAgentRunDeps(db, homeDir), ...overrides });
+}
+
+/** The backend host's run-service lookups (exported for tests). */
+export function backendAgentRunDeps(db: DatabaseManager, homeDir: string): AgentRunServiceDeps {
+  return {
     homeDir,
     async resolveDeck(ref) {
       const deck = await resolveDeckRef(db, ref);
@@ -27,6 +33,15 @@ export function createBackendAgentRunService(
     async resolveDeckBinding(cwd) {
       const manifest = readUseManifest(cwd);
       return manifest ? { deckId: manifest.deckId, deckName: manifest.deckName } : {};
+    },
+    // Same order a headerless MCP connection resolves: a folder assignment
+    // naming an existing deck, then the user default deck (a manifest naming
+    // a deleted deck falls through to the default, as in the daemon).
+    async resolveHeaderlessDeck(cwd) {
+      const manifestDeck = readUseManifest(cwd)?.deckId?.trim();
+      if (manifestDeck && (await db.getDeck(manifestDeck))) return manifestDeck;
+      const state = readDefaultDeckState();
+      return state.status === 'ok' ? state.deck.deckId : undefined;
     },
     // NOT-539: pinned runs started from an MCP session (same lookup as the CLI's).
     async resolvePlaybookPin(input) {
@@ -37,6 +52,5 @@ export function createBackendAgentRunService(
         playbookOnDeck: onDeck.some((playbook) => playbook.id === input.playbookId),
       };
     },
-    ...overrides,
-  });
+  };
 }

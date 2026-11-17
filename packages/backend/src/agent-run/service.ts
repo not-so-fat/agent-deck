@@ -114,6 +114,13 @@ export type AgentRunServiceDeps = {
   resolveDeck: (ref: string) => Promise<RunDeck | null>;
   /** Read-only folder assignment lookup. The service never rewrites it. */
   resolveDeckBinding: (cwd: string) => Promise<RunDeckBinding>;
+  /**
+   * Deck a headerless MCP connection from `cwd` would bind (folder
+   * assignment naming an existing deck, else the user default deck).
+   * Consulted only for trusted-caller runs on clients that cannot carry the
+   * launch deck header (Cursor, Muse). Defaults to the folder assignment.
+   */
+  resolveHeaderlessDeck?: (cwd: string) => Promise<string | undefined>;
   /** Defaults to the real `claude auth status` probe. */
   claudeProbe?: ClaudeClientProbe;
   /** Process seams for the shipped adapters (spawn, probe, SDK loader, ...). */
@@ -156,9 +163,18 @@ export type AgentRunRequest = {
   trustedBinding?: RunDeckBinding;
 };
 
+/** Clients whose per-run MCP override can carry the launch deck header. */
+function clientCarriesLaunchDeck(client: RunClient): boolean {
+  return client === 'codex' || client === 'claude';
+}
+
 export type PreparedRun = {
   request: AgentRunRequest;
   deck: RunDeck;
+  /** Run's deck, carried as the launch deck header (see `AdapterStartArgs.launchDeckId`). */
+  launchDeckId?: string;
+  /** See `AdapterStartArgs.headerlessDeckMismatch`. */
+  headerlessDeckMismatch?: boolean;
   /** Trusted origin of `request.resumeId`, when the client requires one. */
   resumedFrom?: RunResumeOrigin;
 };
@@ -184,7 +200,13 @@ export type AgentRunRejectionCode =
   | 'playbook_pin_invalid';
 
 export type AgentRunValidation =
-  | { ok: true; deck: RunDeck; resumedFrom?: RunResumeOrigin }
+  | {
+      ok: true;
+      deck: RunDeck;
+      resumedFrom?: RunResumeOrigin;
+      launchDeckId?: string;
+      headerlessDeckMismatch?: boolean;
+    }
   | { ok: false; code: AgentRunRejectionCode; error: string };
 export type RunLaunchOptions = {
   /** Reuse an allocated run id (the CLI's detached child). */
@@ -466,7 +488,30 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       }
     }
 
-    return { ok: true, deck, ...(resumedFrom ? { resumedFrom } : {}) };
+    // A trusted caller (an MCP session) proved the deck, but a worker's own
+    // headerless MCP connection would resolve its deck again from the folder
+    // assignment or the user default (wrong after a session-only switch, or
+    // on a host with no folder pins). Always carry the run's deck. Clients
+    // that cannot carry it get a point-in-time mismatch check instead.
+    let launchDeckId: string | undefined;
+    let headerlessDeckMismatch = false;
+    if (request.trustedBinding) {
+      launchDeckId = deck.id;
+      if (!clientCarriesLaunchDeck(request.client)) {
+        const headerless = deps.resolveHeaderlessDeck
+          ? await deps.resolveHeaderlessDeck(request.cwd)
+          : (await deps.resolveDeckBinding(request.cwd)).deckId;
+        headerlessDeckMismatch = headerless !== deck.id;
+      }
+    }
+
+    return {
+      ok: true,
+      deck,
+      ...(resumedFrom ? { resumedFrom } : {}),
+      ...(launchDeckId ? { launchDeckId } : {}),
+      ...(headerlessDeckMismatch ? { headerlessDeckMismatch } : {}),
+    };
   };
 
   /**
@@ -474,7 +519,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
    * completion streams the run to its terminal state.
    */
   const begin = async (
-    { request, deck, resumedFrom }: PreparedRun,
+    { request, deck, resumedFrom, launchDeckId, headerlessDeckMismatch }: PreparedRun,
     launch: RunLaunchOptions = {},
   ): Promise<RejectedRun | LaunchedRun> => {
     const adapter = createAdapter(request.client);
@@ -489,6 +534,8 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       ...(request.resumeId ? { resumeId: request.resumeId } : {}),
       ...(resumedFrom ? { resumedFrom } : {}),
       ...(request.playbookPin ? { playbookPin: request.playbookPin } : {}),
+      ...(launchDeckId ? { launchDeckId } : {}),
+      ...(headerlessDeckMismatch ? { headerlessDeckMismatch: true } : {}),
     };
     const startPlan = adapter.planStart(startArgs);
     if (!startPlan.ok) {
@@ -704,6 +751,8 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       request,
       deck: validation.deck,
       ...(validation.resumedFrom ? { resumedFrom: validation.resumedFrom } : {}),
+      ...(validation.launchDeckId ? { launchDeckId: validation.launchDeckId } : {}),
+      ...(validation.headerlessDeckMismatch ? { headerlessDeckMismatch: true } : {}),
     };
   };
 

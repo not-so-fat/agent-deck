@@ -494,6 +494,17 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
             '--playbook-version is not supported with --client cursor: cursor-agent has no per-run MCP env override, so the pin would never reach the session. Re-run with --client codex or --client claude.',
         };
       }
+      // The run's deck came from an MCP session and a headerless connection
+      // from this folder would bind another deck; cursor has no per-run MCP
+      // override to carry the launch deck header, so fail closed instead of
+      // running on the wrong deck.
+      if (args.launchDeckId && args.headerlessDeckMismatch) {
+        return {
+          ok: false,
+          remedy:
+            'This session\'s deck differs from the folder\'s deck (or the default deck), and --client cursor cannot carry the session deck to its MCP connection. Re-run with --client codex or --client claude.',
+        };
+      }
       // --trust is passed on every launch, so every cursor run records the
       // workspace-trust grant.
       return { ok: true, trustOverride: true };
