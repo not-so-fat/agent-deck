@@ -278,7 +278,21 @@ describe('launch deck carriage for runs started from an MCP session', () => {
     });
   });
 
-  it('cursor and muse fail closed when the deck must be carried', () => {
+  it('codex resume carries the deck-only override after exec resume', () => {
+    const resume = buildCodexArgv({
+      prompt: 'hi',
+      tools: 'readonly',
+      insideGitRepo: true,
+      resumeId: '0199a213-81c0-7800-8aa1-bbab2a035a53',
+      launchDeckId: DECK_ID,
+      workspaceRoot: '/work',
+    });
+    expect(resume.slice(0, 3)).toEqual(['exec', 'resume', '-c']);
+    expect(resume[3]).toContain(`"x-agent-deck-deck-id"="${DECK_ID}"`);
+    expect(resume.indexOf('-c')).toBeLessThan(resume.indexOf('--'));
+  });
+
+  it('cursor and muse fail closed only on a headerless deck mismatch', () => {
     const muse = createMuseAdapter({
       readFile: (candidate) =>
         candidate.endsWith('settings.json')
@@ -287,9 +301,17 @@ describe('launch deck carriage for runs started from an MCP session', () => {
       probe: () => ({ code: 0, stdout: '--disable-write --disable-shell', stderr: '' }),
     });
     for (const adapter of [createCursorAdapter(), muse]) {
-      const plan = adapter.planStart({ cwd: '/work', prompt: 'hi', tools: 'readonly', launchDeckId: DECK_ID });
+      const plan = adapter.planStart({
+        cwd: '/work',
+        prompt: 'hi',
+        tools: 'readonly',
+        launchDeckId: DECK_ID,
+        headerlessDeckMismatch: true,
+      });
       expect(plan.ok).toBe(false);
+      expect(
+        adapter.planStart({ cwd: '/work', prompt: 'hi', tools: 'readonly', launchDeckId: DECK_ID }).ok,
+      ).toBe(true);
     }
   });
 });
-

@@ -148,14 +148,20 @@ export type AdapterStartArgs = {
   playbookPin?: RunPlaybookPin;
   /**
    * Deck the run's MCP session must bind, sent as the launch deck header
-   * (`x-agent-deck-deck-id`). Set only when the run's deck came from a
-   * trusted caller (an MCP session's live deck) and a headerless connection
-   * from `cwd` would bind a different deck (folder assignment or user
-   * default). Codex and Claude carry it through the same per-run MCP
-   * override as `playbookPin`; clients with no per-run override fail closed
-   * in `planStart` instead of running on the wrong deck.
+   * (`x-agent-deck-deck-id`). Set for every run whose deck came from a
+   * trusted caller (an MCP session's live deck). Codex and Claude always
+   * carry it through the same per-run MCP override as `playbookPin`, so the
+   * worker binds that deck whatever the folder assignment or user default
+   * says at connect time.
    */
   launchDeckId?: string;
+  /**
+   * For clients with no per-run MCP override (Cursor, Muse): a headerless
+   * connection from `cwd` resolved to another deck when the run was
+   * prepared, so `planStart` fails closed. Point-in-time: a folder
+   * assignment or default changed after that check is not caught.
+   */
+  headerlessDeckMismatch?: boolean;
 };
 
 export type AdapterPreflight = { ok: true } | { ok: false; remedy: string };

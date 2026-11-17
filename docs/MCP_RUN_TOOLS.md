@@ -42,13 +42,14 @@ sandbox.
   folder-assignment check unchanged.
 - The worker binds the run's deck. Its own MCP connection would otherwise
   resolve a deck again from the workspace (folder assignment, then the user
-  default deck). When that names another deck — a session switched with
-  *This session only*, or a host with no folder pins — the run sends its
-  deck as the launch deck header (`x-agent-deck-deck-id`): Codex through
-  its `-c mcp_servers.agent-deck` override, Claude through an inline MCP
-  server. Cursor and Muse have no per-run MCP override, so such a run fails
-  closed before any model work; when the workspace already resolves to the
-  run's deck, every client launches unchanged.
+  default deck), which is wrong after a *This session only* switch or on a
+  host with no folder pins. Codex and Claude runs always send the run's deck
+  as the launch deck header (`x-agent-deck-deck-id`): Codex through its
+  `-c mcp_servers.agent-deck` override, Claude through an inline MCP
+  server. Cursor and Muse have no per-run MCP override: when the workspace
+  resolves to another deck at start, the run fails closed before any model
+  work. That check is point-in-time; a folder assignment or default deck
+  changed after it is not caught.
 - Remote-grant MCP sessions carry no trusted host workspace.
 
 Without a launch-bound workspace every run tool fails with

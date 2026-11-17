@@ -542,7 +542,7 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
       // from this folder would bind another deck; muse has no per-run MCP
       // override to carry the launch deck header, so fail closed instead of
       // running on the wrong deck.
-      if (args.launchDeckId) {
+      if (args.launchDeckId && args.headerlessDeckMismatch) {
         return {
           ok: false,
           remedy:

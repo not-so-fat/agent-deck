@@ -797,37 +797,38 @@ describe('codex resume provenance (NOT-484)', () => {
     });
   });
 
-  it('carries the trusted deck as the launch deck only when a headerless worker would bind another deck', async () => {
+  it('always carries the trusted deck for codex/claude; cursor/muse get a mismatch check instead', async () => {
     const home = makeDir('ad-svc-home-');
     const cwd = makeDir('ad-svc-cwd-');
     const trusted = { trustedBinding: { deckId: DECK.id } };
+    const resolveHeaderlessDeck = vi.fn(async () => DECK.id);
 
-    // Session switched to DECK, but the folder/default resolves elsewhere.
-    const switched = fixtureAdapter('codex', { events: successEvents() });
-    await makeService(home, switched, {
-      resolveHeaderlessDeck: async () => 'deck-default',
-    }).service.start(request(cwd, trusted));
-    expect(switched.starts[0].launchDeckId).toBe(DECK.id);
+    // Codex/Claude: carried even when the headerless deck matches today; no lookup.
+    for (const client of ['codex', 'claude'] as const) {
+      const adapter = fixtureAdapter(client, { events: successEvents() });
+      await makeService(home, adapter, { resolveHeaderlessDeck }).service.start(request(cwd, { client, ...trusted }));
+      expect(adapter.starts[0].launchDeckId).toBe(DECK.id);
+      expect(adapter.starts[0]).not.toHaveProperty('headerlessDeckMismatch');
+    }
+    expect(resolveHeaderlessDeck).not.toHaveBeenCalled();
 
-    // No folder pin and no default deck: still carried.
-    const unpinned = fixtureAdapter('codex', { events: successEvents() });
-    await makeService(home, unpinned, {
-      resolveHeaderlessDeck: async () => undefined,
-    }).service.start(request(cwd, trusted));
-    expect(unpinned.starts[0].launchDeckId).toBe(DECK.id);
+    // Cursor: headerless resolution matches -> no mismatch flag.
+    const same = fixtureAdapter('cursor', { events: successEvents() });
+    await makeService(home, same, { resolveHeaderlessDeck }).service.start(request(cwd, { client: 'cursor', ...trusted }));
+    expect(same.starts[0]).not.toHaveProperty('headerlessDeckMismatch');
 
-    // Headerless resolution already lands on the run's deck: unchanged launch.
-    const same = fixtureAdapter('codex', { events: successEvents() });
-    await makeService(home, same, {
-      resolveHeaderlessDeck: async () => DECK.id,
-    }).service.start(request(cwd, trusted));
-    expect(same.starts[0]).not.toHaveProperty('launchDeckId');
+    // Cursor: headerless resolution names another deck (or none) -> mismatch flag.
+    for (const headerless of ['deck-default', undefined]) {
+      const other = fixtureAdapter('cursor', { events: successEvents() });
+      await makeService(home, other, {
+        resolveHeaderlessDeck: async () => headerless,
+      }).service.start(request(cwd, { client: 'cursor', ...trusted }));
+      expect(other.starts[0].headerlessDeckMismatch).toBe(true);
+    }
 
     // CLI runs (no trusted caller) keep the folder-assignment launch.
     const cli = fixtureAdapter('codex', { events: successEvents() });
-    await makeService(home, cli, {
-      resolveHeaderlessDeck: async () => 'deck-default',
-    }).service.start(request(cwd));
+    await makeService(home, cli, { resolveHeaderlessDeck }).service.start(request(cwd));
     expect(cli.starts[0]).not.toHaveProperty('launchDeckId');
   });
 });
