@@ -11,6 +11,7 @@ import { z } from 'zod';
 
 import { AGENT_DECK_SESSION_HEADER, AGENT_DECK_WORKSPACE_HEADER } from '@agent-deck/shared';
 
+import { deckSwitchApprovalUrl } from '../lib/deck-switch-approval-url';
 import { DatabaseManager } from '../models/database';
 import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
@@ -36,6 +37,9 @@ const FORBIDDEN_SUBSTRINGS = [
   'https://',
   'ws://',
 ];
+
+/** Credential-like content that must never appear, even beside the approval link. */
+const CREDENTIAL_SUBSTRINGS = FORBIDDEN_SUBSTRINGS.filter((value) => value !== 'approv');
 
 describe('switch_deck creation endpoint (NOT-209)', () => {
   const servers: Array<Awaited<ReturnType<typeof Fastify>>> = [];
@@ -99,13 +103,25 @@ describe('switch_deck creation endpoint (NOT-209)', () => {
       channels: ['host-elicitation', 'browser'],
     });
 
-    // No approval capability or commit credential embedded.
-    const serialized = JSON.stringify(data).toLowerCase();
+    // NOT-632: the only link is the absolute browser approval page, named in
+    // the message too. It carries the opaque ids only; the page itself needs
+    // dashboard sign-in.
+    const { approvalUrl, message, ...rest } = data;
+    expect(approvalUrl).toBe(deckSwitchApprovalUrl(data.requestId, session.sessionId));
+    expect(['http:', 'https:']).toContain(new URL(approvalUrl).protocol);
+    expect(message).toContain(approvalUrl);
+    expect(message).toContain('pending human approval');
+    // No approval capability or commit credential embedded anywhere else.
+    const serialized = JSON.stringify(rest).toLowerCase();
     for (const forbidden of FORBIDDEN_SUBSTRINGS) {
       expect(serialized, `response must not contain ${forbidden}`).not.toContain(forbidden);
     }
-    expect(serialized).not.toContain('services');
-    expect(serialized).not.toContain('playbook');
+    const messageWithoutLink = String(message).replace(approvalUrl, '').toLowerCase();
+    for (const forbidden of CREDENTIAL_SUBSTRINGS) {
+      expect(messageWithoutLink, `message must not contain ${forbidden}`).not.toContain(forbidden);
+    }
+    expect(JSON.stringify(data)).not.toContain('services');
+    expect(JSON.stringify(data)).not.toContain('playbook');
 
     // Exactly one pending request; session binding unchanged.
     expect(store.listPendingDeckSwitchRequests(session.sessionId)).toHaveLength(1);

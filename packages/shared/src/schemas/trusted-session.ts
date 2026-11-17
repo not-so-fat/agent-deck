@@ -138,6 +138,14 @@ export const DeckSwitchResolveBodySchema = z
   .object({
     runtimeSessionId: z.string().min(1),
     decision: DeckSwitchDecisionSchema,
+    /**
+     * NOT-632: set only by the MCP server under
+     * AGENT_DECK_DECK_SWITCH_APPROVAL=client, when the client's own
+     * permission prompt was the human approval. Recorded in the audit ledger;
+     * the resolve route accepts it only for a session-scope decision on a
+     * local (non-grant) session.
+     */
+    approvedVia: z.literal('client').optional(),
   })
   .strict();
 
@@ -152,6 +160,7 @@ export const DeckSwitchResolutionSchema = z
     deckId: z.string().optional(),
     deckName: z.string().optional(),
     workspaceRoot: z.string().optional(),
+    approvedVia: z.literal('client').optional(),
   })
   .strict();
 

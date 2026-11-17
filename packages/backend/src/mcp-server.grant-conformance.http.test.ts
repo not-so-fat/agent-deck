@@ -479,6 +479,48 @@ describe('MCP remote grant conformance over real HTTP (NOT-318)', () => {
     expect(bound.data.id).toBe(backend.deckA.id);
   });
 
+  it('NOT-632: a bearer grant session never takes the client-approval shortcut', async () => {
+    const savedMode = process.env.AGENT_DECK_DECK_SWITCH_APPROVAL;
+    const savedSecret = process.env.AGENT_DECK_ADMIN_SECRET;
+    process.env.AGENT_DECK_DECK_SWITCH_APPROVAL = 'client';
+    process.env.AGENT_DECK_ADMIN_SECRET = 'test-admin-secret-0123456789abcdef';
+    try {
+      const { backend, port } = await setup();
+      const grant = backend.grantStore.issueGrant({
+        label: 'agent-both',
+        defaultDeck: backend.deckA.id,
+        allowedDecks: [backend.deckA.id, backend.deckB.id],
+      });
+      const auth = { authorization: `Bearer ${grant.token}` };
+      const init = await postInitialize(port, auth, 1);
+      expect(init.status).toBe(200);
+      await init.json();
+      const sessionId = init.headers.get('mcp-session-id');
+      expect(sessionId).toBeTruthy();
+
+      const requested = await callToolOverHttp(port, sessionId!, auth, 'switch_deck', { target: 'beta' }, 2);
+      expect(requested.isError).toBe(false);
+      // Still a pending human decision, with the absolute approval link.
+      expect(requested.data).toMatchObject({ status: 'pending' });
+      expect(requested.data).not.toHaveProperty('approvedVia');
+      expect(['http:', 'https:']).toContain(new URL(requested.data.approvalUrl).protocol);
+
+      const bound = await callToolOverHttp(port, sessionId!, auth, 'get_bound_deck', {}, 3);
+      expect(bound.data.id).toBe(backend.deckA.id);
+    } finally {
+      for (const [key, value] of [
+        ['AGENT_DECK_DECK_SWITCH_APPROVAL', savedMode],
+        ['AGENT_DECK_ADMIN_SECRET', savedSecret],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
+  });
+
   it('NOT-191: expiring a grant-owned session disconnects only its runtime session; the grant re-initializes', async () => {
     // Same stack as setup() but with a short transport TTL on a fake clock,
     // so the expiry is the idle sweep rather than a revoke.
