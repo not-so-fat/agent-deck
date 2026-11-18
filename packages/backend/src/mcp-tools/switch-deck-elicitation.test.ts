@@ -17,11 +17,18 @@ import { registerTrustedSessionRoutes } from '../routes/trusted-session';
 import { registerHttpPolicyHook } from '../trusted-session/policy-hook';
 import { TrustedSessionStore } from '../trusted-session/store';
 import { dashboardAuthHeaders } from '../test/auth-fixtures';
-import { BackendApiError } from '../lib/backend-api-error';
+import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
+import { DECK_SWITCH_REQUEST_TTL_MS } from '../trusted-session/store';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { formatMcpToolError } from './policy';
 import {
   buildCancelRecoveryPayload,
   buildDeckSwitchElicitationInput,
+  createSdkElicitationProvider,
+  DECK_SWITCH_ELICITATION_TIMEOUT_MS,
   DeckSwitchApprovalCommitUnavailable,
   isDeckSwitchApprovalScope,
   presentDeckSwitchApproval,
@@ -826,3 +833,344 @@ describe('approval API backstop for forged input (NOT-213)', () => {
     expect(store.getDeckSwitchRequest(request.requestId)?.status).toBe('pending');
   });
 });
+
+/**
+ * NOT-638: end-to-end through the real `switch_deck` tool on an SDK
+ * McpServer, the production elicitation provider, an SDK Client that
+ * advertises `elicitation.form`, and the real trusted-session routes.
+ */
+describe('switch_deck late approval through a still-open form (NOT-638)', () => {
+  const SECRET = 'test-admin-secret-0123456789abcdef';
+  let savedSecret: string | undefined;
+  const cleanups: Array<() => Promise<void>> = [];
+
+  beforeEach(() => {
+    savedSecret = process.env.AGENT_DECK_ADMIN_SECRET;
+    process.env.AGENT_DECK_ADMIN_SECRET = SECRET;
+  });
+
+  afterEach(async () => {
+    while (cleanups.length) {
+      await cleanups.pop()?.();
+    }
+    if (savedSecret === undefined) {
+      delete process.env.AGENT_DECK_ADMIN_SECRET;
+    } else {
+      process.env.AGENT_DECK_ADMIN_SECRET = savedSecret;
+    }
+  });
+
+  type HeldForm = {
+    requestId: string | number;
+    params: { message: string; requestedSchema: unknown };
+    answer: (result: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }) => void;
+    signal: AbortSignal;
+  };
+
+  async function buildLateApprovalHarness(timers: { toolCallWaitMs: number; formLifetimeMs?: number }) {
+    const db = new DatabaseManager(':memory:');
+    const deckA = await db.createDeck({ name: 'alpha' });
+    const deckB = await db.createDeck({ name: 'beta' });
+    const store = new TrustedSessionStore(db.getSqliteDatabase());
+    const session = store.createRuntimeSession({ deckId: deckA.id });
+
+    const fastify = Fastify();
+    fastify.decorate('db', db);
+    fastify.decorate('trustedSessionStore', store);
+    registerHttpPolicyHook(fastify);
+    await fastify.register(registerTrustedSessionRoutes, { prefix: '/api/trusted-session' });
+    await fastify.ready();
+    cleanups.push(async () => {
+      await fastify.close();
+    });
+
+    // Same unwrap/error contract as AgentDeckMCPServer.callBackendAPI, over
+    // in-process inject instead of a socket.
+    const callBackendAPI = async (endpoint: string, init?: RequestInit): Promise<any> => {
+      const response = await fastify.inject({
+        method: (init?.method ?? 'GET') as 'GET' | 'POST',
+        url: endpoint,
+        headers: {
+          [AGENT_DECK_SESSION_HEADER]: session.sessionId,
+          ...((init?.headers as Record<string, string> | undefined) ?? {}),
+        },
+        ...(init?.body ? { payload: String(init.body) } : {}),
+      });
+      if (response.statusCode >= 400) {
+        throw parseBackendErrorBody(response.body, response.statusCode);
+      }
+      const body = response.json() as { success?: boolean; data?: unknown };
+      return 'data' in body ? body.data : body;
+    };
+
+    const mcpServer = new McpServer({ name: 'agent-deck-test', version: '0.0.0' });
+    const host = {
+      registerTool: (name: string, config: unknown, handler: (...args: any[]) => Promise<any>) => {
+        (mcpServer as unknown as { registerTool: (...args: unknown[]) => unknown }).registerTool(
+          name,
+          config,
+          handler,
+        );
+      },
+      profile: 'standard' as const,
+      getSessionId: () => 'mcp_test',
+      getMode: () => 'normal' as const,
+      refreshRuntimeSession: async () => ({ mode: 'normal' as const, deckId: deckA.id }),
+      getAgentHeaders: () => ({ [AGENT_DECK_SESSION_HEADER]: session.sessionId }),
+      getBoundDeckId: vi.fn(),
+      callBackendAPI,
+      fetchDeck: vi.fn(),
+      buildBindingPayload: async () => ({}),
+      registerLiveDisplay: async () => {},
+      syncWorkspaceOnBind: async () => null,
+      sessionBinding: {
+        getBinding: () => ({ deckId: deckA.id, runtimeSessionId: session.sessionId }),
+        setWorkspace: vi.fn(),
+        setDeckId: vi.fn(),
+        setTrustedSession: vi.fn(),
+        isLaunchSession: () => false,
+        hasSessionDeckOverride: () => false,
+      },
+      badgeBySession: new Map<string, string>(),
+      backendUrl: 'http://127.0.0.1:9',
+      toolResult: (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data) }] }),
+      toolError: (error: unknown) => formatMcpToolError(error),
+      // The production provider (mcp-server.ts) with injected short timers.
+      elicitation: createSdkElicitationProvider(mcpServer.server, timers),
+    } as unknown as McpToolHost;
+    registerMcpTools(host);
+
+    const client = new Client(
+      { name: 'late-approval-client', version: '0.0.0' },
+      { capabilities: { elicitation: { form: {} } } },
+    );
+    const forms: HeldForm[] = [];
+    // The human leaves the form on screen: the handler only settles when
+    // the test answers it, or when the server cancels the request.
+    client.setRequestHandler(ElicitRequestSchema, (request, extra) =>
+      new Promise((resolve) => {
+        forms.push({
+          requestId: extra.requestId,
+          params: request.params as HeldForm['params'],
+          answer: resolve,
+          signal: extra.signal,
+        });
+      }),
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcpServer.connect(serverTransport);
+    await client.connect(clientTransport);
+    // Record every notifications/cancelled the client receives on the wire.
+    const cancelled: Array<{ requestId: unknown; reason?: unknown }> = [];
+    const onmessage = clientTransport.onmessage;
+    clientTransport.onmessage = (message, extra) => {
+      if ('method' in message && message.method === 'notifications/cancelled') {
+        cancelled.push(message.params as { requestId: unknown; reason?: unknown });
+      }
+      onmessage?.(message, extra);
+    };
+    cleanups.push(async () => {
+      await client.close();
+      await mcpServer.close();
+    });
+
+    return { store, session, deckA, deckB, client, forms, cancelled };
+  }
+
+  function toolPayload(result: unknown): Record<string, unknown> {
+    const content = (result as { content: Array<{ text: string }> }).content;
+    return JSON.parse(content[0].text) as Record<string, unknown>;
+  }
+
+  it('returns the timed-out pending payload, then applies a late accept like a dashboard approval', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanups.push(async () => warn.mockRestore());
+    const harness = await buildLateApprovalHarness({ toolCallWaitMs: 50 });
+    const { store, session, deckA, deckB, client, forms, cancelled } = harness;
+
+    const result = await client.callTool({ name: 'switch_deck', arguments: { target: 'beta' } });
+    const payload = toolPayload(result);
+
+    // The call returned while the form is still open in the client.
+    expect(forms).toHaveLength(1);
+    expect(forms[0].signal.aborted).toBe(false);
+    expect(payload).toMatchObject({ status: 'pending', currentDeckName: 'alpha', requestedDeckName: 'beta' });
+    const requestId = String(payload.requestId);
+    expect(String(payload.message)).toContain('no answer within');
+    expect(String(payload.message)).toContain('get_session_context');
+    expect(payload.approvalUrl).toEqual(expect.stringContaining(requestId));
+    expect(String(payload.message)).toContain(String(payload.approvalUrl));
+    expect(payload.expiresAt).toBe(store.getDeckSwitchRequest(requestId)?.expiresAt);
+    // Deck unchanged, request still pending.
+    expect(store.getDeckSwitchRequest(requestId)?.status).toBe('pending');
+    expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+
+    // The human answers the same form late: This session only.
+    forms[0].answer({ action: 'accept', content: { requestId, scope: 'session' } });
+
+    await vi.waitFor(
+      () => expect(store.getDeckSwitchRequest(requestId)?.status).not.toBe('pending'),
+      { timeout: 2_000 },
+    );
+    // Same end state as a dashboard "This session only" approval.
+    expect(store.getDeckSwitchRequest(requestId)?.status).toBe('consumed');
+    expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckB.id);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('late approval answer applied'),
+      expect.objectContaining({ requestId, decision: 'session' }),
+    );
+    // An answered form is never cancelled afterwards.
+    expect(cancelled).toHaveLength(0);
+  });
+
+  it('logs and drops a late answer after the request was resolved elsewhere', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const { store, session, deckA, client, forms } = await buildLateApprovalHarness({ toolCallWaitMs: 50 });
+
+      const payload = toolPayload(await client.callTool({ name: 'switch_deck', arguments: { target: 'beta' } }));
+      const requestId = String(payload.requestId);
+      // Declined from the dashboard first.
+      store.applyDeckSwitchResolution(requestId, session.sessionId, 'decline');
+      expect(store.getDeckSwitchRequest(requestId)?.status).toBe('declined');
+
+      forms[0].answer({ action: 'accept', content: { requestId, scope: 'session' } });
+      await vi.waitFor(
+        () =>
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining('could not be applied'),
+            expect.objectContaining({ requestId }),
+          ),
+        { timeout: 2_000 },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(store.getDeckSwitchRequest(requestId)?.status).toBe('declined');
+      expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+      warn.mockRestore();
+    }
+  });
+
+  it('passes the SDK the form lifetime and cancels the elicitation when it ends unanswered', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { store, session, deckA, client, forms, cancelled } = await buildLateApprovalHarness({
+        toolCallWaitMs: 50,
+        formLifetimeMs: 150,
+      });
+
+      const payload = toolPayload(await client.callTool({ name: 'switch_deck', arguments: { target: 'beta' } }));
+      expect(payload).toMatchObject({ status: 'pending' });
+      expect(forms).toHaveLength(1);
+      // Still open after the tool-call wait.
+      expect(cancelled).toHaveLength(0);
+
+      await vi.waitFor(() => expect(cancelled).toHaveLength(1), { timeout: 2_000 });
+      expect(cancelled[0].requestId).toBe(forms[0].requestId);
+      // The wire-level notification is the assertion, not the client
+      // handler's abort signal: the SDK Client's own _oncancel ignores
+      // requestId 0 (the first server-to-client request id).
+
+      // An answer after the cancellation changes nothing.
+      const requestId = String(payload.requestId);
+      forms[0].answer({ action: 'accept', content: { requestId, scope: 'session' } });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(store.getDeckSwitchRequest(requestId)?.status).toBe('pending');
+      expect(store.getRuntimeSessionRow(session.sessionId)?.deck_id).toBe(deckA.id);
+      // Exactly one cancellation, even though the SDK timeout and the
+      // adapter's signal share the deadline.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(cancelled).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('production provider passes timeout and signal to elicitInput, and the tool-call wait by default', async () => {
+    const elicitInput = vi.fn(async () => ({ action: 'cancel' as const }));
+    const provider = createSdkElicitationProvider({
+      getClientCapabilities: () => ({ elicitation: { form: {} } }),
+      elicitInput,
+    });
+    const controller = new AbortController();
+    await provider.elicitForm({ message: 'm', requestedSchema: {} }, { timeoutMs: 1_234, signal: controller.signal });
+    expect(elicitInput).toHaveBeenLastCalledWith(
+      { message: 'm', requestedSchema: {} },
+      { timeout: 1_234, signal: controller.signal },
+    );
+    // Callers without options (deck assignment) keep the 5-minute wait.
+    await provider.elicitForm({ message: 'm', requestedSchema: {} });
+    expect(elicitInput).toHaveBeenLastCalledWith(
+      { message: 'm', requestedSchema: {} },
+      { timeout: DECK_SWITCH_ELICITATION_TIMEOUT_MS },
+    );
+    expect(provider.supportsFormElicitation()).toBe(true);
+  });
+
+  it('switch_deck derives the SDK timeout from the request expiry by default', async () => {
+    const calls: Array<{ timeout?: number; signal?: AbortSignal }> = [];
+    const { host, tools } = (() => {
+      const captured = new Map<string, { handler: (...args: any[]) => Promise<any> }>();
+      const expiresAt = new Date(Date.now() + 12 * 60_000).toISOString();
+      const h = {
+        registerTool: (name: string, _config: unknown, handler: (...args: any[]) => Promise<any>) => {
+          captured.set(name, { handler });
+        },
+        profile: 'standard' as const,
+        getSessionId: () => 'mcp_test',
+        getMode: () => 'normal' as const,
+        refreshRuntimeSession: async () => ({ mode: 'normal' as const, deckId: 'deck_a' }),
+        getAgentHeaders: () => ({}),
+        getBoundDeckId: vi.fn(),
+        callBackendAPI: vi.fn(async () => ({ ...CREATION_FOR_TIMEOUT, expiresAt })),
+        fetchDeck: vi.fn(),
+        buildBindingPayload: async () => ({}),
+        registerLiveDisplay: async () => {},
+        syncWorkspaceOnBind: async () => null,
+        sessionBinding: {
+          getBinding: () => ({ deckId: 'deck_a', runtimeSessionId: 'rs_owner' }),
+          setWorkspace: vi.fn(),
+          setDeckId: vi.fn(),
+          setTrustedSession: vi.fn(),
+          isLaunchSession: () => false,
+          hasSessionDeckOverride: () => false,
+        },
+        badgeBySession: new Map<string, string>(),
+        backendUrl: 'http://127.0.0.1:9',
+        toolResult: (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data) }] }),
+        toolError: (error: unknown) => formatMcpToolError(error),
+        elicitation: createSdkElicitationProvider({
+          getClientCapabilities: () => ({ elicitation: { form: {} } }),
+          elicitInput: async (_params, options) => {
+            calls.push(options ?? {});
+            return { action: 'cancel' };
+          },
+        }),
+      } as unknown as McpToolHost;
+      return { host: h, tools: captured };
+    })();
+    registerMcpTools(host);
+
+    await tools.get('switch_deck')!.handler({ target: 'beta' });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].signal).toBeInstanceOf(AbortSignal);
+    expect(calls[0].timeout).toBeGreaterThan(12 * 60_000 - 5_000);
+    expect(calls[0].timeout).toBeLessThanOrEqual(12 * 60_000);
+    expect(calls[0].timeout).toBeGreaterThanOrEqual(DECK_SWITCH_ELICITATION_TIMEOUT_MS);
+    expect(calls[0].timeout).toBeLessThanOrEqual(DECK_SWITCH_REQUEST_TTL_MS);
+  });
+});
+
+const CREATION_FOR_TIMEOUT = {
+  requestId: 'req_1',
+  status: 'pending',
+  currentDeckId: 'deck_a',
+  currentDeckName: 'alpha',
+  requestedDeckId: 'deck_b',
+  requestedDeckName: 'beta',
+};
