@@ -169,6 +169,62 @@ type McpSession = {
   server: McpServer;
 };
 
+/** Backend `/mcp/connect-deck` reply for local launch binds. */
+type LaunchConnectResponseBody = {
+  success?: boolean;
+  error?: string;
+  error_code?: string;
+  data?: {
+    sessionId: string;
+    deckId: string;
+    deckName?: string;
+    mode: 'normal' | 'agent-admin';
+    /** NOT-634: present when the bind named a recovered session id. */
+    sessionOverride?: boolean;
+  };
+};
+
+/** NOT-634: `clientInfo.name` from an initialize body, for recovery logs only. */
+function readInitializeClientName(body: unknown): string | undefined {
+  const messages = Array.isArray(body) ? body : [body];
+  for (const message of messages) {
+    if (!message || typeof message !== 'object' || !isInitializeRequest(message)) {
+      continue;
+    }
+    const name = (message.params as { clientInfo?: { name?: unknown } }).clientInfo?.name;
+    if (typeof name === 'string' && name.trim()) {
+      return name.trim().slice(0, 80);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * NOT-634: the approved session deck of a presented pre-restart session id
+ * was deleted. Answered explicitly — never a silent header / folder pin /
+ * default-deck fallback.
+ */
+class SessionDeckMissingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SessionDeckMissingError';
+  }
+}
+
+/**
+ * NOT-634: a grant client presented its pre-restart session id, but its
+ * grant (now revoked / expired) or allowlist no longer permits the approved
+ * session deck. Answered as the uniform 401 / 403 — never a fallback bind.
+ */
+class SessionRecoveryDeniedError extends Error {
+  constructor(readonly reason: 'grant-required' | 'out-of-scope') {
+    super(reason);
+    this.name = 'SessionRecoveryDeniedError';
+  }
+}
+
+type GrantPrincipal = Extract<import('./auth/client-grants').ClientPrincipal, { kind: 'grant' }>;
+
 /**
  * NOT-318: hosted-mode flag. When `AGENT_DECK_MCP_REQUIRE_BEARER=1`, every
  * `/mcp` request requires a valid per-agent grant secret, regardless of
@@ -355,8 +411,13 @@ export class AgentDeckMCPServer {
    * deck-resolving headers, the alias keeps serving later requests on that
    * id. Bounded with the same oldest-first discipline as the stale tally
    * and the closed set — diagnostics/routing, not a ledger.
+   *
+   * NOT-634: stale id → (principal → live id), never the presented id
+   * alone — see {@link recoveryAliasOwner}. A bearer-free launch recovery
+   * and a grant recovery of the same stale id are separate aliases, so one
+   * principal's recovered session is never served to another.
    */
-  private recoveredSessionAlias = new Map<string, string>();
+  private recoveredSessionAlias = new Map<string, Map<string, string>>();
   /**
    * Sessions this process issued and then closed. A late request on one of them is
    * an ordinary end-of-session race, not a client left behind by a restart, and
@@ -893,8 +954,13 @@ export class AgentDeckMCPServer {
     // NOT-569: drop recovery aliases pointing at the cleaned session, so a
     // later request on a stale id re-recovers from headers instead of
     // resolving to a dead session.
-    for (const [staleId, liveId] of this.recoveredSessionAlias) {
-      if (liveId === sessionId) {
+    for (const [staleId, byOwner] of this.recoveredSessionAlias) {
+      for (const [owner, liveId] of byOwner) {
+        if (liveId === sessionId) {
+          byOwner.delete(owner);
+        }
+      }
+      if (byOwner.size === 0) {
         this.recoveredSessionAlias.delete(staleId);
       }
     }
@@ -1703,7 +1769,11 @@ export class AgentDeckMCPServer {
    * keeps its normal idle-TTL retention, and a later request on the evicted
    * stale id simply recovers again.
    */
-  private rememberRecoveryAlias(staleSessionId: string, liveSessionId: string): void {
+  private rememberRecoveryAlias(req: Request, staleSessionId: string, liveSessionId: string): void {
+    const owner = this.recoveryAliasOwner(req);
+    if (!owner) {
+      return;
+    }
     if (
       !this.recoveredSessionAlias.has(staleSessionId) &&
       this.recoveredSessionAlias.size >= AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT
@@ -1713,7 +1783,46 @@ export class AgentDeckMCPServer {
         this.recoveredSessionAlias.delete(oldest);
       }
     }
-    this.recoveredSessionAlias.set(staleSessionId, liveSessionId);
+    const byOwner = this.recoveredSessionAlias.get(staleSessionId) ?? new Map<string, string>();
+    byOwner.set(owner, liveSessionId);
+    this.recoveredSessionAlias.set(staleSessionId, byOwner);
+  }
+
+  /**
+   * NOT-634: the principal a request presents, as an alias owner key —
+   * `grant:<id>` for a bearer that authenticates right now, `local` for a
+   * bearer-free request where bearer-free access is allowed, and null
+   * otherwise (invalid/revoked bearer, or hosted mode without one), which
+   * matches no alias at all.
+   */
+  private recoveryAliasOwner(req: Request): string | null {
+    const bearer = readBearerToken(req);
+    if (bearer) {
+      const principal = this.authenticateGrant(bearer);
+      return principal ? `grant:${principal.grantId}` : null;
+    }
+    return isBearerGrantRequired() ? null : 'local';
+  }
+
+  /**
+   * NOT-634: the live session this request's own principal recovered for
+   * `staleSessionId`. A live alias owned by another principal is invisible;
+   * a dead alias of this principal is dropped so the caller re-recovers.
+   */
+  private lookupRecoveryAlias(req: Request, staleSessionId: string): string | undefined {
+    const owner = this.recoveryAliasOwner(req);
+    const byOwner = owner ? this.recoveredSessionAlias.get(staleSessionId) : undefined;
+    const aliased = owner ? byOwner?.get(owner) : undefined;
+    if (aliased && this.sessions.has(aliased)) {
+      return aliased;
+    }
+    if (aliased && owner && byOwner) {
+      byOwner.delete(owner);
+      if (byOwner.size === 0) {
+        this.recoveredSessionAlias.delete(staleSessionId);
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1751,6 +1860,11 @@ export class AgentDeckMCPServer {
       workspaceRoot: binding.workspaceRoot,
       mode,
     });
+    // NOT-634: whether the session sits on its approved session deck
+    // (reported as `active_source: "session"`). Display only.
+    if (typeof data?.sessionOverride === 'boolean') {
+      this.sessionBinding.setApprovedSessionOverride(sessionId, data.sessionOverride);
+    }
 
     return { mode, deckId };
   }
@@ -1801,8 +1915,14 @@ export class AgentDeckMCPServer {
   private async authenticateGrantDeck(
     sessionId: string,
     req: Request,
-    principal: Extract<import('./auth/client-grants').ClientPrincipal, { kind: 'grant' }>,
+    principal: GrantPrincipal,
     deckId: string,
+    /**
+     * NOT-634: the pre-restart session id the client presented. The backend
+     * aliases the fresh id to its lineage only when that lineage belongs to
+     * this same grant.
+     */
+    recoverFromMcpSessionId?: string,
   ): Promise<void> {
     const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
       method: 'POST',
@@ -1811,24 +1931,28 @@ export class AgentDeckMCPServer {
         deckId,
         mcpSessionId: sessionId,
         grantId: principal.grantId,
+        ...(recoverFromMcpSessionId ? { recoverFromMcpSessionId } : {}),
       }),
     });
 
-    const body = (await response.json()) as {
-      success?: boolean;
-      error?: string;
-      data?: {
-        sessionId: string;
-        deckId: string;
-        deckName?: string;
-        mode: 'normal' | 'agent-admin';
-      };
-    };
+    const body = (await response.json()) as LaunchConnectResponseBody;
 
     if (!response.ok || !body.success || !body.data) {
       throw new Error(body.error ?? 'GRANT_DECK_INVALID');
     }
+    this.adoptGrantConnect(sessionId, req, principal, body.data);
+  }
 
+  /**
+   * Record a successful grant connect on the MCP session binding (shared by
+   * `authenticateGrantDeck` and NOT-634 override recovery).
+   */
+  private adoptGrantConnect(
+    sessionId: string,
+    req: Request,
+    principal: GrantPrincipal,
+    data: NonNullable<LaunchConnectResponseBody['data']>,
+  ): void {
     const existing = this.sessionBinding.getBinding(sessionId);
     const workspaceRoot =
       readWorkspaceRootHeader(req) ??
@@ -1840,10 +1964,10 @@ export class AgentDeckMCPServer {
       label: principal.label,
       defaultDeck: principal.defaultDeck,
       allowedDecks: principal.allowedDecks,
-      runtimeSessionId: body.data.sessionId,
-      deckId: body.data.deckId,
+      runtimeSessionId: data.sessionId,
+      deckId: data.deckId,
       workspaceRoot,
-      mode: body.data.mode,
+      mode: data.mode,
     });
 
     const correlationId = readCorrelationIdHeader(req);
@@ -1944,6 +2068,12 @@ export class AgentDeckMCPServer {
     sessionId: string,
     req: Request,
     deckIdOverride?: string,
+    /**
+     * NOT-634: the pre-restart session id the client presented. The fresh
+     * session is aliased to its lineage so a later restart still finds an
+     * approved session deck approved on this fresh session.
+     */
+    recoverFromMcpSessionId?: string,
   ): Promise<void> {
     const deckId = deckIdOverride ?? readLaunchDeckHeader(req);
     if (!deckId) {
@@ -1982,34 +2112,158 @@ export class AgentDeckMCPServer {
         deckId,
         mcpSessionId: sessionId,
         ...(executionWorkspace ? { executionWorkspace } : {}),
+        ...(recoverFromMcpSessionId ? { recoverFromMcpSessionId } : {}),
       }),
     });
 
-    const body = (await response.json()) as {
-      success?: boolean;
-      error?: string;
-      data?: {
-        sessionId: string;
-        deckId: string;
-        deckName?: string;
-        mode: 'normal' | 'agent-admin';
-      };
-    };
+    const body = (await response.json()) as LaunchConnectResponseBody;
 
     if (!response.ok || !body.success || !body.data) {
+      if (body.error_code === 'SESSION_DECK_MISSING') {
+        throw new SessionDeckMissingError(body.error ?? 'SESSION_DECK_MISSING');
+      }
       throw new Error(body.error ?? 'LAUNCH_DECK_INVALID');
     }
 
+    this.adoptLaunchConnect(sessionId, req, body.data, executionWorkspace);
+    if (body.data.sessionOverride) {
+      this.sessionBinding.markSessionOverrideRecovery(sessionId);
+    }
+  }
+
+  /**
+   * NOT-634: bind a fresh session to the approved session deck of the
+   * pre-restart id the client presented, before any header / folder pin /
+   * default-deck resolution. `principal` is the already-authenticated
+   * bearer grant (omitted for local bearer-free callers); the backend only
+   * restores a lineage owned by that same principal and re-checks the
+   * grant's current state and allowlist. Returns the recovered deck id, or
+   * undefined when that id has no approved session deck (the caller
+   * resolves as before). Throws {@link SessionDeckMissingError} when the
+   * approved deck was deleted and {@link SessionRecoveryDeniedError} when
+   * the grant no longer permits it — the caller answers both explicitly
+   * instead of falling back.
+   */
+  private async bindRecoveredSessionOverride(
+    sessionId: string,
+    req: Request,
+    presentedSessionId: string,
+    principal?: GrantPrincipal,
+  ): Promise<string | undefined> {
+    const executionWorkspace = principal ? undefined : this.readLaunchExecutionWorkspace(req);
+    const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        mcpSessionId: sessionId,
+        recoverFromMcpSessionId: presentedSessionId,
+        ...(principal ? { grantId: principal.grantId } : {}),
+        ...(executionWorkspace ? { executionWorkspace } : {}),
+      }),
+    });
+    const body = (await response.json()) as LaunchConnectResponseBody;
+    if (!response.ok || !body.success || !body.data) {
+      if (body.error_code === 'SESSION_DECK_MISSING') {
+        throw new SessionDeckMissingError(body.error ?? 'SESSION_DECK_MISSING');
+      }
+      if (body.error_code === 'NO_SESSION_OVERRIDE') {
+        return undefined;
+      }
+      if (body.error_code === 'RESOURCE_OUT_OF_SCOPE') {
+        throw new SessionRecoveryDeniedError('out-of-scope');
+      }
+      if (body.error_code === 'GRANT_REQUIRED' && principal) {
+        throw new SessionRecoveryDeniedError('grant-required');
+      }
+      throw new Error(body.error ?? 'LAUNCH_DECK_INVALID');
+    }
+    if (!body.data.sessionOverride) {
+      return undefined;
+    }
+    if (principal) {
+      // Defense in depth: the recovered deck must sit inside the grant the
+      // bearer authenticated to right now.
+      if (!principalAllowsDeck(principal, body.data.deckId)) {
+        await this.disconnectTrustedSession(sessionId, req).catch(() => {});
+        throw new SessionRecoveryDeniedError('out-of-scope');
+      }
+      this.adoptGrantConnect(sessionId, req, principal, body.data);
+      this.sessionBinding.setApprovedSessionOverride(sessionId, true);
+      return body.data.deckId;
+    }
+    this.adoptLaunchConnect(sessionId, req, body.data, executionWorkspace);
+    this.sessionBinding.markSessionOverrideRecovery(sessionId);
+    return body.data.deckId;
+  }
+
+  /** NOT-634: answer a recovered id whose approved session deck was deleted. */
+  private sendSessionDeckMissing(res: Response, message: string): void {
+    res.status(409).json({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: `SESSION_DECK_MISSING: ${message}` },
+      id: null,
+    });
+  }
+
+  /**
+   * NOT-634: answer a grant-session recovery that must not fall back
+   * (deleted approved deck, revoked/expired grant, deck outside the
+   * allowlist). Returns false for any other error so the caller resolves as
+   * if no override existed.
+   */
+  private answerRecoveryFailure(
+    res: Response,
+    error: unknown,
+    presentedSessionId: string,
+    body: unknown,
+    grantId: string,
+  ): boolean {
+    if (error instanceof SessionDeckMissingError) {
+      console.warn(
+        `[agent-deck] MCP request presented pre-restart session ${presentedSessionId} ` +
+          `(client ${readInitializeClientName(body) ?? 'unknown'}, grantId=${grantId}); ` +
+          'its approved session deck is gone:',
+        error.message,
+      );
+      this.sendSessionDeckMissing(res, error.message);
+      return true;
+    }
+    if (error instanceof SessionRecoveryDeniedError) {
+      console.warn(
+        `[agent-deck] Grant session recovery denied (no session created): grantId=${grantId}`,
+        error.reason,
+      );
+      if (error.reason === 'out-of-scope') {
+        this.sendOutOfScope(res);
+      } else {
+        this.sendGrantRequired(res);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Record a successful launch connect on the MCP session binding (shared by
+   * `authenticateLaunchDeck` and NOT-634 override recovery).
+   */
+  private adoptLaunchConnect(
+    sessionId: string,
+    req: Request,
+    data: NonNullable<LaunchConnectResponseBody['data']>,
+    executionWorkspace: string | undefined,
+  ): void {
+    const existing = this.sessionBinding.getBinding(sessionId);
     const workspaceRoot =
       readWorkspaceRootHeader(req) ??
       existing.workspaceRoot ??
       (process.env.AGENT_DECK_WORKSPACE?.trim() || undefined);
 
     this.sessionBinding.setLaunchSession(sessionId, {
-      runtimeSessionId: body.data.sessionId,
-      deckId: body.data.deckId,
+      runtimeSessionId: data.sessionId,
+      deckId: data.deckId,
       workspaceRoot,
-      mode: body.data.mode,
+      mode: data.mode,
     });
     // Freezes presence and absence alike: a launch without workspace metadata
     // keeps returning WORKSPACE_REQUIRED for the session lifetime.
@@ -2114,7 +2368,13 @@ export class AgentDeckMCPServer {
       !launchDeck &&
       this.sessionBinding.isLaunchSession(sessionId) &&
       this.sessionBinding.isDefaultDeckSession(sessionId);
-    if (launchDeck || useManifestFollowUp || defaultDeckFollowUp) {
+    // NOT-634: sessions bound by recovering an approved session deck carry
+    // no deck header for it either — same launch follow-up refresh.
+    const sessionOverrideFollowUp =
+      !launchDeck &&
+      this.sessionBinding.isLaunchSession(sessionId) &&
+      this.sessionBinding.isSessionOverrideRecovery(sessionId);
+    if (launchDeck || useManifestFollowUp || defaultDeckFollowUp || sessionOverrideFollowUp) {
       try {
         await this.authenticateLaunchDeck(
           sessionId,
@@ -2212,7 +2472,13 @@ export class AgentDeckMCPServer {
    * session to the grant-constrained deck (absent header → default;
    * out-of-grant header → 403, no session).
    */
-  private async handleGrantInitialize(req: Request, res: Response, bearer: string): Promise<void> {
+  private async handleGrantInitialize(
+    req: Request,
+    res: Response,
+    bearer: string,
+    /** NOT-634: the pre-restart session id the initialize presented, if any. */
+    presentedSessionId?: string,
+  ): Promise<void> {
     const principal = this.authenticateGrant(bearer);
     if (!principal) {
       const presented = parseGrantToken(bearer);
@@ -2222,6 +2488,44 @@ export class AgentDeckMCPServer {
       );
       this.sendGrantRequired(res);
       return;
+    }
+    // NOT-634: only after the bearer authenticated, a presented pre-restart
+    // id owned by this same grant recovers its approved session deck ahead
+    // of the deck header / grant default. The backend re-checks the grant's
+    // current state and allowlist; denials are answered, never fallen back.
+    if (presentedSessionId) {
+      const recoveredSessionId = randomUUID();
+      let recoveredDeck: string | undefined;
+      try {
+        recoveredDeck = await this.bindRecoveredSessionOverride(
+          recoveredSessionId,
+          req,
+          presentedSessionId,
+          principal,
+        );
+      } catch (error) {
+        this.sessionBinding.clearSession(recoveredSessionId);
+        if (this.answerRecoveryFailure(res, error, presentedSessionId, req.body, principal.grantId)) {
+          return;
+        }
+        // Any other failure: resolve as an initialize without an override.
+      }
+      if (recoveredDeck) {
+        console.warn(
+          `[agent-deck] MCP initialize presented pre-restart session ${presentedSessionId} ` +
+            `(client ${readInitializeClientName(req.body) ?? 'unknown'}, grantId=${principal.grantId}); ` +
+            `recovered approved session deck ${recoveredDeck} as ${recoveredSessionId}.`,
+        );
+        this.getAuditStore()?.append({
+          actor: principal.grantId as AuditActor,
+          event: 'grant.used',
+          targetId: auditDeckTarget(recoveredDeck),
+          outcome: 'succeeded',
+          reasonCode: null,
+        });
+        await this.establishTransportSession(req, res, recoveredSessionId);
+        return;
+      }
     }
     const deckId = resolveGrantDeck(principal, readLaunchDeckHeader(req));
     if (!deckId) {
@@ -2241,7 +2545,7 @@ export class AgentDeckMCPServer {
     }
     const sessionId = randomUUID();
     try {
-      await this.authenticateGrantDeck(sessionId, req, principal, deckId);
+      await this.authenticateGrantDeck(sessionId, req, principal, deckId, presentedSessionId);
     } catch (error) {
       console.warn(
         '[agent-deck] Grant deck bind failed before MCP init (no session created):',
@@ -2405,13 +2709,11 @@ export class AgentDeckMCPServer {
       return;
     }
     if (sessionIdHeader) {
-      const aliased = this.recoveredSessionAlias.get(sessionIdHeader);
-      if (aliased && this.sessions.has(aliased)) {
+      // NOT-634: only an alias the request's own principal installed.
+      const aliased = this.lookupRecoveryAlias(req, sessionIdHeader);
+      if (aliased) {
         await this.serveFollowUp(aliased, req, res, sessionIdHeader);
         return;
-      }
-      if (aliased) {
-        this.recoveredSessionAlias.delete(sessionIdHeader);
       }
     }
 
@@ -2473,14 +2775,60 @@ export class AgentDeckMCPServer {
     // A presented bearer always resolves as a remote grant — even in local
     // mode — while loopback launcher connections without one keep the
     // existing deck-header path with zero config change.
+    const presentedSessionIdForInit =
+      sessionIdHeader && !this.closedSessionIds.has(sessionIdHeader) ? sessionIdHeader : undefined;
     const presentedBearer = readBearerToken(req);
     if (presentedBearer) {
-      await this.handleGrantInitialize(req, res, presentedBearer);
+      await this.handleGrantInitialize(req, res, presentedBearer, presentedSessionIdForInit);
       return;
     }
     if (bearerRequired) {
       this.sendGrantRequired(res);
       return;
+    }
+
+    // NOT-634: an initialize presenting a pre-restart session id first
+    // recovers that id's approved session deck, ahead of header → folder
+    // pin → default deck. Without an approved deck it resolves exactly as
+    // before (the fresh id is still aliased to the presented lineage).
+    // An initialize without a session id never reaches this branch.
+    const presentedSessionId = presentedSessionIdForInit;
+    if (presentedSessionId) {
+      const recoveredSessionId = randomUUID();
+      let recoveredDeck: string | undefined;
+      try {
+        recoveredDeck = await this.bindRecoveredSessionOverride(
+          recoveredSessionId,
+          req,
+          presentedSessionId,
+        );
+      } catch (error) {
+        this.sessionBinding.clearSession(recoveredSessionId);
+        if (error instanceof SessionDeckMissingError) {
+          console.warn(
+            `[agent-deck] MCP initialize presented pre-restart session ${presentedSessionId} ` +
+              `(client ${readInitializeClientName(body) ?? 'unknown'}); its approved session deck is gone:`,
+            error.message,
+          );
+          this.sendSessionDeckMissing(res, error.message);
+          return;
+        }
+        // Any other failure: resolve as an initialize without an override.
+      }
+      if (recoveredDeck) {
+        console.warn(
+          `[agent-deck] MCP initialize presented pre-restart session ${presentedSessionId} ` +
+            `(client ${readInitializeClientName(body) ?? 'unknown'}); recovered approved session deck ` +
+            `${recoveredDeck} as ${recoveredSessionId}.`,
+        );
+        await this.establishTransportSession(req, res, recoveredSessionId);
+        return;
+      }
+      console.warn(
+        `[agent-deck] MCP initialize presented pre-restart session ${presentedSessionId} ` +
+          `(client ${readInitializeClientName(body) ?? 'unknown'}); no approved session deck — ` +
+          'resolving from deck header, folder pin, or default deck.',
+      );
     }
 
     // NOT-562: workspace-header-only hosts (pure MCP, no launcher) resolve
@@ -2505,7 +2853,7 @@ export class AgentDeckMCPServer {
     const sessionId = randomUUID();
     if (effectiveDeck) {
       try {
-        await this.authenticateLaunchDeck(sessionId, req, effectiveDeck);
+        await this.authenticateLaunchDeck(sessionId, req, effectiveDeck, presentedSessionId);
         if (manifestDeck && !launchDeck && effectiveDeck === manifestDeck) {
           this.sessionBinding.markUseManifestSession(sessionId);
         } else if (defaultDeck && !launchDeck && effectiveDeck === defaultDeck) {
@@ -2527,7 +2875,7 @@ export class AgentDeckMCPServer {
           manifestDeck && !launchDeck && defaultDeck && defaultDeck !== manifestDeck;
         if (canFallThroughToDefault) {
           try {
-            await this.authenticateLaunchDeck(sessionId, req, defaultDeck);
+            await this.authenticateLaunchDeck(sessionId, req, defaultDeck, presentedSessionId);
             this.sessionBinding.markDefaultDeckSession(sessionId);
           } catch {
             this.sessionBinding.markUnassigned(sessionId);
@@ -2622,59 +2970,150 @@ export class AgentDeckMCPServer {
     res: Response,
     staleSessionId: string,
   ): Promise<boolean> {
-    // Local bearer-free mode only: hosted requests keep the 401 gate (or
-    // the 404 below once authenticated), and any request carrying a grant
-    // bearer keeps the restart 404 — grant clients re-initialize.
-    if (isBearerGrantRequired()) {
-      return false;
-    }
-    if (readBearerToken(req)) {
-      return false;
-    }
     // A session this process closed stays closed — never resurrect it.
     if (this.closedSessionIds.has(staleSessionId)) {
       return false;
     }
-    const { launchDeck, manifestDeck, defaultDeck, effectiveDeck } = this.resolveHeaderDeck(req);
-    if (!effectiveDeck) {
-      return false;
-    }
-    // A racing recovery may have installed an alias while headers resolved.
-    if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
-      return true;
+    // Bearer / hosted requests: header-based recovery stays local
+    // bearer-free only (grant clients re-initialize). NOT-634 adds one
+    // narrow case — an authenticated grant whose presented id carries an
+    // approved session deck owned by that same grant.
+    const bearer = readBearerToken(req);
+    if (bearer || isBearerGrantRequired()) {
+      const principal = this.authenticateGrant(bearer);
+      if (!principal) {
+        return false;
+      }
+      return this.tryRecoverGrantSessionOverride(req, res, staleSessionId, principal);
     }
 
     const freshSessionId = randomUUID();
-    let recoveredDeck = effectiveDeck;
+    // NOT-634: the presented id's approved session deck wins over header →
+    // folder pin → default deck. A deleted approved deck is answered
+    // explicitly (served, so the call site does not 404 into a silent
+    // fallback); any other lookup failure resolves from headers as before.
+    let overrideDeck: string | undefined;
     try {
-      await this.authenticateLaunchDeck(freshSessionId, req, effectiveDeck);
-      if (manifestDeck && !launchDeck && effectiveDeck === manifestDeck) {
-        this.sessionBinding.markUseManifestSession(freshSessionId);
-      } else if (defaultDeck && !launchDeck && effectiveDeck === defaultDeck) {
-        this.sessionBinding.markDefaultDeckSession(freshSessionId);
-      }
-    } catch {
-      // NOT-604: like initialize, a manifest naming a deleted deck falls
-      // through to the user default deck before recovery gives up.
-      const canFallThroughToDefault =
-        manifestDeck && !launchDeck && defaultDeck && defaultDeck !== manifestDeck;
-      if (!canFallThroughToDefault) {
-        // Opportunistic: a bind failure falls back to the NOT-101 404 the
-        // call site answers — silently, so a retrying host cannot spam one
-        // line per request (the 404 path logs first-seen ids already).
-        this.sessionBinding.clearSession(freshSessionId);
-        return false;
-      }
-      try {
-        await this.authenticateLaunchDeck(freshSessionId, req, defaultDeck);
-        this.sessionBinding.markDefaultDeckSession(freshSessionId);
-        recoveredDeck = defaultDeck;
-      } catch {
-        this.sessionBinding.clearSession(freshSessionId);
-        return false;
+      overrideDeck = await this.bindRecoveredSessionOverride(freshSessionId, req, staleSessionId);
+    } catch (error) {
+      this.sessionBinding.clearSession(freshSessionId);
+      if (error instanceof SessionDeckMissingError) {
+        if (!this.staleSessionsById.get(staleSessionId)?.recovered) {
+          console.warn(
+            `[agent-deck] MCP session ${staleSessionId} presented after restart; its approved session deck is gone:`,
+            error.message,
+          );
+        }
+        this.sendSessionDeckMissing(res, error.message);
+        return true;
       }
     }
 
+    let recoveredDeck: string;
+    if (overrideDeck) {
+      recoveredDeck = overrideDeck;
+    } else {
+      const { launchDeck, manifestDeck, defaultDeck, effectiveDeck } = this.resolveHeaderDeck(req);
+      if (!effectiveDeck) {
+        return false;
+      }
+      // A racing recovery may have installed an alias while headers resolved.
+      if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
+        return true;
+      }
+
+      recoveredDeck = effectiveDeck;
+      try {
+        await this.authenticateLaunchDeck(freshSessionId, req, effectiveDeck, staleSessionId);
+        if (manifestDeck && !launchDeck && effectiveDeck === manifestDeck) {
+          this.sessionBinding.markUseManifestSession(freshSessionId);
+        } else if (defaultDeck && !launchDeck && effectiveDeck === defaultDeck) {
+          this.sessionBinding.markDefaultDeckSession(freshSessionId);
+        }
+      } catch {
+        // NOT-604: like initialize, a manifest naming a deleted deck falls
+        // through to the user default deck before recovery gives up.
+        const canFallThroughToDefault =
+          manifestDeck && !launchDeck && defaultDeck && defaultDeck !== manifestDeck;
+        if (!canFallThroughToDefault) {
+          // Opportunistic: a bind failure falls back to the NOT-101 404 the
+          // call site answers — silently, so a retrying host cannot spam one
+          // line per request (the 404 path logs first-seen ids already).
+          this.sessionBinding.clearSession(freshSessionId);
+          return false;
+        }
+        try {
+          await this.authenticateLaunchDeck(freshSessionId, req, defaultDeck, staleSessionId);
+          this.sessionBinding.markDefaultDeckSession(freshSessionId);
+          recoveredDeck = defaultDeck;
+        } catch {
+          this.sessionBinding.clearSession(freshSessionId);
+          return false;
+        }
+      }
+    }
+    const recoveredFrom = this.sessionBinding.isSessionOverrideRecovery(freshSessionId)
+      ? 'its approved session deck'
+      : 'headers';
+    return this.installRecoveredSession(req, res, staleSessionId, freshSessionId, recoveredDeck, recoveredFrom);
+  }
+
+  /**
+   * NOT-634: stale follow-up from an authenticated bearer grant. Recovers
+   * only an approved session deck owned by the same grant (the backend
+   * re-checks the grant's current state and allowlist); anything else keeps
+   * the restart 404 — grant clients re-initialize as before. A deleted
+   * deck, revoked grant, or out-of-allowlist deck is answered explicitly.
+   */
+  private async tryRecoverGrantSessionOverride(
+    req: Request,
+    res: Response,
+    staleSessionId: string,
+    principal: GrantPrincipal,
+  ): Promise<boolean> {
+    if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
+      return true;
+    }
+    const freshSessionId = randomUUID();
+    let recoveredDeck: string | undefined;
+    try {
+      recoveredDeck = await this.bindRecoveredSessionOverride(
+        freshSessionId,
+        req,
+        staleSessionId,
+        principal,
+      );
+    } catch (error) {
+      this.sessionBinding.clearSession(freshSessionId);
+      return this.answerRecoveryFailure(res, error, staleSessionId, undefined, principal.grantId);
+    }
+    if (!recoveredDeck) {
+      this.sessionBinding.clearSession(freshSessionId);
+      return false;
+    }
+    return this.installRecoveredSession(
+      req,
+      res,
+      staleSessionId,
+      freshSessionId,
+      recoveredDeck,
+      `its approved session deck (grantId=${principal.grantId})`,
+    );
+  }
+
+  /**
+   * Shared NOT-569 tail: given a fresh session already bound (launch or
+   * grant), mint its transport, perform the handshake on the host's
+   * behalf, install the stale → fresh alias, and serve the request.
+   */
+  private async installRecoveredSession(
+    req: Request,
+    res: Response,
+    staleSessionId: string,
+    freshSessionId: string,
+    recoveredDeck: string,
+    recoveredFrom: string,
+  ): Promise<boolean> {
     // Adopt a concurrent winner instead of minting a second session.
     if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
       await this.disconnectTrustedSession(freshSessionId, req);
@@ -2712,21 +3151,19 @@ export class AgentDeckMCPServer {
     // Atomic install: a concurrent recovery may have won during the
     // handshake above — the check and the set below run with no await
     // between them, so exactly one winner installs the alias.
-    const lateWinner = this.recoveredSessionAlias.get(staleSessionId);
-    if (lateWinner && this.sessions.has(lateWinner)) {
+    // Only a winner of this same principal is adopted (NOT-634).
+    const lateWinner = this.lookupRecoveryAlias(req, staleSessionId);
+    if (lateWinner) {
       await this.startCleanupSession(freshSessionId, { closeTransport: true });
       await this.serveFollowUp(lateWinner, req, res, staleSessionId);
       return true;
     }
-    if (lateWinner) {
-      this.recoveredSessionAlias.delete(staleSessionId);
-    }
-    this.rememberRecoveryAlias(staleSessionId, freshSessionId);
+    this.rememberRecoveryAlias(req, staleSessionId, freshSessionId);
     this.markStaleSessionRecoveredById(staleSessionId);
     // One line per recovered session id, not per request — the host keeps
     // sending the stale id on every later call.
     console.warn(
-      `[agent-deck] MCP session ${staleSessionId} recovered from headers as ${freshSessionId} ` +
+      `[agent-deck] MCP session ${staleSessionId} recovered from ${recoveredFrom} as ${freshSessionId} ` +
         `(deck ${recoveredDeck}); the client never re-initialized after the restart.`,
     );
     // NOT-513: adopt the host-side session id before the first live-display
@@ -2749,16 +3186,12 @@ export class AgentDeckMCPServer {
     res: Response,
     staleSessionId: string,
   ): Promise<boolean> {
-    const aliased = this.recoveredSessionAlias.get(staleSessionId);
+    const aliased = this.lookupRecoveryAlias(req, staleSessionId);
     if (!aliased) {
       return false;
     }
-    if (this.sessions.has(aliased)) {
-      await this.serveFollowUp(aliased, req, res, staleSessionId);
-      return true;
-    }
-    this.recoveredSessionAlias.delete(staleSessionId);
-    return false;
+    await this.serveFollowUp(aliased, req, res, staleSessionId);
+    return true;
   }
 
   /**
@@ -2927,12 +3360,10 @@ export class AgentDeckMCPServer {
     if (this.sessions.has(sessionIdHeader)) {
       sessionId = sessionIdHeader;
     } else {
-      const aliased = this.recoveredSessionAlias.get(sessionIdHeader);
-      if (aliased && this.sessions.has(aliased)) {
+      const aliased = this.lookupRecoveryAlias(req, sessionIdHeader);
+      if (aliased) {
         sessionId = aliased;
         presentedSessionId = sessionIdHeader;
-      } else if (aliased) {
-        this.recoveredSessionAlias.delete(sessionIdHeader);
       }
     }
 

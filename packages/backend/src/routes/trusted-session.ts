@@ -156,6 +156,8 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           mode: session.mode,
           expiresAt: session.expiresAt,
           adminExpiresAt: session.adminExpiresAt,
+          // NOT-634: the session sits on its approved "This session only" deck.
+          sessionOverride: store.isRuntimeSessionOnSessionDeckOverride(session.sessionId),
         },
       });
     } catch (error) {
@@ -444,13 +446,94 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post<{
-    Body: { deckId: string; mcpSessionId?: string; grantId?: string; executionWorkspace?: string };
+    Body: {
+      deckId?: string;
+      mcpSessionId?: string;
+      grantId?: string;
+      executionWorkspace?: string;
+      /**
+       * NOT-634: the pre-restart MCP session id the client presented. When
+       * it (or its recovery lineage) carries an approved session deck, that
+       * deck wins over `deckId`. Only a lineage owned by the same principal
+       * (same grant, or bearer-free for bearer-free) is recovered or aliased
+       * (fresh id → origin) so the next restart recovers it too.
+       */
+      recoverFromMcpSessionId?: string;
+    };
   }>(
     '/mcp/connect-deck',
     async (request, reply) => {
       try {
-        const deckId = request.body.deckId?.trim();
+        const mcpId = request.body.mcpSessionId?.trim();
+        // NOT-318: owning-grant link for bearer-grant sessions. Verified
+        // grant-side by the MCP bearer gate before this call; stored here
+        // so deck-switch creation/approval can enforce the same allowlist.
+        // Loopback launcher calls omit it and stay unconstrained.
+        const grantId = request.body.grantId?.trim() || undefined;
+        const recoverFrom = request.body.recoverFromMcpSessionId?.trim() || undefined;
+
+        // NOT-634: an approved session deck is restored only to the same
+        // principal that approved it — a bearer-free caller never inherits
+        // a grant session's deck (and vice versa). The runtime authority
+        // below is always freshly created in normal mode.
+        const recovering = Boolean(recoverFrom && mcpId && recoverFrom !== mcpId);
+        // The presented lineage must belong to this caller's principal for
+        // both override recovery and aliasing — otherwise a caller could
+        // attach its fresh id to another principal's lineage and later
+        // overwrite that lineage's approved deck.
+        const lineagePrincipal = recovering
+          ? store.findSessionDeckLineagePrincipal(recoverFrom!)
+          : undefined;
+        const lineageIsOwn =
+          lineagePrincipal !== undefined && (lineagePrincipal.grantId ?? undefined) === grantId;
+        const override = recovering && lineageIsOwn ? store.findSessionDeckOverride(recoverFrom!) : null;
+        const applicableOverride =
+          override && (override.grantId ?? undefined) === grantId ? override : null;
+        if (applicableOverride && grantId) {
+          // Recovery never bypasses the grant's *current* state: a revoked or
+          // expired grant fails closed, and a deck since removed from the
+          // allowlist is refused (no silent fallback to another deck).
+          const grants = grantStoreOf(fastify);
+          const grant = grants?.getGrant(grantId) ?? null;
+          if (
+            !grants ||
+            !grant ||
+            grant.revokedAt ||
+            (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())
+          ) {
+            throw new TrustedAuthError('GRANT_REQUIRED', 'Grant expired or revoked');
+          }
+          if (!grant.allowedDecks.includes(applicableOverride.deckId)) {
+            throw new TrustedAuthError(
+              'RESOURCE_OUT_OF_SCOPE',
+              "Deck is outside this grant's allowed decks",
+            );
+          }
+        }
+        if (applicableOverride) {
+          const overrideDeck = await fastify.db.getDeck(applicableOverride.deckId);
+          if (!overrideDeck) {
+            return reply.status(409).send({
+              success: false,
+              error_code: 'SESSION_DECK_MISSING',
+              deckId: applicableOverride.deckId,
+              error:
+                `The deck this MCP session switched to (${applicableOverride.deckId}) no longer exists. ` +
+                'The session is not moved to another deck automatically; start a new client session ' +
+                '(without the previous session id) to bind from the deck header, folder pin, or default deck.',
+            });
+          }
+        }
+
+        const deckId = applicableOverride?.deckId ?? request.body.deckId?.trim();
         if (!deckId) {
+          if (recoverFrom) {
+            return reply.status(404).send({
+              success: false,
+              error_code: 'NO_SESSION_OVERRIDE',
+              error: 'No approved session deck for this MCP session',
+            });
+          }
           return reply.status(400).send({ success: false, error: 'deckId required' });
         }
 
@@ -458,13 +541,6 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         if (!deck) {
           return reply.status(404).send({ success: false, error: 'Deck not found' });
         }
-
-        const mcpId = request.body.mcpSessionId?.trim();
-        // NOT-318: owning-grant link for bearer-grant sessions. Verified
-        // grant-side by the MCP bearer gate before this call; stored here
-        // so deck-switch creation/approval can enforce the same allowlist.
-        // Loopback launcher calls omit it and stay unconstrained.
-        const grantId = request.body.grantId?.trim() || undefined;
         // NOT-539: the launcher's host workspace becomes the session's
         // immutable execution workspace. Only a fresh launch row captures it;
         // grant sessions never carry one, and a reused row keeps its own.
@@ -489,6 +565,9 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             ...(executionWorkspace ? { executionWorkspace } : {}),
           });
         }
+        if (recovering && lineageIsOwn) {
+          store.recordSessionDeckOverrideAlias(mcpId!, recoverFrom!);
+        }
 
         return reply.send({
           success: true,
@@ -498,6 +577,7 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             deckName: deck.name,
             mode: session.mode,
             expiresAt: session.expiresAt,
+            ...(recoverFrom ? { sessionOverride: applicableOverride !== null } : {}),
           },
         });
       } catch (error) {

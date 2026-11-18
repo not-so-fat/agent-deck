@@ -78,6 +78,8 @@ export type McpToolHost = {
     isAssignmentSession?(sessionId: string): boolean;
     /** NOT-600: session bound from the user default deck. */
     isDefaultDeckSession?(sessionId: string): boolean;
+    /** NOT-634: session sits on its approved session-scope switch deck. */
+    hasApprovedSessionOverride?(sessionId: string): boolean;
     hasSessionDeckOverride(sessionId: string): boolean;
     /** NOT-537: pinned playbook version for this MCP session, if any. */
     getPlaybookPin?(sessionId: string): PlaybookPin | undefined;
@@ -519,6 +521,8 @@ function describeBindingDisplay(
     activeDeckId,
     workspaceDefaultDeckId: workspaceDefault?.deckId ?? null,
     isDefaultDeckSession: host.sessionBinding.isDefaultDeckSession?.(sessionId) ?? false,
+    hasApprovedSessionOverride:
+      host.sessionBinding.hasApprovedSessionOverride?.(sessionId) ?? false,
   });
   // The override marker follows the id-based source, never the display
   // names: use.json deckName goes stale after a deck rename (heal only

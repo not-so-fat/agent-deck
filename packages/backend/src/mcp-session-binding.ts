@@ -125,6 +125,18 @@ export class McpSessionBindingStore {
    * after `markUnassigned`; cleared on any bind, promotion, or teardown.
    */
   private defaultDeckIssueByMcp = new Map<string, UnassignedDefaultDeckIssue>();
+  /**
+   * NOT-634: launch sessions bound by recovering an approved session deck
+   * for a pre-restart MCP session id. Like a use-manifest session, follow-up
+   * auth re-validates through the launch refresh without a deck header.
+   */
+  private sessionOverrideRecoveryByMcp = new Set<string>();
+  /**
+   * NOT-634: sessions currently on their approved "This session only" deck
+   * (from the backend runtime-session refresh, or set at recovery). Drives
+   * `active_source: "session"`; never consulted for deck, mode, or auth.
+   */
+  private approvedSessionOverrideByMcp = new Set<string>();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -195,6 +207,33 @@ export class McpSessionBindingStore {
 
   isDefaultDeckSession(mcpSessionId: string): boolean {
     return this.defaultDeckByMcp.has(mcpSessionId);
+  }
+
+  /**
+   * NOT-634: record that a launch session was bound by recovering the
+   * approved session deck of a pre-restart MCP session id. Called only
+   * after the bind succeeds, so the marker implies `launchByMcp`.
+   */
+  markSessionOverrideRecovery(mcpSessionId: string): void {
+    this.sessionOverrideRecoveryByMcp.add(mcpSessionId);
+    this.approvedSessionOverrideByMcp.add(mcpSessionId);
+  }
+
+  isSessionOverrideRecovery(mcpSessionId: string): boolean {
+    return this.sessionOverrideRecoveryByMcp.has(mcpSessionId);
+  }
+
+  /** NOT-634: track whether the session sits on its approved session deck. */
+  setApprovedSessionOverride(mcpSessionId: string, active: boolean): void {
+    if (active) {
+      this.approvedSessionOverrideByMcp.add(mcpSessionId);
+    } else {
+      this.approvedSessionOverrideByMcp.delete(mcpSessionId);
+    }
+  }
+
+  hasApprovedSessionOverride(mcpSessionId: string): boolean {
+    return this.approvedSessionOverrideByMcp.has(mcpSessionId);
   }
 
   /**
@@ -291,6 +330,8 @@ export class McpSessionBindingStore {
     this.assignmentByMcp.delete(mcpSessionId);
     this.missingDeckNameByMcp.delete(mcpSessionId);
     this.defaultDeckIssueByMcp.delete(mcpSessionId);
+    this.sessionOverrideRecoveryByMcp.delete(mcpSessionId);
+    this.approvedSessionOverrideByMcp.delete(mcpSessionId);
     this.unassignedByMcp.add(mcpSessionId);
   }
 
@@ -462,6 +503,8 @@ export class McpSessionBindingStore {
     this.defaultDeckByMcp.delete(sessionId);
     this.missingDeckNameByMcp.delete(sessionId);
     this.defaultDeckIssueByMcp.delete(sessionId);
+    this.sessionOverrideRecoveryByMcp.delete(sessionId);
+    this.approvedSessionOverrideByMcp.delete(sessionId);
   }
 
   getWorkspace(sessionId: string): string | undefined {
@@ -555,6 +598,11 @@ export class McpSessionBindingStore {
  * missing default left explicit. A session bound from the user default deck
  * (NOT-600) reports `default-deck`. Without any saved default, a bound active
  * deck is session-held (`session`).
+ *
+ * NOT-634: a session on its approved "This session only" deck reports
+ * `session` — even when it first bound from the user default deck, and
+ * after a restart recovered that deck, and even when the approved deck
+ * happens to equal the workspace pin (the session approval is the source).
  */
 export function resolveBindingActiveSource(input: {
   isLaunchSession: boolean;
@@ -562,7 +610,12 @@ export function resolveBindingActiveSource(input: {
   workspaceDefaultDeckId?: string | null;
   /** NOT-600: the session bound from `$AGENT_DECK_HOME/default-deck.json`. */
   isDefaultDeckSession?: boolean;
+  /** NOT-634: the session sits on its approved session-scope switch deck. */
+  hasApprovedSessionOverride?: boolean;
 }): BindingActiveSource {
+  if (input.hasApprovedSessionOverride && input.activeDeckId) {
+    return 'session';
+  }
   if (input.isDefaultDeckSession) {
     return 'default-deck';
   }

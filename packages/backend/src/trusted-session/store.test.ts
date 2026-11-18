@@ -1,4 +1,7 @@
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { DatabaseManager } from '../models/database';
@@ -521,5 +524,197 @@ describe('TrustedSessionStore deck-switch requests (NOT-205)', () => {
     expect('workspaceRoot' in summary).toBe(false);
     expect(store.getDeckSwitchRequestSummary(request.requestId)).toEqual(summary);
     expect(store.getDeckSwitchRequestSummary('req_missing')).toBeNull();
+  });
+});
+
+describe('TrustedSessionStore session deck overrides (NOT-634)', () => {
+  const deckExists = () => true;
+
+  function approve(
+    store: TrustedSessionStore,
+    session: { sessionId: string; deckId: string },
+    requestedDeckId: string,
+    decision: 'session' | 'workspace-default' | 'decline',
+    /** `null`: the request carried no workspace. */
+    workspaceRoot: string | null = '/work/ws',
+  ) {
+    const request = store.createDeckSwitchRequest({
+      runtimeSessionId: session.sessionId,
+      mcpSessionId: store.getRuntimeSessionRow(session.sessionId)?.mcp_session_id ?? undefined,
+      currentDeckId: session.deckId,
+      requestedDeckId,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+    });
+    return store.applyDeckSwitchResolution(request.requestId, session.sessionId, decision, {
+      deckExists,
+      writeWorkspaceAssignment: () => {},
+    });
+  }
+
+  it('records a session approval durably, independent of runtime-session lifetime', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-1' });
+    expect(approve(store, session, 'deck-b', 'session').outcome).toBe('resolved');
+
+    expect(store.findSessionDeckOverride('mcp-1')).toMatchObject({
+      originMcpSessionId: 'mcp-1',
+      deckId: 'deck-b',
+      grantId: null,
+    });
+    expect(store.isRuntimeSessionOnSessionDeckOverride(session.sessionId)).toBe(true);
+
+    store.revokeRuntimeSession(session.sessionId);
+    store.expireStaleSessions();
+    // A fresh store instance on the same database (daemon restart).
+    expect(new TrustedSessionStore(db).findSessionDeckOverride('mcp-1')?.deckId).toBe('deck-b');
+  });
+
+  it('keeps flat aliases so any recovered id resolves to the original lineage', () => {
+    const store = new TrustedSessionStore(new Database(':memory:'));
+    const first = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-1' });
+    approve(store, first, 'deck-b', 'session');
+
+    store.recordSessionDeckOverrideAlias('mcp-2', 'mcp-1');
+    store.recordSessionDeckOverrideAlias('mcp-3', 'mcp-2');
+    expect(store.resolveSessionDeckOverrideOrigin('mcp-3')).toBe('mcp-1');
+    expect(store.findSessionDeckOverride('mcp-3')?.deckId).toBe('deck-b');
+
+    // A switch approved on a recovered id updates the original lineage.
+    const recovered = store.createRuntimeSession({ deckId: 'deck-b', mcpSessionId: 'mcp-3' });
+    approve(store, recovered, 'deck-c', 'session');
+    expect(store.findSessionDeckOverride('mcp-1')?.deckId).toBe('deck-c');
+    expect(store.findSessionDeckOverride('mcp-2')?.deckId).toBe('deck-c');
+  });
+
+  it('decline leaves the override; workspace-default clears it', () => {
+    const store = new TrustedSessionStore(new Database(':memory:'));
+    const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-1' });
+    approve(store, session, 'deck-b', 'session');
+    expect(approve(store, { ...session, deckId: 'deck-b' }, 'deck-c', 'decline').outcome).toBe('declined');
+    expect(store.findSessionDeckOverride('mcp-1')?.deckId).toBe('deck-b');
+
+    expect(approve(store, { ...session, deckId: 'deck-b' }, 'deck-c', 'workspace-default').outcome).toBe(
+      'resolved',
+    );
+    expect(store.findSessionDeckOverride('mcp-1')).toBeNull();
+    expect(store.isRuntimeSessionOnSessionDeckOverride(session.sessionId)).toBe(false);
+  });
+
+  it('keeps sessions isolated and records the owning grant', () => {
+    const store = new TrustedSessionStore(new Database(':memory:'));
+    const local = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-local' });
+    const granted = store.createRuntimeSession({
+      deckId: 'deck-a',
+      mcpSessionId: 'mcp-grant',
+      grantId: 'grant-1',
+    });
+    approve(store, local, 'deck-b', 'session');
+    approve(store, granted, 'deck-c', 'session');
+    expect(store.findSessionDeckOverride('mcp-local')).toMatchObject({ deckId: 'deck-b', grantId: null });
+    expect(store.findSessionDeckOverride('mcp-grant')).toMatchObject({
+      deckId: 'deck-c',
+      grantId: 'grant-1',
+    });
+    expect(store.findSessionDeckOverride('mcp-unknown')).toBeNull();
+  });
+
+  /** Simulate a database written by a version without durable overrides. */
+  function downgradeToPreOverrideSchema(db: Database.Database): void {
+    db.exec(`DROP TABLE session_deck_overrides; DROP TABLE session_deck_override_aliases;`);
+  }
+
+  it('migrates a session switch approved before durable overrides existed (no workspace: provably session scope)', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-old' });
+    approve(store, session, 'deck-b', 'session', null);
+    const granted = store.createRuntimeSession({
+      deckId: 'deck-a',
+      mcpSessionId: 'mcp-old-grant',
+      grantId: 'grant-1',
+    });
+    approve(store, granted, 'deck-c', 'session', null);
+    // A session whose latest approval moved it off and back is not on the
+    // approved deck any more: not migrated.
+    const movedOn = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-moved' });
+    approve(store, movedOn, 'deck-b', 'session', null);
+    store.revokeRuntimeSession(session.sessionId);
+    store.revokeRuntimeSession(movedOn.sessionId);
+    store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-moved' });
+    downgradeToPreOverrideSchema(db);
+
+    // Upgrade + restart: a fresh store on the same database.
+    const upgraded = new TrustedSessionStore(db);
+    expect(upgraded.findSessionDeckOverride('mcp-old')).toMatchObject({ deckId: 'deck-b', grantId: null });
+    expect(upgraded.findSessionDeckOverride('mcp-old-grant')).toMatchObject({
+      deckId: 'deck-c',
+      grantId: 'grant-1',
+    });
+    expect(upgraded.findSessionDeckOverride('mcp-moved')).toBeNull();
+
+    // The migration runs once: a later workspace-default approval clears
+    // the override and a further restart does not resurrect it.
+    const live = upgraded.createRuntimeSession({ deckId: 'deck-b', mcpSessionId: 'mcp-old' });
+    approve(upgraded, live, 'deck-d', 'workspace-default');
+    expect(new TrustedSessionStore(db).findSessionDeckOverride('mcp-old')).toBeNull();
+  });
+
+  describe('legacy approvals that carried a workspace (scope not recorded)', () => {
+    /**
+     * Pre-upgrade history: one session approved "This session only", one
+     * approved "workspace default", both from a request carrying a
+     * workspace. The folder pin is then set to `pinAfter` (or removed)
+     * before the upgrade. The migration must not infer the past scope from
+     * today's pin: neither row becomes a durable override, whatever the pin.
+     */
+    function legacyHistory(pinAfter: string | null): Database.Database {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'not634-backfill-'));
+      try {
+        const db = new Database(':memory:');
+        const store = new TrustedSessionStore(db);
+        const sessionOnly = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-session-only' });
+        approve(store, sessionOnly, 'deck-b', 'session', workspace);
+        const wsDefault = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-ws-default' });
+        approve(store, wsDefault, 'deck-b', 'workspace-default', workspace);
+        if (pinAfter) {
+          fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
+          fs.writeFileSync(
+            path.join(workspace, '.agent-deck', 'use.json'),
+            JSON.stringify({ version: 3, deckId: pinAfter, deckName: pinAfter }),
+          );
+        }
+        downgradeToPreOverrideSchema(db);
+        // Upgrade + restart while the pin is in its later state.
+        new TrustedSessionStore(db);
+        return db;
+      } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    }
+
+    it.each([
+      ['later pinned to the approved deck', 'deck-b'],
+      ['later pinned to another deck', 'deck-z'],
+      ['pin later removed', null],
+    ])('%s: neither the session-only nor the workspace-default approval is migrated', (_label, pinAfter) => {
+      const store = new TrustedSessionStore(legacyHistory(pinAfter));
+      expect(store.findSessionDeckOverride('mcp-session-only')).toBeNull();
+      expect(store.findSessionDeckOverride('mcp-ws-default')).toBeNull();
+    });
+  });
+
+  it('reports the principal owning an id lineage (override, runtime row, or unknown)', () => {
+    const store = new TrustedSessionStore(new Database(':memory:'));
+    store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-local' });
+    const granted = store.createRuntimeSession({
+      deckId: 'deck-a',
+      mcpSessionId: 'mcp-grant',
+      grantId: 'grant-1',
+    });
+    approve(store, granted, 'deck-b', 'session');
+    expect(store.findSessionDeckLineagePrincipal('mcp-local')).toEqual({ grantId: null });
+    expect(store.findSessionDeckLineagePrincipal('mcp-grant')).toEqual({ grantId: 'grant-1' });
+    expect(store.findSessionDeckLineagePrincipal('mcp-unknown')).toBeUndefined();
   });
 });

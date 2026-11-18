@@ -29,6 +29,14 @@ export type RuntimeSessionRow = {
   grant_id: string | null;
 };
 
+/** NOT-634: durable approved "This session only" deck for one MCP session lineage. */
+export type SessionDeckOverride = {
+  originMcpSessionId: string;
+  deckId: string;
+  grantId: string | null;
+  approvedAt: string;
+};
+
 export type AdminChallengeRow = {
   id: string;
   runtime_session_id: string;
@@ -341,6 +349,12 @@ export class TrustedSessionStore {
 
   private ensureTables(): void {
     this.maybeShedGrantSchema();
+    // NOT-634: a database opened by an earlier version has no durable
+    // session-deck override table yet; its approved switches are migrated
+    // from historical session data once, right after the table is created.
+    const needsSessionDeckOverrideBackfill = !this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_deck_overrides'`)
+      .get();
     // NOT-107: shed legacy issuer tables (created by the deleted SQLite store).
     this.db.exec(`
       DROP TABLE IF EXISTS ea_audit_events;
@@ -418,10 +432,93 @@ export class TrustedSessionStore {
 
       CREATE INDEX IF NOT EXISTS deck_assignment_requests_pending_idx
         ON deck_assignment_requests (mcp_session_id, status, expires_at);
+
+      CREATE TABLE IF NOT EXISTS session_deck_overrides (
+        origin_mcp_session_id TEXT PRIMARY KEY,
+        deck_id TEXT NOT NULL,
+        grant_id TEXT,
+        approved_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS session_deck_override_aliases (
+        mcp_session_id TEXT PRIMARY KEY,
+        origin_mcp_session_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
     this.ensureGrantColumn();
     this.ensureExecutionWorkspaceColumn();
     this.ensureDashboardAbsoluteExpiryColumn();
+    if (needsSessionDeckOverrideBackfill) {
+      this.backfillSessionDeckOverrides();
+    }
+  }
+
+  /**
+   * NOT-634: migrate "This session only" switches approved before durable
+   * overrides existed. Earlier versions kept such a switch only on the
+   * runtime-session row (`deck_id`, rebound at approval) and the consumed
+   * `deck_switch_requests` row. For each MCP session id, the latest consumed
+   * request is treated as an approved session deck when the id's latest
+   * runtime row (expired or revoked alike — the lease is not the override)
+   * still sits on that deck.
+   *
+   * Earlier versions did not record the approval's scope ("This session
+   * only" vs "workspace default"), and the current folder pin says nothing
+   * about which scope was approved in the past — a pin can be changed,
+   * removed, or set to the same deck later. The only historical provenance
+   * is the request itself: a workspace-default approval requires a
+   * `workspace_root` on the request, so a consumed request without one is
+   * provably session-scoped. Decision (NOT-634): migrate only those. A
+   * request that carried a workspace is ambiguous and is never migrated —
+   * whatever the folder pin says today — so it keeps resolving from header
+   * → folder pin → default deck exactly as before the upgrade, and no
+   * workspace-default approval is ever turned into a durable session
+   * override. Runs once (when the table is first created), so later
+   * workspace-default approvals that clear an override are never
+   * resurrected from history. Reads and writes no workspace files.
+   */
+  private backfillSessionDeckOverrides(): void {
+    const candidates = this.db
+      .prepare(
+        `SELECT r.mcp_session_id AS mcp_session_id, r.requested_deck_id AS deck_id,
+                r.workspace_root AS workspace_root,
+                COALESCE(r.resolved_at, r.created_at) AS approved_at
+         FROM deck_switch_requests r
+         WHERE r.status = 'consumed' AND r.mcp_session_id IS NOT NULL
+           AND r.id = (
+             SELECT r2.id FROM deck_switch_requests r2
+             WHERE r2.mcp_session_id = r.mcp_session_id AND r2.status = 'consumed'
+             ORDER BY COALESCE(r2.resolved_at, r2.created_at) DESC, r2.created_at DESC
+             LIMIT 1
+           )`,
+      )
+      .all() as Array<{
+      mcp_session_id: string;
+      deck_id: string;
+      workspace_root: string | null;
+      approved_at: string;
+    }>;
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO session_deck_overrides
+       (origin_mcp_session_id, deck_id, grant_id, approved_at) VALUES (?, ?, ?, ?)`,
+    );
+    for (const candidate of candidates) {
+      const latest = this.db
+        .prepare(
+          `SELECT deck_id, grant_id FROM runtime_sessions
+           WHERE mcp_session_id = ? ORDER BY last_seen_at DESC, rowid DESC LIMIT 1`,
+        )
+        .get(candidate.mcp_session_id) as { deck_id: string; grant_id: string | null } | undefined;
+      if (!latest || latest.deck_id !== candidate.deck_id) {
+        continue;
+      }
+      if (candidate.workspace_root?.trim()) {
+        // Ambiguous scope (could have been a workspace-default approval).
+        continue;
+      }
+      insert.run(candidate.mcp_session_id, candidate.deck_id, latest.grant_id, candidate.approved_at);
+    }
   }
 
   /**
@@ -608,6 +705,135 @@ export class TrustedSessionStore {
       .all(...uniqueIds, now) as Array<{ mcp_session_id: string; mode: AgentSessionMode }>;
 
     return new Map(rows.map((row) => [row.mcp_session_id, row.mode]));
+  }
+
+  /**
+   * NOT-634: the original MCP session id a (possibly recovered) id descends
+   * from. Recovery records `fresh id → origin` aliases, so a client that
+   * presents either its first id or any id minted for it after a restart
+   * resolves to the same approved session deck. Aliases are flat: every
+   * alias points straight at the origin, never at another alias.
+   */
+  resolveSessionDeckOverrideOrigin(mcpSessionId: string): string {
+    const row = this.db
+      .prepare(
+        `SELECT origin_mcp_session_id FROM session_deck_override_aliases WHERE mcp_session_id = ?`,
+      )
+      .get(mcpSessionId) as { origin_mcp_session_id: string } | undefined;
+    return row?.origin_mcp_session_id ?? mcpSessionId;
+  }
+
+  /**
+   * NOT-634: the approved "This session only" deck for an MCP session id
+   * (direct or via a recovery alias). Independent of runtime-session rows,
+   * so lease expiry, admin-mode exit, and transport teardown never erase it.
+   * Carries the owning grant (if any) so recovery never hands a grant
+   * session's deck to a bearer-free caller.
+   */
+  findSessionDeckOverride(mcpSessionId: string): SessionDeckOverride | null {
+    const origin = this.resolveSessionDeckOverrideOrigin(mcpSessionId);
+    const row = this.db
+      .prepare(
+        `SELECT origin_mcp_session_id, deck_id, grant_id, approved_at
+         FROM session_deck_overrides WHERE origin_mcp_session_id = ?`,
+      )
+      .get(origin) as
+      | { origin_mcp_session_id: string; deck_id: string; grant_id: string | null; approved_at: string }
+      | undefined;
+    return row
+      ? {
+          originMcpSessionId: row.origin_mcp_session_id,
+          deckId: row.deck_id,
+          grantId: row.grant_id,
+          approvedAt: row.approved_at,
+        }
+      : null;
+  }
+
+  /**
+   * NOT-634: record that `freshMcpSessionId` was minted to recover
+   * `presentedMcpSessionId` after a restart. The alias points at the
+   * presented id's origin so continuity survives repeated restarts.
+   * Idempotent; an id that is its own origin is never aliased.
+   */
+  recordSessionDeckOverrideAlias(freshMcpSessionId: string, presentedMcpSessionId: string): void {
+    const origin = this.resolveSessionDeckOverrideOrigin(presentedMcpSessionId);
+    if (origin === freshMcpSessionId) {
+      return;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO session_deck_override_aliases (mcp_session_id, origin_mcp_session_id, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT (mcp_session_id) DO UPDATE SET origin_mcp_session_id = excluded.origin_mcp_session_id`,
+      )
+      .run(freshMcpSessionId, origin, nowIso());
+  }
+
+  /**
+   * NOT-634: the principal that owns an MCP session id's override lineage —
+   * the grant that approved its override, else the grant on the latest
+   * runtime row for the presented id (or its origin). `null` grant means a
+   * bearer-free (local launch) principal. Returns undefined when nothing
+   * about the id is known, so callers never adopt an unowned lineage.
+   */
+  findSessionDeckLineagePrincipal(mcpSessionId: string): { grantId: string | null } | undefined {
+    const override = this.findSessionDeckOverride(mcpSessionId);
+    if (override) {
+      return { grantId: override.grantId };
+    }
+    const origin = this.resolveSessionDeckOverrideOrigin(mcpSessionId);
+    for (const id of origin === mcpSessionId ? [mcpSessionId] : [mcpSessionId, origin]) {
+      const row = this.db
+        .prepare(
+          `SELECT grant_id FROM runtime_sessions
+           WHERE mcp_session_id = ? ORDER BY last_seen_at DESC, rowid DESC LIMIT 1`,
+        )
+        .get(id) as { grant_id: string | null } | undefined;
+      if (row) {
+        return { grantId: row.grant_id };
+      }
+    }
+    return undefined;
+  }
+
+  private upsertSessionDeckOverride(
+    mcpSessionId: string,
+    deckId: string,
+    grantId: string | null,
+    now: string,
+  ): void {
+    const origin = this.resolveSessionDeckOverrideOrigin(mcpSessionId);
+    this.db
+      .prepare(
+        `INSERT INTO session_deck_overrides (origin_mcp_session_id, deck_id, grant_id, approved_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (origin_mcp_session_id) DO UPDATE
+           SET deck_id = excluded.deck_id, grant_id = excluded.grant_id,
+               approved_at = excluded.approved_at`,
+      )
+      .run(origin, deckId, grantId, now);
+  }
+
+  private clearSessionDeckOverride(mcpSessionId: string): void {
+    const origin = this.resolveSessionDeckOverrideOrigin(mcpSessionId);
+    this.db
+      .prepare(`DELETE FROM session_deck_overrides WHERE origin_mcp_session_id = ?`)
+      .run(origin);
+  }
+
+  /**
+   * NOT-634: whether a runtime session currently sits on its approved
+   * session deck — the `active_source: "session"` signal. False when the
+   * session has no MCP id, no override, or has since moved elsewhere.
+   */
+  isRuntimeSessionOnSessionDeckOverride(sessionId: string): boolean {
+    const row = this.getRuntimeSessionRow(sessionId);
+    if (!row?.mcp_session_id) {
+      return false;
+    }
+    const override = this.findSessionDeckOverride(row.mcp_session_id);
+    return override !== null && override.deckId === row.deck_id;
   }
 
   createDashboardNonce(nonce: string, expiresAtIso: string): void {
@@ -1245,6 +1471,25 @@ export class TrustedSessionStore {
 
       if (!this.rebindRuntimeSessionDeck(row.runtime_session_id, row.requested_deck_id, now)) {
         throw new DeckSwitchCommitFailed('session-invalid');
+      }
+
+      // NOT-634: a "This session only" approval is also recorded durably
+      // against the session's MCP id lineage, so it survives lease expiry,
+      // transport teardown, and a daemon restart. A workspace-default
+      // approval hands the session back to normal workspace resolution, so
+      // any earlier session override is dropped. Neither touches use.json.
+      const mcpSessionId = row.mcp_session_id ?? sessionRow.mcp_session_id;
+      if (mcpSessionId) {
+        if (decision === 'session') {
+          this.upsertSessionDeckOverride(
+            mcpSessionId,
+            row.requested_deck_id,
+            sessionRow.grant_id ?? null,
+            now,
+          );
+        } else {
+          this.clearSessionDeckOverride(mcpSessionId);
+        }
       }
 
       this.db
