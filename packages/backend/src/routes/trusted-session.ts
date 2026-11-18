@@ -454,8 +454,9 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
       /**
        * NOT-634: the pre-restart MCP session id the client presented. When
        * it (or its recovery lineage) carries an approved session deck, that
-       * deck wins over `deckId`; either way the fresh id is aliased to the
-       * presented id's lineage so the next restart recovers it too.
+       * deck wins over `deckId`. Only a lineage owned by the same principal
+       * (same grant, or bearer-free for bearer-free) is recovered or aliased
+       * (fresh id → origin) so the next restart recovers it too.
        */
       recoverFromMcpSessionId?: string;
     };
@@ -475,12 +476,40 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         // principal that approved it — a bearer-free caller never inherits
         // a grant session's deck (and vice versa). The runtime authority
         // below is always freshly created in normal mode.
-        const override =
-          recoverFrom && mcpId && recoverFrom !== mcpId
-            ? store.findSessionDeckOverride(recoverFrom)
-            : null;
+        const recovering = Boolean(recoverFrom && mcpId && recoverFrom !== mcpId);
+        // The presented lineage must belong to this caller's principal for
+        // both override recovery and aliasing — otherwise a caller could
+        // attach its fresh id to another principal's lineage and later
+        // overwrite that lineage's approved deck.
+        const lineagePrincipal = recovering
+          ? store.findSessionDeckLineagePrincipal(recoverFrom!)
+          : undefined;
+        const lineageIsOwn =
+          lineagePrincipal !== undefined && (lineagePrincipal.grantId ?? undefined) === grantId;
+        const override = recovering && lineageIsOwn ? store.findSessionDeckOverride(recoverFrom!) : null;
         const applicableOverride =
           override && (override.grantId ?? undefined) === grantId ? override : null;
+        if (applicableOverride && grantId) {
+          // Recovery never bypasses the grant's *current* state: a revoked or
+          // expired grant fails closed, and a deck since removed from the
+          // allowlist is refused (no silent fallback to another deck).
+          const grants = grantStoreOf(fastify);
+          const grant = grants?.getGrant(grantId) ?? null;
+          if (
+            !grants ||
+            !grant ||
+            grant.revokedAt ||
+            (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())
+          ) {
+            throw new TrustedAuthError('GRANT_REQUIRED', 'Grant expired or revoked');
+          }
+          if (!grant.allowedDecks.includes(applicableOverride.deckId)) {
+            throw new TrustedAuthError(
+              'RESOURCE_OUT_OF_SCOPE',
+              "Deck is outside this grant's allowed decks",
+            );
+          }
+        }
         if (applicableOverride) {
           const overrideDeck = await fastify.db.getDeck(applicableOverride.deckId);
           if (!overrideDeck) {
@@ -536,8 +565,8 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             ...(executionWorkspace ? { executionWorkspace } : {}),
           });
         }
-        if (recoverFrom && mcpId && recoverFrom !== mcpId) {
-          store.recordSessionDeckOverrideAlias(mcpId, recoverFrom);
+        if (recovering && lineageIsOwn) {
+          store.recordSessionDeckOverrideAlias(mcpId!, recoverFrom!);
         }
 
         return reply.send({

@@ -1,4 +1,7 @@
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { DatabaseManager } from '../models/database';
@@ -612,5 +615,89 @@ describe('TrustedSessionStore session deck overrides (NOT-634)', () => {
       grantId: 'grant-1',
     });
     expect(store.findSessionDeckOverride('mcp-unknown')).toBeNull();
+  });
+
+  /** Simulate a database written by a version without durable overrides. */
+  function downgradeToPreOverrideSchema(db: Database.Database): void {
+    db.exec(`DROP TABLE session_deck_overrides; DROP TABLE session_deck_override_aliases;`);
+  }
+
+  it('migrates a session switch approved before durable overrides existed', () => {
+    const db = new Database(':memory:');
+    const store = new TrustedSessionStore(db);
+    const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-old' });
+    approve(store, session, 'deck-b', 'session');
+    const granted = store.createRuntimeSession({
+      deckId: 'deck-a',
+      mcpSessionId: 'mcp-old-grant',
+      grantId: 'grant-1',
+    });
+    approve(store, granted, 'deck-c', 'session');
+    // A session whose latest approval moved it off and back is not on the
+    // approved deck any more: not migrated.
+    const movedOn = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-moved' });
+    approve(store, movedOn, 'deck-b', 'session');
+    store.revokeRuntimeSession(session.sessionId);
+    store.revokeRuntimeSession(movedOn.sessionId);
+    store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-moved' });
+    downgradeToPreOverrideSchema(db);
+
+    // Upgrade + restart: a fresh store on the same database.
+    const upgraded = new TrustedSessionStore(db);
+    expect(upgraded.findSessionDeckOverride('mcp-old')).toMatchObject({ deckId: 'deck-b', grantId: null });
+    expect(upgraded.findSessionDeckOverride('mcp-old-grant')).toMatchObject({
+      deckId: 'deck-c',
+      grantId: 'grant-1',
+    });
+    expect(upgraded.findSessionDeckOverride('mcp-moved')).toBeNull();
+
+    // The migration runs once: a later workspace-default approval clears
+    // the override and a further restart does not resurrect it.
+    const live = upgraded.createRuntimeSession({ deckId: 'deck-b', mcpSessionId: 'mcp-old' });
+    approve(upgraded, live, 'deck-d', 'workspace-default');
+    expect(new TrustedSessionStore(db).findSessionDeckOverride('mcp-old')).toBeNull();
+  });
+
+  it('does not migrate a pre-upgrade approval that matches the workspace pin (ambiguous scope)', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'not634-backfill-'));
+    try {
+      fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspace, '.agent-deck', 'use.json'),
+        JSON.stringify({ version: 3, deckId: 'deck-b', deckName: 'beta' }),
+      );
+      const db = new Database(':memory:');
+      const store = new TrustedSessionStore(db);
+      const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-ws' });
+      const request = store.createDeckSwitchRequest({
+        runtimeSessionId: session.sessionId,
+        mcpSessionId: 'mcp-ws',
+        currentDeckId: 'deck-a',
+        requestedDeckId: 'deck-b',
+        workspaceRoot: workspace,
+      });
+      store.applyDeckSwitchResolution(request.requestId, session.sessionId, 'session', {
+        deckExists,
+        writeWorkspaceAssignment: () => {},
+      });
+      downgradeToPreOverrideSchema(db);
+      expect(new TrustedSessionStore(db).findSessionDeckOverride('mcp-ws')).toBeNull();
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the principal owning an id lineage (override, runtime row, or unknown)', () => {
+    const store = new TrustedSessionStore(new Database(':memory:'));
+    store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-local' });
+    const granted = store.createRuntimeSession({
+      deckId: 'deck-a',
+      mcpSessionId: 'mcp-grant',
+      grantId: 'grant-1',
+    });
+    approve(store, granted, 'deck-b', 'session');
+    expect(store.findSessionDeckLineagePrincipal('mcp-local')).toEqual({ grantId: null });
+    expect(store.findSessionDeckLineagePrincipal('mcp-grant')).toEqual({ grantId: 'grant-1' });
+    expect(store.findSessionDeckLineagePrincipal('mcp-unknown')).toBeUndefined();
   });
 });

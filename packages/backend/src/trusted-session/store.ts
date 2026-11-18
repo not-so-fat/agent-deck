@@ -513,7 +513,7 @@ export class TrustedSessionStore {
       const latest = this.db
         .prepare(
           `SELECT deck_id, grant_id FROM runtime_sessions
-           WHERE mcp_session_id = ? ORDER BY last_seen_at DESC LIMIT 1`,
+           WHERE mcp_session_id = ? ORDER BY last_seen_at DESC, rowid DESC LIMIT 1`,
         )
         .get(candidate.mcp_session_id) as { deck_id: string; grant_id: string | null } | undefined;
       if (!latest || latest.deck_id !== candidate.deck_id) {
@@ -792,7 +792,7 @@ export class TrustedSessionStore {
       const row = this.db
         .prepare(
           `SELECT grant_id FROM runtime_sessions
-           WHERE mcp_session_id = ? ORDER BY last_seen_at DESC LIMIT 1`,
+           WHERE mcp_session_id = ? ORDER BY last_seen_at DESC, rowid DESC LIMIT 1`,
         )
         .get(id) as { grant_id: string | null } | undefined;
       if (row) {

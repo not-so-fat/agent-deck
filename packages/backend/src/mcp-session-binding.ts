@@ -601,8 +601,8 @@ export class McpSessionBindingStore {
  *
  * NOT-634: a session on its approved "This session only" deck reports
  * `session` — even when it first bound from the user default deck, and
- * after a restart recovered that deck — unless the active deck equals the
- * workspace default, which still reports `workspace`.
+ * after a restart recovered that deck, and even when the approved deck
+ * happens to equal the workspace pin (the session approval is the source).
  */
 export function resolveBindingActiveSource(input: {
   isLaunchSession: boolean;
@@ -614,7 +614,7 @@ export function resolveBindingActiveSource(input: {
   hasApprovedSessionOverride?: boolean;
 }): BindingActiveSource {
   if (input.hasApprovedSessionOverride && input.activeDeckId) {
-    return input.activeDeckId === input.workspaceDefaultDeckId ? 'workspace' : 'session';
+    return 'session';
   }
   if (input.isDefaultDeckSession) {
     return 'default-deck';

@@ -212,6 +212,20 @@ class SessionDeckMissingError extends Error {
 }
 
 /**
+ * NOT-634: a grant client presented its pre-restart session id, but its
+ * grant (now revoked / expired) or allowlist no longer permits the approved
+ * session deck. Answered as the uniform 401 / 403 — never a fallback bind.
+ */
+class SessionRecoveryDeniedError extends Error {
+  constructor(readonly reason: 'grant-required' | 'out-of-scope') {
+    super(reason);
+    this.name = 'SessionRecoveryDeniedError';
+  }
+}
+
+type GrantPrincipal = Extract<import('./auth/client-grants').ClientPrincipal, { kind: 'grant' }>;
+
+/**
  * NOT-318: hosted-mode flag. When `AGENT_DECK_MCP_REQUIRE_BEARER=1`, every
  * `/mcp` request requires a valid per-agent grant secret, regardless of
  * peer address. Peer-address detection is explicitly rejected as the
@@ -1848,8 +1862,14 @@ export class AgentDeckMCPServer {
   private async authenticateGrantDeck(
     sessionId: string,
     req: Request,
-    principal: Extract<import('./auth/client-grants').ClientPrincipal, { kind: 'grant' }>,
+    principal: GrantPrincipal,
     deckId: string,
+    /**
+     * NOT-634: the pre-restart session id the client presented. The backend
+     * aliases the fresh id to its lineage only when that lineage belongs to
+     * this same grant.
+     */
+    recoverFromMcpSessionId?: string,
   ): Promise<void> {
     const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
       method: 'POST',
@@ -1858,24 +1878,28 @@ export class AgentDeckMCPServer {
         deckId,
         mcpSessionId: sessionId,
         grantId: principal.grantId,
+        ...(recoverFromMcpSessionId ? { recoverFromMcpSessionId } : {}),
       }),
     });
 
-    const body = (await response.json()) as {
-      success?: boolean;
-      error?: string;
-      data?: {
-        sessionId: string;
-        deckId: string;
-        deckName?: string;
-        mode: 'normal' | 'agent-admin';
-      };
-    };
+    const body = (await response.json()) as LaunchConnectResponseBody;
 
     if (!response.ok || !body.success || !body.data) {
       throw new Error(body.error ?? 'GRANT_DECK_INVALID');
     }
+    this.adoptGrantConnect(sessionId, req, principal, body.data);
+  }
 
+  /**
+   * Record a successful grant connect on the MCP session binding (shared by
+   * `authenticateGrantDeck` and NOT-634 override recovery).
+   */
+  private adoptGrantConnect(
+    sessionId: string,
+    req: Request,
+    principal: GrantPrincipal,
+    data: NonNullable<LaunchConnectResponseBody['data']>,
+  ): void {
     const existing = this.sessionBinding.getBinding(sessionId);
     const workspaceRoot =
       readWorkspaceRootHeader(req) ??
@@ -1887,10 +1911,10 @@ export class AgentDeckMCPServer {
       label: principal.label,
       defaultDeck: principal.defaultDeck,
       allowedDecks: principal.allowedDecks,
-      runtimeSessionId: body.data.sessionId,
-      deckId: body.data.deckId,
+      runtimeSessionId: data.sessionId,
+      deckId: data.deckId,
       workspaceRoot,
-      mode: body.data.mode,
+      mode: data.mode,
     });
 
     const correlationId = readCorrelationIdHeader(req);
@@ -2057,24 +2081,30 @@ export class AgentDeckMCPServer {
   /**
    * NOT-634: bind a fresh session to the approved session deck of the
    * pre-restart id the client presented, before any header / folder pin /
-   * default-deck resolution. Local bearer-free callers only (the call
-   * site gates). Returns the recovered deck id, or undefined when that id
-   * has no approved session deck (the caller resolves as before). Throws
-   * {@link SessionDeckMissingError} when the approved deck was deleted —
-   * the caller answers it explicitly instead of falling back.
+   * default-deck resolution. `principal` is the already-authenticated
+   * bearer grant (omitted for local bearer-free callers); the backend only
+   * restores a lineage owned by that same principal and re-checks the
+   * grant's current state and allowlist. Returns the recovered deck id, or
+   * undefined when that id has no approved session deck (the caller
+   * resolves as before). Throws {@link SessionDeckMissingError} when the
+   * approved deck was deleted and {@link SessionRecoveryDeniedError} when
+   * the grant no longer permits it — the caller answers both explicitly
+   * instead of falling back.
    */
   private async bindRecoveredSessionOverride(
     sessionId: string,
     req: Request,
     presentedSessionId: string,
+    principal?: GrantPrincipal,
   ): Promise<string | undefined> {
-    const executionWorkspace = this.readLaunchExecutionWorkspace(req);
+    const executionWorkspace = principal ? undefined : this.readLaunchExecutionWorkspace(req);
     const response = await fetch(`${this.backendUrl}/api/trusted-session/mcp/connect-deck`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         mcpSessionId: sessionId,
         recoverFromMcpSessionId: presentedSessionId,
+        ...(principal ? { grantId: principal.grantId } : {}),
         ...(executionWorkspace ? { executionWorkspace } : {}),
       }),
     });
@@ -2086,10 +2116,27 @@ export class AgentDeckMCPServer {
       if (body.error_code === 'NO_SESSION_OVERRIDE') {
         return undefined;
       }
+      if (body.error_code === 'RESOURCE_OUT_OF_SCOPE') {
+        throw new SessionRecoveryDeniedError('out-of-scope');
+      }
+      if (body.error_code === 'GRANT_REQUIRED' && principal) {
+        throw new SessionRecoveryDeniedError('grant-required');
+      }
       throw new Error(body.error ?? 'LAUNCH_DECK_INVALID');
     }
     if (!body.data.sessionOverride) {
       return undefined;
+    }
+    if (principal) {
+      // Defense in depth: the recovered deck must sit inside the grant the
+      // bearer authenticated to right now.
+      if (!principalAllowsDeck(principal, body.data.deckId)) {
+        await this.disconnectTrustedSession(sessionId, req).catch(() => {});
+        throw new SessionRecoveryDeniedError('out-of-scope');
+      }
+      this.adoptGrantConnect(sessionId, req, principal, body.data);
+      this.sessionBinding.setApprovedSessionOverride(sessionId, true);
+      return body.data.deckId;
     }
     this.adoptLaunchConnect(sessionId, req, body.data, executionWorkspace);
     this.sessionBinding.markSessionOverrideRecovery(sessionId);
@@ -2103,6 +2150,44 @@ export class AgentDeckMCPServer {
       error: { code: -32001, message: `SESSION_DECK_MISSING: ${message}` },
       id: null,
     });
+  }
+
+  /**
+   * NOT-634: answer a grant-session recovery that must not fall back
+   * (deleted approved deck, revoked/expired grant, deck outside the
+   * allowlist). Returns false for any other error so the caller resolves as
+   * if no override existed.
+   */
+  private answerRecoveryFailure(
+    res: Response,
+    error: unknown,
+    presentedSessionId: string,
+    body: unknown,
+    grantId: string,
+  ): boolean {
+    if (error instanceof SessionDeckMissingError) {
+      console.warn(
+        `[agent-deck] MCP request presented pre-restart session ${presentedSessionId} ` +
+          `(client ${readInitializeClientName(body) ?? 'unknown'}, grantId=${grantId}); ` +
+          'its approved session deck is gone:',
+        error.message,
+      );
+      this.sendSessionDeckMissing(res, error.message);
+      return true;
+    }
+    if (error instanceof SessionRecoveryDeniedError) {
+      console.warn(
+        `[agent-deck] Grant session recovery denied (no session created): grantId=${grantId}`,
+        error.reason,
+      );
+      if (error.reason === 'out-of-scope') {
+        this.sendOutOfScope(res);
+      } else {
+        this.sendGrantRequired(res);
+      }
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -2334,7 +2419,13 @@ export class AgentDeckMCPServer {
    * session to the grant-constrained deck (absent header → default;
    * out-of-grant header → 403, no session).
    */
-  private async handleGrantInitialize(req: Request, res: Response, bearer: string): Promise<void> {
+  private async handleGrantInitialize(
+    req: Request,
+    res: Response,
+    bearer: string,
+    /** NOT-634: the pre-restart session id the initialize presented, if any. */
+    presentedSessionId?: string,
+  ): Promise<void> {
     const principal = this.authenticateGrant(bearer);
     if (!principal) {
       const presented = parseGrantToken(bearer);
@@ -2344,6 +2435,44 @@ export class AgentDeckMCPServer {
       );
       this.sendGrantRequired(res);
       return;
+    }
+    // NOT-634: only after the bearer authenticated, a presented pre-restart
+    // id owned by this same grant recovers its approved session deck ahead
+    // of the deck header / grant default. The backend re-checks the grant's
+    // current state and allowlist; denials are answered, never fallen back.
+    if (presentedSessionId) {
+      const recoveredSessionId = randomUUID();
+      let recoveredDeck: string | undefined;
+      try {
+        recoveredDeck = await this.bindRecoveredSessionOverride(
+          recoveredSessionId,
+          req,
+          presentedSessionId,
+          principal,
+        );
+      } catch (error) {
+        this.sessionBinding.clearSession(recoveredSessionId);
+        if (this.answerRecoveryFailure(res, error, presentedSessionId, req.body, principal.grantId)) {
+          return;
+        }
+        // Any other failure: resolve as an initialize without an override.
+      }
+      if (recoveredDeck) {
+        console.warn(
+          `[agent-deck] MCP initialize presented pre-restart session ${presentedSessionId} ` +
+            `(client ${readInitializeClientName(req.body) ?? 'unknown'}, grantId=${principal.grantId}); ` +
+            `recovered approved session deck ${recoveredDeck} as ${recoveredSessionId}.`,
+        );
+        this.getAuditStore()?.append({
+          actor: principal.grantId as AuditActor,
+          event: 'grant.used',
+          targetId: auditDeckTarget(recoveredDeck),
+          outcome: 'succeeded',
+          reasonCode: null,
+        });
+        await this.establishTransportSession(req, res, recoveredSessionId);
+        return;
+      }
     }
     const deckId = resolveGrantDeck(principal, readLaunchDeckHeader(req));
     if (!deckId) {
@@ -2363,7 +2492,7 @@ export class AgentDeckMCPServer {
     }
     const sessionId = randomUUID();
     try {
-      await this.authenticateGrantDeck(sessionId, req, principal, deckId);
+      await this.authenticateGrantDeck(sessionId, req, principal, deckId, presentedSessionId);
     } catch (error) {
       console.warn(
         '[agent-deck] Grant deck bind failed before MCP init (no session created):',
@@ -2595,9 +2724,11 @@ export class AgentDeckMCPServer {
     // A presented bearer always resolves as a remote grant — even in local
     // mode — while loopback launcher connections without one keep the
     // existing deck-header path with zero config change.
+    const presentedSessionIdForInit =
+      sessionIdHeader && !this.closedSessionIds.has(sessionIdHeader) ? sessionIdHeader : undefined;
     const presentedBearer = readBearerToken(req);
     if (presentedBearer) {
-      await this.handleGrantInitialize(req, res, presentedBearer);
+      await this.handleGrantInitialize(req, res, presentedBearer, presentedSessionIdForInit);
       return;
     }
     if (bearerRequired) {
@@ -2610,8 +2741,7 @@ export class AgentDeckMCPServer {
     // pin → default deck. Without an approved deck it resolves exactly as
     // before (the fresh id is still aliased to the presented lineage).
     // An initialize without a session id never reaches this branch.
-    const presentedSessionId =
-      sessionIdHeader && !this.closedSessionIds.has(sessionIdHeader) ? sessionIdHeader : undefined;
+    const presentedSessionId = presentedSessionIdForInit;
     if (presentedSessionId) {
       const recoveredSessionId = randomUUID();
       let recoveredDeck: string | undefined;
@@ -2789,18 +2919,21 @@ export class AgentDeckMCPServer {
     res: Response,
     staleSessionId: string,
   ): Promise<boolean> {
-    // Local bearer-free mode only: hosted requests keep the 401 gate (or
-    // the 404 below once authenticated), and any request carrying a grant
-    // bearer keeps the restart 404 — grant clients re-initialize.
-    if (isBearerGrantRequired()) {
-      return false;
-    }
-    if (readBearerToken(req)) {
-      return false;
-    }
     // A session this process closed stays closed — never resurrect it.
     if (this.closedSessionIds.has(staleSessionId)) {
       return false;
+    }
+    // Bearer / hosted requests: header-based recovery stays local
+    // bearer-free only (grant clients re-initialize). NOT-634 adds one
+    // narrow case — an authenticated grant whose presented id carries an
+    // approved session deck owned by that same grant.
+    const bearer = readBearerToken(req);
+    if (bearer || isBearerGrantRequired()) {
+      const principal = this.authenticateGrant(bearer);
+      if (!principal) {
+        return false;
+      }
+      return this.tryRecoverGrantSessionOverride(req, res, staleSessionId, principal);
     }
 
     const freshSessionId = randomUUID();
@@ -2871,7 +3004,65 @@ export class AgentDeckMCPServer {
     const recoveredFrom = this.sessionBinding.isSessionOverrideRecovery(freshSessionId)
       ? 'its approved session deck'
       : 'headers';
+    return this.installRecoveredSession(req, res, staleSessionId, freshSessionId, recoveredDeck, recoveredFrom);
+  }
 
+  /**
+   * NOT-634: stale follow-up from an authenticated bearer grant. Recovers
+   * only an approved session deck owned by the same grant (the backend
+   * re-checks the grant's current state and allowlist); anything else keeps
+   * the restart 404 — grant clients re-initialize as before. A deleted
+   * deck, revoked grant, or out-of-allowlist deck is answered explicitly.
+   */
+  private async tryRecoverGrantSessionOverride(
+    req: Request,
+    res: Response,
+    staleSessionId: string,
+    principal: GrantPrincipal,
+  ): Promise<boolean> {
+    if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
+      return true;
+    }
+    const freshSessionId = randomUUID();
+    let recoveredDeck: string | undefined;
+    try {
+      recoveredDeck = await this.bindRecoveredSessionOverride(
+        freshSessionId,
+        req,
+        staleSessionId,
+        principal,
+      );
+    } catch (error) {
+      this.sessionBinding.clearSession(freshSessionId);
+      return this.answerRecoveryFailure(res, error, staleSessionId, undefined, principal.grantId);
+    }
+    if (!recoveredDeck) {
+      this.sessionBinding.clearSession(freshSessionId);
+      return false;
+    }
+    return this.installRecoveredSession(
+      req,
+      res,
+      staleSessionId,
+      freshSessionId,
+      recoveredDeck,
+      `its approved session deck (grantId=${principal.grantId})`,
+    );
+  }
+
+  /**
+   * Shared NOT-569 tail: given a fresh session already bound (launch or
+   * grant), mint its transport, perform the handshake on the host's
+   * behalf, install the stale → fresh alias, and serve the request.
+   */
+  private async installRecoveredSession(
+    req: Request,
+    res: Response,
+    staleSessionId: string,
+    freshSessionId: string,
+    recoveredDeck: string,
+    recoveredFrom: string,
+  ): Promise<boolean> {
     // Adopt a concurrent winner instead of minting a second session.
     if (await this.serveFromRecoveryAlias(req, res, staleSessionId)) {
       await this.disconnectTrustedSession(freshSessionId, req);

@@ -496,7 +496,7 @@ describe('approved session deck survives a daemon restart (NOT-634)', () => {
   });
 
   it('never hands a grant session\'s approved deck to a bearer-free or revoked caller', async () => {
-    const [deckA, deckB] = await createDecks('alpha', 'beta');
+    const [deckA, deckB, deckC] = await createDecks('alpha', 'beta', 'gamma');
     db ??= new DatabaseManager(':memory:');
     grantStore = new ClientGrantStore(db.getSqliteDatabase());
     const issued = grantStore.issueGrant({
@@ -529,8 +529,165 @@ describe('approved session deck survives a daemon restart (NOT-634)', () => {
     expect(runtimeSessionCount()).toBe(rowsBefore);
 
     // Bearer-free with a deck header: plain header recovery, not the grant's deck.
-    const headered = await sessionContext(grantSession, { [AGENT_DECK_DECK_ID_HEADER]: deckA.id });
+    const headerOnly = { [AGENT_DECK_DECK_ID_HEADER]: deckA.id };
+    const headered = await sessionContext(grantSession, headerOnly);
     expect(headered.data?.effective_deck_id).toBe(deckA.id);
+    expect(headered.data?.active_source).not.toBe('session');
+
+    // ...and that bearer-free session was not aliased into the grant's
+    // lineage: approving a session switch on it leaves the grant's B alone.
+    await switchAndResolve(grantSession, headerOnly, deckC, 'session');
+    expect(store.findSessionDeckOverride(grantSession)).toMatchObject({
+      deckId: deckB.id,
+      grantId: issued.grant.id,
+    });
+  });
+
+  it('a valid bearer grant recovers its own approved deck (follow-up, re-initialize, second restart)', async () => {
+    const [deckA, deckB, deckC] = await createDecks('alpha', 'beta', 'gamma');
+    db ??= new DatabaseManager(':memory:');
+    grantStore = new ClientGrantStore(db.getSqliteDatabase());
+    const issued = grantStore.issueGrant({
+      label: 'remote',
+      defaultDeck: deckA.id,
+      allowedDecks: [deckA.id, deckB.id],
+    });
+    const other = grantStore.issueGrant({
+      label: 'other',
+      defaultDeck: deckA.id,
+      allowedDecks: [deckA.id, deckB.id, deckC.id],
+    });
+    const bearer = { authorization: `Bearer ${issued.token}` };
+    const otherBearer = { authorization: `Bearer ${other.token}` };
+    await startDaemon();
+
+    const grantSession = await openSession(bearer);
+    await switchAndResolve(grantSession, bearer, deckB, 'session');
+    const live = await sessionContext(grantSession, bearer);
+    expect(live.data?.effective_deck_id).toBe(deckB.id);
+    expect(live.data?.active_source).toBe('session');
+    const liveRow = store.findActiveRuntimeSessionByMcpSessionId(grantSession)!;
+    expect(store.elevateSessionToAdmin(liveRow.sessionId)?.mode).toBe('agent-admin');
+
+    // Restart #1: follow-up on the old id with the same valid bearer.
+    await restartDaemon();
+    const followUp = await sessionContext(grantSession, bearer);
+    expect(followUp.status).toBe(200);
+    expect(followUp.sessionHeader).toBe(grantSession);
+    expect(followUp.data?.effective_deck_id).toBe(deckB.id);
+    expect(followUp.data?.active_source).toBe('session');
+
+    // A different (valid) grant presenting that id gets nothing of it.
+    await restartDaemon();
+    const stranger = await sessionContext(grantSession, otherBearer);
+    expect(stranger.status).toBe(404);
+    const strangerInit = await initialize(otherBearer, grantSession);
+    expect(strangerInit.status).toBe(200);
+    const strangerCtx = await sessionContext(strangerInit.sessionHeader!, otherBearer);
+    expect(strangerCtx.data?.effective_deck_id).toBe(deckA.id);
+    // Not aliased: a switch on the stranger session leaves the lineage alone.
+    await switchAndResolve(strangerInit.sessionHeader!, otherBearer, deckC, 'session');
+    expect(store.findSessionDeckOverride(grantSession)).toMatchObject({
+      deckId: deckB.id,
+      grantId: issued.grant.id,
+    });
+
+    // Restart #2: re-initialize presenting the original id.
+    await restartDaemon();
+    const reinit = await initialize(bearer, grantSession);
+    expect(reinit.status).toBe(200);
+    const recovered = reinit.sessionHeader!;
+    expect(recovered).not.toBe(grantSession);
+    const viaRecovered = await sessionContext(recovered, bearer);
+    expect(viaRecovered.data?.effective_deck_id).toBe(deckB.id);
+    expect(viaRecovered.data?.active_source).toBe('session');
+
+    // Restart #3: the recovered id is presented on a follow-up.
+    await restartDaemon();
+    const byRecovered = await sessionContext(recovered, bearer);
+    expect(byRecovered.data?.effective_deck_id).toBe(deckB.id);
+    expect(byRecovered.data?.active_source).toBe('session');
+
+    // Recovered authority is normal mode and still grant-linked.
+    const rows = db!
+      .getSqliteDatabase()
+      .prepare(
+        `SELECT mode, grant_id FROM runtime_sessions
+         WHERE revoked_at IS NULL AND deck_id = ? AND mcp_session_id != ?`,
+      )
+      .all(deckB.id, grantSession) as Array<{ mode: string; grant_id: string | null }>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row).toEqual({ mode: 'normal', grant_id: issued.grant.id });
+    }
+  });
+
+  it('a grant whose allowlist no longer contains the approved deck is refused, not fallen back', async () => {
+    const [deckA, deckB] = await createDecks('alpha', 'beta');
+    db ??= new DatabaseManager(':memory:');
+    grantStore = new ClientGrantStore(db.getSqliteDatabase());
+    const issued = grantStore.issueGrant({
+      label: 'remote',
+      defaultDeck: deckA.id,
+      allowedDecks: [deckA.id, deckB.id],
+    });
+    const bearer = { authorization: `Bearer ${issued.token}` };
+    await startDaemon();
+    const grantSession = await openSession(bearer);
+    await switchAndResolve(grantSession, bearer, deckB, 'session');
+
+    await stopDaemon();
+    db!
+      .getSqliteDatabase()
+      .prepare(`UPDATE agent_grants SET allowed_decks = ? WHERE id = ?`)
+      .run(JSON.stringify([deckA.id]), issued.grant.id);
+    await startDaemon();
+    const rowsBefore = runtimeSessionCount();
+
+    const followUp = await sessionContext(grantSession, bearer);
+    expect(followUp.status).toBe(403);
+    const reinit = await initialize(bearer, grantSession);
+    expect(reinit.status).toBe(403);
+    expect(reinit.sessionHeader).toBeNull();
+    expect(runtimeSessionCount()).toBe(rowsBefore);
+  });
+
+  it('an approved session deck equal to the folder pin still reports session after recovery', async () => {
+    const [deckA, deckB] = await createDecks('alpha', 'beta');
+    await startDaemon();
+    const workspace = makeWorkspace();
+    writePin(workspace, deckA);
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: workspace };
+    const original = await openSession(headers);
+    await switchAndResolve(original, headers, deckB, 'session');
+    // The folder pin is edited (outside agent-deck) to the same deck.
+    writePin(workspace, deckB);
+    const live = await sessionContext(original, headers);
+    expect(live.data?.active_source).toBe('session');
+
+    await restartDaemon();
+    const after = await sessionContext(original, headers);
+    expect(after.data?.effective_deck_id).toBe(deckB.id);
+    expect(after.data?.active_source).toBe('session');
+  });
+
+  it('recovers a session switch approved by a version without durable overrides', async () => {
+    const [deckA, deckB] = await createDecks('alpha', 'beta');
+    useDefaultDeck(deckA);
+    await startDaemon();
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: makeWorkspace() };
+    const original = await openSession(headers);
+    await switchAndResolve(original, headers, deckB, 'session');
+    await stopDaemon();
+    // The database as an earlier version left it: no override tables.
+    db!
+      .getSqliteDatabase()
+      .exec(`DROP TABLE session_deck_overrides; DROP TABLE session_deck_override_aliases;`);
+
+    await startDaemon();
+    const after = await sessionContext(original, headers);
+    expect(after.data?.effective_deck_id).toBe(deckB.id);
+    expect(after.data?.active_source).toBe('session');
   });
 
   it('hosted mode (bearer required) never recovers an approved deck without auth', async () => {

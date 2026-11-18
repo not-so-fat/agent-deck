@@ -309,7 +309,7 @@ describe('resolveBindingActiveSource (NOT-211)', () => {
     ).toBe('session');
   });
 
-  it('NOT-634: an approved session deck equal to the workspace default reports workspace', () => {
+  it('NOT-634: an approved session deck equal to the workspace pin still reports session', () => {
     expect(
       resolveBindingActiveSource({
         isLaunchSession: true,
@@ -317,7 +317,7 @@ describe('resolveBindingActiveSource (NOT-211)', () => {
         workspaceDefaultDeckId: deckA,
         hasApprovedSessionOverride: true,
       }),
-    ).toBe('workspace');
+    ).toBe('session');
   });
 
   it('returns session when the active deck differs from the workspace default', () => {
