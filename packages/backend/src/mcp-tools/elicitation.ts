@@ -30,8 +30,12 @@
 
 import { readAdminSecretFromEnvOrFile } from '../trusted-session/admin-secret';
 
-/** How long the tool call waits for the human to answer the native form. */
-export const DECK_SWITCH_ELICITATION_TIMEOUT_MS = 60_000;
+/**
+ * How long the tool call waits for the human to answer the native form:
+ * 5 minutes (NOT-636). After this the call returns `pending`; the request
+ * itself stays approvable for `DECK_SWITCH_REQUEST_TTL_MS` (30 minutes).
+ */
+export const DECK_SWITCH_ELICITATION_TIMEOUT_MS = 300_000;
 
 /** Commit scopes the approval API accepts (NOT-207). */
 export type DeckSwitchApprovalScope = 'session' | 'workspace-default' | 'decline';
