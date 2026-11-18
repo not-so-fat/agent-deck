@@ -535,13 +535,15 @@ describe('TrustedSessionStore session deck overrides (NOT-634)', () => {
     session: { sessionId: string; deckId: string },
     requestedDeckId: string,
     decision: 'session' | 'workspace-default' | 'decline',
+    /** `null`: the request carried no workspace. */
+    workspaceRoot: string | null = '/work/ws',
   ) {
     const request = store.createDeckSwitchRequest({
       runtimeSessionId: session.sessionId,
       mcpSessionId: store.getRuntimeSessionRow(session.sessionId)?.mcp_session_id ?? undefined,
       currentDeckId: session.deckId,
       requestedDeckId,
-      workspaceRoot: '/work/ws',
+      ...(workspaceRoot ? { workspaceRoot } : {}),
     });
     return store.applyDeckSwitchResolution(request.requestId, session.sessionId, decision, {
       deckExists,
@@ -622,21 +624,21 @@ describe('TrustedSessionStore session deck overrides (NOT-634)', () => {
     db.exec(`DROP TABLE session_deck_overrides; DROP TABLE session_deck_override_aliases;`);
   }
 
-  it('migrates a session switch approved before durable overrides existed', () => {
+  it('migrates a session switch approved before durable overrides existed (no workspace: provably session scope)', () => {
     const db = new Database(':memory:');
     const store = new TrustedSessionStore(db);
     const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-old' });
-    approve(store, session, 'deck-b', 'session');
+    approve(store, session, 'deck-b', 'session', null);
     const granted = store.createRuntimeSession({
       deckId: 'deck-a',
       mcpSessionId: 'mcp-old-grant',
       grantId: 'grant-1',
     });
-    approve(store, granted, 'deck-c', 'session');
+    approve(store, granted, 'deck-c', 'session', null);
     // A session whose latest approval moved it off and back is not on the
     // approved deck any more: not migrated.
     const movedOn = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-moved' });
-    approve(store, movedOn, 'deck-b', 'session');
+    approve(store, movedOn, 'deck-b', 'session', null);
     store.revokeRuntimeSession(session.sessionId);
     store.revokeRuntimeSession(movedOn.sessionId);
     store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-moved' });
@@ -658,33 +660,48 @@ describe('TrustedSessionStore session deck overrides (NOT-634)', () => {
     expect(new TrustedSessionStore(db).findSessionDeckOverride('mcp-old')).toBeNull();
   });
 
-  it('does not migrate a pre-upgrade approval that matches the workspace pin (ambiguous scope)', () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'not634-backfill-'));
-    try {
-      fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
-      fs.writeFileSync(
-        path.join(workspace, '.agent-deck', 'use.json'),
-        JSON.stringify({ version: 3, deckId: 'deck-b', deckName: 'beta' }),
-      );
-      const db = new Database(':memory:');
-      const store = new TrustedSessionStore(db);
-      const session = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-ws' });
-      const request = store.createDeckSwitchRequest({
-        runtimeSessionId: session.sessionId,
-        mcpSessionId: 'mcp-ws',
-        currentDeckId: 'deck-a',
-        requestedDeckId: 'deck-b',
-        workspaceRoot: workspace,
-      });
-      store.applyDeckSwitchResolution(request.requestId, session.sessionId, 'session', {
-        deckExists,
-        writeWorkspaceAssignment: () => {},
-      });
-      downgradeToPreOverrideSchema(db);
-      expect(new TrustedSessionStore(db).findSessionDeckOverride('mcp-ws')).toBeNull();
-    } finally {
-      fs.rmSync(workspace, { recursive: true, force: true });
+  describe('legacy approvals that carried a workspace (scope not recorded)', () => {
+    /**
+     * Pre-upgrade history: one session approved "This session only", one
+     * approved "workspace default", both from a request carrying a
+     * workspace. The folder pin is then set to `pinAfter` (or removed)
+     * before the upgrade. The migration must not infer the past scope from
+     * today's pin: neither row becomes a durable override, whatever the pin.
+     */
+    function legacyHistory(pinAfter: string | null): Database.Database {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'not634-backfill-'));
+      try {
+        const db = new Database(':memory:');
+        const store = new TrustedSessionStore(db);
+        const sessionOnly = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-session-only' });
+        approve(store, sessionOnly, 'deck-b', 'session', workspace);
+        const wsDefault = store.createRuntimeSession({ deckId: 'deck-a', mcpSessionId: 'mcp-ws-default' });
+        approve(store, wsDefault, 'deck-b', 'workspace-default', workspace);
+        if (pinAfter) {
+          fs.mkdirSync(path.join(workspace, '.agent-deck'), { recursive: true });
+          fs.writeFileSync(
+            path.join(workspace, '.agent-deck', 'use.json'),
+            JSON.stringify({ version: 3, deckId: pinAfter, deckName: pinAfter }),
+          );
+        }
+        downgradeToPreOverrideSchema(db);
+        // Upgrade + restart while the pin is in its later state.
+        new TrustedSessionStore(db);
+        return db;
+      } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
     }
+
+    it.each([
+      ['later pinned to the approved deck', 'deck-b'],
+      ['later pinned to another deck', 'deck-z'],
+      ['pin later removed', null],
+    ])('%s: neither the session-only nor the workspace-default approval is migrated', (_label, pinAfter) => {
+      const store = new TrustedSessionStore(legacyHistory(pinAfter));
+      expect(store.findSessionDeckOverride('mcp-session-only')).toBeNull();
+      expect(store.findSessionDeckOverride('mcp-ws-default')).toBeNull();
+    });
   });
 
   it('reports the principal owning an id lineage (override, runtime row, or unknown)', () => {

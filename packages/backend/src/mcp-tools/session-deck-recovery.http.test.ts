@@ -364,7 +364,39 @@ describe('approved session deck survives a daemon restart (NOT-634)', () => {
     );
   });
 
-  it('lease expiry and transport cleanup do not erase the approved deck; recovery is normal mode', async () => {
+  it('transport cleanup (DELETE) revokes the runtime session but not the approved deck', async () => {
+    const [deckA, deckB] = await createDecks('alpha', 'beta');
+    useDefaultDeck(deckA);
+    await startDaemon();
+    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: makeWorkspace() };
+    const original = await openSession(headers);
+    await switchAndResolve(original, headers, deckB, 'session');
+    const live = store.findActiveRuntimeSessionByMcpSessionId(original)!;
+    expect(live).toBeTruthy();
+
+    // A clean DELETE succeeds and revokes the runtime authority right away,
+    // with the daemon still running and no lease forced to expire.
+    const deleted = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, {
+      method: 'DELETE',
+      headers: { ...headers, 'mcp-session-id': original },
+    });
+    expect(deleted.status).toBe(200);
+    // The transport's close runs the unified cleanup asynchronously after
+    // the 200; bounded wait, daemon still up, no lease touched.
+    for (let attempt = 0; attempt < 100 && store.findActiveRuntimeSessionByMcpSessionId(original); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(store.findActiveRuntimeSessionByMcpSessionId(original)).toBeNull();
+    expect(store.getRuntimeSessionRow(live.sessionId)?.revoked_at).toBeTruthy();
+    expect(store.findSessionDeckOverride(original)?.deckId).toBe(deckB.id);
+
+    await restartDaemon();
+    const after = await sessionContext(original, headers);
+    expect(after.data?.effective_deck_id).toBe(deckB.id);
+    expect(after.data?.active_source).toBe('session');
+  });
+
+  it('lease expiry does not erase the approved deck; recovery is normal mode, not admin', async () => {
     const [deckA, deckB] = await createDecks('alpha', 'beta');
     useDefaultDeck(deckA);
     await startDaemon();
@@ -375,13 +407,7 @@ describe('approved session deck survives a daemon restart (NOT-634)', () => {
     // Elevate to admin before the restart: recovery must not restore it.
     const live = store.findActiveRuntimeSessionByMcpSessionId(original)!;
     expect(store.elevateSessionToAdmin(live.sessionId)?.mode).toBe('agent-admin');
-
-    // Transport cleanup (clean DELETE) revokes the runtime session.
-    const deleted = await fetch(`http://127.0.0.1:${mcpPort}/mcp`, {
-      method: 'DELETE',
-      headers: { 'mcp-session-id': original },
-    });
-    expect(deleted.status).toBeLessThan(500);
+    // The daemon dies without any transport cleanup.
     await stopDaemon();
 
     // Force every remaining lease past expiry and sweep.
@@ -671,23 +697,126 @@ describe('approved session deck survives a daemon restart (NOT-634)', () => {
     expect(after.data?.active_source).toBe('session');
   });
 
-  it('recovers a session switch approved by a version without durable overrides', async () => {
-    const [deckA, deckB] = await createDecks('alpha', 'beta');
-    useDefaultDeck(deckA);
-    await startDaemon();
-    const headers = { [AGENT_DECK_WORKSPACE_HEADER]: makeWorkspace() };
-    const original = await openSession(headers);
-    await switchAndResolve(original, headers, deckB, 'session');
-    await stopDaemon();
-    // The database as an earlier version left it: no override tables.
+  /** The database as an earlier version left it: no override tables. */
+  function downgradeToPreOverrideSchema(): void {
     db!
       .getSqliteDatabase()
       .exec(`DROP TABLE session_deck_overrides; DROP TABLE session_deck_override_aliases;`);
+  }
+
+  it('recovers a provably session-only switch approved by a version without durable overrides', async () => {
+    const [deckA, deckB] = await createDecks('alpha', 'beta');
+    await startDaemon();
+    // No workspace on the session, so the request could not have been a
+    // workspace-default approval.
+    const headers = { [AGENT_DECK_DECK_ID_HEADER]: deckA.id };
+    const original = await openSession(headers);
+    await switchAndResolve(original, headers, deckB, 'session');
+    await stopDaemon();
+    downgradeToPreOverrideSchema();
 
     await startDaemon();
     const after = await sessionContext(original, headers);
     expect(after.data?.effective_deck_id).toBe(deckB.id);
     expect(after.data?.active_source).toBe('session');
+  });
+
+  it.each([
+    ['session', 'pin later set to the approved deck', 'same'],
+    ['session', 'pin later changed to another deck', 'other'],
+    ['workspace-default', 'pin later changed to another deck', 'other'],
+    ['workspace-default', 'pin later removed', 'none'],
+  ] as const)(
+    'a legacy %s approval carrying a workspace (%s) is not migrated and resolves as before',
+    async (decision, _label, pinAfter) => {
+      const [deckA, deckB, deckC] = await createDecks('alpha', 'beta', 'gamma');
+      useDefaultDeck(deckA);
+      await startDaemon();
+      const workspace = makeWorkspace();
+      const headers = { [AGENT_DECK_WORKSPACE_HEADER]: workspace };
+      const original = await openSession(headers);
+      await switchAndResolve(original, headers, deckB, decision);
+      await stopDaemon();
+      if (pinAfter === 'same') {
+        writePin(workspace, deckB);
+      } else if (pinAfter === 'other') {
+        writePin(workspace, deckC);
+      } else {
+        fs.rmSync(path.join(workspace, '.agent-deck'), { recursive: true, force: true });
+      }
+      downgradeToPreOverrideSchema();
+
+      await startDaemon();
+      expect(store.findSessionDeckOverride(original)).toBeNull();
+      const after = await sessionContext(original, headers);
+      // Plain header → folder pin → default deck resolution.
+      const expected = pinAfter === 'same' ? deckB : pinAfter === 'other' ? deckC : deckA;
+      expect(after.data?.effective_deck_id).toBe(expected.id);
+      expect(after.data?.active_source).toBe(pinAfter === 'none' ? 'default-deck' : 'workspace');
+    },
+  );
+
+  describe('live recovery aliases are scoped to the presenting principal', () => {
+    async function grantLineage() {
+      const [deckA, deckB] = await createDecks('alpha', 'beta');
+      db ??= new DatabaseManager(':memory:');
+      grantStore = new ClientGrantStore(db.getSqliteDatabase());
+      const issued = grantStore.issueGrant({
+        label: 'remote',
+        defaultDeck: deckA.id,
+        allowedDecks: [deckA.id, deckB.id],
+      });
+      const bearer = { authorization: `Bearer ${issued.token}` };
+      await startDaemon();
+      const grantSession = await openSession(bearer);
+      await switchAndResolve(grantSession, bearer, deckB, 'session');
+      await restartDaemon();
+      return { deckA, deckB, bearer, grantSession };
+    }
+
+    it('a bearer-free header recovery first does not capture the grant owner\'s next request', async () => {
+      const { deckA, deckB, bearer, grantSession } = await grantLineage();
+      const headerOnly = { [AGENT_DECK_DECK_ID_HEADER]: deckA.id };
+
+      const bearerFree = await sessionContext(grantSession, headerOnly);
+      expect(bearerFree.status).toBe(200);
+      expect(bearerFree.data?.effective_deck_id).toBe(deckA.id);
+      expect(bearerFree.data?.active_source).not.toBe('session');
+
+      // No restart in between: the owner still gets its approved deck, on
+      // a grant-bound session (the bearer is honoured, not ignored).
+      const owner = await sessionContext(grantSession, bearer);
+      expect(owner.status).toBe(200);
+      expect(owner.data?.effective_deck_id).toBe(deckB.id);
+      expect(owner.data?.active_source).toBe('session');
+
+      // Both aliases keep serving their own principal.
+      expect((await sessionContext(grantSession, headerOnly)).data?.effective_deck_id).toBe(deckA.id);
+      expect((await sessionContext(grantSession, bearer)).data?.effective_deck_id).toBe(deckB.id);
+      // A bearer-free request without deck headers never reaches the grant alias.
+      expect((await sessionContext(grantSession, {})).data?.effective_deck_id).not.toBe(deckB.id);
+    });
+
+    it('a grant recovery first is not served to a later bearer-free request', async () => {
+      const { deckA, deckB, bearer, grantSession } = await grantLineage();
+      const headerOnly = { [AGENT_DECK_DECK_ID_HEADER]: deckA.id };
+
+      const owner = await sessionContext(grantSession, bearer);
+      expect(owner.data?.effective_deck_id).toBe(deckB.id);
+      expect(owner.data?.active_source).toBe('session');
+
+      // Bearer-free with no deck headers: 404, not the grant's live session.
+      expect((await sessionContext(grantSession, {})).status).toBe(404);
+      // Bearer-free with a deck header: its own header recovery.
+      const bearerFree = await sessionContext(grantSession, headerOnly);
+      expect(bearerFree.data?.effective_deck_id).toBe(deckA.id);
+      expect(bearerFree.data?.active_source).not.toBe('session');
+
+      // The owner's alias is untouched.
+      const ownerAgain = await sessionContext(grantSession, bearer);
+      expect(ownerAgain.data?.effective_deck_id).toBe(deckB.id);
+      expect(ownerAgain.data?.active_source).toBe('session');
+    });
   });
 
   it('hosted mode (bearer required) never recovers an approved deck without auth', async () => {

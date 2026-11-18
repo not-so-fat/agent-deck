@@ -411,8 +411,13 @@ export class AgentDeckMCPServer {
    * deck-resolving headers, the alias keeps serving later requests on that
    * id. Bounded with the same oldest-first discipline as the stale tally
    * and the closed set — diagnostics/routing, not a ledger.
+   *
+   * NOT-634: stale id → (principal → live id), never the presented id
+   * alone — see {@link recoveryAliasOwner}. A bearer-free launch recovery
+   * and a grant recovery of the same stale id are separate aliases, so one
+   * principal's recovered session is never served to another.
    */
-  private recoveredSessionAlias = new Map<string, string>();
+  private recoveredSessionAlias = new Map<string, Map<string, string>>();
   /**
    * Sessions this process issued and then closed. A late request on one of them is
    * an ordinary end-of-session race, not a client left behind by a restart, and
@@ -949,8 +954,13 @@ export class AgentDeckMCPServer {
     // NOT-569: drop recovery aliases pointing at the cleaned session, so a
     // later request on a stale id re-recovers from headers instead of
     // resolving to a dead session.
-    for (const [staleId, liveId] of this.recoveredSessionAlias) {
-      if (liveId === sessionId) {
+    for (const [staleId, byOwner] of this.recoveredSessionAlias) {
+      for (const [owner, liveId] of byOwner) {
+        if (liveId === sessionId) {
+          byOwner.delete(owner);
+        }
+      }
+      if (byOwner.size === 0) {
         this.recoveredSessionAlias.delete(staleId);
       }
     }
@@ -1759,7 +1769,11 @@ export class AgentDeckMCPServer {
    * keeps its normal idle-TTL retention, and a later request on the evicted
    * stale id simply recovers again.
    */
-  private rememberRecoveryAlias(staleSessionId: string, liveSessionId: string): void {
+  private rememberRecoveryAlias(req: Request, staleSessionId: string, liveSessionId: string): void {
+    const owner = this.recoveryAliasOwner(req);
+    if (!owner) {
+      return;
+    }
     if (
       !this.recoveredSessionAlias.has(staleSessionId) &&
       this.recoveredSessionAlias.size >= AgentDeckMCPServer.STALE_SESSION_SAMPLE_LIMIT
@@ -1769,7 +1783,46 @@ export class AgentDeckMCPServer {
         this.recoveredSessionAlias.delete(oldest);
       }
     }
-    this.recoveredSessionAlias.set(staleSessionId, liveSessionId);
+    const byOwner = this.recoveredSessionAlias.get(staleSessionId) ?? new Map<string, string>();
+    byOwner.set(owner, liveSessionId);
+    this.recoveredSessionAlias.set(staleSessionId, byOwner);
+  }
+
+  /**
+   * NOT-634: the principal a request presents, as an alias owner key —
+   * `grant:<id>` for a bearer that authenticates right now, `local` for a
+   * bearer-free request where bearer-free access is allowed, and null
+   * otherwise (invalid/revoked bearer, or hosted mode without one), which
+   * matches no alias at all.
+   */
+  private recoveryAliasOwner(req: Request): string | null {
+    const bearer = readBearerToken(req);
+    if (bearer) {
+      const principal = this.authenticateGrant(bearer);
+      return principal ? `grant:${principal.grantId}` : null;
+    }
+    return isBearerGrantRequired() ? null : 'local';
+  }
+
+  /**
+   * NOT-634: the live session this request's own principal recovered for
+   * `staleSessionId`. A live alias owned by another principal is invisible;
+   * a dead alias of this principal is dropped so the caller re-recovers.
+   */
+  private lookupRecoveryAlias(req: Request, staleSessionId: string): string | undefined {
+    const owner = this.recoveryAliasOwner(req);
+    const byOwner = owner ? this.recoveredSessionAlias.get(staleSessionId) : undefined;
+    const aliased = owner ? byOwner?.get(owner) : undefined;
+    if (aliased && this.sessions.has(aliased)) {
+      return aliased;
+    }
+    if (aliased && owner && byOwner) {
+      byOwner.delete(owner);
+      if (byOwner.size === 0) {
+        this.recoveredSessionAlias.delete(staleSessionId);
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -2656,13 +2709,11 @@ export class AgentDeckMCPServer {
       return;
     }
     if (sessionIdHeader) {
-      const aliased = this.recoveredSessionAlias.get(sessionIdHeader);
-      if (aliased && this.sessions.has(aliased)) {
+      // NOT-634: only an alias the request's own principal installed.
+      const aliased = this.lookupRecoveryAlias(req, sessionIdHeader);
+      if (aliased) {
         await this.serveFollowUp(aliased, req, res, sessionIdHeader);
         return;
-      }
-      if (aliased) {
-        this.recoveredSessionAlias.delete(sessionIdHeader);
       }
     }
 
@@ -3100,16 +3151,14 @@ export class AgentDeckMCPServer {
     // Atomic install: a concurrent recovery may have won during the
     // handshake above — the check and the set below run with no await
     // between them, so exactly one winner installs the alias.
-    const lateWinner = this.recoveredSessionAlias.get(staleSessionId);
-    if (lateWinner && this.sessions.has(lateWinner)) {
+    // Only a winner of this same principal is adopted (NOT-634).
+    const lateWinner = this.lookupRecoveryAlias(req, staleSessionId);
+    if (lateWinner) {
       await this.startCleanupSession(freshSessionId, { closeTransport: true });
       await this.serveFollowUp(lateWinner, req, res, staleSessionId);
       return true;
     }
-    if (lateWinner) {
-      this.recoveredSessionAlias.delete(staleSessionId);
-    }
-    this.rememberRecoveryAlias(staleSessionId, freshSessionId);
+    this.rememberRecoveryAlias(req, staleSessionId, freshSessionId);
     this.markStaleSessionRecoveredById(staleSessionId);
     // One line per recovered session id, not per request — the host keeps
     // sending the stale id on every later call.
@@ -3137,16 +3186,12 @@ export class AgentDeckMCPServer {
     res: Response,
     staleSessionId: string,
   ): Promise<boolean> {
-    const aliased = this.recoveredSessionAlias.get(staleSessionId);
+    const aliased = this.lookupRecoveryAlias(req, staleSessionId);
     if (!aliased) {
       return false;
     }
-    if (this.sessions.has(aliased)) {
-      await this.serveFollowUp(aliased, req, res, staleSessionId);
-      return true;
-    }
-    this.recoveredSessionAlias.delete(staleSessionId);
-    return false;
+    await this.serveFollowUp(aliased, req, res, staleSessionId);
+    return true;
   }
 
   /**
@@ -3315,12 +3360,10 @@ export class AgentDeckMCPServer {
     if (this.sessions.has(sessionIdHeader)) {
       sessionId = sessionIdHeader;
     } else {
-      const aliased = this.recoveredSessionAlias.get(sessionIdHeader);
-      if (aliased && this.sessions.has(aliased)) {
+      const aliased = this.lookupRecoveryAlias(req, sessionIdHeader);
+      if (aliased) {
         sessionId = aliased;
         presentedSessionId = sessionIdHeader;
-      } else if (aliased) {
-        this.recoveredSessionAlias.delete(sessionIdHeader);
       }
     }
 

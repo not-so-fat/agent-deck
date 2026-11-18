@@ -229,20 +229,6 @@ function readRawUseJson(workspaceRoot: string): string | null {
   }
 }
 
-/** NOT-634: whether a workspace `use.json` currently pins `deckId` (unreadable → false). */
-function workspacePinsDeck(workspaceRoot: string, deckId: string): boolean {
-  try {
-    const raw = readRawUseJson(workspaceRoot);
-    if (!raw) {
-      return false;
-    }
-    const parsed = JSON.parse(raw) as { deckId?: unknown };
-    return parsed.deckId === deckId;
-  } catch {
-    return false;
-  }
-}
-
 /** Restore `use.json` to previously snapshotted bytes (null deletes it). */
 function restoreRawUseJson(workspaceRoot: string, raw: string | null): void {
   const filePath = useJsonPath(workspaceRoot);
@@ -477,12 +463,20 @@ export class TrustedSessionStore {
    * runtime row (expired or revoked alike — the lease is not the override)
    * still sits on that deck.
    *
-   * Earlier versions did not record the approval's scope. A request whose
-   * workspace `use.json` currently pins the requested deck is ambiguous with
-   * a workspace-default approval; it is skipped, so it keeps resolving from
-   * header → folder pin → default deck as before. Runs once (when the table
-   * is first created), so later workspace-default approvals that clear an
-   * override are never resurrected from history. Writes no workspace files.
+   * Earlier versions did not record the approval's scope ("This session
+   * only" vs "workspace default"), and the current folder pin says nothing
+   * about which scope was approved in the past — a pin can be changed,
+   * removed, or set to the same deck later. The only historical provenance
+   * is the request itself: a workspace-default approval requires a
+   * `workspace_root` on the request, so a consumed request without one is
+   * provably session-scoped. Decision (NOT-634): migrate only those. A
+   * request that carried a workspace is ambiguous and is never migrated —
+   * whatever the folder pin says today — so it keeps resolving from header
+   * → folder pin → default deck exactly as before the upgrade, and no
+   * workspace-default approval is ever turned into a durable session
+   * override. Runs once (when the table is first created), so later
+   * workspace-default approvals that clear an override are never
+   * resurrected from history. Reads and writes no workspace files.
    */
   private backfillSessionDeckOverrides(): void {
     const candidates = this.db
@@ -519,7 +513,8 @@ export class TrustedSessionStore {
       if (!latest || latest.deck_id !== candidate.deck_id) {
         continue;
       }
-      if (candidate.workspace_root && workspacePinsDeck(candidate.workspace_root, candidate.deck_id)) {
+      if (candidate.workspace_root?.trim()) {
+        // Ambiguous scope (could have been a workspace-default approval).
         continue;
       }
       insert.run(candidate.mcp_session_id, candidate.deck_id, latest.grant_id, candidate.approved_at);
