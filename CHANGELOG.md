@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Change: `switch_deck` waits 5 minutes for the approval form (NOT-636)
+
+- The host-native approval form now waits up to 5 minutes (was 60 seconds) for the human to answer before `switch_deck` returns `pending`, so an approval given within that time is seen by the same tool call. A client's own tool-call timeout (Claude Code `MCP_TOOL_TIMEOUT`, Codex `tool_timeout_sec`) can still end the wait sooner; the pending request stays approvable for 30 minutes as before.
+
 ## 2.5.4 — 2026-11-16
 
 ### Fix: delegated runs bind the session's deck
