@@ -1,10 +1,9 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import fs from 'node:fs/promises';
 import { getServiceIconPath } from '../services/icon-resolver';
 import { 
   CreateServiceInput, 
   UpdateServiceInput,
-  ServiceCallInput,
   AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_SESSION_HEADER,
   ApiResponse,

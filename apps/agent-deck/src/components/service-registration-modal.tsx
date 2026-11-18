@@ -613,7 +613,7 @@ export default function ServiceRegistrationModal({
                     {nameConflict && (
                       <div className="mt-2 text-xs text-red-400 flex items-center">
                         <AlertTriangle className="w-4 h-4 mr-1" />
-                        A service with the name "{nameConflict}" already exists.
+                        A service with the name &quot;{nameConflict}&quot; already exists.
                       </div>
                     )}
                   </div>
@@ -943,7 +943,7 @@ export default function ServiceRegistrationModal({
         {nameConflict && (
           <div className="text-red-400 text-sm mt-2">
             <AlertTriangle className="w-4 h-4 mr-1" />
-            A service with the name "{nameConflict}" already exists. You can register it anyway, but it might overwrite the existing one.
+            A service with the name &quot;{nameConflict}&quot; already exists. You can register it anyway, but it might overwrite the existing one.
           </div>
         )}
 

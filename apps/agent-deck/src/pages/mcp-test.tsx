@@ -276,7 +276,7 @@ export default function McpTestPage() {
           <CardContent className="space-y-4">
             <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
               <p className="text-sm text-blue-800">
-                This MCP service requires OAuth authentication. Click the "Authenticate" button above to start the OAuth flow.
+                This MCP service requires OAuth authentication. Click the &quot;Authenticate&quot; button above to start the OAuth flow.
               </p>
             </div>
             <div className="flex gap-2">

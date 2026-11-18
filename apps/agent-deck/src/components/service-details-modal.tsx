@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Database, Brain, ExternalLink, Wrench, User, Calendar, Activity, Bolt, AlertTriangle } from "lucide-react";
+import { Database, Brain, ExternalLink, Wrench, User, Activity, Bolt, AlertTriangle } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { apiRequest } from "@/lib/queryClient";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -1345,8 +1345,8 @@ export default function ServiceDetailsModal({
                             <div>
                               <p>• <strong>OAuth 2.0 Authentication Required</strong></p>
                               <p>• This MCP server requires OAuth 2.0 Bearer token authentication</p>
-                              <p>• You'll need to provide OAuth credentials (client ID, client secret, authorization URL, token URL)</p>
-                              <p>• Check the service provider's documentation for OAuth setup instructions</p>
+                              <p>• You&apos;ll need to provide OAuth credentials (client ID, client secret, authorization URL, token URL)</p>
+                              <p>• Check the service provider&apos;s documentation for OAuth setup instructions</p>
                             </div>
                           )}
                           
@@ -1354,7 +1354,7 @@ export default function ServiceDetailsModal({
                             <div>
                               <p>• <strong>SSE Protocol Required</strong></p>
                               <p>• This MCP server uses Server-Sent Events (SSE) protocol</p>
-                              <p>• We'll need to connect using event streaming instead of HTTP</p>
+                              <p>• We&apos;ll need to connect using event streaming instead of HTTP</p>
                             </div>
                           )}
                           
@@ -1620,7 +1620,7 @@ ${mcpDiscoveryData.data.oauth.issuer ? `Issuer: ${mcpDiscoveryData.data.oauth.is
                         <p><strong>💡 Next Steps:</strong></p>
                         <ul className="list-disc list-inside ml-2 space-y-1">
                           <li>For OAuth servers: Provide OAuth credentials in service settings</li>
-                          <li>For SSE servers: We'll automatically use the correct protocol</li>
+                          <li>For SSE servers: We&apos;ll automatically use the correct protocol</li>
                           <li>For connection issues: Verify the server URL and status</li>
                         </ul>
                       </div>
@@ -1649,7 +1649,7 @@ ${mcpDiscoveryData.data.oauth.issuer ? `Issuer: ${mcpDiscoveryData.data.oauth.is
                 <div className="text-yellow-200 text-xs mt-2">
                   <p><strong>This could mean:</strong></p>
                   <ul className="list-disc list-inside ml-2 space-y-1">
-                    <li>The agent doesn't provide a manifest</li>
+                    <li>The agent doesn&apos;t provide a manifest</li>
                     <li>Manifest endpoint is not implemented</li>
                     <li>Agent requires specific authentication</li>
                   </ul>

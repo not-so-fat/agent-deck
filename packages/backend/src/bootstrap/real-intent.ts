@@ -62,7 +62,7 @@ export function extractRawUserText(line: unknown): string | null {
  * Claude string content is unchanged (no those tags).
  */
 export function unwrapCursorUserEnvelope(raw: string): string {
-  let text = raw.replace(CURSOR_TIMESTAMP_RE, '').trim();
+  const text = raw.replace(CURSOR_TIMESTAMP_RE, '').trim();
   const match = CURSOR_USER_QUERY_RE.exec(text);
   if (match) {
     return match[1]!.trim();

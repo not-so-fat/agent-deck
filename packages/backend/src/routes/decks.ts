@@ -1,10 +1,7 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import {
   CreateDeckInput,
   UpdateDeckInput,
-  AddServiceToDeckInput,
-  RemoveServiceFromDeckInput,
-  ReorderDeckServicesInput,
   ApiResponse,
   Deck,
   DeckListEntry,
@@ -22,8 +19,8 @@ import {
   boundDeckScopeResponse,
   requireBoundDeckScope,
 } from '../lib/bound-deck-scope';
-import { AgentDeckContextError, resolveAgentDeckId, resolveAgentMode } from '../lib/agent-deck-context';
-import { requireAgentAdmin, requireDashboard, RoutePolicyError, sendRoutePolicyError } from '../lib/route-policy';
+import { resolveAgentDeckId, resolveAgentMode } from '../lib/agent-deck-context';
+import { requireAgentAdmin, RoutePolicyError, sendRoutePolicyError } from '../lib/route-policy';
 import { resolveDeckRef } from '../lib/deck-resolve';
 import { triggerWarningsForDeck } from '../playbooks/stub-workspace-sync';
 import { CredentialManager } from '../vault/credential-manager';

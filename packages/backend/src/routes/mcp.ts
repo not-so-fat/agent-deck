@@ -1,15 +1,14 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { ServiceManager } from '../services/service-manager';
 import { MCPDiscoveryService } from '../services/mcp-discovery-service';
-import { ApiResponse, Service, ServiceTool } from '@agent-deck/shared';
+import { ApiResponse } from '@agent-deck/shared';
 import { resolveMcpEndpoint } from '../mcp-endpoint';
 import { guardedFetch } from '../lib/destination-guard';
 
 // OAuth discovery functions
 async function extractUrlsFromWWWAuthenticate(headerValue: string): Promise<string[]> {
   if (!headerValue) return [];
-  const urlRegex = /https?:\/\/[^\s,;\"]+/g;
+  const urlRegex = /https?:\/\/[^\s,;"]+/g;
   return headerValue.match(urlRegex) || [];
 }
 

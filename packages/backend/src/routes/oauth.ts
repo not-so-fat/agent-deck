@@ -1,8 +1,5 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { 
-  OAuthFlowInput,
-  OAuthCallbackInput,
-  OAuthRefreshInput,
   ApiResponse,
   OAuthDiscoveryResult,
   OAuthToken

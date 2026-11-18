@@ -19,7 +19,6 @@ import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 import Database from 'better-sqlite3';
-import { z } from 'zod';
 import { getAgentDeckVersion } from './lib/version';
 import { resolveDatabasePath } from './lib/paths';
 import { resolveLiveDisplayStaleMs } from './scope/live-display-registry';

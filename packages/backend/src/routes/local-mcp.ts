@@ -1,5 +1,4 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { ServiceManager } from '../services/service-manager';
+import { FastifyInstance } from 'fastify';
 import { ApiResponse } from '@agent-deck/shared';
 
 interface ImportConfigRequest {

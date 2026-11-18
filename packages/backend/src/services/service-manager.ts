@@ -22,7 +22,6 @@ import { CredentialManager } from '../vault/credential-manager';
 import { ConfigManager } from './config-manager';
 import {
   cacheIconForService,
-  getServiceIconPath,
   serviceIconApiPath,
   serviceIconFileExists,
 } from './icon-resolver';

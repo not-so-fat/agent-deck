@@ -17,7 +17,7 @@ type Section = {
 function parseSections(body: string): { preamble: string; sections: Section[] } {
   const lines = body.split('\n');
   const sections: Section[] = [];
-  let preamble: string[] = [];
+  const preamble: string[] = [];
   let current: Section | null = null;
   let inPreamble = true;
 

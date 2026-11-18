@@ -30,7 +30,6 @@ import PlaybookDetailsModal from "@/components/playbook-details-modal";
 import CredentialDetailsModal from "@/components/credential-details-modal";
 import ServiceDetailsModal from "@/components/service-details-modal";
 import ImportBundleModal from "@/components/import-bundle-modal";
-import McpToolsPanel from "@/components/mcp-tools-panel";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { useDragAndDrop } from "@/hooks/use-drag-and-drop";
 import { useEditingDeck } from "@/hooks/use-editing-deck";

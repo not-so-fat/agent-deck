@@ -23,6 +23,10 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # Non-type-aware lint, so it does not need built workspace outputs.
+      - name: Lint
+        run: npm run lint
+
       - name: Build workspaces
         run: npm run build
 
