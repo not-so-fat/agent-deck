@@ -229,6 +229,20 @@ function readRawUseJson(workspaceRoot: string): string | null {
   }
 }
 
+/** NOT-634: whether a workspace `use.json` currently pins `deckId` (unreadable → false). */
+function workspacePinsDeck(workspaceRoot: string, deckId: string): boolean {
+  try {
+    const raw = readRawUseJson(workspaceRoot);
+    if (!raw) {
+      return false;
+    }
+    const parsed = JSON.parse(raw) as { deckId?: unknown };
+    return parsed.deckId === deckId;
+  } catch {
+    return false;
+  }
+}
+
 /** Restore `use.json` to previously snapshotted bytes (null deletes it). */
 function restoreRawUseJson(workspaceRoot: string, raw: string | null): void {
   const filePath = useJsonPath(workspaceRoot);
@@ -349,6 +363,12 @@ export class TrustedSessionStore {
 
   private ensureTables(): void {
     this.maybeShedGrantSchema();
+    // NOT-634: a database opened by an earlier version has no durable
+    // session-deck override table yet; its approved switches are migrated
+    // from historical session data once, right after the table is created.
+    const needsSessionDeckOverrideBackfill = !this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_deck_overrides'`)
+      .get();
     // NOT-107: shed legacy issuer tables (created by the deleted SQLite store).
     this.db.exec(`
       DROP TABLE IF EXISTS ea_audit_events;
@@ -443,6 +463,67 @@ export class TrustedSessionStore {
     this.ensureGrantColumn();
     this.ensureExecutionWorkspaceColumn();
     this.ensureDashboardAbsoluteExpiryColumn();
+    if (needsSessionDeckOverrideBackfill) {
+      this.backfillSessionDeckOverrides();
+    }
+  }
+
+  /**
+   * NOT-634: migrate "This session only" switches approved before durable
+   * overrides existed. Earlier versions kept such a switch only on the
+   * runtime-session row (`deck_id`, rebound at approval) and the consumed
+   * `deck_switch_requests` row. For each MCP session id, the latest consumed
+   * request is treated as an approved session deck when the id's latest
+   * runtime row (expired or revoked alike — the lease is not the override)
+   * still sits on that deck.
+   *
+   * Earlier versions did not record the approval's scope. A request whose
+   * workspace `use.json` currently pins the requested deck is ambiguous with
+   * a workspace-default approval; it is skipped, so it keeps resolving from
+   * header → folder pin → default deck as before. Runs once (when the table
+   * is first created), so later workspace-default approvals that clear an
+   * override are never resurrected from history. Writes no workspace files.
+   */
+  private backfillSessionDeckOverrides(): void {
+    const candidates = this.db
+      .prepare(
+        `SELECT r.mcp_session_id AS mcp_session_id, r.requested_deck_id AS deck_id,
+                r.workspace_root AS workspace_root,
+                COALESCE(r.resolved_at, r.created_at) AS approved_at
+         FROM deck_switch_requests r
+         WHERE r.status = 'consumed' AND r.mcp_session_id IS NOT NULL
+           AND r.id = (
+             SELECT r2.id FROM deck_switch_requests r2
+             WHERE r2.mcp_session_id = r.mcp_session_id AND r2.status = 'consumed'
+             ORDER BY COALESCE(r2.resolved_at, r2.created_at) DESC, r2.created_at DESC
+             LIMIT 1
+           )`,
+      )
+      .all() as Array<{
+      mcp_session_id: string;
+      deck_id: string;
+      workspace_root: string | null;
+      approved_at: string;
+    }>;
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO session_deck_overrides
+       (origin_mcp_session_id, deck_id, grant_id, approved_at) VALUES (?, ?, ?, ?)`,
+    );
+    for (const candidate of candidates) {
+      const latest = this.db
+        .prepare(
+          `SELECT deck_id, grant_id FROM runtime_sessions
+           WHERE mcp_session_id = ? ORDER BY last_seen_at DESC LIMIT 1`,
+        )
+        .get(candidate.mcp_session_id) as { deck_id: string; grant_id: string | null } | undefined;
+      if (!latest || latest.deck_id !== candidate.deck_id) {
+        continue;
+      }
+      if (candidate.workspace_root && workspacePinsDeck(candidate.workspace_root, candidate.deck_id)) {
+        continue;
+      }
+      insert.run(candidate.mcp_session_id, candidate.deck_id, latest.grant_id, candidate.approved_at);
+    }
   }
 
   /**
@@ -692,6 +773,33 @@ export class TrustedSessionStore {
          ON CONFLICT (mcp_session_id) DO UPDATE SET origin_mcp_session_id = excluded.origin_mcp_session_id`,
       )
       .run(freshMcpSessionId, origin, nowIso());
+  }
+
+  /**
+   * NOT-634: the principal that owns an MCP session id's override lineage —
+   * the grant that approved its override, else the grant on the latest
+   * runtime row for the presented id (or its origin). `null` grant means a
+   * bearer-free (local launch) principal. Returns undefined when nothing
+   * about the id is known, so callers never adopt an unowned lineage.
+   */
+  findSessionDeckLineagePrincipal(mcpSessionId: string): { grantId: string | null } | undefined {
+    const override = this.findSessionDeckOverride(mcpSessionId);
+    if (override) {
+      return { grantId: override.grantId };
+    }
+    const origin = this.resolveSessionDeckOverrideOrigin(mcpSessionId);
+    for (const id of origin === mcpSessionId ? [mcpSessionId] : [mcpSessionId, origin]) {
+      const row = this.db
+        .prepare(
+          `SELECT grant_id FROM runtime_sessions
+           WHERE mcp_session_id = ? ORDER BY last_seen_at DESC LIMIT 1`,
+        )
+        .get(id) as { grant_id: string | null } | undefined;
+      if (row) {
+        return { grantId: row.grant_id };
+      }
+    }
+    return undefined;
   }
 
   private upsertSessionDeckOverride(
