@@ -35,10 +35,7 @@ import {
   resolveDeckBindingSource,
 } from './mcp-session-binding';
 import { registerMcpTools, type McpToolInputSchema } from './mcp-tools/register';
-import {
-  DECK_SWITCH_ELICITATION_TIMEOUT_MS,
-  supportsFormElicitation,
-} from './mcp-tools/elicitation';
+import { createSdkElicitationProvider } from './mcp-tools/elicitation';
 import { McpToolProfile, resolveMcpToolProfile } from './mcp-tools/profile';
 import {
   skipDeckHeaderAuth,
@@ -368,6 +365,9 @@ export class AgentDeckMCPServer {
   private readonly unregisterTimeoutMsValue: number;
   /** NOT-191: keep-alive override (tests); otherwise the env resolution wins. */
   private readonly liveTouchKeepAliveMsOverride: number | undefined;
+  /** NOT-638: switch_deck elicitation timers (tests); production uses the defaults. */
+  private readonly deckSwitchToolCallWaitMs: number | undefined;
+  private readonly deckSwitchFormLifetimeMs: number | undefined;
   /**
    * NOT-191: last real client traffic per session — tool calls, handshakes,
    * stream connects, heartbeat pulses. Server-generated keep-alive touches
@@ -463,6 +463,10 @@ export class AgentDeckMCPServer {
       unregisterTimeoutMs?: number;
       /** NOT-191: live-touch keep-alive cadence (overrides the env var). */
       liveTouchKeepAliveMs?: number;
+      /** NOT-638: switch_deck tool-call wait override (tests). */
+      deckSwitchToolCallWaitMs?: number;
+      /** NOT-638: switch_deck form lifetime override (tests). */
+      deckSwitchFormLifetimeMs?: number;
     },
   ) {
     this.port = port;
@@ -480,6 +484,8 @@ export class AgentDeckMCPServer {
     this.unregisterTimeoutMsValue =
       options?.unregisterTimeoutMs ?? AgentDeckMCPServer.unregisterTimeoutMs();
     this.liveTouchKeepAliveMsOverride = options?.liveTouchKeepAliveMs;
+    this.deckSwitchToolCallWaitMs = options?.deckSwitchToolCallWaitMs;
+    this.deckSwitchFormLifetimeMs = options?.deckSwitchFormLifetimeMs;
 
     this.app = express();
     this.app.use(
@@ -1284,23 +1290,17 @@ export class AgentDeckMCPServer {
       // detection reads the capabilities the client reported at initialize;
       // elicitation itself goes through the session server so the host UI
       // answers. Timeouts/errors degrade to the browser fallback downstream.
-      elicitation: {
-        supportsFormElicitation: () =>
-          supportsFormElicitation(elicitingServer.server.getClientCapabilities()),
-        elicitForm: async (input) => {
-          const params = {
-            message: input.message,
-            requestedSchema: input.requestedSchema,
-          } as Parameters<typeof elicitingServer.server.elicitInput>[0];
-          const result = await elicitingServer.server.elicitInput(params, {
-            timeout: DECK_SWITCH_ELICITATION_TIMEOUT_MS,
-          });
-          return {
-            action: result.action,
-            ...(result.content ? { content: { ...result.content } } : {}),
-          };
-        },
-      },
+      // NOT-638: switch_deck passes the form lifetime (time left until the
+      // request expires) as the SDK timeout plus an AbortSignal, so the form
+      // outlives the 5-minute tool-call wait and a late answer still applies.
+      elicitation: createSdkElicitationProvider(elicitingServer.server, {
+        ...(this.deckSwitchToolCallWaitMs !== undefined
+          ? { toolCallWaitMs: this.deckSwitchToolCallWaitMs }
+          : {}),
+        ...(this.deckSwitchFormLifetimeMs !== undefined
+          ? { formLifetimeMs: this.deckSwitchFormLifetimeMs }
+          : {}),
+      }),
     });
   }
 
