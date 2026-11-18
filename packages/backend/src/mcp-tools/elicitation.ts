@@ -459,6 +459,15 @@ export async function presentDeckSwitchApproval(deps: {
     deps.formLifetimeMs ??
     deckSwitchFormLifetimeMs(creation.expiresAt, toolCallWaitMs, (deps.now ?? Date.now)());
 
+  // The tool-call wait timer starts before the form-lifetime timer so that,
+  // when the two deadlines are equal (a reused pending request whose
+  // expiresAt is closer than the wait), the wait fires first and the call
+  // returns the timed-out pending payload.
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
+  const waitEnded = new Promise<'wait-ended'>((resolve) => {
+    waitTimer = setTimeout(() => resolve('wait-ended'), toolCallWaitMs);
+  });
+
   // The signal cancels the open form when its lifetime ends (the SDK
   // timeout carries the same deadline; whichever fires first sends
   // `notifications/cancelled`). It is never aborted after the form settles,
@@ -492,10 +501,6 @@ export async function presentDeckSwitchApproval(deps: {
     clearTimeout(lifetimeTimer);
   });
 
-  let waitTimer: ReturnType<typeof setTimeout> | undefined;
-  const waitEnded = new Promise<'wait-ended'>((resolve) => {
-    waitTimer = setTimeout(() => resolve('wait-ended'), toolCallWaitMs);
-  });
   const first = await Promise.race([form, waitEnded]);
   clearTimeout(waitTimer);
 
@@ -516,8 +521,21 @@ export async function presentDeckSwitchApproval(deps: {
     };
   }
 
+  if (!first.ok && controller.signal.aborted) {
+    // The form lifetime ended unanswered before the wait timer callback ran
+    // (equal deadlines; our lifetime timer is created before the SDK's own
+    // `timeout` timer, so it aborts first on the same deadline).
+    // No answer arrived within the wait, so this is the timed-out pending
+    // outcome, not the raw fallback. The form is already cancelled, so
+    // there is no late answer to listen for.
+    return {
+      handled: 'pending-recovery',
+      payload: buildTimedOutRecoveryPayload(creation, toolCallWaitMs),
+    };
+  }
+
   if (!first.ok) {
-    // Transport error, form lifetime ended, or schema mismatch (SDK
+    // Transport error or schema mismatch (SDK
     // validates the accepted content against requestedSchema and throws
     // McpError).
     return { handled: 'fallback', payload: creation };

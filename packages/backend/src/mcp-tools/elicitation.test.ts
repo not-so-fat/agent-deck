@@ -217,6 +217,66 @@ describe('form lifetime (NOT-638)', () => {
     await vi.waitFor(() => expect(signal?.aborted).toBe(true), { timeout: 1_000 });
   });
 
+  /** An elicitForm that rejects when its signal aborts, like the SDK does. */
+  function abortRejectingForm() {
+    const calls: Array<{ options?: ElicitFormOptions }> = [];
+    return {
+      calls,
+      elicitForm: (_input: unknown, options?: ElicitFormOptions) => {
+        calls.push({ options });
+        return new Promise<ElicitationResult>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+        });
+      },
+    };
+  }
+
+  it.each([
+    ['equal to the tool-call wait', WAIT_MS],
+    ['shorter than the tool-call wait', WAIT_MS / 5],
+  ])(
+    'returns the timed-out pending payload, not the raw fallback, when the form lifetime is %s',
+    async (_label, formLifetimeMs) => {
+      const form = abortRejectingForm();
+      const submitCalls: unknown[] = [];
+      const outcome = await presentDeckSwitchApproval({
+        creation: CREATION,
+        runtimeSessionId: 'rs_owner',
+        supportsFormElicitation: () => true,
+        elicitForm: form.elicitForm,
+        submitApproval: async (args) => {
+          submitCalls.push(args);
+          return {};
+        },
+        toolCallWaitMs: WAIT_MS,
+        formLifetimeMs,
+        log: () => {},
+      });
+      expect(outcome.handled).toBe('pending-recovery');
+      expect(outcome.payload).toMatchObject({ status: 'pending', requestId: 'req_1', approvalUrl: APPROVAL_URL });
+      expect(String((outcome.payload as { message: string }).message)).toContain('no answer within');
+      expect(form.calls[0].options?.timeoutMs).toBe(formLifetimeMs);
+      expect(submitCalls).toHaveLength(0);
+    },
+  );
+
+  it('returns the timed-out pending payload when expiresAt is closer than the wait (derived equal lifetime)', async () => {
+    const form = abortRejectingForm();
+    const outcome = await presentDeckSwitchApproval({
+      // A reused pending request that expires before the wait would end.
+      creation: { ...CREATION, expiresAt: new Date(Date.now() + 5).toISOString() },
+      runtimeSessionId: 'rs_owner',
+      supportsFormElicitation: () => true,
+      elicitForm: form.elicitForm,
+      submitApproval: async () => ({}),
+      toolCallWaitMs: WAIT_MS,
+      log: () => {},
+    });
+    expect(form.calls[0].options?.timeoutMs).toBe(WAIT_MS);
+    expect(outcome.handled).toBe('pending-recovery');
+    expect(String((outcome.payload as { message: string }).message)).toContain('no answer within');
+  });
+
   it('never aborts the signal of a form answered in time', async () => {
     const form = deferredForm();
     const pending = presentDeckSwitchApproval({
