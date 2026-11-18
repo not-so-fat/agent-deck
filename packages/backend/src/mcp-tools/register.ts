@@ -2,7 +2,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { countDeckCards, formatDisplayLine, normalizeCorrelationId, PatchOpSchema, type PlaybookPin } from '@agent-deck/shared';
-import type { ElicitationResult } from './elicitation';
+import type { ElicitationResult, ElicitFormOptions } from './elicitation';
 import {
   DeckSwitchApprovalCommitUnavailable,
   presentDeckSwitchApproval,
@@ -107,10 +107,23 @@ export type McpToolHost = {
    */
   elicitation?: {
     supportsFormElicitation(): boolean;
-    elicitForm(input: {
-      message: string;
-      requestedSchema: Record<string, unknown>;
-    }): Promise<ElicitationResult>;
+    elicitForm(
+      input: {
+        message: string;
+        requestedSchema: Record<string, unknown>;
+      },
+      options?: ElicitFormOptions,
+    ): Promise<ElicitationResult>;
+    /**
+     * NOT-638: switch_deck tool-call wait override (tests). Default
+     * `DECK_SWITCH_ELICITATION_TIMEOUT_MS`.
+     */
+    toolCallWaitMs?: number;
+    /**
+     * NOT-638: switch_deck form lifetime override (tests). Default: time
+     * left until the request's `expiresAt`, clamped to [wait, TTL].
+     */
+    formLifetimeMs?: number;
   };
   toolResult(data: unknown): { content: Array<{ type: 'text'; text: string }> };
   toolError(error: unknown): { content: Array<{ type: 'text'; text: string }> };
@@ -831,7 +844,12 @@ function registerRuntimeTools(host: McpToolHost): void {
           creation: creationForElicitation,
           runtimeSessionId,
           supportsFormElicitation: () => elicitation.supportsFormElicitation(),
-          elicitForm: (input) => elicitation.elicitForm(input),
+          elicitForm: (input, options) => elicitation.elicitForm(input, options),
+          // NOT-638: the call waits only the tool-call wait; the form stays
+          // open until the request expires and a late answer applies in the
+          // background (the agent learns it from get_session_context).
+          ...(elicitation.toolCallWaitMs !== undefined ? { toolCallWaitMs: elicitation.toolCallWaitMs } : {}),
+          ...(elicitation.formLifetimeMs !== undefined ? { formLifetimeMs: elicitation.formLifetimeMs } : {}),
           submitApproval: ({ requestId, runtimeSessionId: owner, decision }) =>
             submitDeckSwitchApprovalViaBackend({
               callBackendAPI: (endpoint, init) => host.callBackendAPI(endpoint, init),
