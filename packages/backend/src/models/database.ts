@@ -42,8 +42,6 @@ import {
   normalizeOperatingInstructions,
 } from '@agent-deck/shared';
 import { 
-  serializeForDatabase, 
-  deserializeFromDatabase,
   generateId,
   generateShortId,
 } from '@agent-deck/shared';

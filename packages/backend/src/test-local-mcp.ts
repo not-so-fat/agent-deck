@@ -2,7 +2,6 @@
 
 import { LocalMCPServerManager } from './services/local-mcp-server-manager';
 import { ConfigManager } from './services/config-manager';
-import { Service } from '@agent-deck/shared';
 
 async function testLocalMCPServer() {
   console.log('🧪 Testing Local MCP Server functionality...\n');

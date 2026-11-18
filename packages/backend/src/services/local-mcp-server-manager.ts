@@ -1,7 +1,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { Service, ServiceTool, LocalMCPServerProcess, LocalMCPServerConfig } from '@agent-deck/shared';
+import { Service, LocalMCPServerProcess } from '@agent-deck/shared';
 import { generateId } from '@agent-deck/shared';
 
 export class LocalMCPServerManager {

@@ -5,7 +5,6 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Separator } from '@/components/ui/separator';
 import { Service } from '@agent-deck/shared';
 import { useMcpService } from '@/hooks/use-mcp-service';
 import { 
@@ -17,7 +16,6 @@ import {
   FileText, 
   MessageSquare,
   RefreshCw,
-  ExternalLink,
   AlertCircle
 } from 'lucide-react';
 

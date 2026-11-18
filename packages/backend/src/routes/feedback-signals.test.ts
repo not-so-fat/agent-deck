@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   AGENT_DECK_CLIENT_HEADER,
-  AGENT_DECK_DASHBOARD_CLIENT,
   AGENT_DECK_AGENT_CLIENT,
   generateShortId,
 } from '@agent-deck/shared';

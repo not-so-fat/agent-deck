@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyRequest } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { WebSocketMessage, ServiceStatusUpdate, DeckUpdate } from '@agent-deck/shared';
 
 interface WebSocketConnection {

@@ -6,7 +6,6 @@ import path from 'node:path';
 import {
   AGENT_DECK_AGENT_CLIENT,
   AGENT_DECK_CLIENT_HEADER,
-  AGENT_DECK_DASHBOARD_CLIENT,
 } from '@agent-deck/shared';
 import { DatabaseManager } from '../models/database';
 import { PlaybookManager } from '../playbooks/playbook-manager';

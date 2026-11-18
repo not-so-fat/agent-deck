@@ -17,7 +17,7 @@ function isServersMap(value: unknown): value is Record<string, LocalMCPServerCon
 
 /** Strip ``` / ```json fences when users paste from markdown docs. */
 export function stripJsonMarkdownFences(raw: string): string {
-  let text = raw.trim();
+  const text = raw.trim();
   if (!text.startsWith('```')) {
     return text;
   }

@@ -10,7 +10,6 @@ import {
   liveSessionRowSubtitle,
   sessionModeClass,
   sessionModeLabel,
-  truncateDeckName,
 } from '@/lib/live-bindings';
 import { MCP_CARD_COLOR } from '@/lib/card-colors';
 import { cn } from '@/lib/utils';

@@ -35,6 +35,24 @@ export default tseslint.config(
       ...react.configs.flat.recommended.rules,
       ...react.configs.flat['jsx-runtime'].rules,
       ...reactHooks.configs.recommended.rules,
+      // 34 hits; typing them is out of scope for NOT-637.
+      '@typescript-eslint/no-explicit-any': 'off',
+      // Leftover locals/params remain in non-import code; warn (not error) and honor the repo's `_` placeholder convention.
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
+      // 14 hits in files that co-export helpers/variants with components; HMR-only concern, so warn.
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // TypeScript props types replace runtime prop-types.
+      'react/prop-types': 'off',
+    },
+  },
+  {
+    files: ['src/test/**/*.{ts,tsx}', '**/*.test.{ts,tsx}'],
+    rules: {
+      // Test wrappers are anonymous render helpers; display names add nothing there.
+      'react/display-name': 'off',
     },
   },
 );

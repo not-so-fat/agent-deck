@@ -74,7 +74,7 @@ export default function FeedbackSignalsPage() {
   const editorSignalIds = editor?.kind === 'create' ? editor.signalIds : editorScenario?.sourceSignalIds;
   const editorSignals = (editor?.kind === 'create' ? signals : allSignals).filter((s) => editorSignalIds?.includes(s.id));
 
-  const toggle = (id: string) => setSelected((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const toggle = (id: string) => setSelected((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const copyForAgent = async () => {
     const chosen = selected.size > 0 ? selectedSignals : signals;
     if (chosen.length === 0) return;
