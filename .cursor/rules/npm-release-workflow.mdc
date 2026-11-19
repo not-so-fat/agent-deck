@@ -1,12 +1,16 @@
 ---
 description: npm publish and release — version sync, CHANGELOG, git tag v*, GitHub release, release:tag scripts
-globs: CHANGELOG.md,package.json,server.json,docs/PUBLISHING.md,scripts/release-tag.mjs,scripts/sync-versions.mjs,scripts/prepare-release.mjs
+globs: CHANGELOG.md,package.json,server.json,docs/PUBLISHING.md,scripts/release-tag.mjs,scripts/release-guard.mjs,scripts/release-publish.mjs,scripts/sync-versions.mjs,scripts/prepare-release.mjs,.github/workflows/release.yml
 alwaysApply: false
 ---
 
 # npm release workflow
 
 Canonical checklist: [docs/PUBLISHING.md](../../docs/PUBLISHING.md). Integration smoke: [release-integration-smoke.mdc](./release-integration-smoke.mdc). Follow this when the user asks to **publish**, **bump version**, **ship a release**, or **tag GitHub**.
+
+Normal releases publish from `.github/workflows/release.yml` via npm trusted
+publishing (OIDC — no npm login, no npm token). The only human step is the
+owner approving the `npm` environment on GitHub.
 
 ## Order (do not skip)
 
@@ -16,8 +20,13 @@ Canonical checklist: [docs/PUBLISHING.md](../../docs/PUBLISHING.md). Integration
 4. **Integration smoke** — `npm run release:smoke` (also runs inside `build:release`; blocks publish on failure)
 5. Commit on `main`: `Ship X.Y.Z: <short why>.`
 6. Push `main`
-7. **Human only:** `npm run publish:packages` (OTP / 2FA) — agent does **not** run npm publish
-8. **Agent:** after npm shows the new version (`npm view @agent-deck/cli version`), run `npm run release:tag:push` (git tag + GitHub Release from `CHANGELOG.md`)
+7. **Agent:** `npm run release:tag:push-only` (creates and pushes the annotated
+   `vX.Y.Z` tag — this starts `release.yml`; do **not** create the GitHub
+   Release locally). **Human:** approve the `npm` environment on GitHub.
+8. **Agent:** watch the workflow to green, then verify
+   `npm view @agent-deck/cli version` shows `X.Y.Z`. The workflow publishes
+   shared → backend → cli with provenance and creates the GitHub Release
+   from the `CHANGELOG.md` section.
 
 ## Git tags (required every npm release)
 
@@ -31,11 +40,17 @@ If the ship commit is already pushed and HEAD moved, tag explicitly: `node scrip
 
 ## Agent behavior
 
-- **Never** run `npm publish` / `publish:packages` — that is the human’s only release step (OTP).
+- **Never** run `npm publish` / `publish:packages` in a normal release — the
+  release workflow publishes via OIDC. Local `publish:packages` (npm login +
+  OTP) is only the documented manual fallback when the workflow cannot run.
 - **Do** version bump, changelog, `build:release`, commit, push `main` when they ask to ship/release.
-- **Do** `npm run release:tag:push` after confirming the version is on npm (`npm view @agent-deck/cli version`).
+- **Do** `npm run release:tag:push-only` after pushing `main` — pushing the
+  tag is what starts the release; creating the GitHub Release locally is the
+  workflow's job (manual fallback: `npm run release:tag:push`).
+- **Do** watch the release workflow to green and confirm the version is on npm
+  (`npm view @agent-deck/cli version`).
 - **Do** backfill missing `v*` tags / GitHub Releases when a Ship commit has no tag (or tag exists locally but not on origin / no `gh release`).
-- **Do** ensure `npm run release:smoke` passes before asking the human to publish.
+- **Do** ensure `npm run release:smoke` passes before pushing the tag.
 - One-time historical tags: `npm run release:tag:backfill` (already done for early history; re-run with `--push --github-release` only for gaps).
 
 ## Do not
@@ -45,4 +60,5 @@ If the ship commit is already pushed and HEAD moved, tag explicitly: `node scrip
 - Use lightweight tags or non-`v` prefix
 - Bump version without syncing all packages
 - Publish if `release:smoke` fails — move unfinished bullets to **Pending publish** in CHANGELOG
-- Ask the human to run `release:tag:push` — that is agent work
+- Ask the human to run `release:tag:push-only` or to publish — the human's
+  only release step is approving the `npm` environment on GitHub

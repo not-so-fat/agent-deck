@@ -1,0 +1,72 @@
+name: Release
+
+# Tag-pushed releases with npm trusted publishing (OIDC — no npm token anywhere).
+# Flow: an agent ships the version, pushes the vX.Y.Z tag, and this workflow
+# waits for the owner's approval of the `npm` environment, then publishes
+# shared -> backend -> cli with provenance and creates the GitHub Release.
+# Setup (owner, one time): on npmjs.com each of the three packages trusts
+# publisher not-so-fat/agent-deck, workflow release.yml, environment npm;
+# in repo settings the `npm` environment requires the owner's review.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+# One release at a time; a re-run after a partial publish finishes the rest.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Ensure trusted-publishing toolchain (Node >= 22.14, npm >= 11.5.1)
+        run: |
+          NODE_VERSION="$(node --version | sed 's/^v//')"
+          if [ "$(printf '%s\n%s\n' "$NODE_VERSION" "22.14.0" | sort -V | head -n 1)" != "22.14.0" ]; then
+            echo "Node $NODE_VERSION is too old for npm trusted publishing (need >= 22.14)"
+            exit 1
+          fi
+          NPM_VERSION="$(npm --version)"
+          if [ "$(printf '%s\n%s\n' "$NPM_VERSION" "11.5.1" | sort -V | head -n 1)" != "11.5.1" ]; then
+            echo "npm $NPM_VERSION predates trusted publishing (need >= 11.5.1) — upgrading"
+            npm install -g npm@11
+          fi
+          echo "node $(node --version) / npm $(npm --version)"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches the shipped release
+        run: node scripts/release-guard.mjs "${GITHUB_REF_NAME}"
+
+      - name: Build and smoke-test the release
+        run: npm run build:release
+
+      - name: Publish packages to npm (OIDC, no token)
+        run: node scripts/release-publish.mjs
+
+      - name: Create GitHub Release from CHANGELOG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release-tag.mjs --github-release
