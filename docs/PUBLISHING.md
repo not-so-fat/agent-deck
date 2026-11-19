@@ -12,11 +12,42 @@
 
 Publish **in order**: shared → backend → cli.
 
+## Release flow (agent + one approval)
+
+No npm login is needed for a normal release. The agent prepares everything,
+pushes the `vX.Y.Z` tag, and a GitHub Actions workflow publishes to npm via
+[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC —
+no npm token anywhere). The only human step is the owner approving the `npm`
+environment on GitHub.
+
+1. `npm run version:sync -- X.Y.Z` — all workspaces + `server.json`
+2. Update `CHANGELOG.md` for `X.Y.Z`
+3. `npm install` && `npm run build:release` (includes the release smoke)
+4. Commit on `main`: `Ship X.Y.Z: <short why>.`
+5. Push `main`
+6. **Agent:** `npm run release:tag:push-only` (creates and pushes the annotated
+   `vX.Y.Z` tag; this starts `.github/workflows/release.yml` — do **not**
+   create the GitHub Release locally)
+7. **Human:** approve the `npm` environment when GitHub asks (the workflow
+   waits for the owner's review)
+8. **Agent:** watch the workflow to green, then verify
+   `npm view @agent-deck/cli version` shows `X.Y.Z`. The workflow creates the
+   GitHub Release from the `CHANGELOG.md` section after all three packages
+   are live.
+
 ## Prerequisites
 
-- Node.js **24** (or **20+**) on the publish machine ([SETUP.md](./SETUP.md#nodejs-version-policy))
-- npm account with access to publish `@agent-deck/*` (create the [npm org](https://www.npmjs.com/org/create) if needed)
-- Logged in: `npm login`
+- Node.js **24** (or **20+**) on the machine preparing the release ([SETUP.md](./SETUP.md#nodejs-version-policy))
+- No npm login for a normal release — publishing happens in GitHub Actions
+  with OIDC. (`npm login` + OTP is only needed for the
+  [manual fallback](#manual-fallback-local-publish).)
+- One-time owner setup (before the first workflow release):
+  - On [npmjs.com](https://www.npmjs.com), each of `@agent-deck/shared`,
+    `@agent-deck/backend`, `@agent-deck/cli` trusts publisher
+    `not-so-fat/agent-deck`, workflow `release.yml`, environment `npm`
+    (canonical repo name — `agent_deck` only redirects).
+  - In repo Settings → Environments, environment `npm` requires the owner's
+    review.
 
 ## Version bump
 
@@ -39,14 +70,22 @@ Tag every npm release so `git checkout v1.2.1` matches what shipped.
 | Annotated git tag | `v1.2.1` (matches root `package.json` / npm) |
 | Points at | The `Ship X.Y.Z: …` commit on `main` |
 
-### After publish
-
-**Handoff:** human runs **only** `npm run publish:packages` (OTP). Agent then runs tag + GitHub Release:
+### Normal path: push the tag, the workflow does the rest
 
 ```bash
-# Agent: after npm view shows the new version
-npm run release:tag:push
+# Agent: tags the Ship commit and pushes vX.Y.Z — starts release.yml
+npm run release:tag:push-only
 ```
+
+Pushing the tag triggers `.github/workflows/release.yml`, which waits for the
+owner's `npm` environment approval, then verifies the tag
+(`scripts/release-guard.mjs`: tag == root version, workspaces + `server.json`
+in sync, tag on `main`, `CHANGELOG.md` section present), runs
+`npm run build:release`, publishes shared → backend → cli with provenance
+(skipping versions already on npm, so a re-run finishes a partial publish),
+and finally creates the GitHub Release with notes from the `CHANGELOG.md`
+section. Watch it (`gh run watch`) and confirm with
+`npm view @agent-deck/cli version`.
 
 ### One-time backfill (older releases)
 
@@ -83,23 +122,32 @@ Dev repo (`npm run dev:all`) uses `:8000` / `:3001` so both can run together —
 
 ## Publish to npm
 
-Tests must pass first (`npm test`). Publish is blocked if any workspace test fails.
+Normal releases publish from `.github/workflows/release.yml` (trusted
+publishing, no npm login): the workflow runs the full test suite via
+`build:release`, publishes shared → backend → cli, and creates the GitHub
+Release. The agent watches the run and verifies
+`npm view @agent-deck/cli version` afterwards.
 
-**Human (OTP only):**
+### Manual fallback (local publish)
+
+Only when the workflow cannot be used. Requires an npm account with access to
+`@agent-deck/*`, `npm login`, and OTP for each publish:
 
 ```bash
+# Human: local publish (OTP)
 npm run publish:packages
 ```
 
-**Agent (after npm shows the new version):**
+`publish:packages` runs the full test suite, `build:release`, then publishes
+shared → backend → cli. Afterwards the agent tags and releases locally:
 
 ```bash
+# Agent: only for the manual fallback — the workflow owns this normally
 npm run release:tag:push
 ```
 
-`release:tag:push` tags the ship commit, pushes `vX.Y.Z`, and creates a GitHub Release with notes from `CHANGELOG.md` (requires `gh` CLI).
-
-`publish:packages` runs the full test suite, `build:release`, then publishes shared → backend → cli.
+`release:tag:push` tags the ship commit, pushes `vX.Y.Z`, and creates a GitHub
+Release with notes from `CHANGELOG.md` (requires `gh` CLI).
 
 Or step by step (human):
 
