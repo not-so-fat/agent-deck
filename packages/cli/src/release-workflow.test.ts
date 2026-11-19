@@ -254,6 +254,26 @@ describe('release-guard.mjs', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(`CHANGELOG.md has no ## ${VERSION} section`);
   });
+
+  it('rejects a hostile tag without running shell metacharacters', () => {
+    const dir = makeReleaseFixture();
+    initGitTagOnMain(dir, TAG);
+    const canaryDir = trackTemp('release-guard-canary-');
+    const payloads = [
+      (canary: string) => `v${VERSION}$(touch ${canary})`,
+      (canary: string) => `v${VERSION};touch ${canary}`,
+      (canary: string) => `v${VERSION}\`touch ${canary}\``,
+    ];
+    payloads.forEach((makeTag, index) => {
+      const canary = path.join(canaryDir, `pwned-${index}`);
+      const hostile = makeTag(canary);
+      const result = runGuard(dir, hostile, ['--main-ref', 'main']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('is not v<semver>');
+      expect(result.stderr).toContain('Skipping git checks');
+      expect(fs.existsSync(canary)).toBe(false);
+    });
+  });
 });
 
 describe('release-publish.mjs', () => {

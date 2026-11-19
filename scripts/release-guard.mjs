@@ -18,7 +18,7 @@
  * The tag defaults to $GITHUB_REF_NAME (set by the release workflow).
  * --main-ref defaults to origin/main when it exists, else main.
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,7 +54,8 @@ function readJson(relativePath) {
 
 function refExists(ref) {
   try {
-    execSync(`git rev-parse --verify --quiet ${ref}`, { cwd: root, stdio: 'ignore' });
+    // argv array — never a shell string: `ref` can carry an attacker's tag.
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd: root, stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -150,14 +151,19 @@ if (expected) {
 }
 
 // --- 4. Tagged commit is on main ---------------------------------------------
+// `tag` comes from GITHUB_REF_NAME (pushed-tag controlled). When it failed
+// v<semver> validation above, skip every git operation touching it — even
+// argv-safe calls must not resolve a hostile ref.
 const mainRef = resolveMainRef();
-if (!refExists(`refs/tags/${tag}`)) {
+if (!tagVersion) {
+  console.error('[release-guard] Skipping git checks — tag is not v<semver>');
+} else if (!refExists(`refs/tags/${tag}`)) {
   fail(`tag ${tag} does not exist in this clone`);
 } else if (!refExists(mainRef)) {
   fail(`main ref ${JSON.stringify(mainRef)} does not exist in this clone (fetch origin/main first)`);
 } else {
   try {
-    execSync(`git merge-base --is-ancestor ${tag} ${mainRef}`, { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['merge-base', '--is-ancestor', tag, mainRef], { cwd: root, stdio: 'ignore' });
     pass(`tag ${tag} is on ${mainRef}`);
   } catch {
     fail(`tag ${tag} is not on ${mainRef} — releases ship from main only`);
