@@ -332,8 +332,13 @@ export class OAuthManager {
       return null;
     }
 
+    // NOT-639: a reindex rebuilds the services row without the has-token flag
+    // or expiry; the vault bundle is the source of truth for both.
+    const expiresAt = service.oauthTokenExpiresAt || bundle.expiresAt;
+    await this.tokens.restoreDbState(serviceId, bundle, service);
+
     // Check if token is expired (missing expiry means still valid)
-    if (isOAuthAccessTokenExpired(service)) {
+    if (isOAuthAccessTokenExpired({ oauthHasToken: true, oauthTokenExpiresAt: expiresAt })) {
       // Try to refresh the token
       if (bundle.refreshToken) {
         try {
@@ -352,6 +357,36 @@ export class OAuthManager {
     }
 
     return bundle.accessToken;
+  }
+
+  /**
+   * NOT-639: refresh regardless of the recorded expiry — the remote server just
+   * rejected the access token. Returns the new access token, or null when there
+   * is no refresh token or the refresh failed (the card needs a reconnect).
+   */
+  async forceRefreshAccessToken(serviceId: string): Promise<string | null> {
+    const service = await this.db.getService(serviceId);
+    if (!service) {
+      return null;
+    }
+    const bundle = await this.tokens.get(
+      serviceId,
+      service.oauthAccessToken,
+      service.oauthRefreshToken,
+    );
+    if (!bundle?.refreshToken) {
+      return null;
+    }
+    try {
+      const newToken = await this.refreshOAuthToken({
+        serviceId,
+        refreshToken: bundle.refreshToken,
+      });
+      return newToken.accessToken;
+    } catch (error) {
+      console.error(`Failed to refresh rejected OAuth token for service ${serviceId}:`, error);
+      return null;
+    }
   }
 
   async hasOAuthTokens(serviceId: string): Promise<boolean> {
