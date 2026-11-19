@@ -27,6 +27,7 @@ import {
 } from './icon-resolver';
 import {
   classifyMcpErrorCode,
+  McpOAuthRejectedError,
   resolveMcpErrorMessage,
 } from '../lib/mcp-connection-error';
 import { normalizeServiceToolResult } from '../lib/normalize-service-tool-result';
@@ -513,7 +514,9 @@ export class ServiceManager {
     try {
       return { value: await operation(), retried: false };
     } catch (firstError) {
-      if (!this.shouldRetryMcpCall(service)) {
+      // NOT-639: the client already refreshed the rejected OAuth token and
+      // retried once; another attempt would only loop.
+      if (firstError instanceof McpOAuthRejectedError || !this.shouldRetryMcpCall(service)) {
         throw firstError;
       }
       this.mcpClient.invalidateClient(service.id);
@@ -673,6 +676,9 @@ export class ServiceManager {
           tool_name: validatedInput.toolName,
           cause,
           phase: 'callTool',
+          ...(error instanceof McpOAuthRejectedError && error.needsReconnect
+            ? { hint: 'OAuth token refresh failed — reconnect this service in Agent Deck' }
+            : {}),
         },
         serviceName: service.name,
         toolName: validatedInput.toolName,

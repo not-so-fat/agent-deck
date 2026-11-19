@@ -102,7 +102,10 @@ export async function createServer() {
   const oauthManager = new OAuthManager(db, oauthClientSecretVault, oauthTokenVault);
   const storeWriter = new FileStoreWriter();
   const credentialManager = new CredentialManager(db, secretStore, undefined, storeWriter);
-  const mcpClient = new MCPClientManager((serviceId) => oauthManager.getValidAccessToken(serviceId));
+  const mcpClient = new MCPClientManager(
+    (serviceId) => oauthManager.getValidAccessToken(serviceId),
+    (serviceId) => oauthManager.forceRefreshAccessToken(serviceId),
+  );
   const serviceManager = new ServiceManager(
     db,
     mcpClient,
