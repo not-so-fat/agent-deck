@@ -6,6 +6,9 @@ import { LocalMCPServerManager } from './local-mcp-server-manager';
 import {
   formatMcpConnectionError,
   extractMcpErrorMessage,
+  isMcpUnauthorizedError,
+  McpOAuthRejectedError,
+  resolveMcpErrorMessage,
   shouldAttemptLegacySseFallback,
 } from '../lib/mcp-connection-error';
 import { guardedFetch } from '../lib/destination-guard';
@@ -29,6 +32,11 @@ export class MCPClientManager {
 
   constructor(
     private resolveAccessToken?: (serviceId: string) => Promise<string | null>,
+    /**
+     * NOT-639: refresh the OAuth access token after the remote rejected it.
+     * Returns the new token, or null when it cannot be refreshed.
+     */
+    private refreshAccessToken?: (serviceId: string) => Promise<string | null>,
   ) {
     this.localServerManager = new LocalMCPServerManager();
   }
@@ -41,7 +49,10 @@ export class MCPClientManager {
     }
   }
 
-  private async buildRequestHeaders(service: Service): Promise<Record<string, string>> {
+  private async buildRequestHeaders(
+    service: Service,
+    accessTokenOverride?: string,
+  ): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       Accept: 'application/json, text/event-stream',
     };
@@ -57,9 +68,10 @@ export class MCPClientManager {
       }
     }
 
-    const accessToken = this.resolveAccessToken
-      ? await this.resolveAccessToken(service.id)
-      : service.oauthAccessToken;
+    const accessToken = accessTokenOverride
+      ?? (this.resolveAccessToken
+        ? await this.resolveAccessToken(service.id)
+        : service.oauthAccessToken);
     if (accessToken) {
       headers.Authorization = `Bearer ${accessToken}`;
     }
@@ -67,7 +79,7 @@ export class MCPClientManager {
     return headers;
   }
 
-  private async getClient(service: Service): Promise<Client> {
+  private async getClient(service: Service, accessTokenOverride?: string): Promise<Client> {
     const clientKey = service.id;
     
     // Check if this is a local MCP server
@@ -88,8 +100,8 @@ export class MCPClientManager {
     }
 
     const baseUrl = new URL(service.url);
-    const headers = await this.buildRequestHeaders(service);
-    
+    const headers = await this.buildRequestHeaders(service, accessTokenOverride);
+
     const client = await this.connectRemoteClient(baseUrl, headers, service.url);
     this.clients.set(clientKey, client);
     return client;
@@ -117,11 +129,17 @@ export class MCPClientManager {
     } catch (streamableError) {
       const streamableMessage = extractMcpErrorMessage(streamableError);
       if (streamableMessage) {
-        throw new Error(
+        const wrapped = new Error(
           streamableMessage.toLowerCase().includes('unauthorized')
             ? `${streamableMessage} — link a credential on the service or add Authorization in service headers`
             : streamableMessage,
         );
+        // Keep the HTTP status (e.g. 401) so a rejected token stays recognizable.
+        const code = (streamableError as { code?: unknown } | null)?.code;
+        if (code !== undefined) {
+          (wrapped as { code?: unknown }).code = code;
+        }
+        throw wrapped;
       }
 
       if (!shouldAttemptLegacySseFallback(streamableError)) {
@@ -153,14 +171,70 @@ export class MCPClientManager {
     }
   }
 
+  private canRefreshOAuth(service: Service): boolean {
+    return Boolean(
+      this.refreshAccessToken
+        && service.type !== 'local-mcp'
+        && (service.oauthClientId || service.oauthAuthorizationUrl || service.oauthTokenUrl),
+    );
+  }
+
+  /**
+   * NOT-639: run a remote MCP operation; when the server rejects the OAuth
+   * access token (401), refresh it once and retry once with a client rebuilt on
+   * the new token. A refresh that is impossible or fails, or a second
+   * rejection, surfaces as `McpOAuthRejectedError` — never another retry.
+   */
+  private async withOAuthRefreshOnUnauthorized<T>(
+    service: Service,
+    operation: (client: Client) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation(await this.getClient(service));
+    } catch (firstError) {
+      if (!this.canRefreshOAuth(service) || !isMcpUnauthorizedError(firstError)) {
+        throw firstError;
+      }
+      this.invalidateClient(service.id);
+      const cause = resolveMcpErrorMessage(firstError);
+      console.warn(`🔑 ${service.url} rejected the OAuth access token (${cause}); refreshing once`);
+
+      let refreshed: string | null = null;
+      try {
+        refreshed = await this.refreshAccessToken!(service.id);
+      } catch (refreshError) {
+        console.error(`❌ OAuth refresh failed for service ${service.id}:`, refreshError);
+      }
+      if (!refreshed) {
+        throw new McpOAuthRejectedError(
+          `Unauthorized: ${cause} — the OAuth token could not be refreshed; reconnect the service`,
+          { needsReconnect: true, cause: firstError },
+        );
+      }
+
+      try {
+        return await operation(await this.getClient(service, refreshed));
+      } catch (retryError) {
+        if (!isMcpUnauthorizedError(retryError)) {
+          throw retryError;
+        }
+        this.invalidateClient(service.id);
+        throw new McpOAuthRejectedError(
+          `Unauthorized: ${resolveMcpErrorMessage(retryError)} — the refreshed OAuth token was also rejected`,
+          { needsReconnect: false, cause: retryError },
+        );
+      }
+    }
+  }
+
   async discoverTools(service: Service): Promise<ServiceTool[]> {
     try {
       console.log(`🔍 Discovering tools for MCP service: ${service.url}`);
       
-      const client = await this.getClient(service);
-      
       // List available tools using the MCP protocol
-      const tools = await client.listTools();
+      const tools = await this.withOAuthRefreshOnUnauthorized(service, (client) =>
+        client.listTools(),
+      );
       console.log(`📋 Raw tools result from MCP service ${service.url}:`, tools);
       console.log(`📋 Tools type:`, typeof tools);
       console.log(`📋 Tools is array:`, Array.isArray(tools));
@@ -209,13 +283,13 @@ export class MCPClientManager {
         return await this.localServerManager.callTool(service.id, toolName, arguments_);
       }
       
-      const client = await this.getClient(service);
-      
       // Call the tool using the MCP protocol
-      const result = await client.callTool({
-        name: toolName,
-        arguments: arguments_ || {},
-      });
+      const result = await this.withOAuthRefreshOnUnauthorized(service, (client) =>
+        client.callTool({
+          name: toolName,
+          arguments: arguments_ || {},
+        }),
+      );
 
       console.log(`✅ Successfully called tool ${toolName} on ${service.url}`);
       return result;

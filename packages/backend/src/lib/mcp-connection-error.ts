@@ -14,6 +14,44 @@ export interface ServiceToolErrorDetails {
   hint?: string;
 }
 
+/**
+ * NOT-639: thrown once the OAuth refresh-and-retry for a rejected access token
+ * has run. Callers must not retry again (no loop); `needsReconnect` is true
+ * when the refresh itself was impossible or failed.
+ */
+export class McpOAuthRejectedError extends Error {
+  readonly needsReconnect: boolean;
+
+  constructor(message: string, options: { needsReconnect: boolean; cause?: unknown }) {
+    super(message);
+    this.name = 'McpOAuthRejectedError';
+    this.needsReconnect = options.needsReconnect;
+    if (options.cause !== undefined) {
+      (this as { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+/** Whether an MCP failure means the remote server rejected our credentials (HTTP 401). */
+export function isMcpUnauthorizedError(err: unknown): boolean {
+  if (!err) {
+    return false;
+  }
+  if (typeof err === 'object') {
+    const { code, name } = err as { code?: unknown; name?: unknown };
+    if (code === 401 || name === 'UnauthorizedError') {
+      return true;
+    }
+  }
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    /\b401\b/.test(msg)
+    || msg.includes('unauthorized')
+    || msg.includes('invalid_token')
+    || msg.includes('invalid access token')
+  );
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof Error) {
     return err.message;

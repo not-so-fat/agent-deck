@@ -5,6 +5,11 @@ import type { SecretStore } from './secret-store';
 export type OAuthTokenBundle = {
   accessToken: string;
   refreshToken?: string;
+  /**
+   * NOT-639: access-token expiry, kept with the tokens so it survives a store
+   * reindex/rebuild of the `services` table (which only mirrors it in SQLite).
+   */
+  expiresAt?: string;
 };
 
 export function oauthTokenAccount(serviceId: string): string {
@@ -20,6 +25,10 @@ function parseBundle(raw: string): OAuthTokenBundle | null {
         refreshToken:
           typeof parsed.refreshToken === 'string' && parsed.refreshToken.length > 0
             ? parsed.refreshToken
+            : undefined,
+        expiresAt:
+          typeof parsed.expiresAt === 'string' && !Number.isNaN(Date.parse(parsed.expiresAt))
+            ? parsed.expiresAt
             : undefined,
       };
     }
@@ -79,9 +88,31 @@ export class OAuthTokenVault {
     const bundle: OAuthTokenBundle = {
       accessToken: accessToken.trim(),
       refreshToken: refreshToken?.trim() || undefined,
+      expiresAt: expiresAt || undefined,
     };
     await this.secretStore.set(oauthTokenAccount(serviceId), JSON.stringify(bundle));
-    await this.db.clearOAuthTokensFromDb(serviceId, { expiresAt, hasToken: true });
+    // `null` (not `undefined`) so a token without an expiry clears a stale one.
+    await this.db.clearOAuthTokensFromDb(serviceId, { expiresAt: expiresAt ?? null, hasToken: true });
+  }
+
+  /**
+   * NOT-639: re-mirror the vault's token state into SQLite when a rebuilt
+   * `services` row (reindex, fresh DB) lost the has-token flag or the expiry.
+   */
+  async restoreDbState(
+    serviceId: string,
+    bundle: OAuthTokenBundle,
+    current: { oauthHasToken?: boolean; oauthTokenExpiresAt?: string | null },
+  ): Promise<void> {
+    const missingFlag = !current.oauthHasToken;
+    const missingExpiry = !current.oauthTokenExpiresAt && Boolean(bundle.expiresAt);
+    if (!missingFlag && !missingExpiry) {
+      return;
+    }
+    await this.db.clearOAuthTokensFromDb(serviceId, {
+      hasToken: true,
+      ...(missingExpiry ? { expiresAt: bundle.expiresAt } : {}),
+    });
   }
 
   async has(

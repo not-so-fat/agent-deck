@@ -522,6 +522,23 @@ export class DatabaseManager {
         }>
       ).map((row) => [row.id, row]),
     );
+    // NOT-639: OAuth token state is host-local (tokens live in the vault, never
+    // in store files), so carry the SQLite mirror of it across the rebuild.
+    // Dropping it made a reindexed card look token-less with no expiry, so an
+    // expired access token was never refreshed nor retried.
+    const existingOAuthState = new Map(
+      (
+        this.db
+          .prepare(
+            'SELECT id, oauth_token_expires_at, oauth_has_token FROM services',
+          )
+          .all() as Array<{
+          id: string;
+          oauth_token_expires_at: string | null;
+          oauth_has_token: number | null;
+        }>
+      ).map((row) => [row.id, row]),
+    );
     const existingDecks = new Map(
       (
         this.db
@@ -543,8 +560,9 @@ export class DatabaseManager {
         @id, @name, @type, @url, 'unknown', @description, @card_color, 0,
         @registered_at, @updated_at, @headers, @credential_id, @icon_url,
         @disabled_tools, @oauth_client_id, NULL, @oauth_authorization_url,
-        @oauth_token_url, @oauth_redirect_uri, @oauth_scope, NULL, NULL, NULL,
-        0, NULL, @local_command, @local_args, @local_working_dir, NULL
+        @oauth_token_url, @oauth_redirect_uri, @oauth_scope, NULL, NULL,
+        @oauth_token_expires_at, @oauth_has_token, NULL, @local_command,
+        @local_args, @local_working_dir, NULL
       )
     `);
     const insertCredential = this.db.prepare(`
@@ -599,7 +617,10 @@ export class DatabaseManager {
       `);
 
       for (const service of snapshot.services) {
+        const oauthState = existingOAuthState.get(service.id);
         insertService.run({
+          oauth_token_expires_at: oauthState?.oauth_token_expires_at ?? null,
+          oauth_has_token: oauthState?.oauth_has_token ? 1 : 0,
           id: service.id,
           name: service.name,
           type: service.type,
