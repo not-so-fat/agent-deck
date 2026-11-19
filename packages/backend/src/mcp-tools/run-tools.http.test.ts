@@ -378,7 +378,16 @@ describe('MCP agent run tools (NOT-539)', () => {
       actor: 'agent',
     });
     const session = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
-    const base = { deckRef: ctx.deckA.id, client: 'claude', cwd: wt, prompt: 'do the thing', trustedBinding: { deckId: ctx.deckA.id } };
+    const runtimeSessionId = ctx.store.findActiveRuntimeSessionByMcpSessionId(session.id)?.sessionId;
+    expect(runtimeSessionId).toBeTruthy();
+    const base = {
+      deckRef: ctx.deckA.id,
+      client: 'claude',
+      cwd: wt,
+      prompt: 'do the thing',
+      trustedBinding: { deckId: ctx.deckA.id },
+      startedBySessionId: runtimeSessionId,
+    };
 
     const fresh = await startRun(ctx, session);
     await untilTerminal(ctx, session, fresh);
