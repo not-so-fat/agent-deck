@@ -1,10 +1,33 @@
 # Changelog
 
-## Unreleased
+## 2.5.5 — 2026-11-19
 
-### Change: `switch_deck` waits 5 minutes for the approval form (NOT-636)
+### Fix: OAuth cards keep working after a store reindex (NOT-639)
+
+- `agent-deck reindex` rebuilt service rows without the token's expiry or has-token flag while the token stayed in the vault, so an expired access token was never refreshed. The expiry now survives a reindex (and is kept in the vault bundle too), and the row is repaired from the vault when needed.
+- When a remote MCP server rejects the OAuth token (401 / `invalid_token`), Agent Deck now forces one refresh and retries once with the new token. If the refresh fails, the error says to reconnect the service; a second rejection is returned as `MCP_AUTH_ERROR` without looping.
+
+### Fix: an approved session deck survives a daemon restart (NOT-634)
+
+- A **This session only** `switch_deck` approval is now stored durably. When a client reconnects after a daemon restart and presents its previous MCP session id, the session lands back on its approved deck instead of falling back to the folder pin or default deck. A deck that was deleted meanwhile is reported as `SESSION_DECK_MISSING`. `active_source` reports `session` for a session on its approved deck.
+
+### Fix: `get_run` works for the starting session after it switches decks (NOT-640)
+
+- The session that started a delegated run can still read its status and events after moving to another deck. Cancel keeps the deck rule; runs started before this release, from the CLI, or by grants behave as before.
+
+### Change: `switch_deck` approval waits longer and late answers still count (NOT-636, NOT-638)
 
 - The host-native approval form now waits up to 5 minutes (was 60 seconds) for the human to answer before `switch_deck` returns `pending`, so an approval given within that time is seen by the same tool call. A client's own tool-call timeout (Claude Code `MCP_TOOL_TIMEOUT`, Codex `tool_timeout_sec`) can still end the wait sooner; the pending request stays approvable for 30 minutes as before.
+- After the tool call returns `pending`, the approval form stays open until the request expires, so an answer given later in the same form still switches the deck.
+
+### Change: `switch_deck` pending requests always carry an absolute approval link (NOT-632)
+
+- Pending deck-switch responses (creation, cancel recovery, and `GET /deck-switch/pending` / `GET /deck-switch/:requestId`) include an absolute `approvalUrl` (`AGENT_DECK_PUBLIC_URL`, else the local dashboard origin). With `AGENT_DECK_DECK_SWITCH_APPROVAL=client`, client-approved switches are recorded in the audit log.
+
+### Internal: release and CI
+
+- Releases now publish from GitHub Actions with npm trusted publishing (OIDC, no npm token): pushing `vX.Y.Z` starts `release.yml`, which waits for the owner's approval of the `npm` environment, verifies the tag, builds and smoke-tests, publishes shared → backend → cli with provenance, and creates the GitHub Release (NOT-642).
+- CI runs with a read-only `GITHUB_TOKEN`, no persisted checkout credentials, and an actions lockfile; `npm run lint` is restored on ESLint 9 flat config and runs in CI (NOT-637).
 
 ## 2.5.4 — 2026-11-16
 
