@@ -9,6 +9,9 @@ workflows:
     '.github/workflows/hol-plugin-scanner.yml':
         - 'actions/checkout@v7.0.1'
         - 'hashgraph-online/ai-plugin-scanner-action@11cbacde361ef96e800316edbaadb332415798e7'
+    '.github/workflows/release.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'actions/setup-node@v7.0.0'
 dependencies:
     'actions/checkout@v7.0.1':
         ref: 'v7.0.1'

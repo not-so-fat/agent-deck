@@ -2,10 +2,18 @@
 /**
  * Create and optionally push Git tags (v{semver}) for npm releases.
  *
+ * Normal release path (see docs/PUBLISHING.md): the agent tags the Ship
+ * commit and pushes the tag ONLY — `npm run release:tag:push-only` — which
+ * starts .github/workflows/release.yml. The workflow publishes to npm and
+ * creates the GitHub Release from the CHANGELOG section itself
+ * (`--github-release` below, run on the tag checkout in CI).
+ *
  * Usage:
  *   node scripts/release-tag.mjs              # tag HEAD with root package.json version
  *   node scripts/release-tag.mjs 1.2.1        # tag HEAD as v1.2.1
- *   node scripts/release-tag.mjs --push       # tag HEAD and push to origin
+ *   node scripts/release-tag.mjs --push       # tag HEAD and push to origin (tag only; CI makes the release)
+ *   node scripts/release-tag.mjs --github-release  # create the GitHub Release for root version (used by CI)
+ *   node scripts/release-tag.mjs --push --github-release  # manual fallback: tag, push, and release locally
  *   node scripts/release-tag.mjs --backfill   # tag historical "Ship X.Y.Z" commits
  *   node scripts/release-tag.mjs --backfill --push --github-release
  */
