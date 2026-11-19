@@ -161,6 +161,12 @@ export type AgentRunRequest = {
    * HTTP API never set it, so they keep reading the folder assignment.
    */
   trustedBinding?: RunDeckBinding;
+  /**
+   * NOT-640: trusted-session id of the MCP session starting the run.
+   * Recorded on the run meta so the starter keeps read access after a deck
+   * switch; the CLI and grant API never set it.
+   */
+  startedBySessionId?: string;
 };
 
 /** Clients whose per-run MCP override can carry the launch deck header. */
@@ -568,6 +574,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       ...(startPlan.trustOverride ? { trustOverride: true as const } : {}),
       ...(resumedFrom ? { resumedFrom } : {}),
       ...(request.playbookPin ? { playbookPin: request.playbookPin } : {}),
+      ...(request.startedBySessionId ? { startedBySessionId: request.startedBySessionId } : {}),
     };
     writeRunMeta(metaPath, meta);
 

@@ -378,7 +378,16 @@ describe('MCP agent run tools (NOT-539)', () => {
       actor: 'agent',
     });
     const session = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
-    const base = { deckRef: ctx.deckA.id, client: 'claude', cwd: wt, prompt: 'do the thing', trustedBinding: { deckId: ctx.deckA.id } };
+    const runtimeSessionId = ctx.store.findActiveRuntimeSessionByMcpSessionId(session.id)?.sessionId;
+    expect(runtimeSessionId).toBeTruthy();
+    const base = {
+      deckRef: ctx.deckA.id,
+      client: 'claude',
+      cwd: wt,
+      prompt: 'do the thing',
+      trustedBinding: { deckId: ctx.deckA.id },
+      startedBySessionId: runtimeSessionId,
+    };
 
     const fresh = await startRun(ctx, session);
     await untilTerminal(ctx, session, fresh);
@@ -479,6 +488,77 @@ describe('MCP agent run tools (NOT-539)', () => {
     expect(still.data.state).not.toBe('canceled');
     gate.release();
     await untilTerminal(ctx, owner, runId);
+  });
+
+  it('NOT-640: the starter reads status and events after switching to another deck', async () => {
+    const ctx = await setup();
+    const wt = worktree();
+    const session = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
+    const runId = await startRun(ctx, session);
+
+    await approveSessionSwitch(ctx, session, 'beta');
+    const context = await call(ctx, session, 'get_session_context', {});
+    expect(context.data.effective_deck_id).toBe(ctx.deckB.id);
+
+    // Status and the full event page from the new deck, no switch-back.
+    const terminal = await untilTerminal(ctx, session, runId);
+    expect(terminal).toMatchObject({ runId, deckId: ctx.deckA.id, state: 'ended' });
+    const events = terminal.events as Array<{ seq: number; type: string }>;
+    expect(events.map((event) => event.type)).toEqual(['text', 'tool', 'notice', 'result', 'end']);
+    expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5]);
+
+    // Cursor paging also works from the new deck.
+    const first = await call(ctx, session, 'get_run', { runId, limit: 2 });
+    expect(first.isError).toBe(false);
+    expect(first.data).toMatchObject({ runId, state: 'ended', nextCursor: '2' });
+  });
+
+  it('NOT-640: another session on the new deck cannot read, and the starter cannot cancel there', async () => {
+    const ctx = await setup();
+    const wt = worktree();
+    const starter = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
+    const runId = await startRun(ctx, starter);
+    await approveSessionSwitch(ctx, starter, 'beta');
+
+    // A different session bound to deck B, same workspace: deck-scoped as today.
+    const other = await open(ctx, dealerHeaders(ctx.deckB.id, wt));
+    for (const tool of ['get_run', 'cancel_run']) {
+      const denied = await call(ctx, other, tool, { runId });
+      expect(denied.isError).toBe(true);
+      expect(denied.data.error_code).toBe('RESOURCE_OUT_OF_SCOPE');
+      expect(String(denied.data.message)).toContain('another deck');
+    }
+
+    // The starter keeps reads but not cancel after moving decks.
+    const readable = await call(ctx, starter, 'get_run', { runId });
+    expect(readable.isError).toBe(false);
+    const cancelDenied = await call(ctx, starter, 'cancel_run', { runId });
+    expect(cancelDenied.isError).toBe(true);
+    expect(cancelDenied.data.error_code).toBe('RESOURCE_OUT_OF_SCOPE');
+    expect(String(cancelDenied.data.message)).toContain('another deck');
+
+    await untilTerminal(ctx, starter, runId);
+  });
+
+  it('NOT-640: a run record without the starter field keeps deck-scoped reads', async () => {
+    const ctx = await setup();
+    const wt = worktree();
+    const session = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
+    const runId = await startRun(ctx, session);
+    await untilTerminal(ctx, session, runId);
+
+    // Simulate a pre-NOT-640 record: the starter field was never written.
+    const metaPath = path.join(ctx.home, 'runs', runId, 'meta.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
+    expect(meta.startedBySessionId).toBeTruthy();
+    delete meta.startedBySessionId;
+    fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+
+    await approveSessionSwitch(ctx, session, 'beta');
+    const denied = await call(ctx, session, 'get_run', { runId });
+    expect(denied.isError).toBe(true);
+    expect(denied.data.error_code).toBe('RESOURCE_OUT_OF_SCOPE');
+    expect(String(denied.data.message)).toContain('another deck');
   });
 
   it('cancels a live run idempotently and leaves a finished run unchanged', async () => {
