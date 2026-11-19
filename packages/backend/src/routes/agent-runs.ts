@@ -1025,12 +1025,18 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
         });
         return null;
       }
-      return { deckId: principal.deckId, workspace, canonical: canonicalCwd(workspace) ?? path.resolve(workspace) };
+      return {
+        sessionId,
+        deckId: principal.deckId,
+        workspace,
+        canonical: canonicalCwd(workspace) ?? path.resolve(workspace),
+      };
     };
 
     const sessionRun = (
       request: FastifyRequest<{ Params: { runId: string } }>,
       reply: FastifyReply,
+      options: { allowStarter?: boolean } = {},
     ): { caller: SessionCaller; record: RunMeta } | null => {
       const caller = sessionCaller(request, reply);
       if (!caller) {
@@ -1050,7 +1056,17 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
         return null;
       };
       if (record.deck !== caller.deckId) {
-        return outOfScope("Run was started on another deck than this session's");
+        // NOT-640: reads stay available to the session that started the run,
+        // whatever deck it is on now. The workspace check below still applies,
+        // and cancel never takes this path. Runs without a starter (written
+        // before NOT-640, CLI, grants) keep today's deck rule.
+        const isStarter =
+          options.allowStarter === true &&
+          typeof record.startedBySessionId === 'string' &&
+          record.startedBySessionId === caller.sessionId;
+        if (!isStarter) {
+          return outOfScope("Run was started on another deck than this session's");
+        }
       }
       if ((record.canonicalCwd ?? path.resolve(record.cwd)) !== caller.canonical) {
         return outOfScope("Run was started in another workspace than this session's");
@@ -1118,6 +1134,7 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
             ...(body.resumeSessionId ? { resumeId: body.resumeSessionId } : {}),
             ...(body.playbookVersion ? { playbookPin: body.playbookVersion } : {}),
             trustedBinding: { deckId: caller.deckId },
+            startedBySessionId: caller.sessionId,
           },
           { runId, ownProcessGroup: true, ...(gate ? { beforeStart: gate.beforeStart } : {}) },
         );
@@ -1139,7 +1156,7 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
       '/trusted-session/agent-runs/:runId',
       { exposeHeadRoute: false },
       async (request, reply) => {
-        const found = sessionRun(request, reply);
+        const found = sessionRun(request, reply, { allowStarter: true });
         if (!found) {
           return reply;
         }
@@ -1183,7 +1200,7 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
 }
 
 /** NOT-539: a trusted MCP session's live deck and launch-bound workspace. */
-type SessionCaller = { deckId: string; workspace: string; canonical: string };
+type SessionCaller = { sessionId: string; deckId: string; workspace: string; canonical: string };
 
 /** Canonical log line → public event. Unknown line types are skipped (their `seq` stays reserved). */
 function toPublicEvent(seq: number, event: Record<string, unknown>): AgentRunEvent | null {

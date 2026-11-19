@@ -77,6 +77,12 @@ export type RunMeta = {
   resumedFrom?: RunResumeOrigin;
   /** Present only on a pinned run: the playbook version the session read (NOT-537). */
   playbookPin?: RunPlaybookPin;
+  /**
+   * Trusted-session id (NOT-640) of the MCP session that started the run.
+   * Lets the starter read status and events after switching decks; absent
+   * on runs written before NOT-640 and on non-session starts (CLI, grants).
+   */
+  startedBySessionId?: string;
 };
 
 export type RunInspectState = RunMetaState;
