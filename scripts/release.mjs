@@ -665,7 +665,7 @@ function tagMergedRelease(version, pr) {
     process.exit(1);
   }
   console.log(
-    `[release:finish] Done: ${tag} pushed. release.yml verifies the tag, runs the release build and smoke, publishes the packages, and attaches the GitHub Release notes — approve the npm environment when asked, watch the run, then check npm view for each package.`,
+    `[release:finish] Done: ${tag} pushed. release.yml verifies the tag, runs the release build and smoke, publishes the packages, and attaches the GitHub Release notes — watch the run, then check npm view for each package.`,
   );
 }
 

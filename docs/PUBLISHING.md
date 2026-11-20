@@ -12,13 +12,14 @@
 
 Publish **in order**: shared → backend → cli.
 
-## Release flow (agent + one approval)
+## Release flow (agent-run)
 
 No npm login is needed for a normal release. The agent runs two commands, and
 a GitHub Actions workflow publishes to npm via
 [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC —
-no npm token anywhere). The only human step is the owner approving the `npm`
-environment on GitHub.
+no npm token anywhere). The only human step is the owner's release request;
+`release.yml` runs straight from the tag push to verify, build, publish and
+GitHub Release, with no approval step.
 
 1. **Agent:** `npm run release:prepare -- <patch|minor|major|X.Y.Z> --summary "<why>"`
    from a clean, up-to-date `main`. One pass syncs every manifest, internal
@@ -33,9 +34,7 @@ environment on GitHub.
    publishes and never creates the GitHub Release; the workflow does both.
    If it fails after the merge (network, tag push), just re-run it —
    finish resumes an already-merged PR at the tag step.
-3. **Human:** approve the `npm` environment when GitHub asks (the workflow
-   waits for the owner's review)
-4. **Agent:** watch the workflow to green, then verify each package:
+3. **Agent:** watch the workflow to green, then verify each package:
    `npm view @agent-deck/shared version`,
    `npm view @agent-deck/backend version`,
    `npm view @agent-deck/cli version` all show `X.Y.Z`. The workflow creates
@@ -66,8 +65,8 @@ Two rules keep releases reproducible:
     `@agent-deck/backend`, `@agent-deck/cli` trusts publisher
     `not-so-fat/agent-deck`, workflow `release.yml`, environment `npm`
     (canonical repo name — `agent_deck` only redirects).
-  - In repo Settings → Environments, environment `npm` requires the owner's
-    review.
+  - In repo Settings → Environments, environment `npm` exists only to scope
+    trusted publishing and has no required reviewer.
 
 ## Git tags & GitHub releases
 
@@ -79,8 +78,8 @@ Tag every npm release so `git checkout v1.2.1` matches what shipped.
 | Points at | The squash-merged `Ship X.Y.Z: …` commit on `main` |
 
 `release:finish` creates and pushes the tag — never tag a release by hand.
-Pushing the tag triggers `.github/workflows/release.yml`, which waits for the
-owner's `npm` environment approval, then verifies the tag
+Pushing the tag triggers `.github/workflows/release.yml`, which runs straight
+from the tag and verifies it
 (`scripts/release-guard.mjs`: tag == root version, workspaces + `server.json`
 in sync, tag on `main`, `CHANGELOG.md` section present), runs
 `npm run build:release`, publishes shared → backend → cli with provenance
