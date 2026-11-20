@@ -28,7 +28,7 @@ Release / user path (packaged artifact)
 |-------|--------|--------------|
 | Unit + component | `npm test` (Vitest via Turbo) | Every PR / local |
 | Launch smoke | `npm run smoke:dev` | After BE/MCP changes (manual / agent rule) |
-| Release smoke | `npm run release:smoke` (inside `build:release`) | Before publish |
+| Release smoke | `npm run smoke:release` (inside `build:release`) | Before publish |
 
 ---
 
@@ -221,5 +221,5 @@ npm test --workspace packages/backend       # includes MCP HTTP + mcp-tools
 npm test --workspace packages/cli
 npm test --workspace apps/agent-deck
 npm run smoke:dev                           # live ports health
-npm run release:smoke                       # pack + setup user path
+npm run smoke:release                       # pack + setup user path
 ```

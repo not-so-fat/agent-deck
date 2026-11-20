@@ -176,4 +176,4 @@ When adding features, preserve the distinction: **skills = behavior in repo; pla
 - [MONOREPO_SCOPE.md](./MONOREPO_SCOPE.md) — playbooks are cards, not repo paths
 - [examples/playbooks/](./examples/playbooks/) — sample content for registration
   - [user-path-integration-smoke.md](./examples/playbooks/user-path-integration-smoke.md) — **generic** pre-release user-path gate (any project)
-  - [npm-release-integration-smoke.md](./examples/playbooks/npm-release-integration-smoke.md) — Agent Deck npm/`release:smoke` specifics
+  - [npm-release-integration-smoke.md](./examples/playbooks/npm-release-integration-smoke.md) — Agent Deck npm/`smoke:release` specifics

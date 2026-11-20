@@ -14,26 +14,44 @@ Publish **in order**: shared → backend → cli.
 
 ## Release flow (agent + one approval)
 
-No npm login is needed for a normal release. The agent prepares everything,
-pushes the `vX.Y.Z` tag, and a GitHub Actions workflow publishes to npm via
+No npm login is needed for a normal release. The agent runs two commands, and
+a GitHub Actions workflow publishes to npm via
 [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC —
 no npm token anywhere). The only human step is the owner approving the `npm`
 environment on GitHub.
 
-1. `npm run version:sync -- X.Y.Z` — all workspaces + `server.json`
-2. Update `CHANGELOG.md` for `X.Y.Z`
-3. `npm install` && `npm run build:release` (includes the release smoke)
-4. Commit on `main`: `Ship X.Y.Z: <short why>.`
-5. Push `main`
-6. **Agent:** `npm run release:tag:push-only` (creates and pushes the annotated
-   `vX.Y.Z` tag; this starts `.github/workflows/release.yml` — do **not**
-   create the GitHub Release locally)
-7. **Human:** approve the `npm` environment when GitHub asks (the workflow
+1. **Agent:** `npm run release:prepare -- <patch|minor|major|X.Y.Z> --summary "<why>"`
+   from a clean, up-to-date `main`. One pass syncs every manifest, internal
+   pin, `server.json` and lockfile entry, stubs the `CHANGELOG.md` section
+   from the commits since the previous tag, runs `build:release` (tests +
+   release smoke), then cuts branch `release/X.Y.Z` with one
+   `Ship X.Y.Z: <why>` commit, pushes it and opens the release PR.
+2. **Agent:** review the release PR (CI, including `release:check`, must be
+   green), then `npm run release:finish` from the `release/X.Y.Z` branch. It
+   waits for CI, squash-merges the PR, tags the merge commit `vX.Y.Z` and
+   pushes the tag — this starts `.github/workflows/release.yml`. It never
+   publishes and never creates the GitHub Release; the workflow does both.
+3. **Human:** approve the `npm` environment when GitHub asks (the workflow
    waits for the owner's review)
-8. **Agent:** watch the workflow to green, then verify
-   `npm view @agent-deck/cli version` shows `X.Y.Z`. The workflow creates the
-   GitHub Release from the `CHANGELOG.md` section after all three packages
-   are live.
+4. **Agent:** watch the workflow to green, then verify each package:
+   `npm view @agent-deck/shared version`,
+   `npm view @agent-deck/backend version`,
+   `npm view @agent-deck/cli version` all show `X.Y.Z`. The workflow creates
+   the GitHub Release from the `CHANGELOG.md` section after all three
+   packages are live.
+
+Two rules keep releases reproducible:
+
+- **Keep-the-version rule** — versions change only in a `release:prepare`
+  Ship commit. Never bump a version in a feature or fix PR (the 2.5.6 release
+  showed the cost: a version bumped for changes that needed no new version),
+  and never cut a release with no changes since the last tag — `prepare`
+  refuses an empty range. `release:check` runs in CI and fails any PR with
+  version, pin, `server.json`, lockfile or changelog drift.
+- **Trusted-publisher rule** — releases publish only from `release.yml` via
+  OIDC. Never run `npm publish` / `publish:packages` on a dev machine for a
+  normal release; local publish is only the documented manual fallback when
+  the workflow cannot run.
 
 ## Prerequisites
 
@@ -49,18 +67,6 @@ environment on GitHub.
   - In repo Settings → Environments, environment `npm` requires the owner's
     review.
 
-## Version bump
-
-```bash
-# Set all package.json + server.json to the same semver
-npm run version:sync -- 1.2.0
-
-npm install
-npm run build:release
-```
-
-Update `CHANGELOG.md`, then commit.
-
 ## Git tags & GitHub releases
 
 Tag every npm release so `git checkout v1.2.1` matches what shipped.
@@ -68,15 +74,9 @@ Tag every npm release so `git checkout v1.2.1` matches what shipped.
 | Tag format | Example |
 |------------|---------|
 | Annotated git tag | `v1.2.1` (matches root `package.json` / npm) |
-| Points at | The `Ship X.Y.Z: …` commit on `main` |
+| Points at | The squash-merged `Ship X.Y.Z: …` commit on `main` |
 
-### Normal path: push the tag, the workflow does the rest
-
-```bash
-# Agent: tags the Ship commit and pushes vX.Y.Z — starts release.yml
-npm run release:tag:push-only
-```
-
+`release:finish` creates and pushes the tag — never tag a release by hand.
 Pushing the tag triggers `.github/workflows/release.yml`, which waits for the
 owner's `npm` environment approval, then verifies the tag
 (`scripts/release-guard.mjs`: tag == root version, workspaces + `server.json`
@@ -84,30 +84,24 @@ in sync, tag on `main`, `CHANGELOG.md` section present), runs
 `npm run build:release`, publishes shared → backend → cli with provenance
 (skipping versions already on npm, so a re-run finishes a partial publish),
 and finally creates the GitHub Release with notes from the `CHANGELOG.md`
-section. Watch it (`gh run watch`) and confirm with
-`npm view @agent-deck/cli version`.
+section. Watch it (`gh run watch`) and confirm with `npm view` for each of
+the three packages.
 
-### One-time backfill (older releases)
+## Dry run
 
-```bash
-npm run release:tag:backfill
-```
-
-Scans `git log` for `Ship 1.2.1:` / `… at 1.1.5` subjects and tags those commits. Skips tags that already exist.
-
-### Manual
+`release:prepare` takes `--dry` to rehearse everything except the push and the
+PR creation (the `Ship` commit is kept on the local `release/X.Y.Z` branch;
+the release build still runs):
 
 ```bash
-git tag -a v1.2.1 -m "Agent Deck 1.2.1"
-git push origin v1.2.1
-gh release create v1.2.1 --title "1.2.1" --notes-file .temporal/logs/release-notes-1.2.1.md
+npm run release:prepare -- patch --summary "rehearse the pipeline" --dry
 ```
 
-## Dry run (local)
+Local build + smoke without cutting a release:
 
 ```bash
 npm run build:release
-npm run release:smoke   # also runs inside build:release — fresh HOME + npm pack + setup artifacts
+npm run smoke:release   # also runs inside build:release — fresh HOME + npm pack + setup artifacts
 npx @agent-deck/cli doctor
 npx @agent-deck/cli start
 # opens dashboard with a secure session; --no-open for headless
@@ -143,11 +137,11 @@ shared → backend → cli. Afterwards the agent tags and releases locally:
 
 ```bash
 # Agent: only for the manual fallback — the workflow owns this normally
-npm run release:tag:push
+node scripts/release-tag.mjs --push --github-release
 ```
 
-`release:tag:push` tags the ship commit, pushes `vX.Y.Z`, and creates a GitHub
-Release with notes from `CHANGELOG.md` (requires `gh` CLI).
+This tags the ship commit, pushes `vX.Y.Z`, and creates a GitHub Release with
+notes from `CHANGELOG.md` (requires `gh` CLI).
 
 Or step by step (human):
 

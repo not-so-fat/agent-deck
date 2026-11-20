@@ -68,7 +68,7 @@ When the host loads your code from a **packaged artifact** (VSIX, `.vsix`, webpa
 | Scan entrypoint + `dist/` | Every `require("…")` must be: host API (`vscode`), Node builtin, or file **inside** the package |
 | Headless activate | Stub the host API, call `activate()` — must not throw `MODULE_NOT_FOUND` |
 | User-visible minimum | `activate()` must call `show()` / equivalent so a blank UI is a **test failure**, not user confusion |
-| Package script gate | Run the scan in `release:smoke` / CI before publish |
+| Package script gate | Run the scan in `smoke:release` / CI before publish |
 
 **Symptom:** Install succeeds; host lists the extension; status bar / panel is empty; no error unless user opens Output.
 
@@ -92,7 +92,7 @@ When another program parses your CLI stdout:
 
 ## Automate the gate
 
-Add a script (e.g. `release:smoke`) that CI and `prepare-release` run **before publish**:
+Add a script (e.g. `smoke:release`) that CI and `prepare-release` run **before publish**:
 
 1. Pack / build release artifact
 2. Assert required files in the artifact
