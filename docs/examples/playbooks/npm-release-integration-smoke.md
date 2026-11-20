@@ -6,7 +6,7 @@ triggers:
   - release smoke
   - before tag
 connections: []
-exec: "npm run release:smoke"
+exec: "npm run smoke:release"
 skill: docs/PUBLISHING.md
 ---
 
@@ -49,14 +49,14 @@ CHANGELOG claim  →  command/API exists in tarball  →  setup wires it  →  a
 ## Automated gate
 
 ```bash
-npm run build:release   # includes release:smoke via prepare-release
+npm run build:release   # includes smoke:release via prepare-release
 # or alone after build:
-npm run release:smoke
+npm run smoke:release
 ```
 
 Logs: `.temporal/logs/release-smoke.log`
 
-**Publish is blocked** if `release:smoke` fails. Fix or move the CHANGELOG bullet to **Pending publish**.
+**Publish is blocked** if `smoke:release` fails. Fix or move the CHANGELOG bullet to **Pending publish**.
 
 ## Manual pass (5 min, human or agent)
 
@@ -73,9 +73,9 @@ Do this when the release touches **CLI setup**, **agent surfaces** (Claude/Curso
    - Claude Code **terminal** footer ✓
    - Cursor **CLI** terminal footer ✓
    - Cursor **IDE Agent chat** ✗ — no host API; do not imply otherwise in CHANGELOG
-5. **CHANGELOG honesty** — bullets under `X.Y.Z` are **only** what passed `release:smoke`. Everything else → `### Pending publish`.
+5. **CHANGELOG honesty** — bullets under `X.Y.Z` are **only** what passed `smoke:release`. Everything else → `### Pending publish`.
 6. **Tag = tarball** — `git show vX.Y.Z:path` must contain the same files as `npm pack` at that version.
-7. **GitHub Release** — `gh release view vX.Y.Z` exists with notes from the matching `CHANGELOG.md` section (run via `npm run release:tag:push`).
+7. **GitHub Release** — `gh release view vX.Y.Z` exists with notes from the matching `CHANGELOG.md` section (created by `release.yml` after `release:finish` pushes the tag).
 
 ## Anti-patterns
 
@@ -83,7 +83,7 @@ Do this when the release touches **CLI setup**, **agent surfaces** (Claude/Curso
 2. **Test only in monorepo dev** — `npm run dev:all` masks prod paths (`:8000` vs `:1111`, `dev/bindings.json`).
 3. **Doc-only integration** — “add this to settings.json” without `setup` doing it.
 4. **Polluted stdout** — wrappers that call `npx` without `NO_COLOR` + stderr redirect.
-5. **CHANGELOG as wishlist** — features listed as shipped before `release:smoke` passes.
+5. **CHANGELOG as wishlist** — features listed as shipped before `smoke:release` passes.
 6. **Replace entire user config** — merge JSON; document merge in setup code.
 7. **Tag without GitHub Release** — `vX.Y.Z` exists but `gh release view` fails; users see no release notes on GitHub.
 
@@ -93,7 +93,7 @@ Add a row to the surface checklist and an assertion in `scripts/release-smoke.sh
 
 ## Related
 
-- [PUBLISHING.md](../../PUBLISHING.md) — publish order and `release:smoke`
+- [PUBLISHING.md](../../PUBLISHING.md) — publish order and `smoke:release`
 - [PRD_DECK_DISPLAY.md](../../PRD_DECK_DISPLAY.md) — deck display surfaces
 - `.cursor/rules/release-integration-smoke.mdc` — Agent Deck cursor rule
 - `.cursor/rules/npm-release-workflow.mdc` — agent release steps

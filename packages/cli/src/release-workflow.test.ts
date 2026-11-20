@@ -18,6 +18,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..', '..');
 const guardScript = path.join(repoRoot, 'scripts', 'release-guard.mjs');
 const publishScript = path.join(repoRoot, 'scripts', 'release-publish.mjs');
+const releaseScript = path.join(repoRoot, 'scripts', 'release.mjs');
+const syncScript = path.join(repoRoot, 'scripts', 'sync-versions.mjs');
 
 const VERSION = '9.9.9';
 const TAG = `v${VERSION}`;
@@ -344,6 +346,444 @@ describe('release-publish.mjs', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Could not check @agent-deck/shared@9.9.9 on npm');
     expect(readCalls(callsFile)).toEqual([]);
+  });
+});
+
+/** Full version tree for release.mjs check: manifests, pins, server.json, plugins, lockfile, changelog. */
+function makeCheckFixture(version: string = VERSION): string {
+  const dir = trackTemp('release-check-fixture-');
+  writeJson(path.join(dir, 'package.json'), { name: 'agent-deck', version, private: true });
+  for (const manifest of WORKSPACE_MANIFESTS) {
+    const dependencies: Record<string, string> = {};
+    if (manifest === 'packages/cli/package.json') {
+      dependencies['@agent-deck/backend'] = `^${version}`;
+      dependencies['@agent-deck/shared'] = `^${version}`;
+    }
+    if (manifest === 'packages/backend/package.json') {
+      dependencies['@agent-deck/shared'] = `^${version}`;
+    }
+    writeJson(path.join(dir, manifest), {
+      name: manifest,
+      version,
+      ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
+    });
+  }
+  writeJson(path.join(dir, 'server.json'), {
+    version,
+    packages: [{ identifier: '@agent-deck/cli', version }],
+  });
+  for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json']) {
+    writeJson(path.join(dir, manifest), { name: 'agent-deck', version });
+  }
+  writeJson(path.join(dir, '.claude-plugin/marketplace.json'), {
+    name: 'agent-deck',
+    plugins: [{ name: 'agent-deck', version }],
+  });
+  const lockPackages: Record<string, unknown> = { '': { name: 'agent-deck', version } };
+  for (const manifest of WORKSPACE_MANIFESTS) {
+    const key = path.dirname(manifest);
+    const entry: Record<string, unknown> = { name: manifest, version };
+    if (manifest === 'packages/cli/package.json') {
+      entry.dependencies = {
+        '@agent-deck/backend': `^${version}`,
+        '@agent-deck/shared': `^${version}`,
+      };
+    }
+    if (manifest === 'packages/backend/package.json') {
+      entry.dependencies = { '@agent-deck/shared': `^${version}` };
+    }
+    lockPackages[key] = entry;
+  }
+  writeJson(path.join(dir, 'package-lock.json'), {
+    name: 'agent-deck',
+    version,
+    lockfileVersion: 3,
+    packages: lockPackages,
+  });
+  fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), `# Changelog\n\n## ${version} — 2026-11-19\n\n- Release ${version}.\n`);
+  return dir;
+}
+
+function setJson(file: string, mutate: (value: any) => void): void {
+  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  mutate(value);
+  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+describe('release.mjs check', () => {
+  function runCheck(dir: string, extraArgs: string[] = []): RunResult {
+    return runScript(releaseScript, ['check', '--root', dir, ...extraArgs]);
+  }
+
+  it('passes for a fully synced tree', () => {
+    const result = runCheck(makeCheckFixture());
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('All checks passed');
+  });
+
+  it('fails when a workspace version differs', () => {
+    const dir = makeCheckFixture();
+    setJson(path.join(dir, 'packages/cli/package.json'), (v) => {
+      v.version = '9.9.8';
+    });
+    const result = runCheck(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('packages/cli/package.json');
+    expect(result.stderr).toContain('differs from root');
+  });
+
+  it('fails when an internal pin differs', () => {
+    const dir = makeCheckFixture();
+    setJson(path.join(dir, 'packages/backend/package.json'), (v) => {
+      v.dependencies['@agent-deck/shared'] = '^9.9.8';
+    });
+    const result = runCheck(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('pins @agent-deck/shared at "^9.9.8", want ^9.9.9');
+  });
+
+  it('fails when server.json differs', () => {
+    const dir = makeCheckFixture();
+    setJson(path.join(dir, 'server.json'), (v) => {
+      v.packages[0].version = '9.9.8';
+    });
+    const result = runCheck(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('server.json package @agent-deck/cli');
+    expect(result.stderr).toContain('differs from root');
+  });
+
+  it('fails when a plugin manifest differs', () => {
+    const dir = makeCheckFixture();
+    setJson(path.join(dir, '.cursor-plugin/plugin.json'), (v) => {
+      v.version = '9.9.8';
+    });
+    const result = runCheck(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('.cursor-plugin/plugin.json');
+    expect(result.stderr).toContain('differs from root');
+  });
+
+  it('fails when a lockfile version differs', () => {
+    const dir = makeCheckFixture();
+    setJson(path.join(dir, 'package-lock.json'), (v) => {
+      v.packages['packages/cli'].version = '9.9.8';
+    });
+    const result = runCheck(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('package-lock.json packages[packages/cli]');
+    expect(result.stderr).toContain('differs from root');
+  });
+
+  it('fails when a lockfile pin differs', () => {
+    const dir = makeCheckFixture();
+    setJson(path.join(dir, 'package-lock.json'), (v) => {
+      v.packages['packages/cli'].dependencies['@agent-deck/backend'] = '^9.9.8';
+    });
+    const result = runCheck(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('packages[packages/cli] pins @agent-deck/backend at "^9.9.8", want ^9.9.9');
+  });
+
+  it('fails when the CHANGELOG section is missing', () => {
+    const dir = makeCheckFixture();
+    fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), '# Changelog\n\n## 9.9.8 — 2026-11-19\n\n- Old.\n');
+    const result = runCheck(dir);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CHANGELOG.md has no ## 9.9.9 section');
+  });
+});
+
+describe('release.mjs argument validation', () => {
+  // None of these reach git or the network: they fail on arguments alone.
+  it('rejects an unknown command', () => {
+    const result = runScript(releaseScript, ['bogus']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Unknown command: bogus');
+  });
+
+  it('requires --summary for prepare', () => {
+    const result = runScript(releaseScript, ['prepare', 'patch']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--summary "<why>" is required');
+  });
+
+  it('rejects a bad prepare level', () => {
+    const result = runScript(releaseScript, ['prepare', 'sideways', '--summary', 'x']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('patch, minor, major or X.Y.Z');
+  });
+
+  it('rejects arguments to finish', () => {
+    const result = runScript(releaseScript, ['finish', 'extra']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('finish takes no arguments');
+  });
+
+  it('rejects stray arguments to check', () => {
+    const result = runScript(releaseScript, ['check', 'extra']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('check takes only --root DIR');
+  });
+});
+
+describe('release.mjs finish', () => {
+  // NOT-646 round 2: finish must resume a MERGED PR at the tag step (a merge
+  // followed by a failed fetch/tag push, or a lost gh response, otherwise
+  // leaves main bumped without the tag and forces hand-derived tag steps).
+  // These tests run release.mjs as a black box with stub git/gh on PATH, so
+  // the real repo is never touched: every git/gh call is answered from env
+  // and the mutating calls (fetch/tag/push, checks/merge) are logged to files.
+  const MERGE_OID = 'abcdef0123456789abcdef0123456789abcdef01';
+  const MAIN_OID = '1234567890abcdef1234567890abcdef12345678';
+  const OTHER_OID = 'ffffffffffffffffffffffffffffffffffffffff';
+  const BRANCH = `release/${VERSION}`;
+  const SHIP_SUBJECT = `Ship ${VERSION}: test`;
+
+  const STUB_GIT = [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs");',
+    'const args = process.argv.slice(2);',
+    'const version = process.env.STUB_GIT_VERSION;',
+    'const tagRef = `refs/tags/v${version}`;',
+    'const log = (line) => fs.appendFileSync(process.env.STUB_GIT_CALLS, `${line}\\n`);',
+    'const [cmd, ...rest] = args;',
+    'if (cmd === "rev-parse" && rest.join(" ") === "--abbrev-ref HEAD") {',
+    '  console.log(process.env.STUB_GIT_BRANCH);',
+    '  process.exit(0);',
+    '}',
+    'if (cmd === "status") {',
+    '  process.stdout.write(process.env.STUB_GIT_STATUS ?? "");',
+    '  process.exit(0);',
+    '}',
+    'if (cmd === "rev-parse" && rest[0] === "--verify" && rest[1] === "--quiet") {',
+    '  const ref = rest[2];',
+    '  const known = [process.env.STUB_GIT_MERGE_OID, process.env.STUB_GIT_MAIN].filter(Boolean);',
+    '  if (known.includes(ref) || (ref === tagRef && process.env.STUB_GIT_TAG_EXISTS === "1")) {',
+    '    process.exit(0);',
+    '  }',
+    '  process.exit(1);',
+    '}',
+    'if (cmd === "rev-parse" && rest.length === 1) {',
+    '  if (rest[0] === `v${version}^{}`) {',
+    '    console.log(process.env.STUB_GIT_TAG_TARGET);',
+    '    process.exit(0);',
+    '  }',
+    '  if (rest[0] === "origin/main") {',
+    '    console.log(process.env.STUB_GIT_MAIN);',
+    '    process.exit(0);',
+    '  }',
+    '  console.error(`stub git: unexpected rev-parse ${rest[0]}`);',
+    '  process.exit(2);',
+    '}',
+    'if (cmd === "log") {',
+    '  console.log(process.env.STUB_GIT_SUBJECT ?? `Ship ${version}: test`);',
+    '  process.exit(0);',
+    '}',
+    'if (cmd === "merge-base") {',
+    '  process.exit(process.env.STUB_GIT_ANCESTOR_FAIL === "1" ? 1 : 0);',
+    '}',
+    'if (cmd === "fetch" || cmd === "tag" || cmd === "push") {',
+    '  log(`${cmd} ${rest.join(" ")}`);',
+    '  process.exit(0);',
+    '}',
+    'console.error(`stub git: unexpected ${args.join(" ")}`);',
+    'process.exit(2);',
+  ].join('\n');
+
+  const STUB_GH = [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs");',
+    'const args = process.argv.slice(2);',
+    'if (args[0] === "--version") {',
+    '  console.log("gh version 9.9.9-stub");',
+    '  process.exit(0);',
+    '}',
+    'const log = (line) => fs.appendFileSync(process.env.STUB_GH_CALLS, `${line}\\n`);',
+    'if (args[0] === "pr" && args[1] === "view" && args[3] === "--json") {',
+    '  if (args[4] === "mergeCommit") {',
+    '  console.log(process.env.STUB_GH_MERGECOMMIT ?? `{"mergeCommit":{"oid":"${process.env.STUB_GIT_MERGE_OID}"}}`);',
+    '    process.exit(0);',
+    '  }',
+    '  console.log(process.env.STUB_GH_PR);',
+    '  process.exit(0);',
+    '}',
+    'if (args[0] === "pr" && (args[1] === "checks" || args[1] === "merge")) {',
+    '  log(`pr ${args.slice(1).join(" ")}`);',
+    '  process.exit(0);',
+    '}',
+    'console.error(`stub gh: unexpected ${args.join(" ")}`);',
+    'process.exit(2);',
+  ].join('\n');
+
+  interface FinishOptions {
+    prState?: string;
+    subject?: string;
+    tagExists?: boolean;
+    tagTarget?: string;
+    mergeCommitJson?: string;
+  }
+
+  function installFinishStubs(options: FinishOptions = {}): {
+    env: NodeJS.ProcessEnv;
+    gitCallsFile: string;
+    ghCallsFile: string;
+  } {
+    const bin = trackTemp('stub-finish-bin-');
+    const gitPath = path.join(bin, 'git');
+    fs.writeFileSync(gitPath, STUB_GIT);
+    fs.chmodSync(gitPath, 0o755);
+    const ghPath = path.join(bin, 'gh');
+    fs.writeFileSync(ghPath, STUB_GH);
+    fs.chmodSync(ghPath, 0o755);
+    const gitCallsFile = path.join(trackTemp('stub-finish-git-calls-'), 'calls.log');
+    const ghCallsFile = path.join(trackTemp('stub-finish-gh-calls-'), 'calls.log');
+    return {
+      gitCallsFile,
+      ghCallsFile,
+      env: {
+        PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+        STUB_GIT_CALLS: gitCallsFile,
+        STUB_GH_CALLS: ghCallsFile,
+        STUB_GIT_BRANCH: BRANCH,
+        STUB_GIT_STATUS: '',
+        STUB_GIT_VERSION: VERSION,
+        STUB_GIT_MERGE_OID: MERGE_OID,
+        STUB_GIT_MAIN: MAIN_OID,
+        STUB_GIT_SUBJECT: options.subject ?? SHIP_SUBJECT,
+        STUB_GIT_TAG_EXISTS: options.tagExists ? '1' : '0',
+        STUB_GIT_TAG_TARGET: options.tagTarget ?? MERGE_OID,
+        STUB_GH_PR: JSON.stringify({
+          number: 123,
+          state: options.prState ?? 'MERGED',
+          baseRefName: 'main',
+          headRefName: BRANCH,
+          url: 'https://example.test/pr/123',
+        }),
+        ...(options.mergeCommitJson !== undefined ? { STUB_GH_MERGECOMMIT: options.mergeCommitJson } : {}),
+      },
+    };
+  }
+
+  function runFinish(env: NodeJS.ProcessEnv): RunResult {
+    return runScript(releaseScript, ['finish'], env);
+  }
+
+  it('merges an OPEN PR, then tags the merge commit and pushes', () => {
+    const { env, gitCallsFile, ghCallsFile } = installFinishStubs({ prState: 'OPEN' });
+    const result = runFinish(env);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`Done: v${VERSION} pushed`);
+    expect(readCalls(ghCallsFile)).toEqual(['pr checks 123 --watch', 'pr merge 123 --squash']);
+    expect(readCalls(gitCallsFile)).toEqual([
+      'fetch origin --tags',
+      `tag -a v${VERSION} ${MERGE_OID} -m Agent Deck ${VERSION}`,
+      `push origin v${VERSION}`,
+    ]);
+  });
+
+  it('resumes a MERGED PR at the tag step without merging again', () => {
+    const { env, gitCallsFile, ghCallsFile } = installFinishStubs({ prState: 'MERGED' });
+    const result = runFinish(env);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('already MERGED');
+    expect(result.stdout).toContain('resuming at the tag step');
+    expect(readCalls(ghCallsFile)).toEqual([]);
+    expect(readCalls(gitCallsFile)).toEqual([
+      'fetch origin --tags',
+      `tag -a v${VERSION} ${MERGE_OID} -m Agent Deck ${VERSION}`,
+      `push origin v${VERSION}`,
+    ]);
+  });
+
+  it('re-running after the tag exists only ensures the push', () => {
+    const { env, gitCallsFile } = installFinishStubs({ prState: 'MERGED', tagExists: true, tagTarget: MERGE_OID });
+    const result = runFinish(env);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('already exists on the merge commit');
+    expect(readCalls(gitCallsFile)).toEqual(['fetch origin --tags', `push origin v${VERSION}`]);
+  });
+
+  it('refuses to move a tag pointing at another commit', () => {
+    const { env, gitCallsFile } = installFinishStubs({ prState: 'MERGED', tagExists: true, tagTarget: OTHER_OID });
+    const result = runFinish(env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('refusing to move it');
+    expect(readCalls(gitCallsFile)).toEqual(['fetch origin --tags']);
+  });
+
+  it('refuses a CLOSED PR', () => {
+    const { env, gitCallsFile, ghCallsFile } = installFinishStubs({ prState: 'CLOSED' });
+    const result = runFinish(env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('is CLOSED, not OPEN');
+    expect(readCalls(ghCallsFile)).toEqual([]);
+    expect(readCalls(gitCallsFile)).toEqual([]);
+  });
+
+  it('falls back to the main tip when gh reports no merge commit', () => {
+    const { env, gitCallsFile } = installFinishStubs({ prState: 'MERGED', mergeCommitJson: '{}' });
+    const result = runFinish(env);
+    expect(result.status).toBe(0);
+    expect(readCalls(gitCallsFile)).toEqual([
+      'fetch origin --tags',
+      `tag -a v${VERSION} ${MAIN_OID} -m Agent Deck ${VERSION}`,
+      `push origin v${VERSION}`,
+    ]);
+  });
+
+  it('refuses to tag when the merge commit is not the Ship commit', () => {
+    const { env, gitCallsFile } = installFinishStubs({ prState: 'MERGED', subject: 'Unrelated change' });
+    const result = runFinish(env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`not the Ship ${VERSION} commit`);
+    expect(readCalls(gitCallsFile)).toEqual(['fetch origin --tags']);
+  });
+});
+
+describe('sync-versions.mjs', () => {
+  const ALL_MANIFESTS = ['package.json', ...WORKSPACE_MANIFESTS];
+
+  it('syncs manifests, pins, server.json, plugins and the lockfile in one pass', () => {
+    const dir = makeCheckFixture('9.9.8');
+    const result = runScript(syncScript, ['--root', dir, '9.9.9']);
+    expect(result.status).toBe(0);
+    for (const manifest of ALL_MANIFESTS) {
+      expect(JSON.parse(fs.readFileSync(path.join(dir, manifest), 'utf8')).version).toBe('9.9.9');
+    }
+    const cli = JSON.parse(fs.readFileSync(path.join(dir, 'packages/cli/package.json'), 'utf8'));
+    expect(cli.dependencies['@agent-deck/backend']).toBe('^9.9.9');
+    expect(cli.dependencies['@agent-deck/shared']).toBe('^9.9.9');
+    const backend = JSON.parse(fs.readFileSync(path.join(dir, 'packages/backend/package.json'), 'utf8'));
+    expect(backend.dependencies['@agent-deck/shared']).toBe('^9.9.9');
+    const server = JSON.parse(fs.readFileSync(path.join(dir, 'server.json'), 'utf8'));
+    expect(server.version).toBe('9.9.9');
+    expect(server.packages[0].version).toBe('9.9.9');
+    for (const manifest of ['.codex-plugin/plugin.json', '.claude-plugin/plugin.json', '.cursor-plugin/plugin.json']) {
+      expect(JSON.parse(fs.readFileSync(path.join(dir, manifest), 'utf8')).version).toBe('9.9.9');
+    }
+    const marketplace = JSON.parse(fs.readFileSync(path.join(dir, '.claude-plugin/marketplace.json'), 'utf8'));
+    expect(marketplace.plugins[0].version).toBe('9.9.9');
+    const lock = JSON.parse(fs.readFileSync(path.join(dir, 'package-lock.json'), 'utf8'));
+    expect(lock.version).toBe('9.9.9');
+    for (const key of ['', 'packages/shared', 'packages/backend', 'packages/cli', 'apps/agent-deck']) {
+      expect(lock.packages[key].version, `lock packages[${key}]`).toBe('9.9.9');
+    }
+    expect(lock.packages['packages/cli'].dependencies['@agent-deck/backend']).toBe('^9.9.9');
+    expect(lock.packages['packages/cli'].dependencies['@agent-deck/shared']).toBe('^9.9.9');
+    expect(lock.packages['packages/backend'].dependencies['@agent-deck/shared']).toBe('^9.9.9');
+    // The sync covers everything check looks at except the changelog stub,
+    // which prepare writes next — so check must fail on that alone.
+    const check = runScript(releaseScript, ['check', '--root', dir]);
+    expect(check.status).toBe(1);
+    expect(check.stderr).toContain('CHANGELOG.md has no ## 9.9.9 section');
+    expect(check.stderr).toContain('1 check(s) failed');
+  });
+
+  it('rejects a missing version', () => {
+    const result = runScript(syncScript, ['--root', makeCheckFixture('9.9.8')]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Usage:');
   });
 });
 

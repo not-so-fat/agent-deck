@@ -182,7 +182,7 @@ server.json
 | 5 | Fix scanner findings | `scan .` ≥ 80, zero high/critical |
 | 6 | Scanner CI workflow; SHA-pin audit of `ci.yml` | Green run on `main` |
 | 7 | `.claude-plugin/` manifests | Installable via Claude Code plugin marketplace |
-| 8 | Sync versions script covers plugin.json | `npm run version:sync` updates it |
+| 8 | Sync versions script covers plugin.json | version sync (via `release:prepare`) updates it |
 | 9 | Fork + PR to awesome-codex-plugins | See below |
 
 **The submission line** (Community Plugins → *Development & Workflow*, alphabetical — lands between "Aegis" and "Agent Guard"):

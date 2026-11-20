@@ -1,6 +1,6 @@
 ---
-description: npm publish and release — version sync, CHANGELOG, git tag v*, GitHub release, release:tag scripts
-globs: CHANGELOG.md,package.json,server.json,docs/PUBLISHING.md,scripts/release-tag.mjs,scripts/release-guard.mjs,scripts/release-publish.mjs,scripts/sync-versions.mjs,scripts/prepare-release.mjs,.github/workflows/release.yml
+description: npm publish and release — release:prepare, release:finish, release:check, CHANGELOG, git tag v*, GitHub release
+globs: CHANGELOG.md,package.json,server.json,docs/PUBLISHING.md,scripts/release.mjs,scripts/release-guard.mjs,scripts/release-publish.mjs,scripts/release-tag.mjs,scripts/sync-versions.mjs,scripts/prepare-release.mjs,scripts/release-smoke.sh,.github/workflows/release.yml,.github/workflows/ci.yml
 alwaysApply: false
 ---
 
@@ -14,51 +14,42 @@ owner approving the `npm` environment on GitHub.
 
 ## Order (do not skip)
 
-1. `npm run version:sync -- X.Y.Z` — all workspaces + `server.json`
-2. Update `CHANGELOG.md` for `X.Y.Z`
-3. `npm install` && `npm run build:release`
-4. **Integration smoke** — `npm run release:smoke` (also runs inside `build:release`; blocks publish on failure)
-5. Commit on `main`: `Ship X.Y.Z: <short why>.`
-6. Push `main`
-7. **Agent:** `npm run release:tag:push-only` (creates and pushes the annotated
-   `vX.Y.Z` tag — this starts `release.yml`; do **not** create the GitHub
-   Release locally). **Human:** approve the `npm` environment on GitHub.
-8. **Agent:** watch the workflow to green, then verify
-   `npm view @agent-deck/cli version` shows `X.Y.Z`. The workflow publishes
-   shared → backend → cli with provenance and creates the GitHub Release
-   from the `CHANGELOG.md` section.
+1. `npm run release:prepare -- <patch|minor|major|X.Y.Z> --summary "<why>"` from a clean, up-to-date `main` — versions, pins, `server.json`, lockfile and `CHANGELOG.md` in one pass, then `build:release`, then branch `release/X.Y.Z` with one `Ship X.Y.Z: <why>` commit, pushed with an open PR.
+2. Review the release PR (CI, including `release:check`, must be green).
+3. `npm run release:finish` from the `release/X.Y.Z` branch — waits for CI, squash-merges, tags the merge commit `vX.Y.Z` and pushes the tag. This starts `release.yml`; finish never publishes and never creates the GitHub Release. Safe to re-run after the merge: it resumes at the tag step.
+4. **Human:** approve the `npm` environment on GitHub.
+5. **Agent:** watch the workflow to green, then verify `npm view` shows `X.Y.Z` for `@agent-deck/shared`, `@agent-deck/backend` and `@agent-deck/cli`. The workflow creates the GitHub Release from the `CHANGELOG.md` section.
+
+Dry run: append `--dry` to `release:prepare` — skips the push and the PR creation, keeps the local `Ship` commit.
+
+## Rules
+
+- **Keep-the-version** — versions change only in a `release:prepare` Ship commit. Never bump a version in a feature or fix PR; never cut a release with no changes since the last tag. `release:check` enforces this in CI.
+- **Trusted-publisher** — releases publish only from `release.yml` via OIDC. Local `publish:packages` (npm login + OTP) is only the documented manual fallback when the workflow cannot run.
 
 ## Git tags (required every npm release)
 
 | Rule | Detail |
 |------|--------|
 | Tag name | `vX.Y.Z` (matches npm / root `package.json`) |
-| Points at | The `Ship X.Y.Z` commit — **not** a later docs-only commit |
-| Type | Annotated (`release-tag.mjs` handles this) |
-
-If the ship commit is already pushed and HEAD moved, tag explicitly: `node scripts/release-tag.mjs X.Y.Z --push` from that commit (or checkout ship commit first).
+| Points at | The squash-merged `Ship X.Y.Z` commit on `main` |
+| Type | Annotated (`release:finish` handles this) |
 
 ## Agent behavior
 
-- **Never** run `npm publish` / `publish:packages` in a normal release — the
-  release workflow publishes via OIDC. Local `publish:packages` (npm login +
-  OTP) is only the documented manual fallback when the workflow cannot run.
-- **Do** version bump, changelog, `build:release`, commit, push `main` when they ask to ship/release.
-- **Do** `npm run release:tag:push-only` after pushing `main` — pushing the
-  tag is what starts the release; creating the GitHub Release locally is the
-  workflow's job (manual fallback: `npm run release:tag:push`).
-- **Do** watch the release workflow to green and confirm the version is on npm
-  (`npm view @agent-deck/cli version`).
-- **Do** backfill missing `v*` tags / GitHub Releases when a Ship commit has no tag (or tag exists locally but not on origin / no `gh release`).
-- **Do** ensure `npm run release:smoke` passes before pushing the tag.
-- One-time historical tags: `npm run release:tag:backfill` (already done for early history; re-run with `--push --github-release` only for gaps).
+- **Never** run `npm publish` / `publish:packages` in a normal release — the release workflow publishes via OIDC.
+- **Never** tag a release by hand and never create the GitHub Release locally — `release:finish` owns the tag, the workflow owns the release.
+- **Never** bump versions outside `release:prepare` — not in feature PRs, not "while here".
+- **Do** cut the release with `release:prepare`, review the PR, then `release:finish` once CI is green.
+- **Do** watch the release workflow to green and confirm the version is on npm for all three packages (`npm view @agent-deck/cli version`, same for shared and backend).
+- **Do** ensure the release smoke passes before finishing — it runs inside `build:release` during `prepare`; rerun alone with `npm run smoke:release` after a build.
 
 ## Do not
 
+- Merge the release PR by hand (`gh pr merge`) — `release:finish` merges, waits for CI and tags in one flow
 - Tag without a matching `CHANGELOG.md` section
 - Leave a Ship on `main` without `vX.Y.Z` + GitHub Release after npm is live
 - Use lightweight tags or non-`v` prefix
 - Bump version without syncing all packages
-- Publish if `release:smoke` fails — move unfinished bullets to **Pending publish** in CHANGELOG
-- Ask the human to run `release:tag:push-only` or to publish — the human's
-  only release step is approving the `npm` environment on GitHub
+- Publish if the smoke fails — move unfinished bullets to **Pending publish** in CHANGELOG
+- Ask the human to run the release commands or to publish — the human's only release step is approving the `npm` environment on GitHub

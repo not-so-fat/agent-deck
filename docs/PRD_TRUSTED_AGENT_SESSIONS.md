@@ -260,7 +260,7 @@ Automated and manual coverage should include:
 
 NOT-44 verification remains separate and mandatory: direct HTTP and MCP calls for a service outside the bound deck return `RESOURCE_OUT_OF_SCOPE`, while authenticated dashboard behavior remains unchanged.
 
-**Release (1.7.0):** NOT-45 and NOT-44 shipped together after partial automated coverage (see as-built row), `npm run release:smoke`, and integration tests on main.
+**Release (1.7.0):** NOT-45 and NOT-44 shipped together after partial automated coverage (see as-built row), `npm run smoke:release`, and integration tests on main.
 
 ### As-built (current)
 

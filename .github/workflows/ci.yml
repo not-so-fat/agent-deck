@@ -25,6 +25,11 @@ jobs:
           node-version: 22.x
           cache: npm
 
+      # Before install: release:check must see the committed lockfile as-is
+      # (npm install would rewrite drifted entries instead of failing).
+      - name: Release drift check
+        run: npm run release:check
+
       - name: Install dependencies
         run: npm install
 

@@ -1,5 +1,5 @@
 ---
-description: Agent Deck release integration smoke — user path invariants, release:smoke gate, setup/statusline artifacts
+description: Agent Deck release integration smoke — user path invariants, smoke:release gate, setup/statusline artifacts
 globs: CHANGELOG.md,package.json,scripts/release-smoke.sh,scripts/prepare-release.mjs,packages/cli/src/setup.ts,packages/cli/src/statusline*.ts,docs/PUBLISHING.md,docs/examples/playbooks/npm-release-integration-smoke.md
 alwaysApply: false
 ---
@@ -22,7 +22,7 @@ CHANGELOG (shipped) → dist/tarball contains code → setup wires it → artifa
 
 ## Before publish
 
-1. `npm run release:smoke` (runs inside `build:release`) — **do not publish if it fails**
+1. `npm run smoke:release` (runs inside `build:release`) — **do not publish if it fails**
 2. Move unfinished bullets to `### Pending publish` in CHANGELOG
 3. Extend `scripts/release-smoke.sh` when adding a new setup artifact or stdout contract
 
