@@ -10,15 +10,15 @@ Canonical checklist: [docs/PUBLISHING.md](../../docs/PUBLISHING.md). Integration
 
 Normal releases publish from `.github/workflows/release.yml` via npm trusted
 publishing (OIDC — no npm login, no npm token). The only human step is the
-owner approving the `npm` environment on GitHub.
+owner's release request; `release.yml` runs straight from the tag push to
+verify, build, publish and GitHub Release, with no approval step.
 
 ## Order (do not skip)
 
 1. `npm run release:prepare -- <patch|minor|major|X.Y.Z> --summary "<why>"` from a clean, up-to-date `main` — versions, pins, `server.json`, lockfile and `CHANGELOG.md` in one pass, then `build:release`, then branch `release/X.Y.Z` with one `Ship X.Y.Z: <why>` commit, pushed with an open PR.
 2. Review the release PR (CI, including `release:check`, must be green).
 3. `npm run release:finish` from the `release/X.Y.Z` branch — waits for CI, squash-merges, tags the merge commit `vX.Y.Z` and pushes the tag. This starts `release.yml`; finish never publishes and never creates the GitHub Release. Safe to re-run after the merge: it resumes at the tag step.
-4. **Human:** approve the `npm` environment on GitHub.
-5. **Agent:** watch the workflow to green, then verify `npm view` shows `X.Y.Z` for `@agent-deck/shared`, `@agent-deck/backend` and `@agent-deck/cli`. The workflow creates the GitHub Release from the `CHANGELOG.md` section.
+4. **Agent:** watch the workflow to green, then verify `npm view` shows `X.Y.Z` for `@agent-deck/shared`, `@agent-deck/backend` and `@agent-deck/cli`. The workflow creates the GitHub Release from the `CHANGELOG.md` section.
 
 Dry run: append `--dry` to `release:prepare` — skips the push and the PR creation, keeps the local `Ship` commit.
 
@@ -52,4 +52,4 @@ Dry run: append `--dry` to `release:prepare` — skips the push and the PR creat
 - Use lightweight tags or non-`v` prefix
 - Bump version without syncing all packages
 - Publish if the smoke fails — move unfinished bullets to **Pending publish** in CHANGELOG
-- Ask the human to run the release commands or to publish — the human's only release step is approving the `npm` environment on GitHub
+- Ask the human to run the release commands or to publish — the human's only release step is the release request

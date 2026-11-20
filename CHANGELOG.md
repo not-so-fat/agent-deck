@@ -26,7 +26,7 @@
 
 ### Internal: release and CI
 
-- Releases now publish from GitHub Actions with npm trusted publishing (OIDC, no npm token): pushing `vX.Y.Z` starts `release.yml`, which waits for the owner's approval of the `npm` environment, verifies the tag, builds and smoke-tests, publishes shared → backend → cli with provenance, and creates the GitHub Release (NOT-642).
+- Releases now publish from GitHub Actions with npm trusted publishing (OIDC, no npm token): pushing `vX.Y.Z` starts `release.yml`, which verifies the tag, builds and smoke-tests, publishes shared → backend → cli with provenance, and creates the GitHub Release (NOT-642).
 - Published packages name the canonical repository (`not-so-fat/agent-deck`) in `repository.url`, which npm requires for provenance; `@agent-deck/shared` and `@agent-deck/backend` had none, and `@agent-deck/cli` still named `agent_deck`. The publish step logs npm at verbose level, so a failed trusted-publishing token exchange reports the registry's reason.
 - CI runs with a read-only `GITHUB_TOKEN`, no persisted checkout credentials, and an actions lockfile; `npm run lint` is restored on ESLint 9 flat config and runs in CI (NOT-637).
 

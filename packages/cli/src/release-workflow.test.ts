@@ -674,6 +674,9 @@ describe('release.mjs finish', () => {
     const result = runFinish(env);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(`Done: v${VERSION} pushed`);
+    // NOT-647: the closing message must not ask for an approval step.
+    expect(result.stdout).not.toMatch(/approve/i);
+    expect(result.stdout).toContain('watch the run, then check npm view for each package');
     expect(readCalls(ghCallsFile)).toEqual(['pr checks 123 --watch', 'pr merge 123 --squash']);
     expect(readCalls(gitCallsFile)).toEqual([
       'fetch origin --tags',

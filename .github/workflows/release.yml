@@ -2,11 +2,11 @@ name: Release
 
 # Tag-pushed releases with npm trusted publishing (OIDC — no npm token anywhere).
 # Flow: an agent ships the version, pushes the vX.Y.Z tag, and this workflow
-# waits for the owner's approval of the `npm` environment, then publishes
-# shared -> backend -> cli with provenance and creates the GitHub Release.
+# runs straight from the tag — verifying it, then publishing
+# shared -> backend -> cli with provenance and creating the GitHub Release.
 # Setup (owner, one time): on npmjs.com each of the three packages trusts
 # publisher not-so-fat/agent-deck, workflow release.yml, environment npm;
-# in repo settings the `npm` environment requires the owner's review.
+# the `npm` environment in repo settings only scopes trusted publishing — no required reviewer.
 on:
   push:
     tags:
