@@ -1,6 +1,15 @@
 # Changelog
 
-## 2.5.5 — 2026-11-19
+## 2.5.6 — 2026-11-20
+
+First npm release of the 2.5.5 changes below: `v2.5.5` was tagged, but its publish run failed before anything reached npm.
+
+### Internal: release publishing fixes
+
+- Published packages now name the canonical repository (`not-so-fat/agent-deck`) in `repository.url`, which npm requires for provenance. `@agent-deck/shared` and `@agent-deck/backend` had none, and `@agent-deck/cli` still named `agent_deck`.
+- The release workflow's publish step logs npm at verbose level, so a failed trusted-publishing token exchange reports the registry's reason instead of a bare `ENEEDAUTH`.
+
+## 2.5.5 — 2026-11-19 (tagged, not published to npm — ships in 2.5.6)
 
 ### Fix: OAuth cards keep working after a store reindex (NOT-639)
 
