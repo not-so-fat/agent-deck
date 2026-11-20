@@ -346,3 +346,19 @@ describe('release-publish.mjs', () => {
     expect(readCalls(callsFile)).toEqual([]);
   });
 });
+
+describe('published package metadata', () => {
+  // `npm publish --provenance` from release.yml is rejected (E422) unless
+  // package.json repository.url names the repo the workflow ran in.
+  it('every published package points repository.url at the canonical repo', () => {
+    for (const dir of ['shared', 'backend', 'cli']) {
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(repoRoot, 'packages', dir, 'package.json'), 'utf8'),
+      );
+      expect(manifest.repository?.url, `@agent-deck/${dir}`).toBe(
+        'git+https://github.com/not-so-fat/agent-deck.git',
+      );
+      expect(manifest.repository?.directory, `@agent-deck/${dir}`).toBe(`packages/${dir}`);
+    }
+  });
+});
