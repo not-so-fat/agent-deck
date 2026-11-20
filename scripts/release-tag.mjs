@@ -2,11 +2,14 @@
 /**
  * Create and optionally push Git tags (v{semver}) for npm releases.
  *
- * Normal release path (see docs/PUBLISHING.md): the agent tags the Ship
- * commit and pushes the tag ONLY — `npm run release:tag:push-only` — which
- * starts .github/workflows/release.yml. The workflow publishes to npm and
- * creates the GitHub Release from the CHANGELOG section itself
- * (`--github-release` below, run on the tag checkout in CI).
+ * Normal releases do not call this file directly (see docs/PUBLISHING.md):
+ * `release:prepare` cuts the release branch and `release:finish` creates and
+ * pushes the vX.Y.Z tag, which starts .github/workflows/release.yml. This
+ * file stays as the tag plumbing underneath: release.yml runs
+ * `--github-release` on the tag checkout in CI (do not change that mode),
+ * and the manual fallback invokes the tag + push + GitHub Release modes
+ * directly. The release:tag* npm entries were removed in NOT-646;
+ * --backfill remains here for one-off maintenance.
  *
  * Usage:
  *   node scripts/release-tag.mjs              # tag HEAD with root package.json version

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Sync semver across publishable workspace packages.
+ * Sync semver across the root manifest, workspace packages, server.json,
+ * plugin manifests and package-lock.json.
  * Usage: node scripts/sync-versions.mjs 1.1.0
  */
 import fs from 'node:fs';
@@ -91,6 +92,34 @@ for (const relativePath of targets) {
 
   fs.writeFileSync(filePath, `${JSON.stringify(pkg, null, 2)}\n`);
   console.log(`Updated ${relativePath} -> ${version}`);
+}
+
+// package-lock.json (lockfileVersion 3): mirror what `npm install` rewrites on
+// a version bump, so the committed lockfile matches without a network round
+// trip. release:check verifies these entries.
+const lockPath = path.join(root, 'package-lock.json');
+if (!fs.existsSync(lockPath)) {
+  console.log('Skipped package-lock.json (not found)');
+} else {
+  const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  lock.version = version;
+  const entries = lock.packages ?? {};
+  for (const key of ['', 'packages/shared', 'packages/backend', 'packages/cli', 'apps/agent-deck']) {
+    if (entries[key]) {
+      entries[key].version = version;
+    }
+  }
+  for (const [key, dep] of [
+    ['packages/cli', '@agent-deck/backend'],
+    ['packages/cli', '@agent-deck/shared'],
+    ['packages/backend', '@agent-deck/shared'],
+  ]) {
+    if (entries[key]?.dependencies?.[dep]) {
+      entries[key].dependencies[dep] = `^${version}`;
+    }
+  }
+  fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+  console.log(`Updated package-lock.json -> ${version}`);
 }
 
 console.log(`\nSynced version ${version}. Next: npm install && npm run build:release`);
