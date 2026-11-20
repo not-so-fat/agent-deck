@@ -2,6 +2,11 @@
   "name": "@agent-deck/shared",
   "version": "2.5.5",
   "description": "Shared types, schemas, and utilities for Agent Deck",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/not-so-fat/agent-deck.git",
+    "directory": "packages/shared"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

@@ -2,6 +2,11 @@
   "name": "@agent-deck/backend",
   "version": "2.5.5",
   "description": "Agent Deck backend API, MCP server, and vault",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/not-so-fat/agent-deck.git",
+    "directory": "packages/backend"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

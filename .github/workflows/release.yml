@@ -64,6 +64,11 @@ jobs:
         run: npm run build:release
 
       - name: Publish packages to npm (OIDC, no token)
+        env:
+          # npm logs the trusted-publishing token exchange (and the registry's
+          # reason when it fails) only at verbose level; without it a failed
+          # exchange surfaces as a bare ENEEDAUTH.
+          NPM_CONFIG_LOGLEVEL: verbose
         run: node scripts/release-publish.mjs
 
       - name: Create GitHub Release from CHANGELOG

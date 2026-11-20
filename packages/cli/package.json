@@ -17,7 +17,7 @@
   "mcpName": "io.github.not-so-fat/agent-deck",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/not-so-fat/agent_deck.git",
+    "url": "git+https://github.com/not-so-fat/agent-deck.git",
     "directory": "packages/cli"
   },
   "keywords": [
