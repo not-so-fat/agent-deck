@@ -12,6 +12,7 @@
  * (tests + integration smoke), then pushes the branch and opens the PR.
  * finish merges that PR once CI is green, tags the merge commit vX.Y.Z and
  * pushes the tag. Everything after the tag push belongs to release.yml.
+ * Re-running finish after the merge resumes at the tag step.
  * check fails on any version, pin, server.json, lockfile or changelog drift.
  */
 import { execFileSync, execSync } from 'node:child_process';
@@ -535,13 +536,21 @@ function runFinish(args) {
     console.error(`[release:finish] No PR found for ${branch} — push the branch and open the PR first (release:prepare does both).`);
     process.exit(1);
   }
-  if (pr.state !== 'OPEN') {
-    console.error(`[release:finish] PR #${pr.number} is ${pr.state}, not OPEN.`);
+  if (pr.state !== 'OPEN' && pr.state !== 'MERGED') {
+    console.error(`[release:finish] PR #${pr.number} is ${pr.state}, not OPEN — nothing to finish.`);
     process.exit(1);
   }
   if (pr.baseRefName !== 'main') {
     console.error(`[release:finish] PR #${pr.number} targets ${JSON.stringify(pr.baseRefName)}, not main.`);
     process.exit(1);
+  }
+  if (pr.state === 'MERGED') {
+    // A merge followed by a failed fetch or tag push (or a lost gh
+    // response) leaves main bumped without the tag. Re-running finish
+    // must resume at the tag step, not exit on the merged PR.
+    console.log(`[release:finish] PR #${pr.number} is already MERGED — resuming at the tag step.`);
+    tagMergedRelease(version, pr);
+    return;
   }
   console.log(`[release:finish] Waiting for CI on PR #${pr.number} (${pr.url}) ...`);
   try {
@@ -554,32 +563,109 @@ function runFinish(args) {
   try {
     execFileSync('gh', ['pr', 'merge', String(pr.number), '--squash'], { cwd: root, stdio: 'inherit' });
   } catch {
-    console.error(`[release:finish] Could not merge PR #${pr.number} — resolve it and re-run release:finish.`);
+    console.error(
+      `[release:finish] Could not merge PR #${pr.number} — resolve it and re-run release:finish (a lost gh response after a server-side merge resumes at the tag step).`,
+    );
     process.exit(1);
   }
-  console.log('[release:finish] Fetching the merge commit ...');
+  tagMergedRelease(version, pr);
+}
+
+/** Best-effort merge-commit oid for a PR; null when gh cannot report one. */
+function prMergeCommitOid(pr) {
   try {
-    execFileSync('git', ['fetch', 'origin', '--tags'], { cwd: root, stdio: 'inherit' });
+    const out = execFileSync('gh', ['pr', 'view', String(pr.number), '--json', 'mergeCommit'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const oid = JSON.parse(out)?.mergeCommit?.oid ?? null;
+    return typeof oid === 'string' && /^[0-9a-f]{40}$/i.test(oid) ? oid : null;
   } catch {
-    console.error('[release:finish] git fetch failed — check the network and re-run.');
-    process.exit(1);
+    return null;
   }
-  if (refExists(`refs/tags/v${version}`)) {
-    console.error(`[release:finish] Tag v${version} already exists — refusing to move it.`);
-    process.exit(1);
+}
+
+/**
+ * Resolve the commit to tag: the PR's merge commit when gh reports one
+ * (main may have moved past it, so the tip is not always the merge),
+ * else the origin/main tip after verifying it is the Ship commit.
+ */
+function resolveMergeTarget(version, pr) {
+  const mergeOid = prMergeCommitOid(pr);
+  if (mergeOid) {
+    if (!refExists(mergeOid)) {
+      console.error(
+        `[release:finish] Merge commit ${mergeOid} for PR #${pr.number} is not in this clone even after fetching — check the network and re-run release:finish.`,
+      );
+      process.exit(1);
+    }
+    try {
+      execFileSync('git', ['merge-base', '--is-ancestor', mergeOid, 'origin/main'], { cwd: root, stdio: 'ignore' });
+    } catch {
+      console.error(`[release:finish] Merge commit ${mergeOid} for PR #${pr.number} is not on origin/main — refusing to tag it.`);
+      process.exit(1);
+    }
+    const subject = git(['log', '-1', '--format=%s', mergeOid]);
+    if (!subject.startsWith(`Ship ${version}`)) {
+      console.error(
+        `[release:finish] Merge commit ${mergeOid} subject is ${JSON.stringify(subject)}, not the Ship ${version} commit — refusing to tag it.`,
+      );
+      process.exit(1);
+    }
+    return mergeOid;
   }
   const subject = git(['log', '-1', '--format=%s', 'origin/main']);
   if (!subject.startsWith(`Ship ${version}`)) {
     console.error(`[release:finish] origin/main tip is ${JSON.stringify(subject)}, not the Ship ${version} commit — refusing to tag it.`);
     process.exit(1);
   }
-  execFileSync('git', ['tag', '-a', `v${version}`, 'origin/main', '-m', `Agent Deck ${version}`], {
-    cwd: root,
-    stdio: 'inherit',
-  });
-  execFileSync('git', ['push', 'origin', `v${version}`], { cwd: root, stdio: 'inherit' });
+  return git(['rev-parse', 'origin/main']);
+}
+
+/**
+ * Fetch, then idempotently create and push vX.Y.Z on the merge commit.
+ * Safe to re-run: an existing tag on the right commit is kept and pushed.
+ */
+function tagMergedRelease(version, pr) {
+  console.log('[release:finish] Fetching the merge commit ...');
+  try {
+    execFileSync('git', ['fetch', 'origin', '--tags'], { cwd: root, stdio: 'inherit' });
+  } catch {
+    console.error('[release:finish] git fetch failed — the PR is merged; check the network and re-run release:finish to resume at the tag step.');
+    process.exit(1);
+  }
+  const tag = `v${version}`;
+  const target = resolveMergeTarget(version, pr);
+  if (refExists(`refs/tags/${tag}`)) {
+    let existing = null;
+    try {
+      existing = git(['rev-parse', `${tag}^{}`]);
+    } catch {
+      existing = null;
+    }
+    if (existing === target) {
+      console.log(`[release:finish] Tag ${tag} already exists on the merge commit — ensuring it is pushed.`);
+    } else {
+      console.error(`[release:finish] Tag ${tag} already exists${existing ? ` on ${existing}` : ''}, not the merge commit ${target} — refusing to move it.`);
+      process.exit(1);
+    }
+  } else {
+    try {
+      execFileSync('git', ['tag', '-a', tag, target, '-m', `Agent Deck ${version}`], { cwd: root, stdio: 'inherit' });
+    } catch {
+      console.error(`[release:finish] Could not create tag ${tag} — re-run release:finish to retry.`);
+      process.exit(1);
+    }
+  }
+  try {
+    execFileSync('git', ['push', 'origin', tag], { cwd: root, stdio: 'inherit' });
+  } catch {
+    console.error(`[release:finish] Could not push tag ${tag} — re-run release:finish to retry the push.`);
+    process.exit(1);
+  }
   console.log(
-    `[release:finish] Done: v${version} pushed. release.yml verifies the tag, runs the release build and smoke, publishes the packages, and attaches the GitHub Release notes — approve the npm environment when asked, watch the run, then check npm view for each package.`,
+    `[release:finish] Done: ${tag} pushed. release.yml verifies the tag, runs the release build and smoke, publishes the packages, and attaches the GitHub Release notes — approve the npm environment when asked, watch the run, then check npm view for each package.`,
   );
 }
 

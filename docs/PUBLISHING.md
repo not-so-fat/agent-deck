@@ -31,6 +31,8 @@ environment on GitHub.
    waits for CI, squash-merges the PR, tags the merge commit `vX.Y.Z` and
    pushes the tag — this starts `.github/workflows/release.yml`. It never
    publishes and never creates the GitHub Release; the workflow does both.
+   If it fails after the merge (network, tag push), just re-run it —
+   finish resumes an already-merged PR at the tag step.
 3. **Human:** approve the `npm` environment when GitHub asks (the workflow
    waits for the owner's review)
 4. **Agent:** watch the workflow to green, then verify each package:

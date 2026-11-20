@@ -527,6 +527,220 @@ describe('release.mjs argument validation', () => {
   });
 });
 
+describe('release.mjs finish', () => {
+  // NOT-646 round 2: finish must resume a MERGED PR at the tag step (a merge
+  // followed by a failed fetch/tag push, or a lost gh response, otherwise
+  // leaves main bumped without the tag and forces hand-derived tag steps).
+  // These tests run release.mjs as a black box with stub git/gh on PATH, so
+  // the real repo is never touched: every git/gh call is answered from env
+  // and the mutating calls (fetch/tag/push, checks/merge) are logged to files.
+  const MERGE_OID = 'abcdef0123456789abcdef0123456789abcdef01';
+  const MAIN_OID = '1234567890abcdef1234567890abcdef12345678';
+  const OTHER_OID = 'ffffffffffffffffffffffffffffffffffffffff';
+  const BRANCH = `release/${VERSION}`;
+  const SHIP_SUBJECT = `Ship ${VERSION}: test`;
+
+  const STUB_GIT = [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs");',
+    'const args = process.argv.slice(2);',
+    'const version = process.env.STUB_GIT_VERSION;',
+    'const tagRef = `refs/tags/v${version}`;',
+    'const log = (line) => fs.appendFileSync(process.env.STUB_GIT_CALLS, `${line}\\n`);',
+    'const [cmd, ...rest] = args;',
+    'if (cmd === "rev-parse" && rest.join(" ") === "--abbrev-ref HEAD") {',
+    '  console.log(process.env.STUB_GIT_BRANCH);',
+    '  process.exit(0);',
+    '}',
+    'if (cmd === "status") {',
+    '  process.stdout.write(process.env.STUB_GIT_STATUS ?? "");',
+    '  process.exit(0);',
+    '}',
+    'if (cmd === "rev-parse" && rest[0] === "--verify" && rest[1] === "--quiet") {',
+    '  const ref = rest[2];',
+    '  const known = [process.env.STUB_GIT_MERGE_OID, process.env.STUB_GIT_MAIN].filter(Boolean);',
+    '  if (known.includes(ref) || (ref === tagRef && process.env.STUB_GIT_TAG_EXISTS === "1")) {',
+    '    process.exit(0);',
+    '  }',
+    '  process.exit(1);',
+    '}',
+    'if (cmd === "rev-parse" && rest.length === 1) {',
+    '  if (rest[0] === `v${version}^{}`) {',
+    '    console.log(process.env.STUB_GIT_TAG_TARGET);',
+    '    process.exit(0);',
+    '  }',
+    '  if (rest[0] === "origin/main") {',
+    '    console.log(process.env.STUB_GIT_MAIN);',
+    '    process.exit(0);',
+    '  }',
+    '  console.error(`stub git: unexpected rev-parse ${rest[0]}`);',
+    '  process.exit(2);',
+    '}',
+    'if (cmd === "log") {',
+    '  console.log(process.env.STUB_GIT_SUBJECT ?? `Ship ${version}: test`);',
+    '  process.exit(0);',
+    '}',
+    'if (cmd === "merge-base") {',
+    '  process.exit(process.env.STUB_GIT_ANCESTOR_FAIL === "1" ? 1 : 0);',
+    '}',
+    'if (cmd === "fetch" || cmd === "tag" || cmd === "push") {',
+    '  log(`${cmd} ${rest.join(" ")}`);',
+    '  process.exit(0);',
+    '}',
+    'console.error(`stub git: unexpected ${args.join(" ")}`);',
+    'process.exit(2);',
+  ].join('\n');
+
+  const STUB_GH = [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs");',
+    'const args = process.argv.slice(2);',
+    'if (args[0] === "--version") {',
+    '  console.log("gh version 9.9.9-stub");',
+    '  process.exit(0);',
+    '}',
+    'const log = (line) => fs.appendFileSync(process.env.STUB_GH_CALLS, `${line}\\n`);',
+    'if (args[0] === "pr" && args[1] === "view" && args[3] === "--json") {',
+    '  if (args[4] === "mergeCommit") {',
+    '  console.log(process.env.STUB_GH_MERGECOMMIT ?? `{"mergeCommit":{"oid":"${process.env.STUB_GIT_MERGE_OID}"}}`);',
+    '    process.exit(0);',
+    '  }',
+    '  console.log(process.env.STUB_GH_PR);',
+    '  process.exit(0);',
+    '}',
+    'if (args[0] === "pr" && (args[1] === "checks" || args[1] === "merge")) {',
+    '  log(`pr ${args.slice(1).join(" ")}`);',
+    '  process.exit(0);',
+    '}',
+    'console.error(`stub gh: unexpected ${args.join(" ")}`);',
+    'process.exit(2);',
+  ].join('\n');
+
+  interface FinishOptions {
+    prState?: string;
+    subject?: string;
+    tagExists?: boolean;
+    tagTarget?: string;
+    mergeCommitJson?: string;
+  }
+
+  function installFinishStubs(options: FinishOptions = {}): {
+    env: NodeJS.ProcessEnv;
+    gitCallsFile: string;
+    ghCallsFile: string;
+  } {
+    const bin = trackTemp('stub-finish-bin-');
+    const gitPath = path.join(bin, 'git');
+    fs.writeFileSync(gitPath, STUB_GIT);
+    fs.chmodSync(gitPath, 0o755);
+    const ghPath = path.join(bin, 'gh');
+    fs.writeFileSync(ghPath, STUB_GH);
+    fs.chmodSync(ghPath, 0o755);
+    const gitCallsFile = path.join(trackTemp('stub-finish-git-calls-'), 'calls.log');
+    const ghCallsFile = path.join(trackTemp('stub-finish-gh-calls-'), 'calls.log');
+    return {
+      gitCallsFile,
+      ghCallsFile,
+      env: {
+        PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+        STUB_GIT_CALLS: gitCallsFile,
+        STUB_GH_CALLS: ghCallsFile,
+        STUB_GIT_BRANCH: BRANCH,
+        STUB_GIT_STATUS: '',
+        STUB_GIT_VERSION: VERSION,
+        STUB_GIT_MERGE_OID: MERGE_OID,
+        STUB_GIT_MAIN: MAIN_OID,
+        STUB_GIT_SUBJECT: options.subject ?? SHIP_SUBJECT,
+        STUB_GIT_TAG_EXISTS: options.tagExists ? '1' : '0',
+        STUB_GIT_TAG_TARGET: options.tagTarget ?? MERGE_OID,
+        STUB_GH_PR: JSON.stringify({
+          number: 123,
+          state: options.prState ?? 'MERGED',
+          baseRefName: 'main',
+          headRefName: BRANCH,
+          url: 'https://example.test/pr/123',
+        }),
+        ...(options.mergeCommitJson !== undefined ? { STUB_GH_MERGECOMMIT: options.mergeCommitJson } : {}),
+      },
+    };
+  }
+
+  function runFinish(env: NodeJS.ProcessEnv): RunResult {
+    return runScript(releaseScript, ['finish'], env);
+  }
+
+  it('merges an OPEN PR, then tags the merge commit and pushes', () => {
+    const { env, gitCallsFile, ghCallsFile } = installFinishStubs({ prState: 'OPEN' });
+    const result = runFinish(env);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`Done: v${VERSION} pushed`);
+    expect(readCalls(ghCallsFile)).toEqual(['pr checks 123 --watch', 'pr merge 123 --squash']);
+    expect(readCalls(gitCallsFile)).toEqual([
+      'fetch origin --tags',
+      `tag -a v${VERSION} ${MERGE_OID} -m Agent Deck ${VERSION}`,
+      `push origin v${VERSION}`,
+    ]);
+  });
+
+  it('resumes a MERGED PR at the tag step without merging again', () => {
+    const { env, gitCallsFile, ghCallsFile } = installFinishStubs({ prState: 'MERGED' });
+    const result = runFinish(env);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('already MERGED');
+    expect(result.stdout).toContain('resuming at the tag step');
+    expect(readCalls(ghCallsFile)).toEqual([]);
+    expect(readCalls(gitCallsFile)).toEqual([
+      'fetch origin --tags',
+      `tag -a v${VERSION} ${MERGE_OID} -m Agent Deck ${VERSION}`,
+      `push origin v${VERSION}`,
+    ]);
+  });
+
+  it('re-running after the tag exists only ensures the push', () => {
+    const { env, gitCallsFile } = installFinishStubs({ prState: 'MERGED', tagExists: true, tagTarget: MERGE_OID });
+    const result = runFinish(env);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('already exists on the merge commit');
+    expect(readCalls(gitCallsFile)).toEqual(['fetch origin --tags', `push origin v${VERSION}`]);
+  });
+
+  it('refuses to move a tag pointing at another commit', () => {
+    const { env, gitCallsFile } = installFinishStubs({ prState: 'MERGED', tagExists: true, tagTarget: OTHER_OID });
+    const result = runFinish(env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('refusing to move it');
+    expect(readCalls(gitCallsFile)).toEqual(['fetch origin --tags']);
+  });
+
+  it('refuses a CLOSED PR', () => {
+    const { env, gitCallsFile, ghCallsFile } = installFinishStubs({ prState: 'CLOSED' });
+    const result = runFinish(env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('is CLOSED, not OPEN');
+    expect(readCalls(ghCallsFile)).toEqual([]);
+    expect(readCalls(gitCallsFile)).toEqual([]);
+  });
+
+  it('falls back to the main tip when gh reports no merge commit', () => {
+    const { env, gitCallsFile } = installFinishStubs({ prState: 'MERGED', mergeCommitJson: '{}' });
+    const result = runFinish(env);
+    expect(result.status).toBe(0);
+    expect(readCalls(gitCallsFile)).toEqual([
+      'fetch origin --tags',
+      `tag -a v${VERSION} ${MAIN_OID} -m Agent Deck ${VERSION}`,
+      `push origin v${VERSION}`,
+    ]);
+  });
+
+  it('refuses to tag when the merge commit is not the Ship commit', () => {
+    const { env, gitCallsFile } = installFinishStubs({ prState: 'MERGED', subject: 'Unrelated change' });
+    const result = runFinish(env);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`not the Ship ${VERSION} commit`);
+    expect(readCalls(gitCallsFile)).toEqual(['fetch origin --tags']);
+  });
+});
+
 describe('sync-versions.mjs', () => {
   const ALL_MANIFESTS = ['package.json', ...WORKSPACE_MANIFESTS];
 

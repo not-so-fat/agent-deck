@@ -16,7 +16,7 @@ owner approving the `npm` environment on GitHub.
 
 1. `npm run release:prepare -- <patch|minor|major|X.Y.Z> --summary "<why>"` from a clean, up-to-date `main` — versions, pins, `server.json`, lockfile and `CHANGELOG.md` in one pass, then `build:release`, then branch `release/X.Y.Z` with one `Ship X.Y.Z: <why>` commit, pushed with an open PR.
 2. Review the release PR (CI, including `release:check`, must be green).
-3. `npm run release:finish` from the `release/X.Y.Z` branch — waits for CI, squash-merges, tags the merge commit `vX.Y.Z` and pushes the tag. This starts `release.yml`; finish never publishes and never creates the GitHub Release.
+3. `npm run release:finish` from the `release/X.Y.Z` branch — waits for CI, squash-merges, tags the merge commit `vX.Y.Z` and pushes the tag. This starts `release.yml`; finish never publishes and never creates the GitHub Release. Safe to re-run after the merge: it resumes at the tag step.
 4. **Human:** approve the `npm` environment on GitHub.
 5. **Agent:** watch the workflow to green, then verify `npm view` shows `X.Y.Z` for `@agent-deck/shared`, `@agent-deck/backend` and `@agent-deck/cli`. The workflow creates the GitHub Release from the `CHANGELOG.md` section.
 
