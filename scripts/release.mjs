@@ -4,7 +4,7 @@
  *
  *   npm run release:prepare -- <patch|minor|major|X.Y.Z> --summary "<why>" [--dry]
  *   npm run release:finish
- *   npm run release:check
+ *   npm run release:check [--root DIR]
  *
  * prepare cuts a release/X.Y.Z branch with one Ship commit: it syncs every
  * manifest, internal pin, server.json and lockfile entry, stubs the CHANGELOG
@@ -63,7 +63,7 @@ function usage(exitCode = 1) {
   console.error(`Usage:
   npm run release:prepare -- <patch|minor|major|X.Y.Z> --summary "<why>" [--dry]
   npm run release:finish
-  npm run release:check
+  npm run release:check [--root DIR]
 
 prepare cuts release/X.Y.Z from a clean, up-to-date main: versions, pins,
 server.json, lockfile and CHANGELOG in one pass, then build:release, then a
@@ -75,8 +75,8 @@ check fails on version, pin, server.json, lockfile or changelog drift.`);
   process.exit(exitCode);
 }
 
-function readJson(relativePath) {
-  return JSON.parse(fs.readFileSync(path.join(root, relativePath), 'utf8'));
+function readJson(relativePath, base = root) {
+  return JSON.parse(fs.readFileSync(path.join(base, relativePath), 'utf8'));
 }
 
 function parseSemver(version) {
@@ -145,7 +145,7 @@ function requireGh(command) {
   }
 }
 
-function runCheck() {
+function runCheck(checkRoot = root) {
   const failures = [];
   const ok = (message) => console.log(`[release:check] ok: ${message}`);
   const fail = (message) => {
@@ -156,7 +156,7 @@ function runCheck() {
 
   let expected = null;
   try {
-    expected = readJson('package.json').version;
+    expected = readJson('package.json', checkRoot).version;
   } catch (error) {
     fail(`cannot read package.json version: ${error.message}`);
   }
@@ -172,7 +172,7 @@ function runCheck() {
   for (const manifest of WORKSPACE_MANIFESTS) {
     let version = null;
     try {
-      version = readJson(manifest).version;
+      version = readJson(manifest, checkRoot).version;
     } catch {
       fail(`${manifest} is missing or unreadable`);
       continue;
@@ -188,7 +188,7 @@ function runCheck() {
     let spec = null;
     let unreadable = false;
     try {
-      spec = readJson(manifest).dependencies?.[dep] ?? null;
+      spec = readJson(manifest, checkRoot).dependencies?.[dep] ?? null;
     } catch {
       unreadable = true;
     }
@@ -202,7 +202,7 @@ function runCheck() {
   }
 
   try {
-    const server = readJson('server.json');
+    const server = readJson('server.json', checkRoot);
     if (server.version === expected) {
       ok(`server.json version ${server.version} matches`);
     } else {
@@ -224,7 +224,7 @@ function runCheck() {
   for (const manifest of PLUGIN_MANIFESTS) {
     let version = null;
     try {
-      version = readJson(manifest).version;
+      version = readJson(manifest, checkRoot).version;
     } catch {
       fail(`${manifest} is missing or unreadable`);
       continue;
@@ -237,7 +237,7 @@ function runCheck() {
   }
 
   try {
-    const marketplace = readJson('.claude-plugin/marketplace.json');
+    const marketplace = readJson('.claude-plugin/marketplace.json', checkRoot);
     const plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
     if (plugins.length === 0) {
       fail('.claude-plugin/marketplace.json has no plugins entries');
@@ -257,7 +257,7 @@ function runCheck() {
 
   let lock = null;
   try {
-    lock = readJson('package-lock.json');
+    lock = readJson('package-lock.json', checkRoot);
   } catch {
     fail('package-lock.json is missing or unreadable');
   }
@@ -291,7 +291,7 @@ function runCheck() {
   }
 
   try {
-    const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+    const changelog = fs.readFileSync(path.join(checkRoot, 'CHANGELOG.md'), 'utf8');
     if (changelogHasSection(changelog, expected)) {
       ok(`CHANGELOG.md has a ## ${expected} section`);
     } else {
@@ -591,11 +591,23 @@ if (!command || command === '--help' || command === '-h') {
 } else if (command === 'finish') {
   runFinish(rest);
 } else if (command === 'check') {
-  if (rest.length > 0) {
-    console.error(`[release:check] Unexpected argument: ${rest[0]} (check takes no arguments)`);
+  const rootFlagIndex = rest.indexOf('--root');
+  let checkRoot = root;
+  let extra = rest;
+  if (rootFlagIndex >= 0) {
+    const dir = rest[rootFlagIndex + 1];
+    if (!dir || dir.startsWith('--')) {
+      console.error('[release:check] --root needs a directory.');
+      usage();
+    }
+    checkRoot = path.resolve(dir);
+    extra = rest.filter((_, i) => i !== rootFlagIndex && i !== rootFlagIndex + 1);
+  }
+  if (extra.length > 0) {
+    console.error(`[release:check] Unexpected argument: ${extra[0]} (check takes only --root DIR)`);
     usage();
   }
-  if (!runCheck()) {
+  if (!runCheck(checkRoot)) {
     process.exit(1);
   }
 } else {

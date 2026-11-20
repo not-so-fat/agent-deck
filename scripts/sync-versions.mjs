@@ -9,11 +9,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.join(__dirname, '..');
 
-const version = process.argv[2];
+const rawArgs = process.argv.slice(2);
+const rootFlagIndex = rawArgs.indexOf('--root');
+const root =
+  rootFlagIndex >= 0 && rawArgs[rootFlagIndex + 1] && !rawArgs[rootFlagIndex + 1].startsWith('--')
+    ? path.resolve(rawArgs[rootFlagIndex + 1])
+    : path.join(__dirname, '..');
+const version = rawArgs.find(
+  (a, i) => !a.startsWith('--') && !(rootFlagIndex >= 0 && i === rootFlagIndex + 1),
+);
 if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
-  console.error('Usage: node scripts/sync-versions.mjs <semver>');
+  console.error('Usage: node scripts/sync-versions.mjs [--root DIR] <semver>');
   process.exit(1);
 }
 
