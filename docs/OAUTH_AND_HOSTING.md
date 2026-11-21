@@ -80,7 +80,7 @@ Goal: one small always-on server with TLS for OAuth callbacks (and optionally th
 | Hetzner VPS + Caddy | ~€4–5/mo | Node 24 + TLS |
 | Oracle Cloud free tier | $0 | More setup |
 
-**Runtime on server:** Node **24** (or 20+). See [SETUP.md](./SETUP.md). Set `AGENT_DECK_PUBLIC_URL`, store secrets in env (never in git).
+**Runtime on server:** Node **24** (or 22+). See [SETUP.md](./SETUP.md). Set `AGENT_DECK_PUBLIC_URL`, store secrets in env (never in git).
 
 Minimal env on host:
 

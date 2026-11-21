@@ -8,7 +8,7 @@
 ## Prerequisites
 
 - **macOS** — production Deck secret storage uses macOS Keychain.
-- **Node.js 20+** and **npm** (`node -v` to check).
+- **Node.js 22+** and **npm** (`node -v` to check).
 - **`gh` authenticated** — `gh auth status` must succeed before Dealer can touch GitHub.
 - **One working agent runtime:** Claude Code or Cursor, installed and signed in.
   Runtime install/doctor detail is out of scope here — see the Dealer setup guidance below
@@ -84,7 +84,7 @@ Finish steps 1–4 above first (install, `open`, a small deck, `setup` + `use`);
 
 ### Prerequisites
 
-- **macOS** with **Node.js 20+** (`node -v` to check) — same as the top of this guide.
+- **macOS** with **Node.js 22+** (`node -v` to check) — same as the top of this guide.
 - **Claude Code installed and signed in by the friend.** Sign-in is yours alone: run `claude auth login` on this machine and complete it in your own browser/terminal. Agent Deck never sees, stores, or proxies your Claude credentials.
 - **Steps 1–4 done**: a small deck exists (called `friend` below) and the sample folder is bound to it (`agent-deck use friend` in that folder).
 - **Shell access**: the rule from the top of this section — the orchestrator must be able to run commands on this machine, where Claude Code is signed in. Without that, stop here.

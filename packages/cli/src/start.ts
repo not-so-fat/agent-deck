@@ -855,12 +855,12 @@ export async function runDoctor(options: { daemonHealth?: DaemonHealth } = {}): 
   let ok = true;
 
   console.log(`Node.js ${process.version}`);
-  if (nodeMajor < 20) {
-    console.error('FAIL: Node.js 20+ required (24 recommended — current OS default)');
+  if (nodeMajor < 22) {
+    console.error('FAIL: Node.js 22+ required (24 recommended — current OS default)');
     ok = false;
   } else if (!isSupportedNodeMajor(nodeMajor)) {
     console.error('FAIL: Unsupported Node.js major for better-sqlite3 prebuilds');
-    console.error('     Use Node 20+; Node 24 is the default target');
+    console.error('     Use Node 22+; Node 24 is the default target');
     ok = false;
   } else {
     console.log('OK: Node.js version');
