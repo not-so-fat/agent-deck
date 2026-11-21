@@ -56,7 +56,7 @@ Two rules keep releases reproducible:
 
 ## Prerequisites
 
-- Node.js **24** (or **20+**) on the machine preparing the release ([SETUP.md](./SETUP.md#nodejs-version-policy))
+- Node.js **24** (or **22+**) on the machine preparing the release ([SETUP.md](./SETUP.md#nodejs-version-policy))
 - No npm login for a normal release — publishing happens in GitHub Actions
   with OIDC. (`npm login` + OTP is only needed for the
   [manual fallback](#manual-fallback-local-publish).)
