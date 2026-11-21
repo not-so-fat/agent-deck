@@ -295,21 +295,21 @@ The daemon must be running (`agent-deck start --daemon`); a refused connection a
 
 ## Client compatibility
 
-Installed CLI versions were verified on the agent box on **2026-11-21**,
-against the **Agent Deck 2.6.0** documentation baseline. The version checks
-only confirm what is installed. Live MCP and delegation smoke tests for
-these exact builds, and the Cursor desktop build, were **not verified**.
+The table records installed CLI versions reported by `--version` on the
+agent box, with Agent Deck 2.6.0 as the documentation baseline.
+MCP connection and delegation were not live-tested for these exact builds,
+and the Cursor desktop version is unknown.
 The [setup code](../packages/cli/src/setup.ts) and
 [config resolver](../packages/shared/src/utils/mcp-config.ts) define the
 connection paths. See [Delegation](./DELEGATION.md#clients-at-a-glance) for
 sign-in and run details and [Folder pins](./MONOREPO_SCOPE.md#folder-pins)
 for project binding.
 
-| Client | Global setup and config | Minimum client version | Installed version, 2026-11-21 | Known limitations |
+| Client | Global setup and config | Minimum client version | Installed on agent box (2026-11-21) | Known limitations |
 |---|---|---|---|---|
 | Claude Code | `agent-deck setup --client claude` · streamable HTTP · `~/.claude.json` | None enforced or documented | `2.1.327` | A pinned project uses `.mcp.json` and may need approval. Runs use the Agent SDK and resume with its `session_id`. The adapter passes no workspace trust override. |
 | Codex | `agent-deck setup --client codex` · streamable HTTP · `~/.codex/config.toml` | None enforced or documented | `codex-cli 0.169.0` | Trust the project to load `.codex/config.toml`. Run resume uses a thread UUID from an Agent Deck run with the same deck, canonical workspace, and tool profile. The adapter skips the Git repo check only outside a Git worktree. |
-| Cursor | `agent-deck setup --client cursor` · streamable HTTP · `~/.cursor/mcp.json` | None enforced or documented | `cursor-agent 2026.11.17-f532c45` (desktop not verified) | Enable a pinned project server in Tools & MCP. Runs pass `--trust`, resume with a chat ID, and deliver JSON output at process exit. |
+| Cursor | `agent-deck setup --client cursor` · streamable HTTP · `~/.cursor/mcp.json` | None enforced or documented | `cursor-agent 2026.11.17-f532c45` | Enable a pinned project server in Tools & MCP. Runs pass `--trust`, resume with a chat ID, and deliver JSON output at process exit. |
 | Muse | `agent-deck setup --client muse` · streamable HTTP · `$XDG_CONFIG_HOME/muse/settings.json` or `~/.config/muse/settings.json` | No numeric minimum. Readonly runs require `--disable-write` and `--disable-shell` support. | `Muse Code 1.4.24 (1.4.24-R9131.1)` | Setup installs four managed bootstrap skills. Trust the project to load its `.mcp.json`, then restart Muse and check `/mcp`. Runs pass no trust override and resume with a session UUID. |
 
 When a client changes, capture its exact `--version` output, the date, and
