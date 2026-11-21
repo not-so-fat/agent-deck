@@ -65,6 +65,21 @@ async function writeDeck(home: string, id: string, name: string): Promise<void> 
   );
 }
 
+/**
+ * `runDoctor` also inspects the host's Claude/Codex/Cursor/Muse config and
+ * runs `codex`. Point all of that at an empty temp home so the test does not
+ * depend on (or slow down with) whatever the machine running it has installed.
+ */
+async function isolateHostConfig(): Promise<void> {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-cli-doctor-home-'));
+  tempDirs.push(home);
+  setEnv('HOME', home);
+  setEnv('USERPROFILE', home);
+  setEnv('CODEX_HOME', path.join(home, '.codex'));
+  setEnv('XDG_CONFIG_HOME', path.join(home, '.config'));
+  setEnv('CODEX_BIN', path.join(home, 'no-codex'));
+}
+
 function captureConsole(): { lines: string[]; restore: () => void } {
   const lines: string[] = [];
   const record = (...args: unknown[]) => {
@@ -177,6 +192,7 @@ describe('status and doctor after a failed reindex', () => {
 
   it('fails doctor and reports the error text', async () => {
     const { error } = await createFailedReindex();
+    await isolateHostConfig();
 
     const captured = captureConsole();
     let code: number;
