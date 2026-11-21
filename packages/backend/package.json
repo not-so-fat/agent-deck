@@ -48,7 +48,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22"
   },
   "scripts": {
     "build": "node --max-old-space-size=8192 ../../node_modules/typescript/bin/tsc",

@@ -8,18 +8,18 @@ Canonical install and environment reference. For OAuth / hosting / Slack confusi
 
 - **Git**
 - **npm** (comes with Node)
-- **Node.js 24** (typical OS default) or **Node 20+** — see below
+- **Node.js 24** (typical OS default) or **Node 22+** — see below
 
 ## Node.js version policy
 
 | | |
 |--|--|
 | **Default (use this)** | **Node 24.x** — current OS / Homebrew / nvm default on new machines |
-| **Minimum supported** | Node **20.0.0** (`engines` in all packages) |
-| **Also supported** | 20, 22, 23, 24, 25, 26 (with matching `better-sqlite3` build) |
-| **Optional nvm hint** | `.nvmrc` → `24` (only if you use nvm; **not** a downgrade to 20) |
+| **Minimum supported** | Node **22** (`engines` in all packages). Node 20 reached end-of-life in April 2026 and is no longer supported. |
+| **Also supported** | 22, 23, 24, 25, 26 (with matching `better-sqlite3` build) |
+| **Optional nvm hint** | `.nvmrc` → `24` (only if you use nvm; **not** a downgrade to 22) |
 
-Agent Deck does **not** require Node 20. We upgraded `better-sqlite3` (v12+) so current Node releases work with prebuilds. **Node 24 is what we develop and test against first** because that is what users already have.
+We upgraded `better-sqlite3` (v12+) so current Node releases work with prebuilds. **Node 24 is what we develop and test against first** because that is what users already have.
 
 ### Check your version
 
@@ -28,8 +28,8 @@ node -v
 ```
 
 - `v24.x.x` — expected default; no action needed
-- `v20.x.x` — supported; run `npm install` on that version
-- Anything below 20 — upgrade Node
+- `v22.x.x` — supported; run `npm install` on that version
+- Anything below 22 (including Node 20) — upgrade Node
 
 ### nvm users (optional)
 
@@ -59,7 +59,7 @@ npm rebuild better-sqlite3
 
 ### Production / hosted backend
 
-Use **Node 24** (`node:24-alpine` or current LTS on your host). Node 20 remains valid if your infra pins it — run the same install/rebuild on that runtime.
+Use **Node 24** (`node:24-alpine` or current LTS on your host). Node 22 remains valid if your infra pins it — run the same install/rebuild on that runtime. Node 20 is not supported.
 
 ---
 

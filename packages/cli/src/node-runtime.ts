@@ -2,8 +2,8 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { getCliPackageRoot, resolveBackendRoot } from './paths';
 
-/** Node majors we test against. 24 is the default target; 20+ remains supported. */
-const SUPPORTED_NODE_MAJORS = [20, 22, 23, 24, 25, 26] as const;
+/** Node majors we test against. 24 is the default target; 22+ is supported (Node 20 is end-of-life). */
+const SUPPORTED_NODE_MAJORS = [22, 23, 24, 25, 26] as const;
 const PREFERRED_NODE_MAJOR = 24;
 
 export function getNodeMajor(): number {
@@ -13,7 +13,7 @@ export function getNodeMajor(): number {
 export function formatNodeVersionError(): string {
   const major = getNodeMajor();
   return [
-    `Agent Deck requires Node.js 20+ (you are on ${process.version}).`,
+    `Agent Deck requires Node.js 22+ (you are on ${process.version}).`,
     `Default / recommended: Node ${PREFERRED_NODE_MAJOR} (current OS standard).`,
     '',
     `  node -v`,

@@ -6,7 +6,7 @@ export AGENT_DECK_HOME="${AGENT_DECK_HOME:-$HOME/.agent-deck}"
 mkdir -p "$HOME/.local/bin"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js 20+ is required. Install from https://nodejs.org/ then re-run." >&2
+  echo "Node.js 22+ is required. Install from https://nodejs.org/ then re-run." >&2
   exit 1
 fi
 

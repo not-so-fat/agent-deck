@@ -12,7 +12,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22"
   },
   "mcpName": "io.github.not-so-fat/agent-deck",
   "repository": {

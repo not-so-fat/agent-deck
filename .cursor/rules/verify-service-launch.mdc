@@ -13,6 +13,6 @@ After changes that touch backend, frontend, MCP, CLI, or dev scripts:
    - Backend: `curl http://127.0.0.1:8000/health` and at least one changed route (e.g. `/api/credentials`).
    - Full stack: `bash scripts/smoke-dev.sh` from repo root.
 4. **Save output** to `.temporal/logs/` when debugging launch issues.
-5. **Node 24** is the default target; **Node 20+** supported. See `docs/SETUP.md`. Rebuild `better-sqlite3` if you switch Node major.
+5. **Node 24** is the default target; **Node 22+** supported (Node 20 is end-of-life and no longer supported). See `docs/SETUP.md`. Rebuild `better-sqlite3` if you switch Node major.
 
 Do not mark implementation complete until launch smoke passes or you report the exact failure and blocker.
