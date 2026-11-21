@@ -1,4 +1,7 @@
 ---
+
+> **Historical (2026-06-30)** — This record captures an earlier design, proposal, or verification run. See [the current guide](AGENT_HARNESS.md) for shipped behavior.
+
 playbooks: pb_ai_codegen_prd, pb_product_principle
 ---
 

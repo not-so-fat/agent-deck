@@ -1,5 +1,8 @@
 # Trigger count grandfather (update path) — Design
 
+> **Historical (2026-07-29)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Approved  
 **Date:** 2026-07-29  
 **Related:** [trigger-conflict-detection](./2026-07-12-trigger-conflict-detection-design.md), file-backed store migrate (store codecs already uncapped)

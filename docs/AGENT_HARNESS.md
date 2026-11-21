@@ -4,7 +4,6 @@
 **Status:** Installed automatically by `agent-deck setup`  
 **Related:** [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md), [examples/agent-harness/](./examples/agent-harness/)
 
-> **Switching contract:** deck-switching via admin elevation described here is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204).
 
 Agent Deck exposes **tools** (MCP). Your agent’s **control plane** (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`) teaches *how* to use them. Setup treats the harness as a **required install step** alongside host MCP configuration where applicable. For Codex, setup writes the global headerless HTTP fallback and merges the harness; the plugin supplies skills, not transport. Agent Deck can run without the harness, but the intended workflow always installs it.
 
@@ -38,7 +37,6 @@ Ordinary IDE folders need no per-folder step: the host session binds the default
 
 **Muse.** `agent-deck setup --client muse` once (global headerless HTTP fallback + native bootstrap skills; full flow under [What `setup` installs](#what-setup-installs)). No per-repo step is needed — sessions bind the default deck; an existing `agent-deck use my-deck` pin (plain or `--client muse` — both write the identical headed HTTP entry) stays valid and keeps precedence. `agent-deck setup --client muse --scope project` writes the same headed HTTP `.mcp.json` entry and merges root `AGENTS.md` (trust the workspace so Muse loads it). Legacy note: folders assigned by an older `use --client muse` may still hold a legacy launcher project entry, which Muse rejects against the HTTP user entry — `agent-deck upgrade` converts it (or re-run `use`). Trust the folder, then **start a new Muse process** (restart Muse) after setup so the entry loads, then `/mcp` should show `agent-deck`. First turn: the agent calls `get_session_context` once and shows exactly one verbatim `display_summary` line. Muse has no Agent Deck status line or plugin install — the transcript receipt is the binding record.
 
-If you use `use` and accept playbook patches that change **triggers**, run `agent-deck use --refresh` in that repo (or ask the agent to).
 
 ---
 

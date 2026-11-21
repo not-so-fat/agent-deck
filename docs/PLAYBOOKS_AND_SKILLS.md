@@ -1,8 +1,8 @@
 # Playbooks vs Cursor Skills
 
 **Audience:** Product, implementers, and agents extending Agent Deck  
-**Status:** Design guidance (as-built MVP)  
-**Related:** [MVP.md](./MVP.md) Module 3, [examples/playbooks/](./examples/playbooks/)
+**Status:** Current design guidance
+**Related:** [architecture](./ARCHITECTURE.md#decks-and-cards), [examples/playbooks/](./examples/playbooks/)
 
 Agent Deck **playbooks** and Cursor **skills** overlap in surface area (both can hold markdown instructions) but solve different problems. This doc explains when to use each and how they fit together so we do not duplicate content blindly or collapse two systems into one by accident.
 
@@ -13,12 +13,12 @@ Agent Deck **playbooks** and Cursor **skills** overlap in surface area (both can
 | | **Cursor Skill** | **Agent Deck Playbook** |
 |---|------------------|-------------------------|
 | **Question it answers** | *How should the agent behave in this repo?* | *What procedure should run on this deck, with which connections?* |
-| **Primary home** | Repo file (e.g. `.cursor/skills/…/SKILL.md`) | SQLite card in My Collection (`pb_*`) |
+| **Primary home** | Repo file (e.g. `.cursor/skills/…/SKILL.md`) | File-backed card in My Collection (`pb_*`) |
 | **Discovery** | Cursor skill system (when relevant) | MCP on bound deck (`get_bound_deck` playbook summaries, `get_playbook`) + **[agent harness](./AGENT_HARNESS.md)** (CLAUDE.md / Cursor rules) |
 | **Scoped to a deck** | No | Yes — card linked via dashboard |
 | **Tied to creds / MCPs** | No dependency graph | Yes — `dependsOnCredentialIds`, `dependsOnServiceIds`, auto-detect |
 
-**MVP explicitly does not replace Cursor skill loading.** Playbooks complement skills; they do not supersede them.
+**Use skills for host or repository guidance.** Use playbooks for procedures shared through a deck.
 
 ---
 
@@ -172,7 +172,7 @@ When adding features, preserve the distinction: **skills = behavior in repo; pla
 
 ## Related docs
 
-- [MVP.md](./MVP.md) — Module 3 playbooks, non-goal “replacing Cursor skill loading”
+- [Architecture](./ARCHITECTURE.md) — decks and cards
 - [MONOREPO_SCOPE.md](./MONOREPO_SCOPE.md) — playbooks are cards, not repo paths
 - [examples/playbooks/](./examples/playbooks/) — sample content for registration
   - [user-path-integration-smoke.md](./examples/playbooks/user-path-integration-smoke.md) — **generic** pre-release user-path gate (any project)

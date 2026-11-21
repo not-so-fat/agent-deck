@@ -1,5 +1,8 @@
 # Trigger Hygiene & Conflict Detection — Design
 
+> **Historical (2026-07-12)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Proposed
 **Sources:** [2026-07-11-architecture-revisit-triggering-learning-loop.md](./2026-07-11-architecture-revisit-triggering-learning-loop.md) (§2 implicit triggering, §5a trigger surfaces), [2026-07-11-playbook-learning-loop-design.md](./2026-07-11-playbook-learning-loop-design.md) (propose-first queue), [2026-07-12-stub-lifecycle-sync-design.md](./2026-07-12-stub-lifecycle-sync-design.md)
 

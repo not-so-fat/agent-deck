@@ -1,5 +1,8 @@
 # MCP card edit headers Implementation Plan
 
+> **Historical (2026-08-03)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let users view and edit remote MCP `service.headers` on the service details card (always visible), saving via existing `PUT /api/services/:id`.

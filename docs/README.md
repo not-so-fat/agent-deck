@@ -1,79 +1,30 @@
-# Documentation index
+# Agent Deck documentation
 
-**Entry:** [README](../README.md) · **Shipped scope:** [MVP.md](./MVP.md) · **Direction:** [DIRECTION.md](./DIRECTION.md)
+Start with the [project README](../README.md) for a quick install or the
+[architecture overview](./ARCHITECTURE.md) for the current design. The guides
+below describe Agent Deck 2.6 unless a section names another version.
 
----
+| I want to… | Read |
+|---|---|
+| Install, connect a client, or fix a connection | [Setup](./SETUP.md), [Agent harness](./AGENT_HARNESS.md), [Friend path](./FRIEND_PATH.md) |
+| Understand which deck a session uses | [Binding and monorepos](./MONOREPO_SCOPE.md), [MCP session lifecycle](./MCP_SESSION_LIFECYCLE.md) |
+| Teach or revise a procedure | [Playbooks and skills](./PLAYBOOKS_AND_SKILLS.md), [Playbook skill](../skills/agent-deck-playbooks/SKILL.md), [Examples](./examples/playbooks/) |
+| Follow the end-to-end workflows | [User flows](./USER_FLOWS.md) |
+| Connect a service or configure OAuth | [OAuth and hosting](./OAUTH_AND_HOSTING.md), [Slack app setup](./SLACK_OAUTH_APP.md), [Deployment](./DEPLOYMENT.md) |
+| Inspect or sync portable deck files | [Store format](./STORE_FORMAT.md) |
+| Delegate as an agent | [Run skill](../skills/agent-deck-run/SKILL.md), [MCP run tools](./MCP_RUN_TOOLS.md) |
+| Operate runs from the host | [Per-client delegation reference](./DELEGATION.md), [Agent run HTTP API](./AGENT_RUN_API.md), [Card usage correlation](./CARD_USAGE_CORRELATION.md) |
+| Build an evaluation from feedback | [Evaluation API](./EVALUATION_SCENARIOS_API.md), [Experiment examples](./examples/experiments/) |
+| Develop or test Agent Deck | [Development](./DEVELOPMENT.md), [Testing](./TESTING.md) |
+| Host or release Agent Deck | [Deployment](./DEPLOYMENT.md), [Publishing](./PUBLISHING.md), [Security](../SECURITY.md) |
 
-## Layout
+## Design history and migration
 
-| Location | Use |
-|----------|-----|
-| `docs/*.md` | Flat files only — one topic per file |
-| `docs/decisions/` | ADRs (why X, what we deferred) |
-| `docs/examples/` | Templates for registration / harness — not auto-loaded |
-
-**Naming:** `MVP.md` (shipped) · `PRD_*` (proposed) · `*_REQUIREMENTS` / `*_STRATEGY` / `*_WORKAROUND` (domain)
-
-**Rule:** One owner per fact. MCP tools & agent behavior → **MVP only**. Others link.
-
----
-
-## Core (read these)
-
-| Doc | Role |
-|-----|------|
-| [DIRECTION.md](./DIRECTION.md) | Cross-product direction (agent_deck + agent-dealer), locked decisions, roadmap |
-| [MVP.md](./MVP.md) | Shipped product — bound deck, vault, playbooks, MCP tools |
-| [USER_FLOWS.md](./USER_FLOWS.md) | Typical end-to-end user flows (F1–F10) — the sequence; owner docs hold the details |
-| [SETUP.md](./SETUP.md) | Install, ports, data dirs, **dashboard** tour |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | Components, SQLite, secret storage |
-| [STORE_FORMAT.md](./STORE_FORMAT.md) | File-backed store layout, Git sync, reindex |
-| [DEVELOPMENT.md](./DEVELOPMENT.md) | Clone, test, contribute |
-| [TESTING.md](./TESTING.md) | FE / BE / MCP / CLI test map + integration scenarios |
-| [LEARNING_LOOP_TEST_SCENARIOS.md](./LEARNING_LOOP_TEST_SCENARIOS.md) | Manual QA — proposal queue, stubs, self-improvement |
-| [AGENT_HARNESS.md](./AGENT_HARNESS.md) | What `agent-deck setup` installs |
-| [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md) | Playbooks vs Cursor skills |
-| [MONOREPO_SCOPE.md](./MONOREPO_SCOPE.md) | Session binding in monorepos |
-| [PUBLISHING.md](./PUBLISHING.md) | npm release, distribution |
-| [CODEX_PLUGIN.md](./CODEX_PLUGIN.md) | Codex / Claude / HOL marketplace packaging |
-| [CARD_USAGE_CORRELATION.md](./CARD_USAGE_CORRELATION.md) | Card-usage stream + opaque run-correlation id (coordinator matching) |
-
-## Proposed features
-
-| Doc | Topic |
-|-----|-------|
-| [PRD_EXPORT_IMPORT.md](./PRD_EXPORT_IMPORT.md) | Bundle migration |
-| [PRD_DECK_DISPLAY.md](./PRD_DECK_DISPLAY.md) | Status line / deck visibility |
-| [decisions/installation-no-bypass.md](./decisions/installation-no-bypass.md) | Setup so agents use MCP playbooks |
-
-## OAuth & providers
-
-| Doc | Role |
-|-----|------|
-| [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) | Redirect URIs, local vs hosted |
-| [OAUTH_REQUIREMENTS.md](./OAUTH_REQUIREMENTS.md) | Product OAuth requirements |
-| [MCP_INTEGRATION_STRATEGY.md](./MCP_INTEGRATION_STRATEGY.md) | Tiers, deferred work |
-| [MCP_TOOL_OPTIMIZATION.md](./MCP_TOOL_OPTIMIZATION.md) | Proposed MCP tool surface reduction (link/unlink design) |
-| [SLACK_OAUTH_APP.md](./SLACK_OAUTH_APP.md) | Maintainer Slack app |
-| [SLACK_READ_WORKAROUND.md](./SLACK_READ_WORKAROUND.md) | Slack read without official MCP |
-| [GOOGLE_DRIVE_WORKAROUND.md](./GOOGLE_DRIVE_WORKAROUND.md) | Local Google Drive MCP |
-| [decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md) | Stytch broker ADR |
-
-## Examples
-
-| Path | Purpose |
-|------|---------|
-| [examples/playbooks/](./examples/playbooks/) | Sample playbook bodies |
-| [examples/agent-harness/](./examples/agent-harness/) | Harness templates for `setup` |
-| [examples/grok-agent.mcp.json](./examples/grok-agent.mcp.json) | Grok/xAI remote MCP: URL + per-agent `x-agent-deck-deck-id` ([SETUP](./SETUP.md#grok-agents--per-agent-default-deck-not-298)) |
-
----
-
-## Maintenance
-
-1. **Shipped behavior changes** → [MVP.md](./MVP.md) (+ [SETUP.md](./SETUP.md) / [README](../README.md) if user-visible)
-2. **New feature** → `PRD_*` until merged into MVP
-3. **Non-obvious decision** → `docs/decisions/`
-4. **No new top-level file** without removing or merging an old one
-
-Removed 2026-06-30 (content absorbed above): `INTEGRATION.md`, `USER_GUIDE.md`, `FRONTEND_INTEGRATION_PLAN.md`.
+- [MCP launcher migration](./MCP_LAUNCH_MIGRATION.md) covers older host entries.
+- [MVP spec](./MVP.md), [product direction](./DIRECTION.md),
+  [connection designs](./design/), [decision records](./decisions/), and
+  [dated implementation specs, plans, and smoke notes](./superpowers/) record
+  past decisions or proposals. Use the architecture and task guides above for
+  shipped behavior.
+- The PRDs and QA reports remain at their original paths so issue links and
+  evidence still resolve.

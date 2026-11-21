@@ -1,5 +1,8 @@
 # Codex Plugin & HOL Marketplace — Design / Implementation Guide
 
+> **Historical (2026-07-19)** — This record captures an earlier design, proposal, or verification run. See [the current guide](AGENT_HARNESS.md) for shipped behavior.
+
+
 **Goal:** get Agent Deck listed in [hashgraph-online/awesome-codex-plugins](https://github.com/hashgraph-online/awesome-codex-plugins) (invited by the HOL CEO), packaged so the same bundle also serves Claude Code and Cursor users.
 
 **Status:** Option A implemented (monorepo root) · local `plugin-scanner` **100/100**, zero high/critical · HOL awesome-list PR pending green scanner CI on `main` · owner: not-so-fat · created 2026-07-18 · as-built 2026-07-19

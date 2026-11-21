@@ -1,5 +1,8 @@
 # Managed CLI install + auto-upgrade (agent-deck P1) Implementation Plan
 
+> **Historical (2026-07-30)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship managed home install for agent-deck — version trees under `~/.agent-deck/versions/`, stable `~/.local/bin/agent-deck` launcher, auto-update on by default (download in background, activate on next CLI entry except statusline/menubar), with zero data migration for existing users.

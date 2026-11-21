@@ -1,5 +1,8 @@
 # Feedback signals — data-table redesign
 
+> **Historical (2026-07-22)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-07-22 · **Status:** Approved for implementation · **Supersedes (UI/lifecycle slice of):** [PRD_FEEDBACK_ACCUMULATION.md](../../PRD_FEEDBACK_ACCUMULATION.md) v1 backlog-on-patches UX
 
 **Problem:** The first ship parked an “unreviewed backlog” panel on the playbook-patches page. That treats feedback as a side queue for patches, not as durable correction data for playbook enhancement. Users need to filter by playbook, keep history (open / actioned / discarded), avoid duplicating work when a proposal is already open, and hand selected rows (with ids) to an external agent for propose.

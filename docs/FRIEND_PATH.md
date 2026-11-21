@@ -44,13 +44,11 @@ Verify: the new deck appears under **My Decks**.
 
 ```bash
 agent-deck setup --client claude   # --client one of claude|codex|cursor|muse (once per machine)
-cd /path/to/a/sample/repo
-agent-deck use friend
+agent-deck default friend
 ```
 
 Restart the host after `setup` so it picks up the Agent Deck connection.
-Verify: terminal agents show `◆ friend · …` in the footer.
-Cursor IDE chat has no status-line badge (terminal status line only) — there, ask the agent which deck is bound to this workspace and confirm it answers `friend`.
+Open a fresh chat and check that its first-turn receipt names `friend`. If an existing folder pin selects a different deck, ask to switch to `friend` and approve the request.
 
 ## 5. Install Dealer, check `gh`, configure agents
 
@@ -78,7 +76,7 @@ Verify: the issue appears in the Dealer queue — open it to see it in the timel
 
 Whoever drives the commands below — a cloud orchestrator with local shell access, or the friend's own terminal — must be able to run commands on the machine where Claude Code is signed in. Delegated execution is local-only: an orchestrator that cannot reach that machine's shell is out of scope for this path, and there is no remote runner to fall back to.
 
-Finish steps 1–4 above first (install, `open`, a small deck, `setup` + `use`); Dealer steps 5–6 are not needed here. What follows is the friend-side half: one `agent-deck run` launched detached, checked with `status` and `log`, then resumed once. This is the operator's host-terminal path (installation check, diagnostics, recovery). An orchestrating agent does not drive these commands: it delegates through Agent Deck MCP (`start_run`, `get_run`, `cancel_run`) as described in the `agent-deck-run` skill and [DELEGATION.md](./DELEGATION.md#agent-operated-delegation-is-mcp-the-host-cli-is-exceptional).
+Finish steps 1–4 above first (install, `open`, a small deck, `setup` + `default`); Dealer steps 5–6 are not needed here. What follows is the friend-side half: one `agent-deck run` launched detached, checked with `status` and `log`, then resumed once. This is the operator's host-terminal path (installation check, diagnostics, recovery). An orchestrating agent does not drive these commands: it delegates through Agent Deck MCP (`start_run`, `get_run`, `cancel_run`) as described in the `agent-deck-run` skill and [DELEGATION.md](./DELEGATION.md#agent-operated-delegation-is-mcp-the-host-cli-is-exceptional).
 
 `agent-deck run` accepts `--client claude`, `--client codex`, `--client cursor`, or `--client muse`; the worked example below uses `claude`.
 

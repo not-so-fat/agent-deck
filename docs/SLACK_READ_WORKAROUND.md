@@ -1,5 +1,8 @@
 # Slack read-only workaround (skip official MCP)
 
+> **Historical (2026-06-28)** — This record captures an earlier design, proposal, or verification run. See [the current guide](OAUTH_AND_HOSTING.md) for shipped behavior.
+
+
 When the goal is **read recent DMs + channels** without `mcp.slack.com`. **Big picture:** [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md).
 
 Official Slack MCP imposes: registered app, MCP toggle, public distribution / Marketplace, confidential OAuth. That’s built for Slack’s partner-scale remote MCP product—not for “let my agent read my threads.”

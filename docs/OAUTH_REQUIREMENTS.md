@@ -1,5 +1,8 @@
 # OAuth requirements for Agent Deck
 
+> **Historical (2026-06-28)** — This record captures an earlier design, proposal, or verification run. See [the current guide](OAUTH_AND_HOSTING.md) for shipped behavior.
+
+
 **Purpose:** One place to understand why third-party MCP is hard for a new product, what OAuth Agent Deck must provide, what each vendor expects, and what you must ship for **one-click Slack** (including marketplace registration).
 
 **As-built decision (2025):** Managed Slack OAuth (Stytch broker, hosted callback, shared app one-click) is **deferred**. See [decisions/slack-oauth-stytch-deferred.md](./decisions/slack-oauth-stytch-deferred.md) for the full spike notes and architecture. **Ship today:** auto OAuth (Linear/Notion), BYO OAuth (Slack/Google/GitHub), honest fallbacks.

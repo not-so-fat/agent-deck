@@ -1,5 +1,8 @@
 # Playbook Stub Sync on Bind — Design
 
+> **Historical (2026-07-12)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 > **Switching contract:** stub regeneration on `switch_bound_deck` and the IDE reload note in this spec are **superseded by** [Session/default deck-switching redesign](./2026-09-20-session-deck-switching-redesign.md) (NOT-204), which excludes stub regeneration and IDE reload from the switch path.
 
 **Date:** 2026-07-12 · **Status:** Draft for review · **Scope:** agent_deck core (shared stub module + MCP bind + patch accept)

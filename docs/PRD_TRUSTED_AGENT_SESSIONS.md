@@ -1,4 +1,7 @@
 ---
+
+> **Historical (2026-08-30)** — This record captures an earlier design, proposal, or verification run. See [the current guide](MONOREPO_SCOPE.md) for shipped behavior.
+
 status: shipped
 linear: NOT-45
 related: NOT-44, NOT-105, NOT-108

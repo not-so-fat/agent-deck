@@ -1,5 +1,8 @@
 # Playbook Learning Loop — Proposal Queue Design
 
+> **Historical (2026-07-11)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-07-11 · **Status:** Draft for review · **Scope:** agent_deck core + small agent-dealer change
 
 **Problem:** Corrections given to agents during business tasks are almost never converted into playbook improvements. Evidence: 18 playbooks in the live DB, ~2 ever updated after creation, despite daily corrections. Root causes: (1) the self-improvement rule only covers sessions that already fetched a playbook (genesis gap), (2) the trigger is agent-memory-dependent, (3) the correction signal is never persisted, (4) no versioning/review rail exists to make higher write volume safe.
@@ -13,7 +16,7 @@
 - **Tiny genesis is valid:** title + trigger + one gotcha is an acceptable new-playbook proposal.
 - Lightweight **usage logging** (fetch counts) to measure undertriggering — no A′ architecture dependency; `get_playbook` already transits backend REST.
 
-**Manual QA:** [LEARNING_LOOP_TEST_SCENARIOS.md](../LEARNING_LOOP_TEST_SCENARIOS.md) · seed: `node .temporal/scripts/seed-dev-learning-loop.mjs`
+**Manual QA:** [LEARNING_LOOP_TEST_SCENARIOS.md](../../LEARNING_LOOP_TEST_SCENARIOS.md) · seed: `node .temporal/scripts/seed-dev-learning-loop.mjs`
 
 Related direction: extends DIRECTION.md Phase 1 (D3 learning loop). The per-deck-endpoint architecture (A′) is a separate future spec; nothing here depends on it, and everything here survives it.
 

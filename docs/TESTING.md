@@ -1,9 +1,9 @@
 # Testing map (FE / BE / MCP / CLI)
 
 **Status:** Living map — fill **Integration scenarios** with product owner input  
-**Related:** [DEVELOPMENT.md](./DEVELOPMENT.md), [MCP_TOOL_OPTIMIZATION.md](./MCP_TOOL_OPTIMIZATION.md), playbook [user-path-integration-smoke.md](./examples/playbooks/user-path-integration-smoke.md)
+**Related:** [DEVELOPMENT.md](./DEVELOPMENT.md), [Architecture](./ARCHITECTURE.md), playbook [user-path-integration-smoke.md](./examples/playbooks/user-path-integration-smoke.md)
 
-How we test Agent Deck today, what is missing after the 1.3.0 MCP tool surface change, and how we should grow tests without over-building.
+Use this map to find the test layer and the isolation controls. The 1.3.0 gap list below records the coverage assessment at that release.
 
 ---
 
@@ -155,7 +155,7 @@ Hosts (Cursor / Claude) are **not** in CI. Treat MCP as a **protocol server** we
 
 ---
 
-## Gaps after 1.3.0 (priority)
+## Historical coverage assessment (v1.3.0)
 
 | Priority | Gap | Suggested home |
 |----------|-----|----------------|

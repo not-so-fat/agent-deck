@@ -1,5 +1,8 @@
 # Decision: defer managed Slack OAuth (Stytch / hosted callback)
 
+> **Historical (June 2025)** — This decision records the constraints at the time. See [current guidance](../OAUTH_AND_HOSTING.md).
+
+
 **Status:** Accepted — dropped (June 2025)  
 **Supersedes:** Stytch broker (Option B) and self-hosted HTTPS callback (Option A) as near-term goals  
 **Related:** [OAUTH_REQUIREMENTS.md](../OAUTH_REQUIREMENTS.md), [OAUTH_AND_HOSTING.md](../OAUTH_AND_HOSTING.md), [SLACK_OAUTH_APP.md](../SLACK_OAUTH_APP.md), [SLACK_READ_WORKAROUND.md](../SLACK_READ_WORKAROUND.md), [MCP_INTEGRATION_STRATEGY.md](../MCP_INTEGRATION_STRATEGY.md)

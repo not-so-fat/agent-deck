@@ -18,8 +18,8 @@ No npm login is needed for a normal release. The agent runs two commands, and
 a GitHub Actions workflow publishes to npm via
 [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) (OIDC —
 no npm token anywhere). The only human step is the owner's release request;
-`release.yml` runs straight from the tag push to verify, build, publish and
-GitHub Release, with no approval step.
+`release.yml` runs on a tag push, verifies and builds the release, publishes with provenance,
+and creates the GitHub Release.
 
 1. **Agent:** `npm run release:prepare -- <patch|minor|major|X.Y.Z> --summary "<why>"`
    from a clean, up-to-date `main`. One pass syncs every manifest, internal
@@ -259,7 +259,7 @@ Compat: `npm install -g @agent-deck/cli` still works; `agent-deck install` switc
 | `AGENT_DECK_AUTO_UPGRADE=1` | npm-global only: upgrade via `npm i -g` on `start` |
 | `AGENT_DECK_NO_UPDATE_CHECK=1` | npm-global only: disable update notification on start |
 
-Windows: use `npm install -g` until a managed shim exists.
+On Windows, use `npm install -g` to install the CLI. See [Deployment](./DEPLOYMENT.md) for supported hosted vault configuration.
 
 Optional env:
 

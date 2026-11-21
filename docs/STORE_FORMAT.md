@@ -226,7 +226,7 @@ Each project workspace may hold `.agent-deck/use.json`, but that file stores **o
 
 (`mcpUrl` may also be present when the workspace pins a project MCP endpoint.)
 
-Operating instructions are never copied into `use.json`: the file stays small, merge-free, and safe to rewrite on every deck switch, while the instructions live once in the Git-synced store's `decks/<id>.md` and follow the deck across machines.
+Operating instructions are never copied into `use.json`: the file stays small, merge-free, and safe to rewrite when a workspace-default approval updates the assignment, while the instructions live once in the Git-synced store's `decks/<id>.md` and follow the deck across machines.
 
 ---
 

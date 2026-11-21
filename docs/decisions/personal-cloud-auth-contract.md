@@ -1,5 +1,8 @@
 # Decision: personal-cloud V1 auth contract (bearer grants, deck header as request-only)
 
+> **Historical (2026-10-02)** — This record describes the integration at the time of writing. See [current OAuth and deployment guidance](../DEPLOYMENT.md).
+
+
 **Status:** Accepted (investigation, NOT-56) · **Date:** 2026-10-03
 **Scope:** client-facing wire contract for a single-owner hosted Agent Deck
 **Implements nothing.** Production auth boundary is unchanged by this ticket.

@@ -1,5 +1,8 @@
 # File-backed store (hybrid) — design for user-owned git sync
 
+> **Historical (2026-07-27)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Implemented  
 **Date:** 2026-07-27  
 **Decision:** Hybrid storage — **files are canonical**, SQLite is a **rebuildable query cache**. Agent Deck does not run git; users sync the file tree themselves.

@@ -1,5 +1,8 @@
 # Architecture Revisit — Triggering × Learning Loop
 
+> **Historical (2026-07-11)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-07-11 · **Status:** Draft for review · **Source:** Obsidian `2026-07-11 Agent Deck — Architecture Revisit — Triggering × Learning Loop`  
 **Related:** [learning-loop proposal queue](./2026-07-11-playbook-learning-loop-design.md), [security + CI](./2026-07-06-security-hardening-and-ci-design.md), [DIRECTION.md](../../DIRECTION.md)
 

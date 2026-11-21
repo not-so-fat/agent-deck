@@ -1,4 +1,7 @@
 ---
+
+> **Historical (2026-09-20)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
 status: approved
 linear: NOT-204
 related: NOT-44, NOT-45, NOT-105, NOT-108, docs/PRD_TRUSTED_AGENT_SESSIONS.md

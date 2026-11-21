@@ -2,7 +2,7 @@
 
 **Status:** Living map · **Owner of:** the end-to-end journeys a user (or an agent acting for them) takes through Agent Deck · **Last aligned:** 2026-11-03
 
-This file answers one question: *what do people actually do with this product, start to finish?* Other docs own the details of each step ([MVP.md](./MVP.md) for tools and behavior, [SETUP.md](./SETUP.md) for install and dashboard); this file owns the **sequence**, so a new contributor, an agent, or an evaluation tool can find the real workflows in one place. A playbook for maintaining it ("Maintaining user flows") is proposed for the builder deck and becomes the owner of the upkeep rules once accepted.
+This file answers one question: *what do people actually do with this product, start to finish?* Other docs own the details of each step ([Architecture](./ARCHITECTURE.md) for tools and behavior, [SETUP.md](./SETUP.md) for install and dashboard); this file owns the **sequence**, so a new contributor, an agent, or an evaluation tool can find the real workflows in one place. A playbook for maintaining it ("Maintaining user flows") is proposed for the builder deck and becomes the owner of the upkeep rules once accepted.
 
 **Rule:** a flow links to the owner doc for every fact. It never restates tool schemas, flags, or file layouts.
 
@@ -30,7 +30,7 @@ This file answers one question: *what do people actually do with this product, s
 | [F9](#f9-create-an-evaluation-scenario-from-feedback) | Create an evaluation scenario from feedback | Shipped (manual) |
 | [F10](#f10-check-that-a-playbook-change-helps) | Check that a playbook change helps | Partial |
 
-Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) lives in its own repo; its entry point from this product is [FRIEND_PATH.md](./FRIEND_PATH.md) steps 5–6. **Personal cloud hosting** is proposed work ([personal-cloud design](./superpowers/specs/2026-10-02-personal-cloud-agent-deck-design.md)), not a shipped flow.
+Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) lives in its own repo; its entry point from this product is [FRIEND_PATH.md](./FRIEND_PATH.md) steps 5–6. **Single-owner hosting** is documented in [Deployment](./DEPLOYMENT.md). The broader personal-cloud design is proposed work ([personal-cloud auth decision](./decisions/personal-cloud-auth-contract.md)), not a shipped flow.
 
 ---
 
@@ -46,7 +46,7 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 | 2 | `agent-deck open` | Dashboard opens showing **My Decks** and **My Collection** |
 | 3 | In the dashboard: **My Decks → create a deck**, drag cards on | Deck appears under **My Decks** |
 | 4 | `agent-deck setup` for your client ([SETUP.md](./SETUP.md)), restart the host | Host lists `agent-deck` as connected |
-| 5 | Not needed: sessions without a pin bind to your default deck (`agent-deck default <deck>` sets it); see [one default deck](./design/optional-folder-binding.md) | Session opens on the default deck (continues in F2). An existing `agent-deck use <deck>` pin stays valid and keeps precedence |
+| 5 | Set the default deck if needed. Unpinned sessions bind to it (`agent-deck default <deck>` sets it); see [session binding](./MONOREPO_SCOPE.md) | Session opens on the default deck (continues in F2). An existing `agent-deck use <deck>` pin stays valid and keeps precedence |
 
 - **Success:** the host shows the deck badge, or the agent names the bound deck when asked.
 - **Common failures:** dashboard shows a recovery view, or MCP says no deck is selected: see [SETUP.md](./SETUP.md) Dashboard and troubleshooting.
@@ -66,7 +66,7 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 
 - **Success:** one receipt line, no deck chosen by the agent, playbooks fetched before acting.
 - **Common failures:** tool unavailable or `GRANT_REQUIRED` → agent stops and reports the connection problem rather than improvising.
-- **Owner docs:** [agent-deck-session skill](../skills/agent-deck-session/SKILL.md), [MVP.md](./MVP.md) Module 1, [MCP_SESSION_LIFECYCLE.md](./MCP_SESSION_LIFECYCLE.md), [MONOREPO_SCOPE.md](./MONOREPO_SCOPE.md).
+- **Owner docs:** [agent-deck-session skill](../skills/agent-deck-session/SKILL.md), [session binding](./MONOREPO_SCOPE.md), [MCP session lifecycle](./MCP_SESSION_LIFECYCLE.md).
 
 ## F3. Teach a procedure once, reuse it everywhere
 
@@ -81,7 +81,7 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 
 - **Success:** a second agent or workspace follows the same procedure with no re-teaching.
 - **Common failures:** trigger phrases too narrow or colliding with another playbook (trigger-conflict detection, [design](./superpowers/specs/2026-07-12-playbook-trigger-conflict-design.md)); agent improvises without fetching.
-- **Owner docs:** [MVP.md](./MVP.md) Module 3, [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md), [agent-deck-playbooks skill](../skills/agent-deck-playbooks/SKILL.md).
+- **Owner docs:** [architecture](./ARCHITECTURE.md#decks-and-cards), [PLAYBOOKS_AND_SKILLS.md](./PLAYBOOKS_AND_SKILLS.md), [agent-deck-playbooks skill](../skills/agent-deck-playbooks/SKILL.md).
 
 ## F4. Correct the agent, review the lesson
 
@@ -97,8 +97,8 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 | 5 | Next session fetches the playbook | The lesson applies |
 
 - **Success:** the same correction is not needed twice.
-- **Common failures:** anchor no longer matches (patch becomes `stale`, re-propose); agent never fetched the playbook so no signal is filed.
-- **Owner docs:** [learning-loop design](./superpowers/specs/2026-07-11-playbook-learning-loop-design.md), [LEARNING_LOOP_TEST_SCENARIOS.md](./LEARNING_LOOP_TEST_SCENARIOS.md), [2026-07-22 feedback table](./superpowers/specs/2026-07-22-feedback-signals-table-redesign.md), [no-backend-llm-boundary.md](./decisions/no-backend-llm-boundary.md).
+- **Common failures:** anchor no longer matches (patch becomes `stale`, re-propose); the agent misses the correction and files no proposal or signal.
+- **Owner docs:** [playbook proposal workflow](../skills/agent-deck-playbooks/SKILL.md), [no-backend-llm-boundary.md](./decisions/no-backend-llm-boundary.md).
 
 ## F5. Switch deck mid-session
 
@@ -113,7 +113,7 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 
 - **Success:** exactly one new receipt line; no MCP reconnect.
 - **Common failures:** `DECK_FIXED` or `ADMIN_REQUIRED`: the agent tells the user instead of retrying (handling in the [agent-deck-run skill](../skills/agent-deck-run/SKILL.md)).
-- **Owner docs:** [session-deck-switching design](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md), [MVP.md](./MVP.md).
+- **Owner docs:** [session binding](./MONOREPO_SCOPE.md), [Architecture](./ARCHITECTURE.md).
 
 ## F6. Connect a service or key and attach it to a deck
 
@@ -125,11 +125,11 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 | 1 | In **My Collection**, register an MCP server (remote URL, local stdio, or pasted JSON) or an API key | Card appears in the collection (secret handling: [ARCHITECTURE.md](./ARCHITECTURE.md)) |
 | 2 | For OAuth services, click **Connect** and finish in the browser | Card health turns healthy |
 | 3 | Drag the card onto the deck | Agents on that deck see the service via `call_service_tool` |
-| 4 | For scripts, run the command through `agent-deck exec` ([MVP.md](./MVP.md) Module 2) | Command runs with the key injected, no `.env` |
+| 4 | For scripts, run the command through `agent-deck exec` ([Decks and cards](./ARCHITECTURE.md#decks-and-cards)) | Command runs with the key injected, no `.env` |
 
 - **Success:** the agent calls the service with no key in chat or repo.
 - **Common failures:** unhealthy service (card health shows it; see [SETUP.md](./SETUP.md) troubleshooting); deleting a card a playbook depends on warns.
-- **Owner docs:** [MVP.md](./MVP.md) Module 2, [SETUP.md](./SETUP.md) Dashboard, [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md), [ARCHITECTURE.md](./ARCHITECTURE.md).
+- **Owner docs:** [Decks and cards](./ARCHITECTURE.md#decks-and-cards), [SETUP.md](./SETUP.md) Dashboard, [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md), [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## F7. Delegate a task to another agent
 
@@ -139,8 +139,8 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 | # | Orchestrator does | Observable result |
 |---|-------------------|-------------------|
 | 1 | Writes a brief; the user names the deck (the orchestrator never picks it) | Brief with scope and a tool profile per the run skill |
-| 2 | `start_run` | `runId` and `sessionId` returned |
-| 3 | `get_run` until terminal | Ordered events, then `ended` or `died` |
+| 2 | `start_run` | `runId` and initial state returned |
+| 3 | `get_run` until terminal | Ordered events, a client `sessionId` when available, and eventually a terminal state |
 | 4 | Reviews, then `start_run` with `resumeSessionId` to continue, or `cancel_run` | Same session continues under a new run, or the run stops |
 
 - **Success:** result reported with `runId`, `sessionId`, tool profile, and terminal state.
@@ -155,11 +155,11 @@ Adjacent, not owned here: **agent-dealer** (issue queue, plan approval, review) 
 | # | User does | Observable result |
 |---|-----------|-------------------|
 | 1a | Sync the store through your own private Git repo, then reindex ([STORE_FORMAT.md](./STORE_FORMAT.md) says what is committed and what is not) | Same decks, MCP cards, playbooks |
-| 1b | Or export a bundle on one machine and import it on the other ([PRD_EXPORT_IMPORT.md](./PRD_EXPORT_IMPORT.md)) | Layout restored; conflicts are reported, not overwritten |
+| 1b | Or export a bundle on one machine and import it on the other ([Setup export and import](./SETUP.md#dashboard)) | Layout restored; conflicts are reported, not overwritten |
 | 2 | Re-enter API keys and reconnect OAuth | Import report lists what needs reconnecting |
 
 - **Success:** equivalent layout, with no secrets ever in the bundle.
-- **Owner docs:** [STORE_FORMAT.md](./STORE_FORMAT.md), [PRD_EXPORT_IMPORT.md](./PRD_EXPORT_IMPORT.md).
+- **Owner docs:** [STORE_FORMAT.md](./STORE_FORMAT.md), [Setup export and import](./SETUP.md#dashboard).
 
 ## F9. Create an evaluation scenario from feedback
 

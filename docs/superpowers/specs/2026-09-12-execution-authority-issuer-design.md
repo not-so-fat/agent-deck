@@ -1,4 +1,7 @@
 ---
+
+> **Historical (2026-09-12)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
 status: superseded
 superseded_by: NOT-105, NOT-107
 linear: NOT-86

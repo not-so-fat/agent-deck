@@ -1,5 +1,8 @@
 # MCP tool surface optimization
 
+> **Historical (2026-07-03)** — This record captures an earlier design, proposal, or verification run. See [the current guide](ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Shipped (standard profile default)  
 **Audience:** Product + backend  
 **Related:** [MVP.md](./MVP.md) (current tool table), [MCP_INTEGRATION_STRATEGY.md](./MCP_INTEGRATION_STRATEGY.md), [AGENT_HARNESS.md](./AGENT_HARNESS.md)

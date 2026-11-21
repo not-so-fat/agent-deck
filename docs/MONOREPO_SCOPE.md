@@ -1,30 +1,21 @@
-# Monorepo scope (session binding)
+# Monorepo scope and session binding
 
-> **Switching contract:** agent-initiated `switch_bound_deck` switching below is **superseded by** [Session/default deck-switching redesign](./superpowers/specs/2026-09-20-session-deck-switching-redesign.md) (NOT-204). Agents may only request a switch; a human approves it as This session only or This workspace by default.
+A single workspace can host several concurrent MCP sessions, each bound to
+its own deck. Agent Deck resolves a local session's starting deck from an
+explicit launch deck first, a recognized folder pin second, and the user
+default last. A folder pin is optional. To set the user default, use
+`agent-deck default <deck>`. A configured and enabled project MCP entry can
+supply workspace context for an existing `.agent-deck/use.json` pin.
 
-**Status:** As-built — session-only binding (no repo `deck.yaml`).
+The agent reads the binding with `get_session_context`. To change it, call
+`switch_deck` and wait for human approval. Session-only approval affects the
+current session. Where workspace-default approval is offered, the folder's
+assignment is saved for later sessions. A native tool approval can commit a
+session-only switch. Read `get_session_context` again after the switch.
 
-## One workspace path, many decks
+The display workspace groups session indicators. Delegation uses the
+trusted launch workspace captured at initialization. A display bind via
+`bind_workspace` cannot supply or change that execution workspace.
 
-Agent Deck scopes **per MCP session**, not per git root file. Multiple agents can open the same monorepo path and bind **different** decks:
-
-```
-  Agent A  →  bind_workspace({ workspaceRoot: "/repo", deckId: "web-stack" })
-  Agent B  →  bind_workspace({ workspaceRoot: "/repo", deckId: "api-stack" })
-```
-
-Call `switch_deck` to request a deck change mid-session — the user approves it as This session only or This workspace by default; the active deck is unchanged until approval and no reload is needed.
-
-## Choosing a deck
-
-1. Dashboard **My Decks** → copy icon copies the deck **UUID**
-2. MCP `get_decks` lists available decks
-3. `bind_workspace({ workspaceRoot, deckId })` on session start (see [agent harness](./AGENT_HARNESS.md))
-
-## What workspace root is for
-
-`workspaceRoot` groups live display (status line, menu bar, dashboard session chips) and helps agents know which project they are in. It does **not** auto-select a deck.
-
-## Legacy note
-
-Earlier versions used `.agent-deck/deck.yaml` at the repo root. That manifest is **removed** — delete any leftover files; they are ignored.
+[Agent harness](./AGENT_HARNESS.md) · [MCP run tools](./MCP_RUN_TOOLS.md) ·
+[MCP implementation](../packages/backend/src/mcp-server.ts)

@@ -1,5 +1,8 @@
 # NOT-302 visual QA — star legibility (round 3)
 
+> **Historical (2026-09-30)** — This record captures an earlier design, proposal, or verification run. See [the current guide](AGENT_HARNESS.md) for shipped behavior.
+
+
 ## Method
 
 No browser can launch inside the execution sandbox (headless Chrome

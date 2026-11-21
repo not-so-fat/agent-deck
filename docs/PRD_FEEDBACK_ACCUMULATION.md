@@ -1,4 +1,7 @@
 ---
+
+> **Historical (2026-07-22)** — This record captures an earlier design, proposal, or verification run. See [the current guide](PLAYBOOKS_AND_SKILLS.md) for shipped behavior.
+
 playbooks: pb_ai_codegen_prd, pb_product_principle
 supersedes: brainstorming 2026-07-22 backlog-on-patches UX
 design: docs/superpowers/specs/2026-07-22-feedback-signals-table-redesign.md

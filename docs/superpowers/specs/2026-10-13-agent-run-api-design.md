@@ -1,5 +1,8 @@
 # Agent run API — same-host execution design
 
+> **Historical (2026-10-13)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-10-13  
 **Status:** Approved for API ticketing  
 **Scope:** Agent Deck backend API with coding agents on the Agent Deck host  

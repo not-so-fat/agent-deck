@@ -1,5 +1,8 @@
 # Managed CLI install + auto-upgrade — design
 
+> **Historical (2026-07-30)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Approved — P1–P4 implemented (deck); dealer P2 managed install landed  
 **Date:** 2026-07-30
 **Products:** agent-deck + agent-dealer (same contract, independent implementations)  

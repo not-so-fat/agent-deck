@@ -1,5 +1,8 @@
 # MCP integration strategy
 
+> **Historical (2026-06-28)** — This record captures an earlier design, proposal, or verification run. See [the current guide](OAUTH_AND_HOSTING.md) for shipped behavior.
+
+
 Product notes on MCP OAuth and connection tiers. **Requirements overview:** [OAUTH_REQUIREMENTS.md](./OAUTH_REQUIREMENTS.md). **Operational setup:** [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md). **Node / install:** [SETUP.md](./SETUP.md).
 
 ## OAuth and status (shipped vs deferred)

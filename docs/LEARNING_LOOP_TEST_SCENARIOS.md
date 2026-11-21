@@ -1,5 +1,8 @@
 # Learning loop — manual test scenarios (dev)
 
+> **Historical (2026-07-11)** — This record captures an earlier design, proposal, or verification run. See [the current guide](PLAYBOOKS_AND_SKILLS.md) for shipped behavior.
+
+
 **Audience:** Dogfooding agent_deck on the monorepo dev stack  
 **Prereqs:** `npm run dev:all` · seed playbooks · `use` with dev MCP port  
 **Related:** [learning-loop design](./superpowers/specs/2026-07-11-playbook-learning-loop-design.md) · [architecture revisit](./superpowers/specs/2026-07-11-architecture-revisit-triggering-learning-loop.md)
