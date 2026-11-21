@@ -27,7 +27,9 @@ describe('useWebSocket', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // Reset WebSocket mock
-    global.WebSocket = vi.fn().mockImplementation(() => mockWebSocket) as any
+    // vitest 4+: a mock called with `new` needs a constructible implementation
+    // (a function or class), not an arrow function.
+    global.WebSocket = vi.fn().mockImplementation(function () { return mockWebSocket }) as any
   })
 
   afterEach(() => {
@@ -230,7 +232,7 @@ describe('useWebSocket', () => {
   describe('Error Handling', () => {
     it('handles WebSocket constructor errors', () => {
       // Mock WebSocket to throw an error
-      global.WebSocket = vi.fn().mockImplementation(() => {
+      global.WebSocket = vi.fn().mockImplementation(function () {
         throw new Error('WebSocket connection failed')
       }) as any
 
