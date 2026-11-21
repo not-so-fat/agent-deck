@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.6.1 — 2026-11-21
+
+Mostly a docs and test release: the npm README and docs now match the 2.6 design. One small runtime fix is included: Google OAuth cards now get a refresh token.
+
+### Fix: Google OAuth cards keep working after the first hour (#266)
+
+- When you connect a card that signs in with Google (`accounts.google.com`, for example Gmail, Drive or Docs MCP), the authorization URL now asks for `access_type=offline` and `prompt=consent`, so Google issues a refresh token. Before this fix, these cards stopped working when their one-hour access token expired. Reconnect an existing Google card once to get a refresh token. Other OAuth providers are unchanged.
+
+### Docs: current 2.6 design (#264, #265)
+
+- The docs now describe the current 2.6 design. They include a docs index and an updated architecture page, and older design documents carry a historical banner (#264).
+- Folder pins (`agent-deck use <deck>`) are still supported and take precedence over the default deck, but new setups don't need one. A client compatibility table was added (#265).
+
+### Internal: tests
+
+- The `doctor` test that runs after a failed reindex now isolates `HOME` and `CODEX_BIN`, so it no longer depends on the machine running it (#263).
+
 ## 2.6.0 — 2026-11-21
 
 ### Breaking: Node.js 22 or newer is required (Node 20 dropped) (#257)
