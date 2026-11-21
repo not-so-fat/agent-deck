@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.6.0 — 2026-11-21
+
+### Breaking: Node.js 22 or newer is required (Node 20 dropped) (#257)
+
+- Agent Deck now requires **Node.js 22 or newer**. Node 20 reached end-of-life in April 2026 and is no longer supported. Every published package (`@agent-deck/cli`, `@agent-deck/backend`, `@agent-deck/shared`) declares `engines.node >=22`, and `agent-deck doctor` / the start preflight reject Node 20 with "Node.js 22+ required". Node 24 stays the recommended version.
+- Upgrade Node before upgrading Agent Deck. Your decks, credentials and data are not touched.
+
+### Security: @fastify/static 8.3.0 → 10.1.12 (#63)
+
+- Fixes the static-route authorization bypass advisories in `@fastify/static` (GHSA-8pvw-jcv7-9cmj and later advisories, fixed only in 10.1.12). This is the dependency that serves the bundled dashboard. Its new dependencies need Node 22, which is why Node 20 was dropped.
+
+### Dependency updates
+
+- `@modelcontextprotocol/sdk` 1.29.0 → 1.32.2 (#90).
+- Dashboard: `@tanstack/react-query` 5.85.5 → 5.108.0 (#93); Tailwind CSS v3 → v4 (4.3.5) with `tailwind-merge` 3.7 and `@tailwindcss/typography` 0.5.20, with no visual change (#56, #58); the unused `tw-animate-css` was removed (#258).
+- Tooling: vitest 1.6 → 5.1 with `@testing-library/jest-dom` 7 (#94); `tsx` 4.23.15 (#91).
+
+### Internal: release, CI and docs
+
+- `actions/setup-node` 7.1.0 in CI and release workflows (#171).
+- Dependabot: monthly, grouped minor/patch updates with lower open-PR limits (#258). The HOL plugin scanner action stays at 1.2.543: newer versions flag the lockfile-pinned `actions/checkout` and `actions/setup-node` tags as unpinned because they don't read `.github/workflows/actions.lock` (#260).
+- Releases use the shared release commands `release:prepare` / `release:finish` / `release:check`, and CI fails a PR on version, pin, `server.json`, lockfile or changelog drift (NOT-646, #255).
+- The release docs, rule and `release:finish` message no longer mention an npm-environment approval step (NOT-647, #256). `docs/PUBLISHING.md` lists Node 22+ as the release prerequisite (#261).
+
 ## 2.5.5 — 2026-11-20
 
 ### Fix: OAuth cards keep working after a store reindex (NOT-639)
