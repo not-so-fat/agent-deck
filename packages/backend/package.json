@@ -1,6 +1,6 @@
 {
   "name": "@agent-deck/backend",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "Agent Deck backend API, MCP server, and vault",
   "repository": {
     "type": "git",
@@ -62,7 +62,7 @@
     "prepublishOnly": "node ../../scripts/pre-publish-check.mjs && npm run build"
   },
   "dependencies": {
-    "@agent-deck/shared": "^2.6.0",
+    "@agent-deck/shared": "^2.6.1",
     "@fastify/cors": "^10.0.0",
     "@fastify/static": "^10.1.12",
     "@fastify/websocket": "^11.2.0",

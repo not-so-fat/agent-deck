@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.6.1 — 2026-11-21
+
+docs and tests match the 2.6 design, plus Google OAuth cards get a refresh token
+
+- Google OAuth cards: ask for offline access so they get a refresh token (#266)
+- Docs: folder pins stay supported + client compatibility table (#265)
+- Document the current Agent Deck 2.6 design (#264)
+- test(cli): isolate HOME in the doctor-after-failed-reindex test (#263)
+
 ## 2.6.0 — 2026-11-21
 
 ### Breaking: Node.js 22 or newer is required (Node 20 dropped) (#257)
