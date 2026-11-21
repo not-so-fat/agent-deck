@@ -52,6 +52,38 @@ describe('OAuthManager PKCE', () => {
     expect(oauthManager.getOAuthState(state)).toBe(serviceId);
   });
 
+  it('asks Google for offline access so it returns a refresh token', async () => {
+    const google = await db.createService({
+      name: 'Gmail',
+      type: 'mcp',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+      oauthClientId: 'google-client',
+      oauthAuthorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      oauthTokenUrl: 'https://oauth2.googleapis.com/token',
+    });
+
+    const { authorizationUrl } = await oauthManager.initiateOAuthFlow({
+      serviceId: google.id,
+      redirectUri: 'http://127.0.0.1:8000/api/oauth/callback',
+    });
+
+    const url = new URL(authorizationUrl);
+    expect(url.searchParams.get('access_type')).toBe('offline');
+    expect(url.searchParams.get('prompt')).toBe('consent');
+  });
+
+  it('adds no Google parameters for other providers', async () => {
+    const services = await db.getAllServices();
+    const { authorizationUrl } = await oauthManager.initiateOAuthFlow({
+      serviceId: services[0]!.id,
+      redirectUri: 'http://127.0.0.1:8000/api/oauth/callback',
+    });
+
+    const url = new URL(authorizationUrl);
+    expect(url.searchParams.has('access_type')).toBe(false);
+    expect(url.searchParams.has('prompt')).toBe(false);
+  });
+
   it('sends code_verifier during token exchange', async () => {
     const services = await db.getAllServices();
     const serviceId = services[0]!.id;

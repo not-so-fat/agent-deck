@@ -144,6 +144,13 @@ export class OAuthManager {
     url.searchParams.set('state', state);
     url.searchParams.set('code_challenge', codeChallenge);
     url.searchParams.set('code_challenge_method', 'S256');
+    // Google issues a refresh token only for offline access, and only on a consent
+    // screen; without both, a Google card stops working when its access token
+    // expires (one hour).
+    if (url.hostname === 'accounts.google.com') {
+      url.searchParams.set('access_type', 'offline');
+      url.searchParams.set('prompt', 'consent');
+    }
 
     return {
       authorizationUrl: url.toString(),
