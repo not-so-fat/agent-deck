@@ -1,6 +1,6 @@
 # Design note — One default deck, no folder pins needed
 
-> **Historical (2026-11-13)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../ARCHITECTURE.md) for shipped behavior.
+> **Historical (2026-11-13)** — This record captures an earlier design, proposal, or verification run. For the current supported behavior and known issues, see [Folder pins](../MONOREPO_SCOPE.md#folder-pins).
 
 
 **Status:** Accepted direction (2026-11-13), revised the same day to the simplest mechanism. Not yet implemented; work is tracked in Linear (NOT-598, NOT-600, NOT-601, NOT-602, NOT-603).

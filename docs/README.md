@@ -6,8 +6,8 @@ below describe Agent Deck 2.6 unless a section names another version.
 
 | I want to… | Read |
 |---|---|
-| Install, connect a client, or fix a connection | [Setup](./SETUP.md), [Agent harness](./AGENT_HARNESS.md), [Friend path](./FRIEND_PATH.md) |
-| Understand which deck a session uses | [Binding and monorepos](./MONOREPO_SCOPE.md), [MCP session lifecycle](./MCP_SESSION_LIFECYCLE.md) |
+| Install, connect a client, or fix a connection | [Setup](./SETUP.md), [Client compatibility](./SETUP.md#client-compatibility), [Agent harness](./AGENT_HARNESS.md), [Friend path](./FRIEND_PATH.md) |
+| Understand which deck a session uses | [Binding and monorepos](./MONOREPO_SCOPE.md), [Folder pins](./MONOREPO_SCOPE.md#folder-pins), [MCP session lifecycle](./MCP_SESSION_LIFECYCLE.md) |
 | Teach or revise a procedure | [Playbooks and skills](./PLAYBOOKS_AND_SKILLS.md), [Playbook skill](../skills/agent-deck-playbooks/SKILL.md), [Examples](./examples/playbooks/) |
 | Follow the end-to-end workflows | [User flows](./USER_FLOWS.md) |
 | Connect a service or configure OAuth | [OAuth and hosting](./OAUTH_AND_HOSTING.md), [Slack app setup](./SLACK_OAUTH_APP.md), [Deployment](./DEPLOYMENT.md) |

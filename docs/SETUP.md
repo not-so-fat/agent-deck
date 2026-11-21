@@ -279,7 +279,7 @@ Sessions that die without a clean disconnect (killed terminal, `kill -9`, crashe
 
 Codex, Claude Code, Cursor, and Muse connect over pure MCP (streamable HTTP) with no `agent-deck` executable lookup. The plugins carry skills and guidance only — they declare no MCP server (Muse has no plugin; it uses native bootstrap skills). The connection is plain host MCP config: `agent-deck setup --client codex|claude|cursor|muse` writes one **global headerless fallback** entry (`http://127.0.0.1:1110/mcp`, no headers — `~/.codex/config.toml`, `~/.claude.json`, `~/.cursor/mcp.json`, `$XDG_CONFIG_HOME/muse/settings.json`), so every folder connects through it; sessions with no folder pin bind to the user's default deck, and only a session with no usable default deck lands in the explain-only unassigned session. An existing `agent-deck use <deck>` pin is a same-name **per-folder entry** carrying the workspace header (`.codex/config.toml`, `.mcp.json`, `.cursor/mcp.json`); it shadows the fallback where an assignment exists, and the daemon resolves the deck from `.agent-deck/use.json`. Existing pins stay valid and keep precedence, but no new pin is needed for the connection. Cursor sends header values literally, so `use` writes the absolute folder path into the header (`${workspaceFolder}` would arrive uninterpolated). For Muse an existing per-folder entry lands in the same `.mcp.json` Claude uses (identical shape, written by plain `use` or `use --client muse`): trust the folder, then reload MCP (restart Muse), and `/mcp` should show agent-deck.
 
-> **Connection model:** no folder pin or per-project approval is needed for a working connection. A session with no pin binds to your default deck and the receipt line says so (`default deck, no folder pin`); only a session with no usable default deck lands in the unassigned session. Existing pins keep working and keep precedence. See [one default deck](./design/optional-folder-binding.md).
+> **Connection model:** no folder pin or per-project approval is needed for a working connection. A session with no pin binds to your default deck and the receipt line says so (`default deck, no folder pin`); only a session with no usable default deck lands in the unassigned session. Existing pins keep working and keep precedence. See [folder pins](./MONOREPO_SCOPE.md#folder-pins).
 
 If the host shows no Agent Deck tools, first run `agent-deck start --daemon` and `agent-deck setup --client codex|claude|cursor|muse` (with the host plugin installed where one exists), then work the recovery steps in order:
 
@@ -292,6 +292,30 @@ The daemon must be running (`agent-deck start --daemon`); a refused connection a
 ### Slack distribution requires HTTPS
 
 [SLACK_OAUTH_APP.md](./SLACK_OAUTH_APP.md) — set `AGENT_DECK_PUBLIC_URL` on your hosted backend.
+
+## Client compatibility
+
+The table records installed CLI versions reported by `--version` on the
+agent box, with Agent Deck 2.6.0 as the documentation baseline.
+MCP connection and delegation were not live-tested for these exact builds,
+and the Cursor desktop version is unknown.
+The [setup code](../packages/cli/src/setup.ts) and
+[config resolver](../packages/shared/src/utils/mcp-config.ts) define the
+connection paths. See [Delegation](./DELEGATION.md#clients-at-a-glance) for
+sign-in and run details and [Folder pins](./MONOREPO_SCOPE.md#folder-pins)
+for project binding.
+
+| Client | Global setup and config | Minimum client version | Installed on agent box (2026-11-21) | Known limitations |
+|---|---|---|---|---|
+| Claude Code | `agent-deck setup --client claude` · streamable HTTP · `~/.claude.json` | None enforced or documented | `2.1.327` | A pinned project uses `.mcp.json` and may need approval. Runs use the Agent SDK and resume with its `session_id`. The adapter passes no workspace trust override. |
+| Codex | `agent-deck setup --client codex` · streamable HTTP · `~/.codex/config.toml` | None enforced or documented | `codex-cli 0.169.0` | Trust the project to load `.codex/config.toml`. Run resume uses a thread UUID from an Agent Deck run with the same deck, canonical workspace, and tool profile. The adapter skips the Git repo check only outside a Git worktree. |
+| Cursor | `agent-deck setup --client cursor` · streamable HTTP · `~/.cursor/mcp.json` | None enforced or documented | `cursor-agent 2026.11.17-f532c45` | Enable a pinned project server in Tools & MCP. Runs pass `--trust`, resume with a chat ID, and deliver JSON output at process exit. |
+| Muse | `agent-deck setup --client muse` · streamable HTTP · `$XDG_CONFIG_HOME/muse/settings.json` or `~/.config/muse/settings.json` | No numeric minimum. Readonly runs require `--disable-write` and `--disable-shell` support. | `Muse Code 1.4.24 (1.4.24-R9131.1)` | Setup installs four managed bootstrap skills. Trust the project to load its `.mcp.json`, then restart Muse and check `/mcp`. Runs pass no trust override and resume with a session UUID. |
+
+When a client changes, capture its exact `--version` output, the date, and
+the Agent Deck version. Review the setup writer and run adapter. Record MCP
+bootstrap and delegation smoke results separately after testing on an
+isolated install, and mark any path you could not exercise as **not verified**.
 
 ## Dashboard
 
