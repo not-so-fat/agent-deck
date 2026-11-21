@@ -1,4 +1,7 @@
 ---
+
+> **Historical (2026-07-22)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../ARCHITECTURE.md) for shipped behavior.
+
 title: Session-History Playbook Bootstrap — PRD
 status: draft
 supersedes: null

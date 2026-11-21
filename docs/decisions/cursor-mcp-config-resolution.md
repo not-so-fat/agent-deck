@@ -1,5 +1,8 @@
 # ADR — Cursor MCP config resolution (Agent Deck contract)
 
+> **Historical (2026-09-09)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../AGENT_HARNESS.md) for shipped behavior.
+
+
 **Status:** Accepted (updated NOT-50); **connection mechanics superseded in 2.5.0** — Cursor now connects over pure MCP (HTTP, no `mcp-launch`, no `agent-deck` on `PATH`). See the note below. The precedence and fail-closed rules still apply.  
 **Date:** 2026-09-09  
 **Linear:** NOT-54 (decision), NOT-52 (diagnostics consumer), NOT-50 (no-deck explain session)  

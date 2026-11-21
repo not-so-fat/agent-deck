@@ -21,6 +21,9 @@ launcher entry; legacy Muse launcher entries are converted by
 
 ## Who uses what
 
+Global setup is sufficient for the four HTTP hosts. The project entries below
+apply to optional folder pins or explicit project-scope setup.
+
 | Host | Connection | `mcp-launch` still used? |
 |------|------------|--------------------------|
 | Codex | Per-folder `.codex/config.toml` HTTP entry (`use`) + global headerless HTTP fallback (`setup`) | No — legacy entries keep working until rewritten |

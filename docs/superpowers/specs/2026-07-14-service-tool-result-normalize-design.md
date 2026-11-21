@@ -1,5 +1,8 @@
 # Service Tool Result Normalize — Design
 
+> **Historical (2026-07-14)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-07-14 · **Status:** Approved · **Scope:** `packages/backend` MCP proxy (`callServiceTool` success path)
 
 **Problem:** Proxied MCP tool results pass through verbatim. Two failures surfaced via Slack `slack_read_file`:

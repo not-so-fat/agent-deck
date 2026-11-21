@@ -1,7 +1,7 @@
 # Agent Deck — Development Guide
 
 **Doc role:** Contributor workflow  
-**Install & env:** [SETUP.md](./SETUP.md) · **Product scope:** [MVP.md](./MVP.md) · **Design:** [ARCHITECTURE.md](./ARCHITECTURE.md)
+**Install & env:** [SETUP.md](./SETUP.md) · **Product scope:** [Architecture](./ARCHITECTURE.md) · **Design:** [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 
@@ -70,7 +70,7 @@ npm run smoke:dev                  # lightweight launch smoke
 | CLI / harness | `packages/cli/src/` |
 | Agent harness template | `packages/cli/src/agent-harness.ts` |
 
-When behavior changes, update the **owning doc** ([MVP.md](./MVP.md) for product, [SETUP.md](./SETUP.md) for install) in the same PR.
+When behavior changes, update the **owning doc** ([Architecture](./ARCHITECTURE.md) for product, [SETUP.md](./SETUP.md) for install) in the same PR.
 
 ---
 
@@ -78,9 +78,9 @@ When behavior changes, update the **owning doc** ([MVP.md](./MVP.md) for product
 
 When working in this repo with Agent Deck MCP:
 
-1. `get_decks`, then `bind_workspace({ workspaceRoot, deckId })` with repo root
-2. Procedure cards: `get_playbook` — **not** direct SQLite / `~/.agent-deck/*.db`
-3. Product truth: [MVP.md](./MVP.md); proposed features: `PRD_*.md`
+1. Call `get_session_context` before working in the repository and print its receipt.
+2. Match the task to the bound deck’s triggers and fetch each match with `get_playbook`.
+3. Product truth: [Architecture](./ARCHITECTURE.md); feature proposals and past designs are indexed in [Documentation](./README.md#design-history-and-migration)
 
 See [decisions/installation-no-bypass.md](./decisions/installation-no-bypass.md).
 
@@ -103,7 +103,7 @@ See [decisions/installation-no-bypass.md](./decisions/installation-no-bypass.md)
 | Port in use (CLI) | `agent-deck stop` or change ports in [SETUP.md](./SETUP.md) |
 | Dev vs prod data mixed | Confirm `AGENT_DECK_DEV=1` for `dev:all` |
 
-More: [SETUP.md](./SETUP.md#troubleshooting).
+More: [SETUP.md](./SETUP.md#common-issues).
 
 ---
 

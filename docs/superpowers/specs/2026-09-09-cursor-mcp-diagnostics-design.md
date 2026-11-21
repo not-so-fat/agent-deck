@@ -1,5 +1,8 @@
 # Cursor MCP diagnostics (NOT-54 + NOT-52) — Design
 
+> **Historical (2026-09-09)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-09-09  
 **Tickets:** NOT-54, NOT-52  
 **ADR:** [cursor-mcp-config-resolution.md](../../decisions/cursor-mcp-config-resolution.md)

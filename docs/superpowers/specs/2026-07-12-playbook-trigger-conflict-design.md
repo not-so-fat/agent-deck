@@ -1,5 +1,8 @@
 # Playbook Trigger Conflict Detection — Design
 
+> **Historical (2026-07-12)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-07-12 · **Status:** Draft for review · **Scope:** shared validation + backend write paths + dashboard patch review UI
 
 **Problem:** `triggers: z.array(z.string())` has no trim, dedupe, or cross-playbook conflict check. Live deck has `pb_product_principle` and `pb_ui_principle` with near-identical triggers (`master-detail layout`, `split-pane UI`, `human gate UI`, …). Host skill-matching and harness "check triggers on get_bound_deck" both become a coin flip — wrong playbook fires, corrections land on the wrong card, loop quality degrades.

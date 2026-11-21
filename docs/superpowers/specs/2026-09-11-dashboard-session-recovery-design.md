@@ -1,5 +1,8 @@
 # Durable dashboard session and recovery (NOT-67)
 
+> **Historical (2026-09-11)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Implemented · **Target:** next release after v1.7.6
 
 ## Problem

@@ -74,11 +74,7 @@ AGENT_DECK_PUBLIC_URL=https://oauth.agent-deck.dev   # when hosted
 
 Goal: one small always-on server with TLS for OAuth callbacks (and optionally the full dashboard).
 
-| Option | Approx. cost | Notes |
-|--------|--------------|-------|
-| Fly.io + volume | ~$3–5/mo | Git deploy, HTTPS included, persist SQLite |
-| Hetzner VPS + Caddy | ~€4–5/mo | Node 24 + TLS |
-| Oracle Cloud free tier | $0 | More setup |
+See [single-host deployment](./DEPLOYMENT.md) for Docker Compose and Railway configuration.
 
 **Runtime on server:** Node **24** (or 22+). See [SETUP.md](./SETUP.md). Set `AGENT_DECK_PUBLIC_URL`, store secrets in env (never in git).
 

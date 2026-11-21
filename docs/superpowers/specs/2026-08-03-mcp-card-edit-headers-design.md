@@ -1,5 +1,8 @@
 # MCP card — edit custom headers — design
 
+> **Historical (2026-08-03)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Implemented  
 **Date:** 2026-08-03  
 **Product:** agent-deck  

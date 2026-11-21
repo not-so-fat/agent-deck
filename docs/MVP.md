@@ -1,5 +1,8 @@
 # Agent Deck MVP — Development Spec
 
+> **Historical (2026-06-27)** — This record captures an earlier design, proposal, or verification run. See [the current guide](ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Modules 1–3 implemented (as-built)  
 **Doc role:** Product / scope spec (PRD equivalent for this repo)  
 **Last aligned:** 2026-06-30  

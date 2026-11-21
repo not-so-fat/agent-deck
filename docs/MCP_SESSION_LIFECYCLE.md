@@ -9,6 +9,9 @@ timer owns each half. Two clocks, two jobs — never mix them:
 - **Transport idle TTL (24 h)** — owns *retention* of the in-memory MCP
   transport session. Lives in `AgentDeckMCPServer`.
 
+The four native HTTP clients connect directly. The bridge behavior below applies
+to Claude Desktop and legacy launcher entries.
+
 ## Steady state
 
 A heartbeat-capable bridge (`x-agent-deck-bridge-liveness: 1` on every
@@ -20,6 +23,9 @@ the server-owned 5-minute keep-alive touch instead; those touches never
 extend the transport TTL.
 
 ## Clean shutdown
+
+The following sequence describes stdio bridge shutdown. Native HTTP clients
+can send MCP `DELETE` directly.
 
 1. Host closes stdin → the bridge drains in-flight host requests (bounded).
 2. On a full drain it sends one bounded best-effort HTTP `DELETE` with the
@@ -40,9 +46,10 @@ work.
 Crash, force-quit, or lost process: no more client traffic. The display
 entry goes stale within the 30-minute lease and disappears from bindings and
 the status line; the transport is swept at most 24 hours after its last
-activity (60-second sweep cadence). Expiry answers the spec 404, so a later
-pulse or host request re-initializes through the existing session-expired
-recovery path on the same effective deck.
+activity (60-second sweep cadence). An expired session returns HTTP 404 with
+`mcp-session-status: expired` and the client can initialize again. For details
+of the local server-side recovery exception and bridge behavior after a daemon
+restart, see [MCP launcher migration](./MCP_LAUNCH_MIGRATION.md#session-recovery-after-daemon-restart-not-569).
 
 ## Shutdown and mass expiry
 

@@ -1,5 +1,8 @@
 # Playbook patch supersede — design
 
+> **Historical (2026-08-04)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-08-04 · **Status:** Implemented · **Repo:** agent_deck  
 **Prior art:** [playbook learning loop](./2026-07-11-playbook-learning-loop-design.md), [feedback accumulation PRD](../../PRD_FEEDBACK_ACCUMULATION.md)  
 **Agreed approach:** Agent judges whether an open proposal is the same lesson; propose names those patch ids explicitly to replace them.

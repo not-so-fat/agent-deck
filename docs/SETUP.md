@@ -14,12 +14,12 @@ Canonical install and environment reference. For OAuth / hosting / Slack confusi
 
 | | |
 |--|--|
-| **Default (use this)** | **Node 24.x** — current OS / Homebrew / nvm default on new machines |
-| **Minimum supported** | Node **22** (`engines` in all packages). Node 20 reached end-of-life in April 2026 and is no longer supported. |
-| **Also supported** | 22, 23, 24, 25, 26 (with matching `better-sqlite3` build) |
+| **Default (use this)** | **Node 24.x** — recommended by this repository’s `.nvmrc` |
+| **Minimum supported** | Node **22** (`engines` in all packages). Agent Deck 2.6.0 dropped Node 20. |
+| **Also supported** | Node 22 or later, with a matching `better-sqlite3` build |
 | **Optional nvm hint** | `.nvmrc` → `24` (only if you use nvm; **not** a downgrade to 22) |
 
-We upgraded `better-sqlite3` (v12+) so current Node releases work with prebuilds. **Node 24 is what we develop and test against first** because that is what users already have.
+We upgraded `better-sqlite3` (v12+) so current Node releases work with prebuilds. **Node 24 is what we develop and test against first** and the minimum version remains Node 22.
 
 ### Check your version
 
@@ -173,7 +173,7 @@ One-shot `.agent-deck.json` export/import remains for sharing a layout without g
 
 ### Secrets & OAuth storage
 
-Sensitive values use the same **OS secret store** as API keys (macOS Keychain; dev fallback file under `~/.agent-deck/`). **SQLite holds metadata only** — not plaintext secrets.
+Sensitive values use the same **OS secret store** as API keys (macOS Keychain by default, encrypted file vault for hosted mode, or a file store in development). **SQLite holds metadata only** — not plaintext secrets.
 
 | What | Keychain account | SQLite (metadata) |
 |------|------------------|-------------------|
@@ -297,7 +297,7 @@ The daemon must be running (`agent-deck start --daemon`); a refused connection a
 
 Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](#quick-start-npm--end-users). Dev: `npm run dev:all` then use the Vite UI. `status` and start banners intentionally do not print the one-shot bootstrap URL. A valid dashboard session survives backend/browser restarts and renews for 24 hours after activity. If dashboard authority is missing or expired, the UI tells you to run `agent-deck open`; restarting the daemon is only for an actual API outage. Bare `http://127.0.0.1:1111` grants no authority by itself. MCP `GRANT_REQUIRED` (**No deck selected for this connection**) is separate and is fixed with `request_deck_assignment` from the unassigned session (the user picks the deck in the dashboard/menubar; the daemon writes the folder assignment and the per-folder MCP entry, and the same session binds without a reload), or with `agent-deck use <deck>` in the workspace as the fallback (reload MCP afterwards). Host agent sandboxes (workspace-writable only) can still repair a missing per-folder MCP entry when `.agent-deck/use.json` already assigns the deck; creating a new assignment via the CLI or writing `~/.agent-deck` needs an unsandboxed terminal — `status` / `doctor` label those recoveries separately.
 
-`start` opens the dashboard with a one-shot bootstrap cookie by default (`--no-open` for CI / headless, or `AGENT_DECK_NO_OPEN=1`). Bare `http://127.0.0.1:1111` without a launch pass shows the dashboard recovery view (**Open your dashboard securely**, with an **Open dashboard** action and the `agent-deck open` fallback) — that is **not** the MCP `GRANT_REQUIRED` case (**No deck selected for this connection**; fix with `request_deck_assignment`, or `agent-deck use <deck>` in the workspace as the fallback so the host session binds the folder's deck, then reload MCP). Day to day: `agent-deck start --daemon` / `agent-deck open` / `agent-deck stop` · `agent-deck status` if something fails. Use plain `agent-deck start` when you want a foreground process (logs to stdout).
+`start` opens the dashboard with a one-shot bootstrap cookie by default (`--no-open` for CI / headless, or `AGENT_DECK_NO_OPEN=1`). Bare `http://127.0.0.1:1111` without a launch pass shows the dashboard recovery view (**Open your dashboard securely**, with an **Open dashboard** action and the `agent-deck open` fallback) — that is **not** the MCP `GRANT_REQUIRED` case (**No deck selected for this connection**; fix with `request_deck_assignment`, or set the user default with `agent-deck default <deck>` and reload MCP). Day to day: `agent-deck start --daemon` / `agent-deck open` / `agent-deck stop` · `agent-deck status` if something fails. Use plain `agent-deck start` when you want a foreground process (logs to stdout).
 
 | Area | What it does |
 |------|----------------|
@@ -305,10 +305,10 @@ Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](
 | **Deck fan** | Cards on the **editing deck** — drag from collection to link/unlink |
 | **My Decks** | Select which deck to edit; copy deck id (copy icon) |
 
-**Terminology ([MVP.md](./MVP.md)):**
+**Terminology ([Architecture](./ARCHITECTURE.md)):**
 
 - **Editing deck** — dashboard UI only; does not change agent scope
-- **Bound deck** — what agents see via `bind_workspace({ workspaceRoot, deckId })` or session override
+- **Bound deck** — the deck the session sees through its connection and any approved switch
 - There is no “activate deck” for agents; ignore legacy API `POST /api/decks/:id/activate`
 
 **Common tasks:**
@@ -317,7 +317,7 @@ Open with `agent-deck start` (default) or `agent-deck open` after [Quick start](
 2. **Register API key** — secret stored in Keychain; metadata in collection
 3. **Register playbook** — markdown body; deps auto-detected on save
 4. **OAuth** — Connect on MCP card; redirect URI shown in UI ([OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md))
-5. **Session bind** — agent calls `get_decks`, then `bind_workspace({ workspaceRoot, deckId })`
+5. **Session bind** — agent calls `get_session_context` and prints the binding receipt
 6. **Export / import layouts** — dashboard **Export all** / **Import** on My Collection, or per-deck Export on My Decks; CLI:
 
 ```bash
@@ -326,7 +326,7 @@ agent-deck export deck <uuid> -o my-deck.agent-deck.json
 agent-deck import backup.agent-deck.json
 ```
 
-Credentials and secrets are never included. Import creates cards/decks when names are new; **skips** any display name that already exists (same name = same card/deck). See [PRD_EXPORT_IMPORT.md](./PRD_EXPORT_IMPORT.md).
+Credentials and secrets are never included. Import creates cards/decks when names are new; **skips** any display name that already exists (same name = same card/deck). See the [export/import implementation](../packages/backend/src/routes/export-import.ts).
 
 Card colors are fixed by type (MCP, API key, playbook). Service health and OAuth status update live via WebSocket.
 
@@ -337,6 +337,8 @@ Each Grok (xAI remote MCP) agent picks its **durable default deck** in that agen
 **Example** (replace URL, grant secret, and deck ids): see [examples/grok-agent.mcp.json](./examples/grok-agent.mcp.json). On the xAI API remote-MCP surface the fields map to `server_url`, `authorization`, and `headers` ([personal-cloud auth contract](./decisions/personal-cloud-auth-contract.md) §2–3). Put the bare grant secret in `authorization` unless the host UI already expects a full `Bearer …` value — Agent Deck’s wire form is `Authorization: Bearer <grant-secret>`. Reachability (any tunnel or public HTTPS) is an ops concern — not an Agent Deck product concept.
 
 **Dogfood check**
+
+For this check, the bearer grant used by agent A must allow both Planner and Builder. A human approval cannot extend a grant’s deck allowlist.
 
 1. Configure agent A with Planner's deck id and agent B with Builder's deck id (two connector entries).
 2. Start both; each first turn calls `get_session_context` once and prints exactly one `display_summary` receipt — they must name different decks and must not leak into each other.
@@ -359,7 +361,7 @@ npm run build
 | Guide | When to read |
 |-------|----------------|
 | [README.md](./README.md) | Doc index |
-| [MVP.md](./MVP.md) | Shipped product & agent MCP |
+| [Architecture](./ARCHITECTURE.md) | Shipped product & agent MCP |
 | [OAUTH_AND_HOSTING.md](./OAUTH_AND_HOSTING.md) | Slack, HTTPS, local vs hosted |
 | [DEVELOPMENT.md](./DEVELOPMENT.md) | Contributing |
 | [SLACK_OAUTH_APP.md](./SLACK_OAUTH_APP.md) | Shared Slack app |

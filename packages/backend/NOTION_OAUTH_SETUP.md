@@ -1,5 +1,8 @@
 # Generic OAuth Implementation Status
 
+> **Historical (2025-08-24)** — This record describes the integration at the time of writing. See [current OAuth and deployment guidance](../../docs/OAUTH_AND_HOSTING.md).
+
+
 ## Current Status ✅
 
 **Dynamic OAuth Registration is Working!**

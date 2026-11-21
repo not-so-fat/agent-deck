@@ -1,5 +1,8 @@
 # ADR — Installation must make Agent Deck unavoidable
 
+> **Historical (2026-06-30)** — This decision records the constraints at the time. See [current guidance](../AGENT_HARNESS.md).
+
+
 **Status:** Superseded (partial) — `deck.yaml` / Layer 2 bind model was not shipped; **session binding** (`bind_workspace`) is as-built per [MVP.md](../MVP.md). Retained as historical incident + design notes.  
 **Date:** 2026-06-30  
 **Context:** Agent bypassed Agent Deck when drafting PRDs — read `~/.agent-deck/agent_deck.db` via `sqlite3` instead of `get_playbook` on MCP.

@@ -1,5 +1,8 @@
 # Dashboard bootstrap entry (1.7.1)
 
+> **Historical (2026-09-09)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Approved · **Ship:** v1.7.1
 
 > Superseded in part by NOT-67: printed status/start output no longer exposes one-shot bootstrap URLs, and dashboard sessions now persist across backend restarts. The nonce security boundary remains unchanged.

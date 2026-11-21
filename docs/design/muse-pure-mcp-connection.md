@@ -1,5 +1,8 @@
 # Muse pure-MCP connection (NOT-568 investigation)
 
+> **Historical (2026-11-11)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../ARCHITECTURE.md) for shipped behavior.
+
+
 Base: `4122410` (NOT-566, local `main`). Companion design:
 `docs/design/launcher-free-host-connection.md` (NOT-561, Codex and Claude);
 recording stub: `docs/design/launcher-free-host-connection/stub_mcp.py`.

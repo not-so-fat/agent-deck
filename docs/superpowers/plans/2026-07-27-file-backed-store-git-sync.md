@@ -1,5 +1,8 @@
 # File-Backed Store (Hybrid) Implementation Plan
 
+> **Historical (2026-07-27)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make a git-friendly file tree under Agent Deck home the canonical store for cards and decks, with SQLite as a rebuildable cache, migration from existing DBs, auto + manual reindex, and docs-only user-owned git sync.

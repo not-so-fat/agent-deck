@@ -1,5 +1,8 @@
 # Feedback signals table redesign — Implementation Plan
 
+> **Historical (2026-07-22)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 > **For agentic workers:** Implement tasks in order. Each task ends with tests green for that slice.
 
 **Goal:** Own `/feedback-signals` data table; statuses `open`/`actioned`/`discarded`; link-on-propose / actioned-on-accept; Copy always includes ids.

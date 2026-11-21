@@ -1,5 +1,8 @@
 # Session-History Bootstrap — M3 smoke checklist
 
+> **Historical (2026-07-22)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../ARCHITECTURE.md) for shipped behavior.
+
+
 Human-run E2E gate for milestone M3 (§11). Not CI.
 
 Hosts: digests may be Claude-only, Cursor-only, or mixed (`agent-deck bootstrap --host all`). Matching rule: `workspaceRoot === boundRoot` **or** `workspaceSlug === encodeCursorProjectSlug(boundRoot)` (see PRD F1C.5 / F4.2). Cursor intents must be unwrapped (no `<user_query>` / `<timestamp>` in digest text).

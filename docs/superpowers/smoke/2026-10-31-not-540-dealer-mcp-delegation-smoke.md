@@ -1,5 +1,8 @@
 # NOT-540 smoke: MCP-only delegation from a real Agent Dealer sandbox
 
+> **Historical (2026-10-31)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 Status: **blocked on operator environment**. CI fixture evidence is recorded below.
 The real-sandbox receipts are not recorded yet (see "Developer-session finding"
 and "Re-check"). The `[operator]` acceptance criterion is still open.

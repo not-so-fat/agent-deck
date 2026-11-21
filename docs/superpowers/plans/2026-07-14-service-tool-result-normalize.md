@@ -1,5 +1,8 @@
 # Service Tool Result Normalize — Implementation Plan
 
+> **Historical (2026-07-14)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 > **For agentic workers:** Implement task-by-task. Steps use checkbox syntax.
 
 **Goal:** Surface in-band MCP tool errors as `success: false` (with Slack Connect hint) and spill binary/oversized tool results to `~/.agent-deck/tool-results/`.

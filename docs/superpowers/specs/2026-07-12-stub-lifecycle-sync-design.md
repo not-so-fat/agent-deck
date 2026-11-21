@@ -1,5 +1,8 @@
 # Stub Lifecycle & Sync — Design
 
+> **Historical (2026-07-12)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Status:** Proposed
 **Sources:** [2026-07-11-architecture-revisit-triggering-learning-loop.md](./2026-07-11-architecture-revisit-triggering-learning-loop.md) (A′ decision, build-order item 3), [2026-07-11-playbook-learning-loop-design.md](./2026-07-11-playbook-learning-loop-design.md), [PLAYBOOKS_AND_SKILLS.md](../../PLAYBOOKS_AND_SKILLS.md)
 **Supersedes:** the manual-only sync behavior of `agent-deck use` (`packages/cli/src/use.ts`, `playbook-stubs.ts`)

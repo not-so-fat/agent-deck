@@ -1,5 +1,8 @@
 ## Agent Deck security hardening and CI
 
+> **Historical (2026-07-06)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 ### Scope
 
 - Tighten network exposure for the MCP proxy and REST backend.

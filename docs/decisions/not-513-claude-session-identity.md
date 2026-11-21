@@ -1,5 +1,8 @@
 # ADR — NOT-513: Claude session identity for the status line
 
+> **Historical (2026-10-21)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../AGENT_HARNESS.md) for shipped behavior.
+
+
 **Status:** Accepted (identifier exists — `CLAUDE_CODE_SESSION_ID`)
 **Date:** 2026-10-22
 **Linear:** NOT-513

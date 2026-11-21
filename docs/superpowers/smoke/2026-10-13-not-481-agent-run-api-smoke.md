@@ -1,5 +1,8 @@
 # NOT-481 same-host agent run API smoke (operator record)
 
+> **Historical (2026-10-13)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-10-13 (UTC 2026-10-14T02:11–02:15)
 **Agent Deck code under test:** `75d17a4d22415d05bafe365143dd2dfd6ddbc0b2` (branch `yusukemuraoka0208/not-481-agent-deck-run-api-capabilities-cancellation-restart`; `packages/backend` built with `npm run build` from that commit and started with `node dist/index.js`)
 **Host:** one macOS host runs Agent Deck, Codex, and the workspace. Isolated `AGENT_DECK_HOME=/tmp/not481-smoke/home`, `PORT=18481`, `HOST=127.0.0.1`.

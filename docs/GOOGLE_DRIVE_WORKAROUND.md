@@ -1,5 +1,8 @@
 # Google Drive workaround
 
+> **Historical (2026-06-28)** — This record captures an earlier design, proposal, or verification run. See [the current guide](OAUTH_AND_HOSTING.md) for shipped behavior.
+
+
 Official Google Workspace **remote** MCP (`drivemcp.googleapis.com`) is powerful but painful in Agent Deck: Google Cloud project, OAuth consent screen, **two** API enables, test users, exact redirect URI, and (as of 2026) Drive MCP is still labeled **Developer Preview**.
 
 **Agent Deck no longer seeds Gmail, Calendar, or Drive remote cards.** For Drive, use [Workaround A](#workaround-a--local-google-drive-mcp-recommended) below.

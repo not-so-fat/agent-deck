@@ -1,5 +1,8 @@
 # NOT-256 visual QA — compact top bar rebalance (round 2)
 
+> **Historical (2026-09-23)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../../ARCHITECTURE.md) for shipped behavior.
+
+
 Screenshots for the PR description. Both were rendered from a static
 transcription of the `<header>` block in `apps/agent-deck/src/pages/home.tsx`
 (final composition, including the `-my-1 py-1` focus-ring bleed room) with

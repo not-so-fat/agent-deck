@@ -1,5 +1,8 @@
 # Launcher-free host connection (pure MCP over HTTP)
 
+> **Historical (2026-11-11)** — This record captures an earlier design, proposal, or verification run. See [the current guide](../ARCHITECTURE.md) for shipped behavior.
+
+
 NOT-561 investigation. Base: `ad537fb` (local `main`, 2026-11-11; `origin/main`
 could not be fetched — no network in this session).
 

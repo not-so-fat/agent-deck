@@ -1,5 +1,8 @@
 # Product Direction — agent_deck + agent-dealer
 
+> **Historical (2026-07-05)** — This record captures an earlier design, proposal, or verification run. See [the current guide](ARCHITECTURE.md) for shipped behavior.
+
+
 **Date:** 2026-07-05 · **Updated:** 2026-10-06 · **Status:** Accepted · **Scope:** cross-product (this repo + [agent-dealer](https://github.com/not-so-fat/agent-dealer))
 
 This doc is the single owner of *direction*: what the two products are, which decisions are locked, and what order to build in. Repo-level docs ([MVP.md](./MVP.md), agent-dealer's `docs/`) own behavior details; when they conflict with older PRDs, as-built docs win. Supersedes the direction fragments scattered across PRDs, OAuth docs, and ADRs (see appendix).
@@ -120,7 +123,7 @@ Previously the README's What's next (moved here by NOT-428); sequencing still fo
 
 ## Appendix — Doc hygiene
 
-Per the docs [Maintenance rule](./README.md#maintenance) ("no new top-level file without removing one"): this file's slot is paid for by deleting root `DOCUMENTATION_PLAN.md`.
+Per the docs [Maintenance rule](./README.md) ("no new top-level file without removing one"): this file's slot is paid for by deleting root `DOCUMENTATION_PLAN.md`.
 
 | Doc | Issue | Action |
 |-----|-------|--------|
