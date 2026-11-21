@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.6.0 — 2026-11-21
+
+Node 22+ required (Node 20 dropped), @fastify/static 10 security update, MCP SDK 1.32, Tailwind v4, vitest 5 and other dependency updates.
+
+- docs: PUBLISHING prerequisites say Node 22+ (Node 20 dropped in #257) (#261)
+- Dependabot: hold the HOL plugin scanner at 1.2.543 (keep tags + actions.lock) (#260)
+- Dependabot: monthly grouped updates, lower PR limits; drop unused tw-animate-css (#258)
+- Bump vitest from 1.6.1 to 5.1.1 (+ @testing-library/jest-dom 7) (#94)
+- Bump tailwindcss from 3.4.19 to 4.3.5 (+ tailwind-merge 3.7, v4 migration) (#56)
+- Bump actions/setup-node from 7.0.0 to 7.1.0 (#171)
+- Bump @modelcontextprotocol/sdk from 1.29.0 to 1.32.2 (#90)
+- Bump @fastify/static from 8.3.0 to 10.1.12 (#63)
+- Bump tsx from 4.20.4 to 4.23.15 (#91)
+- Drop Node 20 support: require Node.js 22+ (#257)
+- Bump @tailwindcss/typography from 0.5.16 to 0.5.20 (#58)
+- Bump @tanstack/react-query from 5.85.5 to 5.108.0 (#93)
+- NOT-647: drop stale npm-environment approval step from release docs, rule and finish message (#256)
+- NOT-646: Release: move agent-deck onto the shared release commands (release:prepare / release:finish / release:check) (#255)
+
 ## 2.5.5 — 2026-11-20
 
 ### Fix: OAuth cards keep working after a store reindex (NOT-639)
