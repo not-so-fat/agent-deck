@@ -60,7 +60,7 @@ guidance as applicable. Claude Desktop uses the stdio bridge. See
 [Setup](./SETUP.md) and the [agent harness](./AGENT_HARNESS.md).
 
 For local sessions the initial deck is resolved in this order: explicit launch
-deck, recognized folder pin, user default. A folder pin is optional. A local
+deck, recognized folder pin, user default. A [folder pin](./MONOREPO_SCOPE.md#folder-pins) is a supported project override. A local
 session with no usable deck can explain how to get assigned. Remote MCP sessions
 can use a deck-scoped bearer grant. See [Monorepo scope](./MONOREPO_SCOPE.md).
 
