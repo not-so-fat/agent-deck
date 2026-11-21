@@ -51,7 +51,7 @@ function UnifiedDiffView({ rows, emptyLabel }: { rows: DiffRow[]; emptyLabel: st
           </span>
           <div className="flex min-w-0 gap-2 px-2 py-0.5">
             <span className="w-3 shrink-0 select-none text-gray-500">{prefixFor(row.kind)}</span>
-            <span className="min-w-0 whitespace-pre-wrap break-words">{row.text || " "}</span>
+            <span className="min-w-0 whitespace-pre-wrap wrap-break-word">{row.text || " "}</span>
           </div>
         </div>
       ))}

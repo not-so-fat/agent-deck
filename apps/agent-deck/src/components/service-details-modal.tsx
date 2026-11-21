@@ -653,7 +653,7 @@ export default function ServiceDetailsModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleDialogOpenChange}>
-      <DialogContent className="sm:max-w-6xl bg-gradient-to-br from-cosmic-900 to-cosmic-800 border border-white/20 text-white max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-6xl bg-linear-to-br from-cosmic-900 to-cosmic-800 border border-white/20 text-white max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-2xl font-bold flex items-center">
             {getServiceIcon()}
@@ -678,7 +678,7 @@ export default function ServiceDetailsModal({
                       setIsEditingName(false);
                     }
                   }}
-                  className="max-w-[16rem] rounded border border-white/20 bg-white/10 px-2 py-1 text-2xl font-bold text-white focus:border-white/40 focus:outline-none sm:max-w-[20rem]"
+                  className="max-w-[16rem] rounded border border-white/20 bg-white/10 px-2 py-1 text-2xl font-bold text-white focus:border-white/40 focus:outline-hidden sm:max-w-[20rem]"
                   aria-label="Service name"
                   data-testid="input-service-name"
                 />
@@ -734,7 +734,7 @@ export default function ServiceDetailsModal({
                       <textarea
                         value={editingDescription}
                         onChange={(e) => setEditingDescription(e.target.value)}
-                        className="w-full bg-black/30 border border-white/20 rounded px-2 py-1 text-white focus:outline-none focus:border-white/40 resize-none"
+                        className="w-full bg-black/30 border border-white/20 rounded px-2 py-1 text-white focus:outline-hidden focus:border-white/40 resize-none"
                         rows={3}
                         placeholder="Enter description..."
                         autoFocus
@@ -1109,7 +1109,7 @@ export default function ServiceDetailsModal({
                           </div>
                           
                           {/* Cyberpunk Glow Effect */}
-                          <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-transparent via-purple-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 pointer-events-none"></div>
+                          <div className="absolute inset-0 rounded-lg bg-linear-to-br from-transparent via-purple-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 pointer-events-none"></div>
                         </div>
                       ))}
                     </div>

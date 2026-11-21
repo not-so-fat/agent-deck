@@ -111,7 +111,7 @@ export default function AuditPage() {
                 </TableHeader>
                 <TableBody>
                   {page.data.map((entry) => (
-                    <TableRow key={entry.id} className="border-gray-800 hover:bg-white/[0.03]">
+                    <TableRow key={entry.id} className="border-gray-800 hover:bg-white/3">
                       <TableCell className="whitespace-nowrap text-xs text-gray-400">{formatTimestamp(entry.timestamp)}</TableCell>
                       <TableCell className="font-medium text-[#E8F6F4]">{entry.event}</TableCell>
                       <TableCell className="max-w-48 break-all font-mono text-xs">{entry.actor}</TableCell>
@@ -128,7 +128,7 @@ export default function AuditPage() {
               {page.data.map((entry) => (
                 <li key={entry.id} className="min-w-0 rounded-xl border border-gray-800 bg-gray-900/70 p-4">
                   <div className="flex min-w-0 items-start justify-between gap-3">
-                    <div className="min-w-0 break-words font-medium text-[#E8F6F4]">{entry.event}</div>
+                    <div className="min-w-0 wrap-break-word font-medium text-[#E8F6F4]">{entry.event}</div>
                     <Outcome entry={entry} />
                   </div>
                   <dl className="mt-4 grid min-w-0 grid-cols-1 gap-3">

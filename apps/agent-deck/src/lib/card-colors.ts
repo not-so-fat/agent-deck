@@ -5,7 +5,7 @@ export const PLAYBOOK_CARD_COLOR = "#FFFFFF";
 
 /** Dark face used on playing cards — reuse on register buttons. */
 export const CARD_FACE_CLASS =
-  "bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900";
+  "bg-linear-to-b from-gray-900 via-gray-800 to-gray-900";
 
 /** Fixed by connection type — custom per-card colors are not used. */
 export function getServiceCardColor(_service: { type: string; cardColor?: string | null }): string {

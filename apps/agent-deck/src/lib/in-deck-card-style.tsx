@@ -8,7 +8,7 @@ export function inDeckCollectionClass(isInDeck: boolean): string {
 
 export function InDeckCornerBadge() {
   return (
-    <span className="absolute top-1.5 left-1/2 z-20 -translate-x-1/2 rounded bg-yellow-500 px-1 py-px text-[7px] font-bold uppercase tracking-wide text-black shadow">
+    <span className="absolute top-1.5 left-1/2 z-20 -translate-x-1/2 rounded bg-yellow-500 px-1 py-px text-[7px] font-bold uppercase tracking-wide text-black shadow-sm">
       In deck
     </span>
   );

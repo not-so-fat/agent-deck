@@ -116,9 +116,9 @@ function CardComponent({
     >
       <div
         className={`
-        w-32 h-48 aspect-[2/3] rounded-lg border-2 p-3 
+        w-32 h-48 aspect-2/3 rounded-lg border-2 p-3 
         transform transition-all duration-300 shadow-lg hover:shadow-2xl
-        bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900
+        bg-linear-to-b from-gray-900 via-gray-800 to-gray-900
         relative overflow-hidden
         ${inDeckCollectionClass(isInActiveDeck)}
         ${isInCollection ? "hover:scale-110 hover:rotate-0" : "hover:scale-105"}
@@ -189,7 +189,7 @@ function CardComponent({
           </Button>
         </div>
 
-        <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-transparent via-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 pointer-events-none" />
+        <div className="absolute inset-0 rounded-lg bg-linear-to-br from-transparent via-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-500 pointer-events-none" />
       </div>
     </div>
   );
