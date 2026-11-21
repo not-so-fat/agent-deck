@@ -54,7 +54,7 @@ export function CardUsageMark({ usage, createdAt, color }: CardUsageMarkProps) {
       title={label}
       data-testid="card-usage-mark"
       data-category={usage.category}
-      className="inline-flex items-center gap-[1px] opacity-60"
+      className="inline-flex items-center gap-px opacity-60"
       style={{
         color,
         // Render at 8px for glyph quality, scale the whole group to ~75%

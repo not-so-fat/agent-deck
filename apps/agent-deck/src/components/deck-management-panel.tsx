@@ -310,7 +310,7 @@ export default function DeckManagementPanel({
                   key={deck.id}
                   className={`p-2 rounded-lg border cursor-pointer transition-all relative group ${
                     isEditing
-                      ? "bg-gradient-to-r from-yellow-500/20 to-yellow-600/20 border-2 border-yellow-500/40 hover:border-yellow-400/60"
+                      ? "bg-linear-to-r from-yellow-500/20 to-yellow-600/20 border-2 border-yellow-500/40 hover:border-yellow-400/60"
                       : "bg-white/5 border border-white/10 hover:border-white/20"
                   }`}
                   onClick={() => onSelectDeck(deck.id)}

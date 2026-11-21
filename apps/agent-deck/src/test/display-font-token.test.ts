@@ -58,7 +58,8 @@ describe('NOT-218 display-font token', () => {
     const declarations = css.match(/--font-ui-display\s*:/g) ?? [];
     expect(declarations).toHaveLength(1);
     const rootAt = css.indexOf(':root');
-    const darkAt = css.indexOf('.dark');
+    // The `.dark {` block, not the `@custom-variant dark (&:is(.dark *))` line (Tailwind v4).
+    const darkAt = css.indexOf('.dark {');
     const declAt = css.indexOf('--font-ui-display');
     expect(rootAt).toBeGreaterThanOrEqual(0);
     expect(declAt).toBeGreaterThan(rootAt);
@@ -78,10 +79,8 @@ describe('NOT-218 display-font token', () => {
 
   it('is consumed by one semantic utility backed by the variable', () => {
     const css = read('src/index.css');
-    expect(css).toMatch(/\.font-ui-display\s*\{\s*font-family:\s*var\(--font-ui-display\)/);
-    const tailwind = read('tailwind.config.ts');
-    expect(tailwind).toContain('ui-display');
-    expect(tailwind).toContain('var(--font-ui-display)');
+    // Tailwind v4: the utility is declared in index.css (no tailwind.config.ts).
+    expect(css).toMatch(/@utility font-ui-display\s*\{[^}]*font-family:\s*var\(--font-ui-display\)/);
   });
 
   it('is never hard-coded into a React component or shared primitive', () => {

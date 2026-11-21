@@ -103,7 +103,7 @@ export default function FeedbackSignalsPage() {
           <label className="text-xs text-gray-500">
             <span className="font-ui-display">Playbook</span>
             <select
-              className="mt-1 block min-w-[12rem] rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100"
+              className="mt-1 block min-w-48 rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100"
               value={playbookId}
               onChange={(e) => { setPlaybookId(e.target.value); setSelected(new Set()); }}
             >
@@ -130,8 +130,8 @@ export default function FeedbackSignalsPage() {
       </> : <>
         <p className="text-sm text-gray-400">Saved human-curated scenarios. Ready scenarios can be copied into a deterministic experiment manifest.</p>
         <div className="flex flex-wrap gap-3 rounded-lg border border-gray-800 bg-gray-900/40 p-3">
-          <label className="text-xs text-gray-500">Playbook<select aria-label="Scenario playbook filter" className="mt-1 block min-w-[12rem] rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100" value={scenarioPlaybookId} onChange={(e) => setScenarioPlaybookId(e.target.value)}><option value="">All</option>{playbooks.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}</select></label>
-          <label className="text-xs text-gray-500">Status<select aria-label="Scenario status filter" className="mt-1 block min-w-[9rem] rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100" value={scenarioStatus} onChange={(e) => setScenarioStatus(e.target.value as EvaluationScenarioStatus | 'all')}><option value="all">All</option><option value="draft">Draft</option><option value="ready">Ready</option><option value="retired">Retired</option></select></label>
+          <label className="text-xs text-gray-500">Playbook<select aria-label="Scenario playbook filter" className="mt-1 block min-w-48 rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100" value={scenarioPlaybookId} onChange={(e) => setScenarioPlaybookId(e.target.value)}><option value="">All</option>{playbooks.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}</select></label>
+          <label className="text-xs text-gray-500">Status<select aria-label="Scenario status filter" className="mt-1 block min-w-36 rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-sm text-gray-100" value={scenarioStatus} onChange={(e) => setScenarioStatus(e.target.value as EvaluationScenarioStatus | 'all')}><option value="all">All</option><option value="draft">Draft</option><option value="ready">Ready</option><option value="retired">Retired</option></select></label>
         </div>
         {editor && editorPlaybookId && <ScenarioEditor scenario={editorScenario} playbookId={editorPlaybookId} playbookTitle={titleById.get(editorPlaybookId) ?? editorPlaybookId} sourceSignals={editorSignals} error={editorError} busy={saveMutation.isPending} onCancel={() => { setEditor(null); setEditorError(null); }} onSave={(value, status) => saveMutation.mutate({ value, status })} />}
         {scenariosLoading && <p className="text-sm text-gray-500">Loading…</p>}
@@ -143,7 +143,7 @@ export default function FeedbackSignalsPage() {
 }
 
 function FeedbackTable({ signals, selected, titleById, allVisibleSelected, someVisibleSelected, onToggle, onToggleAll }: { signals: FeedbackSignal[]; selected: Set<string>; titleById: Map<string, string>; allVisibleSelected: boolean; someVisibleSelected: boolean; onToggle: (id: string) => void; onToggleAll: () => void }) {
-  return <div className="overflow-x-auto rounded-lg border border-gray-800"><table className="w-full min-w-[48rem] text-left text-sm">
+  return <div className="overflow-x-auto rounded-lg border border-gray-800"><table className="w-full min-w-3xl text-left text-sm">
     <thead className="border-b border-gray-800 bg-gray-900/80 text-xs uppercase text-gray-500"><tr><th className="w-10 px-3 py-2"><Checkbox checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false} onCheckedChange={onToggleAll} aria-label="Select all visible signals" className={CHECKBOX_CLASS} /></th><th className="px-3 py-2">Excerpt</th><th className="px-3 py-2">Failure</th><th className="px-3 py-2">Playbook</th><th className="px-3 py-2">Source</th><th className="px-3 py-2">When</th></tr></thead>
     <tbody>{signals.map((signal) => <tr key={signal.id} className="border-b border-gray-800/80 align-top"><td className="px-3 py-2"><Checkbox checked={selected.has(signal.id)} onCheckedChange={() => onToggle(signal.id)} aria-label={`Select ${signal.id}`} className={CHECKBOX_CLASS} /></td><td className="px-3 py-2"><p className="font-mono text-[11px] text-gray-600">{signal.id}</p><p className="text-gray-200">“{signal.userFeedbackExcerpt}”</p>{signalLooksInProposal(signal) && <Badge variant="outline" className="mt-1 text-[10px]">In proposal</Badge>}</td><td className="px-3 py-2 text-gray-400">{signal.failureSummary}</td><td className="px-3 py-2 text-gray-300">{signal.candidatePlaybookId ? titleById.get(signal.candidatePlaybookId) ?? signal.candidatePlaybookId : '—'}</td><td className="px-3 py-2 text-gray-500">{signal.source}</td><td className="whitespace-nowrap px-3 py-2 text-gray-500">{new Date(signal.createdAt).toLocaleString()}</td></tr>)}</tbody>
   </table></div>;

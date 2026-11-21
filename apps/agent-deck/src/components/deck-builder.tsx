@@ -133,7 +133,7 @@ export default function DeckBuilder({
                 setEditingName(false);
               }
             }}
-            className="ml-2 h-7 max-w-[12rem] border-white/20 bg-white/10 px-2 text-sm font-normal text-white sm:max-w-[16rem]"
+            className="ml-2 h-7 max-w-48 border-white/20 bg-white/10 px-2 text-sm font-normal text-white sm:max-w-[16rem]"
             data-testid="input-deck-name"
             aria-label="Deck name"
           />
@@ -194,7 +194,7 @@ export default function DeckBuilder({
               {credentials.map((credential, index) => (
                   <div
                     key={credential.id}
-                    className="w-32 h-48 aspect-[2/3] rounded-lg border-2 p-3 transition-shadow duration-500 shadow-lg hover:shadow-2xl bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 relative overflow-hidden cursor-pointer"
+                    className="w-32 h-48 aspect-2/3 rounded-lg border-2 p-3 transition-shadow duration-500 shadow-lg hover:shadow-2xl bg-linear-to-b from-gray-900 via-gray-800 to-gray-900 relative overflow-hidden cursor-pointer"
                     style={{
                       borderColor: API_KEY_CARD_COLOR,
                       boxShadow: `0 0 20px ${API_KEY_CARD_COLOR}20`,
@@ -234,7 +234,7 @@ export default function DeckBuilder({
               {playbooks.map((playbook, index) => (
                     <div
                       key={playbook.id}
-                      className="w-32 h-48 aspect-[2/3] rounded-lg border-2 p-3 transition-shadow duration-500 shadow-lg hover:shadow-2xl bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 relative overflow-hidden cursor-pointer"
+                      className="w-32 h-48 aspect-2/3 rounded-lg border-2 p-3 transition-shadow duration-500 shadow-lg hover:shadow-2xl bg-linear-to-b from-gray-900 via-gray-800 to-gray-900 relative overflow-hidden cursor-pointer"
                       style={{
                         borderColor: PLAYBOOK_CARD_COLOR,
                         boxShadow: `0 0 20px ${PLAYBOOK_CARD_COLOR}20`,
@@ -277,7 +277,7 @@ export default function DeckBuilder({
               {services.map((service) => (
                     <div
                       key={service.id}
-                      className="w-32 h-48 aspect-[2/3] rounded-lg border-2 p-3 transition-shadow duration-500 shadow-lg hover:shadow-2xl bg-gradient-to-b from-gray-900 via-gray-800 to-gray-900 relative overflow-hidden cursor-pointer"
+                      className="w-32 h-48 aspect-2/3 rounded-lg border-2 p-3 transition-shadow duration-500 shadow-lg hover:shadow-2xl bg-linear-to-b from-gray-900 via-gray-800 to-gray-900 relative overflow-hidden cursor-pointer"
                       style={{
                         borderColor: getServiceCardColor(service),
                         boxShadow: `0 0 20px ${getServiceCardColor(service)}20`,

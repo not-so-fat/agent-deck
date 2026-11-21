@@ -304,7 +304,7 @@ export default function GrantsPage() {
                           onCheckedChange={(checked) => toggleAllowedDeck(deck.id, checked === true)}
                           className="border-[#C4B643] data-[state=checked]:bg-[#C4B643] data-[state=checked]:text-[#0A0A07]"
                         />
-                        <Label htmlFor={`allowed-${deck.id}`} className="min-w-0 break-words font-normal">
+                        <Label htmlFor={`allowed-${deck.id}`} className="min-w-0 wrap-break-word font-normal">
                           {deck.name}{isDefault ? " (default)" : ""}
                         </Label>
                       </div>
@@ -365,7 +365,7 @@ export default function GrantsPage() {
                 <article key={grant.id} className="min-w-0 rounded-xl border border-gray-800 bg-gray-900/50 p-4 sm:p-5">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <h3 className="break-words font-semibold text-gray-100">{grant.label}</h3>
+                      <h3 className="wrap-break-word font-semibold text-gray-100">{grant.label}</h3>
                       <p className="mt-1 break-all font-mono text-xs text-gray-600">{grant.id}</p>
                     </div>
                     <StatusBadge status={status} />
@@ -434,7 +434,7 @@ function GrantField({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
       <dt className="font-ui-display text-xs text-gray-500">{label}</dt>
-      <dd className="mt-1 break-words text-gray-300">{value}</dd>
+      <dd className="mt-1 wrap-break-word text-gray-300">{value}</dd>
     </div>
   );
 }

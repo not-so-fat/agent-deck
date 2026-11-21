@@ -281,7 +281,7 @@ export default function DeckFan({ cardCount, children }: DeckFanProps) {
 
       <div
         ref={scrollRef}
-        className="max-w-full overflow-x-auto overflow-y-visible [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="max-w-full overflow-x-auto overflow-y-visible [-ms-overflow-style:none] scrollbar-none [&::-webkit-scrollbar]:hidden"
         style={{
           width: visibleFanWidth,
           maxWidth: "100%",

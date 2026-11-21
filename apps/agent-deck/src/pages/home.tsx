@@ -363,7 +363,7 @@ export default function Home() {
                 alt="Agent Deck Logo"
                 className="h-9 w-9 shrink-0 object-contain"
               />
-              <h1 className="whitespace-nowrap text-xl font-bold bg-gradient-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent" style={{background: 'linear-gradient(to right, #C4B643, #D4C760)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text'}}>
+              <h1 className="whitespace-nowrap text-xl font-bold bg-linear-to-r from-yellow-400 to-yellow-600 bg-clip-text text-transparent" style={{background: 'linear-gradient(to right, #C4B643, #D4C760)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text'}}>
                 AgentDeck
               </h1>
               <p className="sr-only">Build tool deck for your agent</p>
@@ -591,7 +591,7 @@ export default function Home() {
 
             {/* My Collection */}
             <div
-              className="panel-surface flex min-h-[20rem] flex-col overflow-hidden p-4 min-w-0 sm:min-h-[24rem] xl:min-h-0 xl:flex-1"
+              className="panel-surface flex min-h-80 flex-col overflow-hidden p-4 min-w-0 sm:min-h-96 xl:min-h-0 xl:flex-1"
               data-testid="collection-panel"
             >
               <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2">
@@ -642,7 +642,7 @@ export default function Home() {
                   
                   {/* Type Filter */}
                   <Select value={typeFilter || "all"} onValueChange={(v) => setTypeFilter(v === "all" ? "" : v)}>
-                    <SelectTrigger className="w-[7.5rem] h-8 bg-white/10 border-white/20 text-white text-xs shrink-0" data-testid="select-type">
+                    <SelectTrigger className="w-30 h-8 bg-white/10 border-white/20 text-white text-xs shrink-0" data-testid="select-type">
                       <Filter className="w-3 h-3 mr-1 shrink-0" />
                       <SelectValue placeholder="Type" />
                     </SelectTrigger>
@@ -665,7 +665,7 @@ export default function Home() {
                     disabled={!usageAvailable}
                   >
                     <SelectTrigger
-                      className="w-[7.5rem] h-8 bg-white/10 border-white/20 text-white text-xs shrink-0"
+                      className="w-30 h-8 bg-white/10 border-white/20 text-white text-xs shrink-0"
                       data-testid="select-sort"
                       title={
                         usageAvailable
@@ -746,7 +746,7 @@ export default function Home() {
                 <div className="grid grid-cols-[repeat(auto-fill,5rem)] gap-y-2 pr-12">
                   {Array.from({ length: 10 }).map((_, i) => (
                     <div key={i} className="animate-pulse">
-                      <div className="bg-white/10 rounded-lg w-32 h-48 aspect-[2/3]"></div>
+                      <div className="bg-white/10 rounded-lg w-32 h-48 aspect-2/3"></div>
                     </div>
                   ))}
                 </div>
