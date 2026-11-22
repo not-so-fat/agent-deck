@@ -13,6 +13,7 @@ import {
   type ServiceWarningContext,
 } from '@agent-deck/shared';
 import { MCPDiscoveryService } from './mcp-discovery-service';
+import { isGoogleMcpServiceUrl } from './google-oauth-config';
 import type { OAuthManager } from './oauth-manager';
 
 export type CollectionWarningsPayload = {
@@ -117,26 +118,54 @@ export class CollectionWarningService {
     );
 
     // NOT-655: the server auth state (NOT-654) is the single source of truth
-    // for OAuth warnings — stored card fields plus a vault refresh-token bit
-    // no longer decide. The details modal reads the same state, so the face
-    // badge and the modal can never disagree.
+    // for Google OAuth cards — the details modal reads the same state, so the
+    // face badge and the modal can never disagree. Non-Google cards keep the
+    // pre-NOT-655 stored-field + vault refresh-token behavior untouched.
     if (this.oauthManager) {
       await Promise.all(
         services.map(async (service) => {
           if (service.type !== 'mcp') {
             return;
           }
-          let authState: OAuthCardAuthState | undefined;
-          try {
-            authState = (await this.oauthManager!.getOAuthAuthState(service.id)).authState;
-          } catch {
-            authState = undefined;
+          if (isGoogleMcpServiceUrl(service.url)) {
+            try {
+              const authState: OAuthCardAuthState = (
+                await this.oauthManager!.getOAuthAuthState(service.id)
+              ).authState;
+              serviceWarningContext[service.id] = {
+                ...serviceWarningContext[service.id],
+                authState,
+              };
+            } catch {
+              // Round 2: never fall back to stored fields on a failed read —
+              // that would emit oauth_expired without needs_reconnect and
+              // disagree with the details endpoint (which reports an error).
+              serviceWarningContext[service.id] = {
+                ...serviceWarningContext[service.id],
+                authStateUnavailable: true,
+              };
+            }
+            return;
           }
-          if (authState !== undefined) {
+          // Non-Google: preserve the exact pre-NOT-655 legacy inputs.
+          const oauthLikely =
+            service.oauthClientId ||
+            service.oauthAuthorizationUrl ||
+            service.oauthTokenUrl ||
+            serviceWarningContext[service.id]?.oauthRequired;
+          if (!oauthLikely) {
+            return;
+          }
+          try {
+            const hasRefreshToken = await this.oauthManager!.hasRefreshToken(
+              service.id,
+            );
             serviceWarningContext[service.id] = {
               ...serviceWarningContext[service.id],
-              authState,
+              hasRefreshToken,
             };
+          } catch {
+            // Unreadable vault: legacy warns from stored fields alone.
           }
         }),
       );

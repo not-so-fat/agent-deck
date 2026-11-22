@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DatabaseManager } from '../models/database';
 import { OAuthManager } from './oauth-manager';
 import { CollectionWarningService } from './collection-warning-service';
@@ -7,9 +7,10 @@ import { OAuthClientSecretVault } from '../vault/oauth-client-secret-vault';
 import { OAuthTokenVault } from '../vault/oauth-token-vault';
 
 /**
- * NOT-655: the collection warnings for OAuth cards come from the server
- * `authState` (NOT-654) — the same state the details modal reads — so the
- * card face and the modal can never disagree.
+ * NOT-655: the collection warnings for Google OAuth cards come from the
+ * server `authState` (NOT-654) — the same state the details modal reads — so
+ * the card face and the modal can never disagree. Non-Google cards keep the
+ * pre-NOT-655 legacy behavior untouched.
  */
 describe('CollectionWarningService', () => {
   let db: DatabaseManager;
@@ -49,6 +50,32 @@ describe('CollectionWarningService', () => {
       oauthTokenUrl: 'https://oauth2.googleapis.com/token',
       oauthRedirectUri: 'http://127.0.0.1:8000/api/oauth/callback',
       oauthScope: 'https://www.googleapis.com/auth/gmail.readonly',
+    });
+  }
+
+  async function createLinearService() {
+    return db.createService({
+      name: 'Linear',
+      type: 'mcp',
+      url: 'https://mcp.linear.app/mcp',
+      oauthClientId: 'linear-client',
+      oauthAuthorizationUrl: 'https://linear.app/oauth/authorize',
+      oauthTokenUrl: 'https://api.linear.app/oauth/token',
+      oauthRedirectUri: 'http://127.0.0.1:8000/api/oauth/callback',
+      oauthScope: 'read write',
+    });
+  }
+
+  async function createSlackService() {
+    return db.createService({
+      name: 'Slack',
+      type: 'mcp',
+      url: 'https://slack-mcp.example.com/mcp',
+      oauthClientId: 'slack-client',
+      oauthAuthorizationUrl: 'https://slack.com/oauth/v2/authorize',
+      oauthTokenUrl: 'https://slack.com/api/oauth.v2.access',
+      oauthRedirectUri: 'http://127.0.0.1:8000/api/oauth/callback',
+      oauthScope: 'channels:read chat:write',
     });
   }
 
@@ -119,6 +146,77 @@ describe('CollectionWarningService', () => {
     const payload = await warnings.summarize([plain], [], []);
 
     expect(payload.services[plain.id]).toBeUndefined();
+    expect(payload.total).toBe(0);
+  });
+
+  it('round 2: keeps oauth_required (not expired) for a first-time Linear card', async () => {
+    const authSpy = vi.spyOn(oauthManager, 'getOAuthAuthState');
+    const linear = await createLinearService();
+
+    const payload = await warnings.summarize([linear], [], []);
+
+    expect(payload.services[linear.id]?.map((w) => w.kind)).toEqual([
+      'oauth_required',
+    ]);
+    expect(payload.byKind.oauth_required).toBe(1);
+    expect(payload.byKind.oauth_expired).toBe(0);
+    // Non-Google cards never consult the server auth state.
+    expect(authSpy).not.toHaveBeenCalled();
+  });
+
+  it('round 2: keeps oauth_required (not expired) for a first-time Slack card', async () => {
+    const slack = await createSlackService();
+
+    const payload = await warnings.summarize([slack], [], []);
+
+    expect(payload.services[slack.id]?.map((w) => w.kind)).toEqual([
+      'oauth_required',
+    ]);
+    expect(payload.byKind.oauth_required).toBe(1);
+    expect(payload.byKind.oauth_expired).toBe(0);
+  });
+
+  it('round 2: non-Google legacy still honors the vault refresh-token bit', async () => {
+    // Expired access token WITH a refresh token: no warning (renews silently).
+    const refreshable = await createLinearService();
+    const pastExpiry = new Date(Date.now() - 60_000).toISOString();
+    await tokens.set(refreshable.id, 'expired-access', 'live-refresh', pastExpiry);
+    const freshRefreshable = (await db.getAllServices()).find(
+      (s) => s.id === refreshable.id,
+    )!;
+
+    const okPayload = await warnings.summarize([freshRefreshable], [], []);
+    expect(okPayload.services[refreshable.id]).toBeUndefined();
+
+    // Expired access token WITHOUT a refresh token: legacy oauth_expired.
+    const dead = await createSlackService();
+    await tokens.set(dead.id, 'expired-access', undefined, pastExpiry);
+    const freshDead = (await db.getAllServices()).find(
+      (s) => s.id === dead.id,
+    )!;
+
+    const deadPayload = await warnings.summarize([freshDead], [], []);
+    expect(deadPayload.services[dead.id]?.map((w) => w.kind)).toEqual([
+      'oauth_expired',
+    ]);
+  });
+
+  it('round 2: a failed auth-state read suppresses Google OAuth warnings (no stored-field fallback)', async () => {
+    const google = await createGoogleService();
+    const pastExpiry = new Date(Date.now() - 60_000).toISOString();
+    await tokens.set(google.id, 'expired-access', undefined, pastExpiry);
+    const fresh = (await db.getAllServices()).find((s) => s.id === google.id)!;
+    vi.spyOn(oauthManager, 'getOAuthAuthState').mockRejectedValueOnce(
+      new Error('vault unavailable'),
+    );
+
+    const payload = await warnings.summarize([fresh], [], []);
+
+    // Stored fields scream expired, but without needs_reconnect there is no
+    // oauth_expired — the details endpoint reports a status error instead.
+    expect(payload.services[google.id]).toBeUndefined();
+    expect(payload.byKind.oauth_expired).toBe(0);
+    expect(payload.byKind.oauth_required).toBe(0);
     expect(payload.total).toBe(0);
   });
 });

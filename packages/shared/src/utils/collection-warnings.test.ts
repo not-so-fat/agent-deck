@@ -166,6 +166,57 @@ describe('collection-warnings', () => {
     expect(warnings[0].kind).toBe('oauth_required');
   });
 
+  it('NOT-655 round 2: authStateUnavailable suppresses OAuth warnings (failed read)', () => {
+    const storedExpired = {
+      ...baseService,
+      id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      name: 'Gmail',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+      oauthClientId: 'google-client',
+      oauthAccessToken: 'token',
+      oauthTokenExpiresAt: '2020-01-01T00:00:00.000Z',
+    };
+
+    // Stored fields scream expired, but the read failed — no oauth_expired,
+    // so the face cannot disagree with the details endpoint (status error).
+    expect(
+      getServiceWarnings(storedExpired, { authStateUnavailable: true }),
+    ).toHaveLength(0);
+
+    // Same for a first-time card the probe says needs OAuth — no fallback
+    // oauth_required either; unknown stays silent.
+    expect(
+      getServiceWarnings(
+        {
+          ...baseService,
+          id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+          name: 'Gmail',
+          url: 'https://gmailmcp.googleapis.com/mcp/v1',
+        },
+        { authStateUnavailable: true, oauthRequired: true },
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('NOT-655 round 2: unhealthy + authStateUnavailable keeps unhealthy without the OAuth-OK hint', () => {
+    const warnings = getServiceWarnings(
+      {
+        ...baseService,
+        id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        health: 'unhealthy' as const,
+        oauthClientId: 'client',
+        oauthAccessToken: 'token',
+        oauthTokenExpiresAt: '2030-01-01T00:00:00.000Z',
+      },
+      { authStateUnavailable: true },
+    );
+
+    expect(warnings.map((warning) => warning.kind)).toEqual([
+      'service_unhealthy',
+    ]);
+    expect(warnings[0].message).toBe('Service reported unhealthy');
+  });
+
   it('NOT-655: unhealthy needs_reconnect card reports unhealthy without the OAuth-OK hint', () => {
     const warnings = getServiceWarnings(
       {
