@@ -836,4 +836,293 @@ describe('ServiceManager', () => {
       });
     });
   });
+
+  describe('Google OAuth needs_reconnect health (NOT-654)', () => {
+    const googleServiceId = '123e4567-e89b-12d3-a456-426614174099';
+    const googleService = {
+      id: googleServiceId,
+      name: 'Gmail',
+      type: 'mcp',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+      health: 'healthy',
+      isConnected: true,
+      oauthClientId: 'google-client',
+      oauthHasToken: true,
+    };
+    const discoveredTools = [
+      {
+        name: 'gmail_list',
+        description: 'List messages',
+        inputSchema: { type: 'object' },
+      },
+    ];
+
+    function mockGoogleDiscovery(authState: { authState: string; reason?: string }) {
+      mockDbManager.getService.mockResolvedValue(googleService);
+      mockMCPClientManager.discoverTools.mockResolvedValue(discoveredTools);
+      mockOAuthManager.getOAuthAuthState = vi
+        .fn()
+        .mockResolvedValue(authState);
+    }
+
+    it('marks unhealthy and broadcasts when discovery succeeds but auth needs reconnect', async () => {
+      mockGoogleDiscovery({ authState: 'needs_reconnect', reason: 'no_refresh_token' });
+      const broadcast = vi.fn();
+      serviceManager.setStatusBroadcaster(broadcast);
+
+      const result = await serviceManager.discoverServiceTools(googleServiceId);
+
+      // The tools are real (Google served them); only the health changes.
+      expect(result).toEqual([
+        {
+          name: 'gmail_list',
+          description: 'List messages',
+          inputSchema: { type: 'object' },
+          enabled: true,
+        },
+      ]);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(
+        googleServiceId,
+        false,
+        'unhealthy',
+      );
+      expect(broadcast).toHaveBeenCalledWith({
+        serviceId: googleServiceId,
+        health: 'unhealthy',
+        isConnected: false,
+        lastPing: expect.any(String),
+      });
+    });
+
+    it('reports unhealthy from checkServiceHealth when auth needs reconnect', async () => {
+      mockGoogleDiscovery({ authState: 'needs_reconnect', reason: 'refresh_rejected' });
+      const broadcast = vi.fn();
+      serviceManager.setStatusBroadcaster(broadcast);
+
+      const result = await serviceManager.checkServiceHealth(googleServiceId);
+
+      expect(result).toEqual({
+        success: true,
+        health: 'unhealthy',
+        isConnected: false,
+      });
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(
+        googleServiceId,
+        false,
+        'unhealthy',
+      );
+      expect(broadcast).toHaveBeenCalledWith({
+        serviceId: googleServiceId,
+        health: 'unhealthy',
+        isConnected: false,
+        lastPing: expect.any(String),
+      });
+    });
+
+    it('updates the DB status even when no broadcaster is wired', async () => {
+      mockGoogleDiscovery({ authState: 'needs_reconnect', reason: 'no_refresh_token' });
+
+      const result = await serviceManager.discoverServiceTools(googleServiceId);
+
+      expect(Array.isArray(result)).toBe(true);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(
+        googleServiceId,
+        false,
+        'unhealthy',
+      );
+    });
+
+    it('stays healthy for a Google card whose auth is ok', async () => {
+      mockGoogleDiscovery({ authState: 'ok' });
+      const broadcast = vi.fn();
+      serviceManager.setStatusBroadcaster(broadcast);
+
+      const result = await serviceManager.discoverServiceTools(googleServiceId);
+
+      expect(Array.isArray(result)).toBe(true);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(
+        googleServiceId,
+        true,
+        'healthy',
+      );
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    it('ignores auth state for non-Google cards', async () => {
+      const linearService = {
+        id: '123e4567-e89b-12d3-a456-426614174098',
+        name: 'Linear',
+        type: 'mcp',
+        url: 'https://mcp.linear.app/mcp',
+        oauthClientId: 'linear-client',
+        oauthHasToken: true,
+      };
+      mockDbManager.getService.mockResolvedValue(linearService);
+      mockMCPClientManager.discoverTools.mockResolvedValue(discoveredTools);
+      mockOAuthManager.getOAuthAuthState = vi.fn().mockResolvedValue({
+        authState: 'needs_reconnect',
+        reason: 'refresh_rejected',
+      });
+      const broadcast = vi.fn();
+      serviceManager.setStatusBroadcaster(broadcast);
+
+      const result = await serviceManager.discoverServiceTools(linearService.id);
+
+      expect(Array.isArray(result)).toBe(true);
+      expect(mockDbManager.updateServiceStatus).toHaveBeenCalledWith(
+        linearService.id,
+        true,
+        'healthy',
+      );
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(mockOAuthManager.getOAuthAuthState).not.toHaveBeenCalled();
+    });
+
+    it('stays unhealthy against a stub Google MCP server that serves tools/list without auth', async () => {
+      // This file mocks `./mcp-client-manager`; reach past the mock for the
+      // real client so the MCP protocol behavior is genuinely exercised.
+      const { MCPClientManager: RealMCPClientManager } =
+        await vi.importActual<typeof import('./mcp-client-manager')>(
+          './mcp-client-manager',
+        );
+      const seen: Array<{ method: string; auth: string | null }> = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_input: unknown, init?: { method?: string; headers?: unknown; body?: unknown }) => {
+          const method = init?.method ?? 'GET';
+          if (method === 'GET') {
+            return new Response('no sse', { status: 405 });
+          }
+          if (method === 'DELETE') {
+            return new Response(null, { status: 200 });
+          }
+          const msg = JSON.parse(String(init?.body ?? '{}'));
+          const auth = new Headers(init?.headers as HeadersInit).get('authorization');
+          seen.push({ method: msg.method, auth });
+          if (msg.method === 'initialize') {
+            return new Response(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: msg.id,
+                result: {
+                  protocolVersion: '2025-03-26',
+                  capabilities: { tools: {} },
+                  serverInfo: { name: 'stub-google', version: '1.0.0' },
+                },
+              }),
+              {
+                status: 200,
+                headers: {
+                  'content-type': 'application/json',
+                  'mcp-session-id': 'stub-session',
+                },
+              },
+            );
+          }
+          if (msg.method === 'notifications/initialized') {
+            return new Response(null, { status: 202 });
+          }
+          if (msg.method === 'tools/list') {
+            // Google behavior: discovery succeeds with no Authorization header.
+            return new Response(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: msg.id,
+                result: {
+                  tools: [
+                    {
+                      name: 'gmail_list',
+                      description: 'List messages',
+                      inputSchema: { type: 'object' },
+                    },
+                  ],
+                },
+              }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+          }
+          if (msg.method === 'tools/call') {
+            // ...while only tools/call enforces auth.
+            return new Response(JSON.stringify({ error: 'invalid_token' }), {
+              status: 401,
+              headers: {
+                'content-type': 'application/json',
+                'www-authenticate': 'Bearer resource_metadata="https://example"',
+              },
+            });
+          }
+          return new Response('not found', { status: 404 });
+        }),
+      );
+      try {
+        const realMcp = new RealMCPClientManager(
+          async () => null, // No usable access token (expired, no refresh token).
+          async () => null, // Nothing to refresh with.
+        );
+        try {
+          const statusUpdates: Array<{ isConnected: boolean; health: string }> = [];
+          const dbFake = {
+            getService: vi.fn().mockResolvedValue(googleService),
+            updateServiceStatus: vi
+              .fn()
+              .mockImplementation(async (_id: string, isConnected: boolean, health: string) => {
+                statusUpdates.push({ isConnected, health });
+              }),
+          };
+          const oauthFake = {
+            getOAuthAuthState: vi.fn().mockResolvedValue({
+              authState: 'needs_reconnect',
+              reason: 'no_refresh_token',
+            }),
+          };
+          const manager = new ServiceManager(
+            dbFake as unknown as DatabaseManager,
+            realMcp,
+            oauthFake as unknown as OAuthManager,
+            {} as unknown as import('../vault/oauth-client-secret-vault').OAuthClientSecretVault,
+          );
+          const broadcast = vi.fn();
+          manager.setStatusBroadcaster(broadcast);
+
+          const tools = await manager.discoverServiceTools(googleServiceId);
+
+          expect(seen).toContainEqual({ method: 'tools/list', auth: null });
+          expect(tools).toEqual([
+            {
+              name: 'gmail_list',
+              description: 'List messages',
+              inputSchema: { type: 'object' },
+              enabled: true,
+            },
+          ]);
+          expect(statusUpdates).toEqual([{ isConnected: false, health: 'unhealthy' }]);
+          expect(broadcast).toHaveBeenCalledWith({
+            serviceId: googleServiceId,
+            health: 'unhealthy',
+            isConnected: false,
+            lastPing: expect.any(String),
+          });
+
+          const health = await manager.checkServiceHealth(googleServiceId);
+          expect(health).toEqual({
+            success: true,
+            health: 'unhealthy',
+            isConnected: false,
+          });
+
+          const call = await manager.callServiceTool({
+            serviceId: googleServiceId,
+            toolName: 'gmail_list',
+            arguments: {},
+          });
+          expect(call.success).toBe(false);
+          expect(call).toMatchObject({ error_code: 'MCP_AUTH_ERROR' });
+        } finally {
+          await realMcp.cleanup();
+        }
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
 });

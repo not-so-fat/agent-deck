@@ -24,6 +24,12 @@ export interface Service {
   oauthTokenExpiresAt?: string;
   /** True when access token is stored in Keychain (not returned to clients). */
   oauthHasToken?: boolean;
+  /**
+   * NOT-654: true when the token endpoint definitively rejected the
+   * `refresh_token` grant (`invalid_grant`/`invalid_client`). Host-local
+   * runtime state — never exported to bundles or the git store.
+   */
+  oauthRefreshRejected?: boolean;
   oauthState?: string;
   
   // Local MCP server fields

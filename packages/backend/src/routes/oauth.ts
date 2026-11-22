@@ -6,6 +6,7 @@ import {
 } from '@agent-deck/shared';
 import { resolveDashboardOrigin } from '../lib/paths';
 import { getOAuthSetupInfo, startOAuthConnect } from '../services/oauth-connect-service';
+import { isGoogleMcpServiceUrl } from '../services/google-oauth-config';
 
 interface OAuthFlowRequest {
   Params: { serviceId: string };
@@ -342,6 +343,20 @@ export async function registerOAuthRoutes(fastify: FastifyInstance) {
       const refreshedService = await fastify.db.getService(serviceId);
       const isExpired = await fastify.oauthManager.isTokenExpired(serviceId);
       const authenticated = hasToken && !isExpired && !refreshFailed;
+      // NOT-654: read after the refresh attempt above, so a revoked grant
+      // discovered by this very call is already reflected.
+      const authStatus = await fastify.oauthManager.getOAuthAuthState(serviceId);
+      if (
+        authStatus.authState === 'needs_reconnect' &&
+        isGoogleMcpServiceUrl(service.url)
+      ) {
+        // This read may itself have persisted the rejection (the refresh
+        // attempt above), and the background refresher skips
+        // `needs_reconnect` cards — so reconcile into `unhealthy` health
+        // here, or a stale `healthy` row would never be repaired.
+        // Non-Google cards are untouched in this ticket.
+        await fastify.serviceManager.markOAuthNeedsReconnect(serviceId);
+      }
 
       const response: ApiResponse = {
         success: true,
@@ -352,6 +367,8 @@ export async function registerOAuthRoutes(fastify: FastifyInstance) {
           hasRefreshToken,
           refreshFailed,
           expiresAt: refreshedService?.oauthTokenExpiresAt ?? service.oauthTokenExpiresAt,
+          authState: authStatus.authState,
+          reason: authStatus.reason,
         },
       };
       
