@@ -136,18 +136,16 @@ export class CollectionWarningService {
                 ...serviceWarningContext[service.id],
                 authState,
               };
+              return;
             } catch {
-              // Round 2: never fall back to stored fields on a failed read —
-              // that would emit oauth_expired without needs_reconnect and
-              // disagree with the details endpoint (which reports an error).
-              serviceWarningContext[service.id] = {
-                ...serviceWarningContext[service.id],
-                authStateUnavailable: true,
-              };
+              // Round 3: a failed read must not silence an existing warning —
+              // fall through to the legacy inputs below (stored card fields
+              // plus the vault refresh-token bit), so a transient
+              // status/vault failure keeps the previous warning in place.
             }
-            return;
           }
-          // Non-Google: preserve the exact pre-NOT-655 legacy inputs.
+          // Non-Google, plus Google when the auth-state read failed: preserve
+          // the exact pre-NOT-655 legacy inputs.
           const oauthLikely =
             service.oauthClientId ||
             service.oauthAuthorizationUrl ||

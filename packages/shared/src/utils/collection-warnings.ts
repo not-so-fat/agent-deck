@@ -47,27 +47,22 @@ export type ServiceWarningContext = {
   /** Live MCP discovery — OAuth required even before client credentials are stored. */
   oauthRequired?: boolean;
   /**
-   * Legacy fallback (pre-NOT-655, still used for non-Google cards): when true,
-   * expired access tokens can renew silently — do not warn oauth_expired.
-   * Only consulted when `authState` and `authStateUnavailable` are both
-   * absent; the backend sends `authState` for Google cards and
+   * Legacy fallback (pre-NOT-655, still used for non-Google cards and for
+   * Google cards whose auth-state read failed): when true, expired access
+   * tokens can renew silently — do not warn oauth_expired. Only consulted
+   * when `authState` is absent; the backend sends `authState` for Google
+   * cards (falling back to `hasRefreshToken` when the read fails) and
    * `hasRefreshToken` for non-Google cards.
    */
   hasRefreshToken?: boolean;
   /**
    * NOT-655: server auth state — the single source of truth for Google cards
    * when present. Non-Google cards never receive it (their badges keep the
-   * legacy stored-field behavior).
+   * legacy stored-field behavior), and neither do Google cards whose read
+   * failed (they fall back to the legacy computation below so a transient
+   * failure cannot silence an existing warning).
    */
   authState?: OAuthCardAuthState;
-  /**
-   * NOT-655 round 2: the server tried to read the Google card's auth state
-   * and failed. Suppress all OAuth warnings rather than falling back to
-   * stored fields — the details endpoint reports a status error in this case,
-   * so emitting `oauth_expired` here would recreate face/details disagreement
-   * and violate the `oauth_expired` iff `needs_reconnect` contract.
-   */
-  authStateUnavailable?: boolean;
 };
 
 function mcpHasOAuthConfig(service: Service): boolean {
@@ -93,9 +88,7 @@ export function getServiceWarnings(
       service.type === 'mcp' &&
       (context.authState !== undefined
         ? context.authState === 'ok'
-        : context.authStateUnavailable === true
-          ? false
-          : mcpHasValidOAuthSession(service));
+        : mcpHasValidOAuthSession(service));
     warnings.push({
       kind: 'service_unhealthy',
       message: oauthOk
@@ -106,13 +99,6 @@ export function getServiceWarnings(
   }
 
   if (service.type !== 'mcp') {
-    return warnings;
-  }
-
-  // NOT-655 round 2: the auth-state read failed — suppress OAuth warnings so
-  // the face cannot disagree with the details endpoint (which reports an
-  // error) and `oauth_expired` stays iff `needs_reconnect`.
-  if (context.authStateUnavailable === true) {
     return warnings;
   }
 
@@ -147,6 +133,8 @@ export function getServiceWarnings(
     return warnings;
   }
 
+  // No auth state (non-Google cards, or a Google card whose read failed):
+  // the pre-NOT-655 stored-field + vault refresh-token computation.
   if (mcpHasValidOAuthSession(service)) {
     return warnings;
   }

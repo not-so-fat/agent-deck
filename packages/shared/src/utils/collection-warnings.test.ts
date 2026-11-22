@@ -166,7 +166,10 @@ describe('collection-warnings', () => {
     expect(warnings[0].kind).toBe('oauth_required');
   });
 
-  it('NOT-655 round 2: authStateUnavailable suppresses OAuth warnings (failed read)', () => {
+  it('NOT-655 round 3: absent authState falls back to the stored-field + refresh-token computation', () => {
+    // A Google card whose auth-state read failed arrives with no authState
+    // (plus the vault refresh-token bit) — the previous computation applies,
+    // so a transient failure cannot silence an existing warning.
     const storedExpired = {
       ...baseService,
       id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -177,29 +180,39 @@ describe('collection-warnings', () => {
       oauthTokenExpiresAt: '2020-01-01T00:00:00.000Z',
     };
 
-    // Stored fields scream expired, but the read failed — no oauth_expired,
-    // so the face cannot disagree with the details endpoint (status error).
-    expect(
-      getServiceWarnings(storedExpired, { authStateUnavailable: true }),
-    ).toHaveLength(0);
+    // Expired stored token, no refresh token: the warning stays.
+    const expired = getServiceWarnings(storedExpired, {
+      hasRefreshToken: false,
+    });
+    expect(expired.some((warning) => warning.kind === 'oauth_expired')).toBe(
+      true,
+    );
 
-    // Same for a first-time card the probe says needs OAuth — no fallback
-    // oauth_required either; unknown stays silent.
+    // Expired stored token with a live refresh token: renews silently.
+    const refreshable = getServiceWarnings(storedExpired, {
+      hasRefreshToken: true,
+    });
     expect(
-      getServiceWarnings(
-        {
-          ...baseService,
-          id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-          name: 'Gmail',
-          url: 'https://gmailmcp.googleapis.com/mcp/v1',
-        },
-        { authStateUnavailable: true, oauthRequired: true },
-      ),
-    ).toHaveLength(0);
+      refreshable.some((warning) => warning.kind === 'oauth_expired'),
+    ).toBe(false);
+
+    // First-time card the probe says needs OAuth: oauth_required as before.
+    const required = getServiceWarnings(
+      {
+        ...baseService,
+        id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        name: 'Gmail',
+        url: 'https://gmailmcp.googleapis.com/mcp/v1',
+      },
+      { oauthRequired: true },
+    );
+    expect(required.map((warning) => warning.kind)).toEqual([
+      'oauth_required',
+    ]);
   });
 
-  it('NOT-655 round 2: unhealthy + authStateUnavailable keeps unhealthy without the OAuth-OK hint', () => {
-    const warnings = getServiceWarnings(
+  it('NOT-655 round 3: unhealthy without authState uses the stored session for the OAuth-OK hint', () => {
+    const unhealthyValidSession = getServiceWarnings(
       {
         ...baseService,
         id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
@@ -208,13 +221,33 @@ describe('collection-warnings', () => {
         oauthAccessToken: 'token',
         oauthTokenExpiresAt: '2030-01-01T00:00:00.000Z',
       },
-      { authStateUnavailable: true },
+      {},
     );
 
-    expect(warnings.map((warning) => warning.kind)).toEqual([
+    expect(unhealthyValidSession.map((warning) => warning.kind)).toEqual([
       'service_unhealthy',
     ]);
-    expect(warnings[0].message).toBe('Service reported unhealthy');
+    expect(unhealthyValidSession[0].message).toContain('OAuth OK but MCP unreachable');
+
+    const unhealthyExpiredSession = getServiceWarnings(
+      {
+        ...baseService,
+        id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+        health: 'unhealthy' as const,
+        oauthClientId: 'client',
+        oauthAccessToken: 'token',
+        oauthTokenExpiresAt: '2020-01-01T00:00:00.000Z',
+      },
+      {},
+    );
+
+    expect(unhealthyExpiredSession.map((warning) => warning.kind)).toEqual([
+      'service_unhealthy',
+      'oauth_expired',
+    ]);
+    expect(unhealthyExpiredSession[0].message).toBe(
+      'Service reported unhealthy',
+    );
   });
 
   it('NOT-655: unhealthy needs_reconnect card reports unhealthy without the OAuth-OK hint', () => {

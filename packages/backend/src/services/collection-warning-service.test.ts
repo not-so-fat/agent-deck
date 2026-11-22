@@ -201,7 +201,7 @@ describe('CollectionWarningService', () => {
     ]);
   });
 
-  it('round 2: a failed auth-state read suppresses Google OAuth warnings (no stored-field fallback)', async () => {
+  it('round 3: a failed auth-state read keeps the stored-field warning (expired, no refresh token)', async () => {
     const google = await createGoogleService();
     const pastExpiry = new Date(Date.now() - 60_000).toISOString();
     await tokens.set(google.id, 'expired-access', undefined, pastExpiry);
@@ -212,11 +212,30 @@ describe('CollectionWarningService', () => {
 
     const payload = await warnings.summarize([fresh], [], []);
 
-    // Stored fields scream expired, but without needs_reconnect there is no
-    // oauth_expired — the details endpoint reports a status error instead.
+    // A transient read failure falls back to the previous stored-field +
+    // vault computation — the existing warning does not blink out.
+    expect(payload.services[google.id]?.map((w) => w.kind)).toEqual([
+      'oauth_expired',
+    ]);
+    expect(payload.byKind.oauth_expired).toBe(1);
+    expect(payload.total).toBe(1);
+  });
+
+  it('round 3: a failed auth-state read still honors the vault refresh-token bit', async () => {
+    const google = await createGoogleService();
+    const pastExpiry = new Date(Date.now() - 60_000).toISOString();
+    await tokens.set(google.id, 'expired-access', 'live-refresh', pastExpiry);
+    const fresh = (await db.getAllServices()).find((s) => s.id === google.id)!;
+    vi.spyOn(oauthManager, 'getOAuthAuthState').mockRejectedValueOnce(
+      new Error('vault unavailable'),
+    );
+
+    const payload = await warnings.summarize([fresh], [], []);
+
+    // Expired access token WITH a refresh token: the fallback sees the vault
+    // bit and stays silent, exactly like the pre-NOT-655 computation.
     expect(payload.services[google.id]).toBeUndefined();
     expect(payload.byKind.oauth_expired).toBe(0);
-    expect(payload.byKind.oauth_required).toBe(0);
     expect(payload.total).toBe(0);
   });
 });
