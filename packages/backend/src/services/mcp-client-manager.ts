@@ -172,11 +172,20 @@ export class MCPClientManager {
   }
 
   private canRefreshOAuth(service: Service): boolean {
-    return Boolean(
-      this.refreshAccessToken
-        && service.type !== 'local-mcp'
-        && (service.oauthClientId || service.oauthAuthorizationUrl || service.oauthTokenUrl),
-    );
+    if (!this.refreshAccessToken || service.type === 'local-mcp') {
+      return false;
+    }
+    if (service.oauthClientId || service.oauthAuthorizationUrl || service.oauthTokenUrl) {
+      return true;
+    }
+    // NOT-653: a Google card whose client config was wiped can still refresh —
+    // OAuthManager lazily restores the Google URLs + a sibling client ID before
+    // posting the refresh grant. Non-Google cards are unchanged.
+    try {
+      return new URL(service.url).hostname.toLowerCase().endsWith('.googleapis.com');
+    } catch {
+      return false;
+    }
   }
 
   /**

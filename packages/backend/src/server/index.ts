@@ -99,8 +99,8 @@ export async function createServer() {
   const oauthClientSecretVault = new OAuthClientSecretVault(secretStore, db);
   const oauthTokenVault = new OAuthTokenVault(secretStore, db);
   const serviceHeaderVault = new ServiceHeaderVault(secretStore);
-  const oauthManager = new OAuthManager(db, oauthClientSecretVault, oauthTokenVault);
   const storeWriter = new FileStoreWriter();
+  const oauthManager = new OAuthManager(db, oauthClientSecretVault, oauthTokenVault, storeWriter);
   const credentialManager = new CredentialManager(db, secretStore, undefined, storeWriter);
   const mcpClient = new MCPClientManager(
     (serviceId) => oauthManager.getValidAccessToken(serviceId),
@@ -116,6 +116,13 @@ export async function createServer() {
     serviceHeaderVault,
   );
   void serviceManager.backfillMissingIcons();
+  // NOT-653: after the startup reindex, restore Google OAuth client config
+  // that an earlier restart wiped, so stored refresh tokens can refresh.
+  if (!(secretStore instanceof UnavailableSecretStore)) {
+    void oauthManager.healMissingGoogleOAuthConfigs().catch((error) => {
+      fastify.log.warn({ err: error }, 'google OAuth config self-heal failed');
+    });
+  }
   if (secretStore instanceof UnavailableSecretStore) {
     fastify.log.warn('secret-header migration deferred until the vault is available');
   } else {
@@ -226,6 +233,7 @@ export async function createServer() {
 
   // Add services to request context
   fastify.decorate('serviceManager', serviceManager);
+  fastify.decorate('storeWriter', storeWriter);
   fastify.decorate('mcpClient', mcpClient);
   fastify.decorate('oauthManager', oauthManager);
   fastify.decorate('oauthClientSecretVault', oauthClientSecretVault);
@@ -269,6 +277,7 @@ declare module 'fastify' {
     db: DatabaseManager;
     trustedSessionStore: TrustedSessionStore;
     serviceManager: ServiceManager;
+    storeWriter: FileStoreWriter;
     mcpClient: MCPClientManager;
     oauthManager: OAuthManager;
     oauthClientSecretVault: OAuthClientSecretVault;

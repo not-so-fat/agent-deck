@@ -14,6 +14,14 @@ import { randomBytes } from 'crypto';
 import { generatePkcePair } from '../lib/pkce';
 import { getOAuthRedirectUri } from '../config/oauth-redirect';
 import {
+  googleOAuthClientIdMissing,
+  googleOAuthUrlsMissing,
+  healGoogleOAuthConfigForService,
+  healMissingGoogleOAuthConfigs,
+  isGoogleMcpServiceUrl,
+  type GoogleOAuthStoreWriter,
+} from './google-oauth-config';
+import {
   oauthTokenRequestHeaders,
   parseOAuthTokenResponse,
 } from '../lib/oauth-token-response';
@@ -49,6 +57,7 @@ export class OAuthManager {
     private db: DatabaseManager,
     private clientSecrets: OAuthClientSecretVault,
     private tokens: OAuthTokenVault,
+    private storeWriter?: GoogleOAuthStoreWriter,
   ) {}
 
   async discoverOAuth(serviceUrl: string): Promise<OAuthDiscoveryResult> {
@@ -253,10 +262,44 @@ export class OAuthManager {
     return refreshPromise;
   }
 
+  /**
+   * NOT-653 startup pass: restore Google OAuth client config wiped by an
+   * earlier restart/reindex, before any refresh needs it.
+   */
+  async healMissingGoogleOAuthConfigs(): Promise<{ healed: number; ids: string[] }> {
+    return healMissingGoogleOAuthConfigs(this.db, this.clientSecrets, {
+      storeWriter: this.storeWriter,
+    });
+  }
+
   private async performRefreshOAuthToken(input: OAuthRefreshInput): Promise<OAuthToken> {
-    const service = await this.db.getService(input.serviceId);
+    let service = await this.db.getService(input.serviceId);
     if (!service) {
       throw new Error(`Service ${input.serviceId} not found`);
+    }
+
+    // NOT-653: lazily restore a Google card's wiped client config so a stored
+    // refresh token can still refresh. Non-Google cards are untouched.
+    if (
+      isGoogleMcpServiceUrl(service.url) &&
+      (googleOAuthUrlsMissing(service) || googleOAuthClientIdMissing(service))
+    ) {
+      try {
+        const healed = await healGoogleOAuthConfigForService(
+          this.db,
+          this.clientSecrets,
+          input.serviceId,
+          { storeWriter: this.storeWriter },
+        );
+        if (healed.service) {
+          service = healed.service;
+        }
+      } catch (error) {
+        console.error(
+          `Failed to heal Google OAuth config for service ${input.serviceId}:`,
+          error,
+        );
+      }
     }
 
     if (!service.oauthTokenUrl) {
