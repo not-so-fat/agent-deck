@@ -26,7 +26,8 @@ describe("invalidateDashboardServiceQueries", () => {
 
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/services", "svc-1"] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/services", "svc-1", "tools"] });
-    expect(invalidate).toHaveBeenCalledTimes(4);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["/api/oauth", "svc-1", "status"] });
+    expect(invalidate).toHaveBeenCalledTimes(5);
   });
 });
 

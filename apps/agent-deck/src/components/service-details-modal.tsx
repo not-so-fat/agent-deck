@@ -10,6 +10,7 @@ import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import McpToolsPanel from "@/components/mcp-tools-panel";
 import { OAuthConnectPanel } from "@/components/oauth-connect-panel";
+import { OAUTH_EXPIRED_MESSAGE } from "@/lib/collection-warnings";
 import { invalidateDashboardServiceQueries } from "@/lib/invalidate-dashboard-queries";
 import {
   formatHeadersForEditor,
@@ -89,6 +90,8 @@ interface ServiceDetailsModalProps {
   service: Service | null;
   isOpen: boolean;
   onClose: () => void;
+  /** NOT-655: scroll to and focus the OAuth connect panel (one-click fallback). */
+  focusConnect?: boolean;
 }
 
 interface MCPTool {
@@ -130,10 +133,11 @@ interface A2AManifest {
   supportsAuthenticatedExtendedCard?: boolean;
 }
 
-export default function ServiceDetailsModal({ 
-  service, 
-  isOpen, 
-  onClose 
+export default function ServiceDetailsModal({
+  service,
+  isOpen,
+  onClose,
+  focusConnect = false,
 }: ServiceDetailsModalProps) {
   const [error, setError] = useState<string | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
@@ -204,9 +208,14 @@ export default function ServiceDetailsModal({
         hasRefreshToken: boolean;
         refreshFailed?: boolean;
         expiresAt?: string;
+        authState?: 'ok' | 'needs_reconnect';
+        reason?: string;
       };
     },
-    enabled: hasValidService && apiService.type === 'mcp' && isOpen && oauthRequired,
+    // NOT-655: the server auth state decides — never gated on the discovery
+    // probe, so the modal agrees with the card face even when the probe fails
+    // or has not finished.
+    enabled: hasValidService && apiService.type === 'mcp' && isOpen,
     refetchInterval: (query) => {
       const data = query.state.data;
       // Stop polling once auth is good OR refresh failed — retrying a dead
@@ -222,8 +231,14 @@ export default function ServiceDetailsModal({
     status: OAuthUiStatus;
     message: string | null;
   } => {
-    if (!oauthRequired) {
-      return { status: 'not_required', message: null };
+    // NOT-655: the server auth state is the single source of truth — the
+    // same state behind the card face badge — and it decides without
+    // waiting on the discovery probe.
+    if (oauthStatusData?.authState === 'needs_reconnect') {
+      return {
+        status: 'expired',
+        message: OAUTH_EXPIRED_MESSAGE,
+      };
     }
 
     if (oauthStatusData?.refreshFailed) {
@@ -244,10 +259,32 @@ export default function ServiceDetailsModal({
       return { status: 'authenticated', message: null };
     }
 
+    if (oauthStatusData?.authState === 'ok') {
+      if (!oauthStatusData.hasToken && oauthRequired) {
+        return {
+          status: 'required',
+          message: 'OAuth 2.0 Authentication Required',
+        };
+      }
+      if (oauthStatusData.hasToken) {
+        // Token-bearing but not (yet) authenticated: an expired access
+        // token with a live refresh token renews in the background — no
+        // human needed, so no warning.
+        return { status: 'authenticated', message: null };
+      }
+      return { status: 'not_required', message: null };
+    }
+
+    // Status not loaded yet (or the status read failed): fall back to the
+    // probe-gated view so the modal still says something useful.
+    if (!oauthRequired) {
+      return { status: 'not_required', message: null };
+    }
+
     if (oauthStatusData?.hasToken && oauthStatusData?.isExpired) {
       return {
         status: 'expired',
-        message: 'OAuth Token Expired - Please re-authenticate',
+        message: OAUTH_EXPIRED_MESSAGE,
       };
     }
 
@@ -259,6 +296,30 @@ export default function ServiceDetailsModal({
 
   // Get OAuth status after discovery data is available
   const oauthStatus = getOAuthStatus();
+
+  // NOT-655: a card no automatic path can save never shows a "healthy" pill —
+  // Google answers `tools/list` with 200 even for a dead token, so a stale
+  // `healthy` row must not override the auth state.
+  const authBlocked =
+    oauthStatus.status === 'required' ||
+    oauthStatus.status === 'expired' ||
+    oauthStatus.status === 'refresh_failed';
+
+  const connectSectionRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !focusConnect) {
+      return;
+    }
+    const section = connectSectionRef.current;
+    if (!section) {
+      return;
+    }
+    if (typeof section.scrollIntoView === 'function') {
+      section.scrollIntoView({ block: 'center' });
+    }
+    section.focus({ preventScroll: true });
+  }, [isOpen, focusConnect, oauthStatus.status]);
 
   console.log('MCP Discovery Query Debug:', {
     apiService: apiService?.id,
@@ -900,19 +961,21 @@ export default function ServiceDetailsModal({
                   <p className="text-gray-300 text-sm mb-1">Health Status</p>
                   <Badge
                     className={
-                      apiService.health === 'healthy'
-                        ? 'bg-green-500/20 text-green-300'
-                        : apiService.health === 'unhealthy'
-                          ? 'bg-red-500/20 text-red-300'
-                          : 'bg-amber-500/20 text-amber-200'
+                      authBlocked
+                        ? 'bg-amber-500/20 text-amber-200'
+                        : apiService.health === 'healthy'
+                          ? 'bg-green-500/20 text-green-300'
+                          : apiService.health === 'unhealthy'
+                            ? 'bg-red-500/20 text-red-300'
+                            : 'bg-amber-500/20 text-amber-200'
                     }
                   >
-                    {apiService.health === 'healthy'
-                      ? 'Healthy'
-                      : apiService.health === 'unhealthy'
-                        ? 'Unreachable'
-                        : oauthStatus.status === 'required' || oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed'
-                          ? 'Auth required'
+                    {authBlocked
+                      ? 'Auth required'
+                      : apiService.health === 'healthy'
+                        ? 'Healthy'
+                        : apiService.health === 'unhealthy'
+                          ? 'Unreachable'
                           : 'Unknown'}
                   </Badge>
                 </div>
@@ -1156,7 +1219,12 @@ export default function ServiceDetailsModal({
 
             {/* OAuth not required — still show preset setup guide (e.g. Draw.io) */}
             {service?.type === 'mcp' && oauthStatus.status === 'not_required' && apiService?.id && (
-              <div className="bg-blue-500/20 border border-blue-500/30 rounded-lg p-4 mb-4">
+              <div
+                ref={connectSectionRef}
+                tabIndex={-1}
+                data-testid="oauth-connect-section"
+                className="bg-blue-500/20 border border-blue-500/30 rounded-lg p-4 mb-4"
+              >
                 <h3 className="text-blue-300 font-semibold mb-2">How to connect</h3>
                 <OAuthConnectPanel serviceId={apiService.id} />
               </div>
@@ -1171,7 +1239,12 @@ export default function ServiceDetailsModal({
 
             {/* OAuth Status Warning - Show when OAuth is required, expired, or not authenticated */}
             {service?.type === 'mcp' && !isOAuthUsable(oauthStatus.status) && oauthStatus.status !== 'not_required' && (
-              <div className={`${oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed' ? 'bg-red-500/20 border-red-500/30' : 'bg-orange-500/20 border-orange-500/30'} rounded-lg p-4 mb-4`}>
+              <div
+                ref={connectSectionRef}
+                tabIndex={-1}
+                data-testid="oauth-connect-section"
+                className={`${oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed' ? 'bg-red-500/20 border-red-500/30' : 'bg-orange-500/20 border-orange-500/30'} rounded-lg p-4 mb-4`}
+              >
                 <h3 className={`${oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed' ? 'text-red-300' : 'text-orange-300'} font-semibold mb-2`}>
                   {oauthStatus.status === 'expired' || oauthStatus.status === 'refresh_failed' ? '⏰ Token Expired' : '🔐 Authentication Required'}
                 </h3>

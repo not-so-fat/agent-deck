@@ -11,6 +11,9 @@ export function invalidateDashboardServiceQueries(
   if (serviceId) {
     queryClient.invalidateQueries({ queryKey: ["/api/services", serviceId] });
     queryClient.invalidateQueries({ queryKey: ["/api/services", serviceId, "tools"] });
+    // NOT-655: the details modal reads the same server auth state as the
+    // face badge, so a post-callback service update clears both at once.
+    queryClient.invalidateQueries({ queryKey: ["/api/oauth", serviceId, "status"] });
   }
 }
 

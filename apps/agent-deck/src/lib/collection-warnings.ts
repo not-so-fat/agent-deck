@@ -8,7 +8,9 @@ export {
   getCredentialWarnings,
   getPlaybookWarnings,
   primaryCollectionWarning,
+  OAUTH_EXPIRED_MESSAGE,
 } from "../../../../packages/shared/src/utils/collection-warnings";
+export type { OAuthCardAuthState } from "../../../../packages/shared/src/utils/collection-warnings";
 
 export type CollectionWarningsPayload = {
   total: number;
