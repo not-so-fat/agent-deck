@@ -1,8 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getOAuthRedirectUri } from '../config/oauth-redirect';
+import { DatabaseManager } from '../models/database';
+import { FileStoreWriter } from '../store/writer';
 import { oauthClientSecretAccount, OAuthClientSecretVault } from '../vault/oauth-client-secret-vault';
+import { OAuthTokenVault } from '../vault/oauth-token-vault';
 import { MemorySecretStore } from '../vault/secret-store';
+import { OAuthManager } from './oauth-manager';
 
 import {
   hasSavedOAuthCredentials,
@@ -93,7 +100,19 @@ describe('hasSavedOAuthCredentials', () => {
 
 vi.mock('./mcp-discovery-service', () => ({
   MCPDiscoveryService: class {
-    async discoverService() {
+    async discoverService(url: string) {
+      if (String(url).includes('googleapis.com')) {
+        return {
+          oauth: {
+            required: true,
+            provider: 'google',
+            supportsDynamicRegistration: false,
+            authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            scopesSupported: ['https://www.googleapis.com/auth/gmail.readonly'],
+          },
+        };
+      }
       return {
         oauth: {
           required: true,
@@ -239,5 +258,68 @@ describe('startOAuthConnect host-local client', () => {
       getOAuthRedirectUri(),
     );
     expect(resolved).toMatchObject({ clientId: 'card-client', hostRegistered: false });
+  });
+});
+
+/**
+ * NOT-653: Connect used to write the OAuth client config to SQLite only, so a
+ * restart/reindex (services table rebuilt from store files) wiped it and the
+ * card could never refresh. The config must reach the card's store file.
+ */
+describe('startOAuthConnect store persistence', () => {
+  const homes: string[] = [];
+  const databases: DatabaseManager[] = [];
+
+  afterEach(async () => {
+    for (const db of databases.splice(0)) {
+      db.close();
+    }
+    await Promise.all(homes.splice(0).map((home) => fs.rm(home, { recursive: true, force: true })));
+  });
+
+  it('writes a Google card OAuth config to its store file without any secret values', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-oauth-connect-store-'));
+    homes.push(home);
+    const db = new DatabaseManager(':memory:');
+    databases.push(db);
+    const service = await db.createService({
+      name: 'Gmail (personal)',
+      type: 'mcp',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+    });
+
+    const secretStore = new MemorySecretStore();
+    const clientSecrets = new OAuthClientSecretVault(secretStore, db);
+    const tokens = new OAuthTokenVault(secretStore, db);
+    const oauthManager = new OAuthManager(db, clientSecrets, tokens);
+    const storeWriter = new FileStoreWriter(home);
+
+    const result = await startOAuthConnect(
+      db,
+      oauthManager,
+      clientSecrets,
+      service.id,
+      { clientId: 'google-client-id', clientSecret: 'google-client-secret-value' },
+      { storeWriter },
+    );
+    expect(result.success).toBe(true);
+
+    const raw = await fs.readFile(path.join(home, 'services', `${service.id}.json`), 'utf8');
+    const stored = JSON.parse(raw) as Record<string, unknown>;
+    expect(stored.oauthClientId).toBe('google-client-id');
+    expect(stored.oauthAuthorizationUrl).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(stored.oauthTokenUrl).toBe('https://oauth2.googleapis.com/token');
+    expect(stored.oauthRedirectUri).toBe(getOAuthRedirectUri());
+    expect(stored.oauthScope).toBe('https://www.googleapis.com/auth/gmail.readonly');
+
+    // No secret material in the git-synced store file — keys or values.
+    expect(stored).not.toHaveProperty('oauthClientSecret');
+    expect(stored).not.toHaveProperty('oauthAccessToken');
+    expect(stored).not.toHaveProperty('oauthRefreshToken');
+    expect(raw).not.toContain('google-client-secret-value');
+
+    // The secret itself went to the vault, not the row.
+    expect(await clientSecrets.get(service.id)).toBe('google-client-secret-value');
+    expect((await db.getService(service.id))?.oauthClientSecret).toBe('');
   });
 });

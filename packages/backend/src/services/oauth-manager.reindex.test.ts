@@ -6,10 +6,40 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DatabaseManager } from '../models/database';
 import { migrateSqliteToStore } from '../store/migrate';
 import { reindexStoreToSqlite } from '../store/reindex';
+import { FileStoreWriter } from '../store/writer';
 import { MemorySecretStore } from '../vault/secret-store';
 import { OAuthClientSecretVault } from '../vault/oauth-client-secret-vault';
 import { OAuthTokenVault } from '../vault/oauth-token-vault';
+import { startOAuthConnect } from './oauth-connect-service';
 import { OAuthManager } from './oauth-manager';
+
+vi.mock('./mcp-discovery-service', () => ({
+  MCPDiscoveryService: class {
+    async discoverService(url: string) {
+      if (String(url).includes('googleapis.com')) {
+        return {
+          oauth: {
+            required: true,
+            provider: 'google',
+            supportsDynamicRegistration: false,
+            authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            scopesSupported: ['https://www.googleapis.com/auth/gmail.readonly'],
+          },
+        };
+      }
+      return {
+        oauth: {
+          required: true,
+          supportsDynamicRegistration: true,
+          authorizationUrl: 'https://mcp.linear.app/authorize',
+          tokenUrl: 'https://mcp.linear.app/token',
+          scopesSupported: ['read write'],
+        },
+      };
+    }
+  },
+}));
 
 /**
  * NOT-639: a store reindex rebuilds the `services` table from files, which
@@ -176,5 +206,96 @@ describe('OAuth token state across a store reindex', () => {
     await tokens.set(serviceId, 'no-refresh-access');
     expect(await manager.forceRefreshAccessToken(serviceId)).toBeNull();
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * NOT-653: a Google card connected through startOAuthConnect keeps its client
+ * ID, authorization URL and token URL through a full store reindex, and can
+ * then refresh — the refresh grant goes to the Google token endpoint.
+ */
+describe('Google OAuth client config across a store reindex', () => {
+  let home: string;
+  let dbPath: string;
+  let secretStore: MemorySecretStore;
+  const databases: DatabaseManager[] = [];
+
+  beforeEach(async () => {
+    home = await fs.mkdtemp(path.join(os.tmpdir(), 'ad-google-oauth-reindex-'));
+    dbPath = path.join(home, 'agent_deck.db');
+    secretStore = new MemorySecretStore();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    for (const db of databases.splice(0)) {
+      db.close();
+    }
+    await fs.rm(home, { recursive: true, force: true });
+  });
+
+  function stubTokenEndpoint(accessToken: string) {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      text: async () =>
+        JSON.stringify({
+          access_token: accessToken,
+          refresh_token: 'rotated-refresh',
+          expires_in: 3600,
+          token_type: 'Bearer',
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('connect → reindex → refresh posts a refresh_token grant to the Google token endpoint', async () => {
+    const db = new DatabaseManager(dbPath);
+    databases.push(db);
+    const clientSecrets = new OAuthClientSecretVault(secretStore, db);
+    const tokens = new OAuthTokenVault(secretStore, db);
+    const storeWriter = new FileStoreWriter(home);
+    const manager = new OAuthManager(db, clientSecrets, tokens, storeWriter);
+
+    const service = await db.createService({
+      name: 'Gmail (personal)',
+      type: 'mcp',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+    });
+
+    const connected = await startOAuthConnect(
+      db,
+      manager,
+      clientSecrets,
+      service.id,
+      { clientId: 'google-client', clientSecret: 'google-secret' },
+      { storeWriter },
+    );
+    expect(connected.success).toBe(true);
+    // The callback stores tokens in the vault; the client config is on the row + file.
+    await tokens.set(service.id, 'expired-access', 'google-refresh');
+    await storeWriter.ensureLayout();
+
+    const result = await reindexStoreToSqlite(db, { home, force: true });
+    expect(result.ok).toBe(true);
+
+    const after = await db.getService(service.id);
+    expect(after?.oauthClientId).toBe('google-client');
+    expect(after?.oauthAuthorizationUrl).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(after?.oauthTokenUrl).toBe('https://oauth2.googleapis.com/token');
+
+    const fetchMock = stubTokenEndpoint('fresh-access');
+    expect(await manager.forceRefreshAccessToken(service.id)).toBe('fresh-access');
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://oauth2.googleapis.com/token');
+    const body = new URLSearchParams(String(init.body));
+    expect(body.get('grant_type')).toBe('refresh_token');
+    expect(body.get('refresh_token')).toBe('google-refresh');
+    expect(body.get('client_id')).toBe('google-client');
   });
 });
