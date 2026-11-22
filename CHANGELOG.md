@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.2 — 2026-11-22
+
+Google OAuth cards keep their config, refresh tokens in the background and show one auth state
+
+- NOT-655: Google OAuth cards: one auth state on card face and details, and one-click reconnect from the card (#270)
+- NOT-654: Google OAuth cards: refresh tokens in the background and report the true auth state in health (#269)
+- NOT-653: Google OAuth cards lose their client config on restart, so they can never refresh (#268)
+
 ## 2.6.1 — 2026-11-21
 
 Mostly a docs and test release: the npm README and docs now match the 2.6 design. One small runtime fix is included: Google OAuth cards now get a refresh token.
