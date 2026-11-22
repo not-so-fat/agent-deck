@@ -2,6 +2,11 @@ import { MCPDiscoveryService } from './mcp-discovery-service';
 import { OAuthManager } from './oauth-manager';
 import { DatabaseManager } from '../models/database';
 import { storeServiceFromDb } from '../store/service-codec';
+import {
+  GOOGLE_OAUTH_AUTHORIZATION_URL,
+  GOOGLE_OAUTH_TOKEN_URL,
+  isGoogleMcpServiceUrl,
+} from './google-oauth-config';
 import type { StoreService } from '@agent-deck/shared';
 import {
   getOAuthProviderGuide,
@@ -143,13 +148,32 @@ export async function startOAuthConnect(
   const discoveryService = new MCPDiscoveryService();
   const mcpDiscovery = await discoveryService.discoverService(service.url);
 
-  if (!mcpDiscovery.oauth.required) {
+  // NOT-655: live discovery is not a reliable gate for a Google card (the
+  // probe can fail, and Google serves initialize/tools/list without a token).
+  // A Google card always uses OAuth, so reconnect with its saved endpoints and
+  // scope, falling back to Google's fixed endpoints. Non-Google cards keep the
+  // discovery gate unchanged.
+  let oauthDiscovery = mcpDiscovery.oauth;
+  if (!oauthDiscovery.required && isGoogleMcpServiceUrl(service.url)) {
+    const savedScopes = service.oauthScope?.split(/\s+/).filter(Boolean) ?? [];
+    oauthDiscovery = {
+      ...oauthDiscovery,
+      required: true,
+      provider: 'google',
+      supportsDynamicRegistration: false,
+      authorizationUrl: service.oauthAuthorizationUrl || GOOGLE_OAUTH_AUTHORIZATION_URL,
+      tokenUrl: service.oauthTokenUrl || GOOGLE_OAUTH_TOKEN_URL,
+      scopesSupported: savedScopes,
+    };
+  }
+
+  if (!oauthDiscovery.required) {
     throw new Error('Service does not require OAuth authentication');
   }
 
   const provider =
-    mcpDiscovery.oauth.provider ?? inferOAuthProvider(service.url, []);
-  const setupMode = resolveOAuthSetupMode(provider, mcpDiscovery.oauth.supportsDynamicRegistration);
+    oauthDiscovery.provider ?? inferOAuthProvider(service.url, []);
+  const setupMode = resolveOAuthSetupMode(provider, oauthDiscovery.supportsDynamicRegistration);
   const guide = {
     ...getOAuthProviderGuide(provider, {
       serviceName: service.name,
@@ -169,15 +193,15 @@ export async function startOAuthConnect(
   }
 
   const redirectUri = getOAuthRedirectUri();
-  const scope = mcpDiscovery.oauth.scopesSupported?.length
-    ? mcpDiscovery.oauth.scopesSupported.join(' ')
+  const scope = oauthDiscovery.scopesSupported?.length
+    ? oauthDiscovery.scopesSupported.join(' ')
     : 'read write';
 
   const oauthConfig = {
     clientId: '',
     clientSecret: '',
-    authorizationUrl: mcpDiscovery.oauth.authorizationUrl || '',
-    tokenUrl: mcpDiscovery.oauth.tokenUrl || '',
+    authorizationUrl: oauthDiscovery.authorizationUrl || '',
+    tokenUrl: oauthDiscovery.tokenUrl || '',
     redirectUri,
     scope,
   };
@@ -199,7 +223,7 @@ export async function startOAuthConnect(
     storedClientId: effective.clientId,
     storedRedirectUri: effective.redirectUri,
     currentRedirectUri: redirectUri,
-    supportsDynamicRegistration: mcpDiscovery.oauth.supportsDynamicRegistration,
+    supportsDynamicRegistration: oauthDiscovery.supportsDynamicRegistration,
   });
   // The saved secret belongs to the saved client: never pair it with a newly entered Client ID.
   const enteredClientId = input.clientId?.trim();

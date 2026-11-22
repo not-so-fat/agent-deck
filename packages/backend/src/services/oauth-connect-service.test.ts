@@ -101,6 +101,10 @@ describe('hasSavedOAuthCredentials', () => {
 vi.mock('./mcp-discovery-service', () => ({
   MCPDiscoveryService: class {
     async discoverService(url: string) {
+      // NOT-655: discovery that fails or under-reports OAuth.
+      if (String(url).includes('discovery-false')) {
+        return { oauth: { required: false } };
+      }
       if (String(url).includes('googleapis.com')) {
         return {
           oauth: {
@@ -321,5 +325,86 @@ describe('startOAuthConnect store persistence', () => {
     // The secret itself went to the vault, not the row.
     expect(await clientSecrets.get(service.id)).toBe('google-client-secret-value');
     expect((await db.getService(service.id))?.oauthClientSecret).toBe('');
+  });
+});
+
+describe('startOAuthConnect when discovery reports OAuth not required (NOT-655)', () => {
+  const databases: DatabaseManager[] = [];
+
+  afterEach(() => {
+    for (const db of databases.splice(0)) {
+      db.close();
+    }
+  });
+
+  function setup() {
+    const db = new DatabaseManager(':memory:');
+    databases.push(db);
+    const secretStore = new MemorySecretStore();
+    const clientSecrets = new OAuthClientSecretVault(secretStore, db);
+    const tokens = new OAuthTokenVault(secretStore, db);
+    const oauthManager = new OAuthManager(db, clientSecrets, tokens);
+    return { db, clientSecrets, oauthManager };
+  }
+
+  it('reconnects a Google card with its saved client, endpoints and scope', async () => {
+    const { db, clientSecrets, oauthManager } = setup();
+    const service = await db.createService({
+      name: 'Gmail (personal)',
+      type: 'mcp',
+      url: 'https://discovery-false.googleapis.com/mcp/v1',
+      oauthClientId: 'google-client-id',
+      oauthAuthorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      oauthTokenUrl: 'https://oauth2.googleapis.com/token',
+      oauthScope: 'https://mail.google.com/ https://www.googleapis.com/auth/gmail.readonly',
+    });
+    await clientSecrets.set(service.id, 'google-client-secret-value');
+
+    const result = await startOAuthConnect(db, oauthManager, clientSecrets, service.id, {});
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const url = new URL(result.authorizationUrl);
+    expect(url.origin + url.pathname).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(url.searchParams.get('client_id')).toBe('google-client-id');
+    expect(url.searchParams.get('scope')).toBe(
+      'https://mail.google.com/ https://www.googleapis.com/auth/gmail.readonly',
+    );
+    expect(url.searchParams.get('access_type')).toBe('offline');
+    const updated = await db.getService(service.id);
+    expect(updated?.oauthTokenUrl).toBe('https://oauth2.googleapis.com/token');
+  });
+
+  it('falls back to Google fixed endpoints when the Google card has none saved', async () => {
+    const { db, clientSecrets, oauthManager } = setup();
+    const service = await db.createService({
+      name: 'Google (personal)',
+      type: 'mcp',
+      url: 'https://discovery-false.googleapis.com/mcp/v1',
+      oauthClientId: 'google-client-id',
+      oauthScope: 'https://www.googleapis.com/auth/documents.readonly',
+    });
+    await clientSecrets.set(service.id, 'google-client-secret-value');
+
+    const result = await startOAuthConnect(db, oauthManager, clientSecrets, service.id, {});
+
+    expect(result.success).toBe(true);
+    const updated = await db.getService(service.id);
+    expect(updated?.oauthAuthorizationUrl).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(updated?.oauthTokenUrl).toBe('https://oauth2.googleapis.com/token');
+  });
+
+  it('still refuses a non-Google card whose discovery says OAuth is not required', async () => {
+    const { db, clientSecrets, oauthManager } = setup();
+    const service = await db.createService({
+      name: 'Plain MCP',
+      type: 'mcp',
+      url: 'https://discovery-false.example.com/mcp',
+      oauthClientId: 'some-client',
+    });
+
+    await expect(
+      startOAuthConnect(db, oauthManager, clientSecrets, service.id, {}),
+    ).rejects.toThrow('Service does not require OAuth authentication');
   });
 });
