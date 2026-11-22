@@ -7,8 +7,10 @@ import {
   type CollectionCardWarning,
   type CollectionWarningKind,
   type Credential,
+  type OAuthCardAuthState,
   type Playbook,
   type Service,
+  type ServiceWarningContext,
 } from '@agent-deck/shared';
 import { MCPDiscoveryService } from './mcp-discovery-service';
 import type { OAuthManager } from './oauth-manager';
@@ -100,7 +102,7 @@ export class CollectionWarningService {
     playbooks: Playbook[],
   ): Promise<CollectionWarningsPayload> {
     const catalog = buildCollectionCatalog(credentials, services);
-    const serviceWarningContext: Record<string, { oauthRequired?: boolean }> = {};
+    const serviceWarningContext: Record<string, ServiceWarningContext> = {};
 
     await Promise.all(
       services.map(async (service) => {
@@ -114,22 +116,28 @@ export class CollectionWarningService {
       }),
     );
 
-    const refreshTokenByServiceId: Record<string, boolean> = {};
+    // NOT-655: the server auth state (NOT-654) is the single source of truth
+    // for OAuth warnings — stored card fields plus a vault refresh-token bit
+    // no longer decide. The details modal reads the same state, so the face
+    // badge and the modal can never disagree.
     if (this.oauthManager) {
       await Promise.all(
         services.map(async (service) => {
           if (service.type !== 'mcp') {
             return;
           }
-          const oauthLikely =
-            service.oauthClientId ||
-            service.oauthAuthorizationUrl ||
-            service.oauthTokenUrl ||
-            serviceWarningContext[service.id]?.oauthRequired;
-          if (!oauthLikely) {
-            return;
+          let authState: OAuthCardAuthState | undefined;
+          try {
+            authState = (await this.oauthManager!.getOAuthAuthState(service.id)).authState;
+          } catch {
+            authState = undefined;
           }
-          refreshTokenByServiceId[service.id] = await this.oauthManager!.hasRefreshToken(service.id);
+          if (authState !== undefined) {
+            serviceWarningContext[service.id] = {
+              ...serviceWarningContext[service.id],
+              authState,
+            };
+          }
         }),
       );
     }
@@ -142,7 +150,6 @@ export class CollectionWarningService {
     for (const service of services) {
       const warnings = getServiceWarnings(service, {
         ...serviceWarningContext[service.id],
-        hasRefreshToken: refreshTokenByServiceId[service.id],
       });
       if (warnings.length > 0) {
         servicesMap[service.id] = warnings;

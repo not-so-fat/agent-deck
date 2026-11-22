@@ -105,13 +105,16 @@ export function getServiceWarnings(
   }
 
   if (context.authState === 'ok') {
-    // Token-bearing cards are fine: an expired access token with a live
-    // refresh token renews in the background (NOT-654). Cards that never
-    // completed OAuth still warn when a live probe says OAuth is required.
+    // A card with OAuth config and `ok` holds a live-or-renewable token in
+    // the vault — the server verified it, so stored row fields say nothing
+    // (an expired access token renews in the background, NOT-654).
+    if (mcpHasOAuthConfig(service)) {
+      return warnings;
+    }
+    // Config-less card: the live probe is the only OAuth signal, so a card
+    // that never completed OAuth still warns when the probe says required.
     const hasToken = Boolean(service.oauthHasToken || service.oauthAccessToken);
-    const oauthLikely =
-      context.oauthRequired === true || mcpHasOAuthConfig(service);
-    if (!hasToken && oauthLikely) {
+    if (!hasToken && context.oauthRequired === true) {
       warnings.push({
         kind: 'oauth_required',
         message: 'OAuth authentication required',

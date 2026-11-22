@@ -133,6 +133,24 @@ describe('collection-warnings', () => {
     expect(warnings).toHaveLength(0);
   });
 
+  it('NOT-655: config-bearing card with authState ok gets no warning even without stored token fields', () => {
+    // The vault holds the token (the row only carries oauth_has_token, and
+    // may be stale) — the server already verified it, so there is no probe
+    // fallback for configured cards.
+    const warnings = getServiceWarnings(
+      {
+        ...baseService,
+        id: '99999999-9999-9999-9999-999999999999',
+        name: 'Gmail',
+        url: 'https://gmailmcp.googleapis.com/mcp/v1',
+        oauthClientId: 'google-client',
+      },
+      { authState: 'ok', oauthRequired: true },
+    );
+
+    expect(warnings).toHaveLength(0);
+  });
+
   it('NOT-655: authState ok still warns oauth_required for a probed card with no token', () => {
     const warnings = getServiceWarnings(
       {
