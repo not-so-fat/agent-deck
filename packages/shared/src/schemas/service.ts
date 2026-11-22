@@ -28,6 +28,7 @@ export const ServiceSchema = z.object({
   oauthRefreshToken: z.string().optional(),
   oauthTokenExpiresAt: z.string().datetime().optional(),
   oauthHasToken: z.boolean().optional(),
+  oauthRefreshRejected: z.boolean().optional(),
   oauthState: z.string().optional(),
   
   // Local MCP server fields
@@ -47,6 +48,7 @@ export const CreateServiceSchema = ServiceSchema.omit({
   oauthAccessToken: true,
   oauthRefreshToken: true,
   oauthTokenExpiresAt: true,
+  oauthRefreshRejected: true,
   oauthState: true,
   disabledToolNames: true,
 });

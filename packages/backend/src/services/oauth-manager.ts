@@ -64,9 +64,16 @@ export interface OAuthAuthStatus {
 
 /** NOT-654: how a `refresh_token` grant failed. */
 export type OAuthRefreshFailureKind =
-  /** Token endpoint rejected the grant (4xx): retrying cannot help. */
+  /**
+   * Token endpoint rejected the grant with `invalid_grant` (revoked/expired
+   * grant) or `invalid_client`: retrying the same grant cannot help.
+   */
   | 'rejected'
-  /** Network error, 429/408, or 5xx: the grant may succeed on retry. */
+  /**
+   * Network error, 429/408, 5xx, or any other 4xx: the grant may succeed on
+   * retry (or the fault is not the grant itself), so the card is left alone
+   * rather than declared dead.
+   */
   | 'transient'
   /** No token URL to post to (and NOT-653 heal found nothing). */
   | 'missing_config';
@@ -121,13 +128,10 @@ function extractOAuthErrorCode(bodyText: string): string | undefined {
 export class OAuthManager {
   private oauthStates = new Map<string, OAuthStateEntry>();
   private refreshInFlight = new Map<string, Promise<OAuthToken>>();
-  /**
-   * NOT-654: services whose `refresh_token` grant was definitively rejected
-   * (`invalid_grant`, `invalid_client`, or another 4xx). Sticky until a
-   * refresh succeeds or the card is reconnected; while set, the background
-   * refresher leaves the card alone and its auth state is `needs_reconnect`.
-   */
-  private refreshRejected = new Set<string>();
+  // NOT-654: the rejected-grant flag lives in SQLite
+  // (`services.oauth_refresh_rejected`, via `isOAuthRefreshRejected` /
+  // `getOAuthAuthState`), not in memory — a restart or a recreated manager
+  // must still report `needs_reconnect` for a dead grant.
 
   getOAuthState(state: string): string | undefined {
     return this.oauthStates.get(state)?.serviceId;
@@ -313,15 +317,16 @@ export class OAuthManager {
       scope: tokenData.scope,
     };
 
-    // Store tokens in Keychain; expiry + has-token flag in SQLite
+    // Store tokens in Keychain; expiry + has-token flag in SQLite.
+    // NOT-654: a reconnect clears a previously rejected grant in the same
+    // UPDATE that mirrors the new token, once it is durably stored.
     await this.tokens.set(
       serviceId,
       token.accessToken,
       token.refreshToken,
       token.expiresAt,
+      { clearRefreshRejected: true },
     );
-    // NOT-654: a reconnect clears a previously rejected grant.
-    this.refreshRejected.delete(serviceId);
 
     // Clear state - we'll need to implement this properly
     // await this.db.updateService(input.serviceId, {
@@ -429,15 +434,25 @@ export class OAuthManager {
           { status },
         );
       }
-      // NOT-654: the endpoint refused the grant (`invalid_grant` for a
-      // revoked/expired grant, `invalid_client`, or another 4xx client
-      // error). Retrying the same grant cannot help — record it so the
-      // card reports `needs_reconnect` until a human reconnects it.
       const errorCode = extractOAuthErrorCode(errorText);
-      this.refreshRejected.add(input.serviceId);
+      if (errorCode === 'invalid_grant' || errorCode === 'invalid_client') {
+        // NOT-654: the endpoint refused the grant (revoked/expired grant or
+        // bad client). Retrying the same grant cannot help — persist that so
+        // the card reports `needs_reconnect` until a human reconnects it.
+        await this.db.setOAuthRefreshRejected(input.serviceId, true);
+        throw new OAuthRefreshError(
+          `OAuth token refresh failed: ${status} ${errorText}`,
+          'rejected',
+          { status, errorCode },
+        );
+      }
+      // NOT-654: any other 4xx (`invalid_request`, an unrecognized code, or
+      // no parseable code) is not proof the grant is dead — reconnecting may
+      // not address a request/configuration fault — so keep the token and
+      // retry with backoff instead of declaring `needs_reconnect`.
       throw new OAuthRefreshError(
         `OAuth token refresh failed: ${status} ${errorText}`,
-        'rejected',
+        'transient',
         { status, errorCode },
       );
     }
@@ -449,7 +464,7 @@ export class OAuthManager {
       const message = error instanceof Error ? error.message : String(error);
       const rejectedCode = /invalid_grant|invalid_client/.exec(message)?.[0];
       if (rejectedCode) {
-        this.refreshRejected.add(input.serviceId);
+        await this.db.setOAuthRefreshRejected(input.serviceId, true);
         throw new OAuthRefreshError(message, 'rejected', {
           errorCode: rejectedCode,
           cause: error,
@@ -468,15 +483,16 @@ export class OAuthManager {
       scope: tokenData.scope,
     };
 
-    // Store new tokens in Keychain
+    // Store new tokens in Keychain. NOT-654: a successful refresh clears a
+    // previously rejected grant in the same UPDATE that mirrors the new
+    // token, once it is durably stored.
     await this.tokens.set(
       input.serviceId,
       token.accessToken,
       token.refreshToken,
       token.expiresAt,
+      { clearRefreshRejected: true },
     );
-    // NOT-654: a successful refresh clears a previously rejected grant.
-    this.refreshRejected.delete(input.serviceId);
 
     return token;
   }
@@ -592,11 +608,14 @@ export class OAuthManager {
 
   /**
    * NOT-654: whether the service's `refresh_token` grant was definitively
-   * rejected. While true, the background refresher skips the card — only a
-   * human reconnect (or a refresh that somehow succeeds) clears it.
+   * rejected (`invalid_grant`/`invalid_client`), read from SQLite so it
+   * survives restarts and manager recreation. While true, the background
+   * refresher skips the card — only a successful refresh or a human
+   * reconnect clears it.
    */
-  isOAuthRefreshRejected(serviceId: string): boolean {
-    return this.refreshRejected.has(serviceId);
+  async isOAuthRefreshRejected(serviceId: string): Promise<boolean> {
+    const service = await this.db.getService(serviceId);
+    return service?.oauthRefreshRejected === true;
   }
 
   /**
@@ -619,8 +638,9 @@ export class OAuthManager {
       return { authState: 'ok' };
     }
     // Sticky first: the endpoint refused this grant, so the access token is
-    // dead even when its recorded expiry is still in the future.
-    if (this.refreshRejected.has(serviceId)) {
+    // dead even when its recorded expiry is still in the future. Read from
+    // the same row (SQLite), so a restart cannot resurrect it as `ok`.
+    if (service.oauthRefreshRejected === true) {
       return { authState: 'needs_reconnect', reason: 'refresh_rejected' };
     }
     const bundle = await this.tokens.get(

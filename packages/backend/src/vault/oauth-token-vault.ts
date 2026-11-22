@@ -84,6 +84,7 @@ export class OAuthTokenVault {
     accessToken: string,
     refreshToken?: string,
     expiresAt?: string,
+    opts: { clearRefreshRejected?: boolean } = {},
   ): Promise<void> {
     const bundle: OAuthTokenBundle = {
       accessToken: accessToken.trim(),
@@ -92,7 +93,14 @@ export class OAuthTokenVault {
     };
     await this.secretStore.set(oauthTokenAccount(serviceId), JSON.stringify(bundle));
     // `null` (not `undefined`) so a token without an expiry clears a stale one.
-    await this.db.clearOAuthTokensFromDb(serviceId, { expiresAt: expiresAt ?? null, hasToken: true });
+    // NOT-654: when a new token lands after a successful refresh/reconnect,
+    // the rejected-grant flag clears in the same UPDATE — never before the
+    // token is durably stored, and never left behind after it.
+    await this.db.clearOAuthTokensFromDb(serviceId, {
+      expiresAt: expiresAt ?? null,
+      hasToken: true,
+      ...(opts.clearRefreshRejected ? { refreshRejected: false } : {}),
+    });
   }
 
   /**

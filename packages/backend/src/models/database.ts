@@ -186,6 +186,9 @@ export class DatabaseManager {
     this.addColumnIfMissing('services', 'oauth_refresh_token', 'TEXT');
     this.addColumnIfMissing('services', 'oauth_token_expires_at', 'TEXT');
     this.addColumnIfMissing('services', 'oauth_has_token', 'BOOLEAN NOT NULL DEFAULT 0');
+    // NOT-654: sticky rejected-grant flag (invalid_grant/invalid_client).
+    // Host-local runtime state, carried across reindex like the token mirror.
+    this.addColumnIfMissing('services', 'oauth_refresh_rejected', 'BOOLEAN NOT NULL DEFAULT 0');
     this.addColumnIfMissing('services', 'oauth_state', 'TEXT');
     this.addColumnIfMissing('services', 'local_command', 'TEXT');
     this.addColumnIfMissing('services', 'local_args', 'TEXT');
@@ -530,12 +533,13 @@ export class DatabaseManager {
       (
         this.db
           .prepare(
-            'SELECT id, oauth_token_expires_at, oauth_has_token FROM services',
+            'SELECT id, oauth_token_expires_at, oauth_has_token, oauth_refresh_rejected FROM services',
           )
           .all() as Array<{
           id: string;
           oauth_token_expires_at: string | null;
           oauth_has_token: number | null;
+          oauth_refresh_rejected: number | null;
         }>
       ).map((row) => [row.id, row]),
     );
@@ -554,14 +558,16 @@ export class DatabaseManager {
         disabled_tools, oauth_client_id, oauth_client_secret,
         oauth_authorization_url, oauth_token_url, oauth_redirect_uri,
         oauth_scope, oauth_access_token, oauth_refresh_token,
-        oauth_token_expires_at, oauth_has_token, oauth_state, local_command,
+        oauth_token_expires_at, oauth_has_token, oauth_refresh_rejected,
+        oauth_state, local_command,
         local_args, local_working_dir, local_env
       ) VALUES (
         @id, @name, @type, @url, 'unknown', @description, @card_color, 0,
         @registered_at, @updated_at, @headers, @credential_id, @icon_url,
         @disabled_tools, @oauth_client_id, NULL, @oauth_authorization_url,
         @oauth_token_url, @oauth_redirect_uri, @oauth_scope, NULL, NULL,
-        @oauth_token_expires_at, @oauth_has_token, NULL, @local_command,
+        @oauth_token_expires_at, @oauth_has_token, @oauth_refresh_rejected,
+        NULL, @local_command,
         @local_args, @local_working_dir, NULL
       )
     `);
@@ -621,6 +627,7 @@ export class DatabaseManager {
         insertService.run({
           oauth_token_expires_at: oauthState?.oauth_token_expires_at ?? null,
           oauth_has_token: oauthState?.oauth_has_token ? 1 : 0,
+          oauth_refresh_rejected: oauthState?.oauth_refresh_rejected ? 1 : 0,
           id: service.id,
           name: service.name,
           type: service.type,
@@ -879,6 +886,7 @@ export class DatabaseManager {
       oauthRefreshToken: row.oauth_refresh_token,
       oauthTokenExpiresAt: row.oauth_token_expires_at,
       oauthHasToken: Boolean(row.oauth_has_token),
+      oauthRefreshRejected: Boolean(row.oauth_refresh_rejected),
       oauthState: row.oauth_state,
       localCommand: row.local_command,
       localArgs: row.local_args ? JSON.parse(row.local_args) : null,
@@ -1000,10 +1008,35 @@ export class DatabaseManager {
     });
   }
 
+  /**
+   * NOT-654: persist the classified rejected-grant state. Set when the token
+   * endpoint answers a `refresh_token` grant with `invalid_grant` or
+   * `invalid_client`; cleared only after a new token is durably stored
+   * (successful refresh or reconnect), so a restart never resurrects a
+   * dead grant as `ok`.
+   */
+  async setOAuthRefreshRejected(id: string, rejected: boolean): Promise<void> {
+    const stmt = this.db.prepare(`
+      UPDATE services SET
+        oauth_refresh_rejected = @oauth_refresh_rejected,
+        updated_at = @updated_at
+      WHERE id = @id
+    `);
+    stmt.run({
+      id,
+      oauth_refresh_rejected: rejected ? 1 : 0,
+      updated_at: new Date().toISOString(),
+    });
+  }
+
   /** Clears legacy token columns; secrets live in OAuthTokenVault. */
   async clearOAuthTokensFromDb(
     id: string,
-    options: { expiresAt?: string | null; hasToken?: boolean } = {},
+    options: {
+      expiresAt?: string | null;
+      hasToken?: boolean;
+      refreshRejected?: boolean;
+    } = {},
   ): Promise<void> {
     const service = await this.getService(id);
     let headers = service?.headers ? { ...service.headers } : null;
@@ -1033,6 +1066,10 @@ export class DatabaseManager {
     if (options.hasToken !== undefined) {
       fields.push('oauth_has_token = @oauth_has_token');
       params.oauth_has_token = options.hasToken ? 1 : 0;
+    }
+    if (options.refreshRejected !== undefined) {
+      fields.push('oauth_refresh_rejected = @oauth_refresh_rejected');
+      params.oauth_refresh_rejected = options.refreshRejected ? 1 : 0;
     }
 
     const stmt = this.db.prepare(`

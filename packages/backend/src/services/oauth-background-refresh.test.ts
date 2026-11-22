@@ -40,6 +40,7 @@ function jsonResponse(
 describe('OAuth background refresh (NOT-654)', () => {
   let db: DatabaseManager;
   let tokens: OAuthTokenVault;
+  let clientSecrets: OAuthClientSecretVault;
   let oauthManager: OAuthManager;
   let stopFns: Array<() => void>;
 
@@ -48,7 +49,7 @@ describe('OAuth background refresh (NOT-654)', () => {
     vi.setSystemTime(new Date('2026-11-22T12:00:00.000Z'));
     db = new DatabaseManager(':memory:');
     const secretStore = new MemorySecretStore();
-    const clientSecrets = new OAuthClientSecretVault(secretStore, db);
+    clientSecrets = new OAuthClientSecretVault(secretStore, db);
     tokens = new OAuthTokenVault(secretStore, db);
     oauthManager = new OAuthManager(db, clientSecrets, tokens);
     stopFns = [];
@@ -312,7 +313,9 @@ describe('OAuth background refresh (NOT-654)', () => {
     const { deps } = startRefresher();
     await vi.advanceTimersByTimeAsync(0);
     expect(grants).toBe(1);
-    expect(oauthManager.isOAuthRefreshRejected(service.id)).toBe(true);
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      true,
+    );
     await expect(oauthManager.getOAuthAuthState(service.id)).resolves.toEqual({
       authState: 'needs_reconnect',
       reason: 'refresh_rejected',
@@ -334,7 +337,9 @@ describe('OAuth background refresh (NOT-654)', () => {
       code: 'auth-code',
       state,
     });
-    expect(oauthManager.isOAuthRefreshRejected(service.id)).toBe(false);
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      false,
+    );
     allowRefresh = true;
 
     await vi.advanceTimersByTimeAsync(70 * 60_000);
@@ -385,7 +390,9 @@ describe('OAuth background refresh (NOT-654)', () => {
     );
     await vi.advanceTimersByTimeAsync(0);
     expect(n).toBe(1);
-    expect(oauthManager.isOAuthRefreshRejected(service.id)).toBe(false);
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      false,
+    );
     await expect(oauthManager.getOAuthAuthState(service.id)).resolves.toEqual({
       authState: 'ok',
     });
@@ -393,7 +400,9 @@ describe('OAuth background refresh (NOT-654)', () => {
 
     await vi.advanceTimersByTimeAsync(60_000);
     expect(n).toBe(2); // First retry after the 60s base delay.
-    expect(oauthManager.isOAuthRefreshRejected(service.id)).toBe(false);
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      false,
+    );
 
     await vi.advanceTimersByTimeAsync(30_000);
     expect(n).toBe(2); // Backoff: the second retry waits 120s.
@@ -538,11 +547,25 @@ describe('OAuth background refresh (NOT-654)', () => {
       rejected: true,
     },
     {
-      name: 'other 4xx',
+      name: 'invalid_request 4xx',
       status: 400,
       body: { error: 'invalid_request' },
-      kind: 'rejected',
-      rejected: true,
+      kind: 'transient',
+      rejected: false,
+    },
+    {
+      name: 'unrecognized 4xx code',
+      status: 400,
+      body: { error: 'access_denied' },
+      kind: 'transient',
+      rejected: false,
+    },
+    {
+      name: 'unparseable 4xx body',
+      status: 400,
+      body: 'bad request',
+      kind: 'transient',
+      rejected: false,
     },
     {
       name: 'plain-text invalid_grant',
@@ -577,7 +600,9 @@ describe('OAuth background refresh (NOT-654)', () => {
         );
       expect(failure).toBeInstanceOf(OAuthRefreshError);
       expect((failure as OAuthRefreshError).kind).toBe(kind);
-      expect(oauthManager.isOAuthRefreshRejected(service.id)).toBe(rejected);
+      await expect(
+        oauthManager.isOAuthRefreshRejected(service.id),
+      ).resolves.toBe(rejected);
       // The vault token is untouched by a failed grant.
       expect((await tokens.get(service.id))?.accessToken).toBe('expired-access');
     },
@@ -603,7 +628,9 @@ describe('OAuth background refresh (NOT-654)', () => {
       );
     expect(failure).toBeInstanceOf(OAuthRefreshError);
     expect((failure as OAuthRefreshError).kind).toBe('transient');
-    expect(oauthManager.isOAuthRefreshRejected(service.id)).toBe(false);
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      false,
+    );
     expect((await tokens.get(service.id))?.accessToken).toBe('expired-access');
   });
 
@@ -625,7 +652,9 @@ describe('OAuth background refresh (NOT-654)', () => {
       );
     expect(failure).toBeInstanceOf(OAuthRefreshError);
     expect((failure as OAuthRefreshError).kind).toBe('missing_config');
-    expect(oauthManager.isOAuthRefreshRejected(linear.id)).toBe(false);
+    await expect(oauthManager.isOAuthRefreshRejected(linear.id)).resolves.toBe(
+      false,
+    );
   });
 
   it('clears the rejected state when a later grant succeeds', async () => {
@@ -655,16 +684,162 @@ describe('OAuth background refresh (NOT-654)', () => {
         refreshToken: 'refresh-token',
       }),
     ).rejects.toBeInstanceOf(OAuthRefreshError);
-    expect(oauthManager.isOAuthRefreshRejected(service.id)).toBe(true);
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      true,
+    );
 
     await oauthManager.refreshOAuthToken({
       serviceId: service.id,
       refreshToken: 'refresh-token',
     });
-    expect(oauthManager.isOAuthRefreshRejected(service.id)).toBe(false);
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      false,
+    );
     await expect(oauthManager.getOAuthAuthState(service.id)).resolves.toEqual({
       authState: 'ok',
     });
+  });
+
+  it('keeps the rejected state across manager recreation (restart) until a reconnect clears it', async () => {
+    const service = await createGoogleService();
+    await tokens.set(
+      service.id,
+      'expired-access',
+      'revoked-refresh',
+      new Date(Date.now() - 60_000).toISOString(),
+    );
+
+    let grants = 0;
+    installTokenStub((body) => {
+      if (body.get('grant_type') === 'authorization_code') {
+        return jsonResponse({
+          access_token: 'reconnected-access',
+          refresh_token: 'reconnected-refresh',
+          expires_in: 3600,
+          token_type: 'Bearer',
+        });
+      }
+      grants += 1;
+      return jsonResponse({ error: 'invalid_grant' }, 400);
+    });
+
+    // The on-demand path persists the rejection in SQLite.
+    await expect(
+      oauthManager.refreshOAuthToken({
+        serviceId: service.id,
+        refreshToken: 'revoked-refresh',
+      }),
+    ).rejects.toBeInstanceOf(OAuthRefreshError);
+    expect(grants).toBe(1);
+    expect((await db.getService(service.id))?.oauthRefreshRejected).toBe(true);
+
+    // Simulate a daemon restart: a brand-new manager over the same DB/vaults
+    // still reports the dead grant — never `ok`.
+    const restarted = new OAuthManager(db, clientSecrets, tokens);
+    await expect(restarted.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      true,
+    );
+    await expect(restarted.getOAuthAuthState(service.id)).resolves.toEqual({
+      authState: 'needs_reconnect',
+      reason: 'refresh_rejected',
+    });
+
+    // The refresher wired to the restarted manager still skips the dead card.
+    const { deps } = startRefresher({
+      refresh: (serviceId, refreshToken) =>
+        restarted.refreshOAuthToken({ serviceId, refreshToken }),
+      isRefreshRejected: (serviceId) =>
+        restarted.isOAuthRefreshRejected(serviceId),
+    });
+    await vi.advanceTimersByTimeAsync(2 * 3_600_000);
+    expect(grants).toBe(1);
+    expect(deps.onRefreshRejected).not.toHaveBeenCalled();
+
+    // A reconnect through the restarted manager clears the persisted state…
+    const { state } = await restarted.initiateOAuthFlow({
+      serviceId: service.id,
+      redirectUri: 'http://127.0.0.1:8000/api/oauth/callback',
+    });
+    await restarted.handleOAuthCallback({
+      serviceId: service.id,
+      code: 'auth-code',
+      state,
+    });
+
+    // …durably: yet another manager sees it cleared.
+    const afterReconnect = new OAuthManager(db, clientSecrets, tokens);
+    await expect(
+      afterReconnect.isOAuthRefreshRejected(service.id),
+    ).resolves.toBe(false);
+    await expect(afterReconnect.getOAuthAuthState(service.id)).resolves.toEqual({
+      authState: 'ok',
+    });
+  });
+
+  it('retries an invalid_request 4xx with backoff instead of declaring the grant dead', async () => {
+    const service = await createGoogleService();
+    await tokens.set(
+      service.id,
+      'expired-access',
+      'good-refresh',
+      new Date(Date.now() - 60_000).toISOString(),
+    );
+    const startedAt = Date.now();
+
+    const attempts: number[] = [];
+    let n = 0;
+    installTokenStub(() => {
+      n += 1;
+      attempts.push(Date.now());
+      if (n <= 2) {
+        return jsonResponse(
+          {
+            error: 'invalid_request',
+            error_description: 'Missing required parameter.',
+          },
+          400,
+        );
+      }
+      return jsonResponse({
+        access_token: 'recovered-access',
+        refresh_token: 'good-refresh',
+        expires_in: 3600,
+        token_type: 'Bearer',
+      });
+    });
+
+    const { deps } = startRefresher();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(n).toBe(1);
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      false,
+    );
+    await expect(oauthManager.getOAuthAuthState(service.id)).resolves.toEqual({
+      authState: 'ok',
+    });
+    expect(deps.onRefreshRejected).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(n).toBe(2); // Retried after the 60s base delay — not stopped.
+    await expect(oauthManager.isOAuthRefreshRejected(service.id)).resolves.toBe(
+      false,
+    );
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(n).toBe(3);
+    expect(attempts).toEqual([
+      startedAt,
+      startedAt + 60_000,
+      startedAt + 180_000,
+    ]);
+    expect((await tokens.get(service.id))?.accessToken).toBe(
+      'recovered-access',
+    );
+    await expect(oauthManager.getOAuthAuthState(service.id)).resolves.toEqual({
+      authState: 'ok',
+    });
+    expect(deps.invalidateClient).toHaveBeenCalledTimes(1);
+    expect(deps.onRefreshRejected).not.toHaveBeenCalled();
   });
 
   it("registers a 60s unref'd interval and clears it on stop", async () => {

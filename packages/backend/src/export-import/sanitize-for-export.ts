@@ -123,6 +123,7 @@ export const FORBIDDEN_EXPORT_SERVICE_KEYS = [
   'oauthTokenExpiresAt',
   'oauthState',
   'oauthHasToken',
+  'oauthRefreshRejected',
   'localEnv',
   'credentialId',
   'health',

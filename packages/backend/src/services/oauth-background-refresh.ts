@@ -16,10 +16,11 @@ import { OAuthRefreshError } from './oauth-manager';
  * expired while the daemon was down is renewed immediately.
  *
  * Refresh failures are classified by `OAuthManager`: a rejected grant
- * (`invalid_grant`/`invalid_client`/other 4xx) marks the card
- * `needs_reconnect` and the refresher leaves it alone until a human
- * reconnects; a transient failure (network, 429/408, 5xx) or missing config
- * is retried with capped backoff. Non-Google cards are never touched.
+ * (`invalid_grant`/`invalid_client`) marks the card `needs_reconnect`
+ * (persisted in SQLite, so it survives restarts) and the refresher leaves
+ * it alone until a human reconnects; a transient failure (network, 429/408,
+ * 5xx, or any other 4xx) or missing config is retried with capped backoff.
+ * Non-Google cards are never touched.
  */
 
 /** Cadence of the background refresh sweep (wired up in server/index). */
@@ -42,8 +43,11 @@ export interface OAuthBackgroundRefreshDeps {
   getTokenBundle: (service: Service) => Promise<OAuthRefreshTokenBundle | null>;
   /** Renew the access token; must be `OAuthManager.refreshOAuthToken` (single-flight). */
   refresh: (serviceId: string, refreshToken: string) => Promise<unknown>;
-  /** Sticky rejected-grant state; while true the card is skipped. */
-  isRefreshRejected: (serviceId: string) => boolean;
+  /**
+   * Sticky rejected-grant state (SQLite-backed); while true the card is
+   * skipped. Async because the state is read from the database.
+   */
+  isRefreshRejected: (serviceId: string) => boolean | Promise<boolean>;
   /** Drop the cached MCP client (its `Authorization` header is stale). */
   invalidateClient: (serviceId: string) => void;
   /** Called once when a grant is definitively rejected (mark unhealthy + broadcast). */
@@ -192,7 +196,7 @@ export function startOAuthBackgroundRefresh(
       if (inFlight.has(service.id)) {
         continue;
       }
-      if (deps.isRefreshRejected(service.id)) {
+      if (await deps.isRefreshRejected(service.id)) {
         continue;
       }
       const attemptAt = nextAttemptAt.get(service.id);
