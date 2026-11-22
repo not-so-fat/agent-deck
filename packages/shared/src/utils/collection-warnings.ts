@@ -18,6 +18,17 @@ export type CollectionCardWarning = {
   severity: 'warning' | 'error';
 };
 
+/**
+ * NOT-655: server-side auth state per OAuth card (NOT-654), the single
+ * source of truth for OAuth warnings. `ok` means the card is fine — an
+ * expired access token with a live refresh token renews in the background —
+ * and `needs_reconnect` means only a human re-auth can save it.
+ */
+export type OAuthCardAuthState = 'ok' | 'needs_reconnect';
+
+/** Face-badge and details-modal message for `needs_reconnect` cards. */
+export const OAUTH_EXPIRED_MESSAGE = 'OAuth token expired — re-authenticate';
+
 export type CollectionCatalog = {
   credentialIds: Set<string>;
   serviceIds: Set<string>;
@@ -35,8 +46,14 @@ export function isOAuthTokenExpiringSoon(expiresAt?: string): boolean {
 export type ServiceWarningContext = {
   /** Live MCP discovery — OAuth required even before client credentials are stored. */
   oauthRequired?: boolean;
-  /** When true, expired access tokens can renew silently — do not warn oauth_expired. */
+  /**
+   * Legacy fallback (pre-NOT-655): when true, expired access tokens can renew
+   * silently — do not warn oauth_expired. Only consulted when `authState` is
+   * absent; the backend always sends `authState` now.
+   */
   hasRefreshToken?: boolean;
+  /** NOT-655: server auth state — the single source of truth when present. */
+  authState?: OAuthCardAuthState;
 };
 
 function mcpHasOAuthConfig(service: Service): boolean {
@@ -58,7 +75,11 @@ export function getServiceWarnings(
   const warnings: CollectionCardWarning[] = [];
 
   if (service.health === 'unhealthy') {
-    const oauthOk = service.type === 'mcp' && mcpHasValidOAuthSession(service);
+    const oauthOk =
+      service.type === 'mcp' &&
+      (context.authState !== undefined
+        ? context.authState === 'ok'
+        : mcpHasValidOAuthSession(service));
     warnings.push({
       kind: 'service_unhealthy',
       message: oauthOk
@@ -69,6 +90,34 @@ export function getServiceWarnings(
   }
 
   if (service.type !== 'mcp') {
+    return warnings;
+  }
+
+  // NOT-655: when the server sent its auth state, stored card fields say
+  // nothing — `oauth_expired` is emitted exactly for `needs_reconnect`.
+  if (context.authState === 'needs_reconnect') {
+    warnings.push({
+      kind: 'oauth_expired',
+      message: OAUTH_EXPIRED_MESSAGE,
+      severity: 'error',
+    });
+    return warnings;
+  }
+
+  if (context.authState === 'ok') {
+    // Token-bearing cards are fine: an expired access token with a live
+    // refresh token renews in the background (NOT-654). Cards that never
+    // completed OAuth still warn when a live probe says OAuth is required.
+    const hasToken = Boolean(service.oauthHasToken || service.oauthAccessToken);
+    const oauthLikely =
+      context.oauthRequired === true || mcpHasOAuthConfig(service);
+    if (!hasToken && oauthLikely) {
+      warnings.push({
+        kind: 'oauth_required',
+        message: 'OAuth authentication required',
+        severity: 'error',
+      });
+    }
     return warnings;
   }
 
@@ -98,7 +147,7 @@ export function getServiceWarnings(
     }
     warnings.push({
       kind: 'oauth_expired',
-      message: 'OAuth token expired — re-authenticate',
+      message: OAUTH_EXPIRED_MESSAGE,
       severity: 'error',
     });
   }
