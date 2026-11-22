@@ -292,6 +292,7 @@ export async function createServer() {
       oauthManager.refreshOAuthToken({ serviceId, refreshToken }),
     isRefreshRejected: (serviceId) =>
       oauthManager.isOAuthRefreshRejected(serviceId),
+    getAuthState: (serviceId) => oauthManager.getOAuthAuthState(serviceId),
     invalidateClient: (serviceId) => mcpClient.invalidateClient(serviceId),
     onRefreshRejected: (serviceId) =>
       serviceManager.markOAuthNeedsReconnect(serviceId),

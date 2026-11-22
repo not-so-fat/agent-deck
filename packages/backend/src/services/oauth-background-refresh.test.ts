@@ -6,6 +6,7 @@ import { OAuthClientSecretVault } from '../vault/oauth-client-secret-vault';
 import { OAuthTokenVault } from '../vault/oauth-token-vault';
 import { OAuthManager, OAuthRefreshError } from './oauth-manager';
 import { MCPClientManager } from './mcp-client-manager';
+import { ServiceManager } from './service-manager';
 import {
   computeOAuthRefreshRetryDelayMs,
   OAUTH_BACKGROUND_REFRESH_INTERVAL_MS,
@@ -103,6 +104,7 @@ describe('OAuth background refresh (NOT-654)', () => {
         oauthManager.refreshOAuthToken({ serviceId, refreshToken }),
       isRefreshRejected: (serviceId) =>
         oauthManager.isOAuthRefreshRejected(serviceId),
+      getAuthState: (serviceId) => oauthManager.getOAuthAuthState(serviceId),
       invalidateClient: vi.fn(),
       onRefreshRejected: vi.fn(),
       ...depOverrides,
@@ -427,7 +429,7 @@ describe('OAuth background refresh (NOT-654)', () => {
     ).toEqual([60_000, 120_000, 240_000, 480_000, 900_000, 900_000, 900_000, 900_000]);
   });
 
-  it('skips Google cards without a refresh token; they report no_refresh_token', async () => {
+  it('reconciles a Google card without a refresh token without calling the token endpoint', async () => {
     const service = await createGoogleService();
     await tokens.set(
       service.id,
@@ -438,13 +440,119 @@ describe('OAuth background refresh (NOT-654)', () => {
     const fetchMock = installTokenStub(() =>
       jsonResponse({ access_token: 'x', expires_in: 3600 }),
     );
-    startRefresher();
+    const { deps } = startRefresher();
     await vi.advanceTimersByTimeAsync(2 * 3_600_000);
     expect(fetchMock).not.toHaveBeenCalled();
     await expect(oauthManager.getOAuthAuthState(service.id)).resolves.toEqual({
       authState: 'needs_reconnect',
       reason: 'no_refresh_token',
     });
+    // Reported once for health reconciliation, then left alone.
+    expect(deps.onRefreshRejected).toHaveBeenCalledTimes(1);
+    expect(deps.onRefreshRejected).toHaveBeenCalledWith(service.id);
+  });
+
+  /**
+   * Repair round 3: a Google card whose SQLite row still says `healthy`
+   * (e.g. the grant was revoked while the daemon was down) must be
+   * reconciled to `unhealthy` by the startup sweep — the health reprober
+   * only selects already-`unhealthy` services, so nothing else would.
+   */
+  function wireRealHealth() {
+    const mcp = new MCPClientManager(
+      (id) => oauthManager.getValidAccessToken(id),
+      (id) => oauthManager.forceRefreshAccessToken(id),
+    );
+    const serviceManager = new ServiceManager(
+      db,
+      mcp,
+      oauthManager,
+      clientSecrets,
+    );
+    const broadcast = vi.fn();
+    serviceManager.setStatusBroadcaster(broadcast);
+    return { serviceManager, broadcast };
+  }
+
+  it('startup sweep reconciles a healthy row to unhealthy for a persisted rejection', async () => {
+    const service = await createGoogleService();
+    await tokens.set(
+      service.id,
+      'expired-access',
+      'revoked-refresh',
+      new Date(Date.now() - 60_000).toISOString(),
+    );
+    await db.setOAuthRefreshRejected(service.id, true);
+    await db.updateServiceStatus(service.id, true, 'healthy');
+
+    let grants = 0;
+    installTokenStub(() => {
+      grants += 1;
+      return jsonResponse({ error: 'invalid_grant' }, 400);
+    });
+
+    const { serviceManager, broadcast } = wireRealHealth();
+    startRefresher({
+      onRefreshRejected: (serviceId) =>
+        serviceManager.markOAuthNeedsReconnect(serviceId),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(grants).toBe(0); // A rejected grant is never retried.
+    const row = await db.getService(service.id);
+    expect(row?.health).toBe('unhealthy');
+    expect(row?.isConnected).toBe(false);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith({
+      serviceId: service.id,
+      health: 'unhealthy',
+      isConnected: false,
+      lastPing: expect.any(String),
+    });
+
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(grants).toBe(0);
+    expect(broadcast).toHaveBeenCalledTimes(1); // No rebroadcast storm.
+    expect((await db.getService(service.id))?.health).toBe('unhealthy');
+  });
+
+  it('startup sweep reconciles a healthy row to unhealthy for an expired token with no refresh token', async () => {
+    const service = await createGoogleService();
+    await tokens.set(
+      service.id,
+      'expired-access',
+      undefined,
+      new Date(Date.now() - 60_000).toISOString(),
+    );
+    await db.updateServiceStatus(service.id, true, 'healthy');
+
+    const fetchMock = installTokenStub(() =>
+      jsonResponse({ access_token: 'x', expires_in: 3600 }),
+    );
+
+    const { serviceManager, broadcast } = wireRealHealth();
+    startRefresher({
+      onRefreshRejected: (serviceId) =>
+        serviceManager.markOAuthNeedsReconnect(serviceId),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const row = await db.getService(service.id);
+    expect(row?.health).toBe('unhealthy');
+    expect(row?.isConnected).toBe(false);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith({
+      serviceId: service.id,
+      health: 'unhealthy',
+      isConnected: false,
+      lastPing: expect.any(String),
+    });
+
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(broadcast).toHaveBeenCalledTimes(1); // No rebroadcast storm.
+    expect((await db.getService(service.id))?.health).toBe('unhealthy');
   });
 
   it('leaves non-Google cards alone while on-demand refresh keeps working', async () => {
@@ -744,16 +852,19 @@ describe('OAuth background refresh (NOT-654)', () => {
       reason: 'refresh_rejected',
     });
 
-    // The refresher wired to the restarted manager still skips the dead card.
+    // The refresher wired to the restarted manager still skips the dead card
+    // (no retry), but reports it once so its health is reconciled.
     const { deps } = startRefresher({
       refresh: (serviceId, refreshToken) =>
         restarted.refreshOAuthToken({ serviceId, refreshToken }),
       isRefreshRejected: (serviceId) =>
         restarted.isOAuthRefreshRejected(serviceId),
+      getAuthState: (serviceId) => restarted.getOAuthAuthState(serviceId),
     });
     await vi.advanceTimersByTimeAsync(2 * 3_600_000);
     expect(grants).toBe(1);
-    expect(deps.onRefreshRejected).not.toHaveBeenCalled();
+    expect(deps.onRefreshRejected).toHaveBeenCalledTimes(1);
+    expect(deps.onRefreshRejected).toHaveBeenCalledWith(service.id);
 
     // A reconnect through the restarted manager clears the persisted state…
     const { state } = await restarted.initiateOAuthFlow({

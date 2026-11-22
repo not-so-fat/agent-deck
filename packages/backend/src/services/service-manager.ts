@@ -87,10 +87,17 @@ export class ServiceManager {
   /**
    * NOT-654: mark a card `unhealthy` because its OAuth grant needs a human
    * reconnect, and broadcast that so the dashboard stops showing it as
-   * healthy. Called by the background refresher on a rejected grant and by
-   * the discovery/health paths below.
+   * healthy. Called by the background refresher for any `needs_reconnect`
+   * card, by the OAuth `/status` route when it observes one, and by the
+   * discovery/health paths below. Idempotent: a card that already reads
+   * `unhealthy`/disconnected is left alone, so repeated sweeps and polls
+   * neither churn the row nor rebroadcast.
    */
   async markOAuthNeedsReconnect(serviceId: string): Promise<void> {
+    const current = await this.db.getService(serviceId);
+    if (current && current.health === 'unhealthy' && current.isConnected === false) {
+      return;
+    }
     await this.db.updateServiceStatus(serviceId, false, 'unhealthy');
     this.statusBroadcaster?.({
       serviceId,
