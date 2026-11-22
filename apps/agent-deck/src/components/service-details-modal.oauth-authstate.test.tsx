@@ -81,6 +81,10 @@ type MockServer = {
   seen: string[];
   service: Service;
   setup: unknown;
+  /** HTTP status for GET /api/oauth/:id/status (default 200). */
+  statusCode?: number;
+  /** Card-face collection warnings for GET /api/collection/warnings. */
+  faceWarnings?: Record<string, Array<{ kind: string; message: string; severity: string }>>;
 };
 
 function mockOAuthEndpoints(server: MockServer) {
@@ -98,7 +102,22 @@ function mockOAuthEndpoints(server: MockServer) {
       });
     }
     if (url === `/api/oauth/${server.service.id}/status`) {
+      if (server.statusCode && server.statusCode >= 400) {
+        return jsonResponse({ success: false, error: "boom" }, server.statusCode);
+      }
       return jsonResponse({ success: true, data: server.status });
+    }
+    if (url === "/api/collection/warnings") {
+      return jsonResponse({
+        success: true,
+        data: {
+          total: Object.keys(server.faceWarnings ?? {}).length,
+          byKind: {},
+          services: server.faceWarnings ?? {},
+          credentials: {},
+          playbooks: {},
+        },
+      });
     }
     if (url === `/api/oauth/${server.service.id}/setup`) {
       return jsonResponse(server.setup);
@@ -173,6 +192,63 @@ describe("ServiceDetailsModal OAuth authState (NOT-655)", () => {
     const warning = await screen.findByText(OAUTH_EXPIRED_MESSAGE);
     expect(warning).not.toBeNull();
     expect(screen.getByTestId("oauth-connect-section")).not.toBeNull();
+  });
+
+  it("mirrors the card face oauth_expired warning when the Google status read fails (HTTP 500)", async () => {
+    const server: MockServer = {
+      discover: { required: false },
+      status: {},
+      statusCode: 500,
+      faceWarnings: {
+        [GOOGLE_ID]: [
+          { kind: "oauth_expired", message: OAUTH_EXPIRED_MESSAGE, severity: "error" },
+        ],
+      },
+      seen: [],
+      service: googleService,
+      setup: MANUAL_SETUP,
+    };
+    mockOAuthEndpoints(server);
+
+    render(
+      <ServiceDetailsModal service={googleService} isOpen onClose={() => {}} />,
+      { wrapper: createTestWrapper() },
+    );
+
+    const warning = await screen.findByText(OAUTH_EXPIRED_MESSAGE);
+    expect(warning).not.toBeNull();
+    expect(screen.queryByText("Healthy")).toBeNull();
+    expect(
+      server.seen.some((entry) => entry.includes(`/api/oauth/${GOOGLE_ID}/status`)),
+    ).toBe(true);
+  });
+
+  it("does not read card face warnings for a non-Google card", async () => {
+    const server: MockServer = {
+      discover: { required: false },
+      status: {},
+      statusCode: 500,
+      faceWarnings: {
+        [LINEAR_ID]: [
+          { kind: "oauth_expired", message: OAUTH_EXPIRED_MESSAGE, severity: "error" },
+        ],
+      },
+      seen: [],
+      service: linearService,
+      setup: DYNAMIC_SETUP,
+    };
+    mockOAuthEndpoints(server);
+
+    render(
+      <ServiceDetailsModal service={linearService} isOpen onClose={() => {}} />,
+      { wrapper: createTestWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(server.seen.some((entry) => entry.includes("/api/mcp/discover"))).toBe(true);
+    });
+    expect(server.seen.some((entry) => entry.includes("/api/collection/warnings"))).toBe(false);
+    expect(screen.queryByText(OAUTH_EXPIRED_MESSAGE)).toBeNull();
   });
 
   it("never shows a healthy pill for a needs_reconnect card", async () => {

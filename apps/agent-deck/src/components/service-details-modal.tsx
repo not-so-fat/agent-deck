@@ -10,7 +10,7 @@ import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import McpToolsPanel from "@/components/mcp-tools-panel";
 import { OAuthConnectPanel } from "@/components/oauth-connect-panel";
-import { OAUTH_EXPIRED_MESSAGE } from "@/lib/collection-warnings";
+import { OAUTH_EXPIRED_MESSAGE, type CollectionWarningsPayload } from "@/lib/collection-warnings";
 import { isGoogleMcpServiceUrl } from "@/lib/google-card-reconnect";
 import { invalidateDashboardServiceQueries } from "@/lib/invalidate-dashboard-queries";
 import {
@@ -239,6 +239,25 @@ export default function ServiceDetailsModal({
     },
   });
 
+  // NOT-655: the same collection-warnings data that drives the card face
+  // badge (shared react-query cache with the dashboard grid). Used as the
+  // Google fallback when the status read failed, is loading, or carries no
+  // authState, so face and details cannot disagree.
+  const { data: collectionWarningsResponse } = useQuery<{ success: boolean; data: CollectionWarningsPayload }>({
+    queryKey: ['/api/collection/warnings'],
+    queryFn: async () => {
+      const response = await apiRequest('GET', '/api/collection/warnings');
+      return response.json();
+    },
+    staleTime: 60_000,
+    enabled: hasValidService && isOpen && isGoogleCard,
+  });
+  const faceWarningKinds = new Set(
+    (apiService?.id ? collectionWarningsResponse?.data?.services?.[apiService.id] ?? [] : []).map(
+      (warning) => warning.kind,
+    ),
+  );
+
   const getOAuthStatus = (): {
     status: OAuthUiStatus;
     message: string | null;
@@ -292,6 +311,17 @@ export default function ServiceDetailsModal({
         return { status: 'authenticated', message: null };
       }
       return { status: 'not_required', message: null };
+    }
+
+    // Google card without a usable server auth state (status read failed,
+    // still loading, or no authState): mirror the card face warning.
+    if (isGoogleCard && !oauthStatusData?.authState) {
+      if (faceWarningKinds.has('oauth_expired')) {
+        return { status: 'expired', message: OAUTH_EXPIRED_MESSAGE };
+      }
+      if (faceWarningKinds.has('oauth_required')) {
+        return { status: 'required', message: 'OAuth 2.0 Authentication Required' };
+      }
     }
 
     // Probe-gated view: for non-Google cards this is the whole pre-NOT-655
