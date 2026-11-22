@@ -201,6 +201,30 @@ describe('Google OAuth config self-heal', () => {
     expect(body.get('client_secret')).toBe('donor-secret-value');
   });
 
+  it('pairs a borrowed client ID with the donor secret when the target secret mismatches', async () => {
+    await seedDonor('donor-secret-value');
+    // Target holds its own unrelated secret (seedStrippedDocsCard uses
+    // 'docs-own-secret'): no donor matches it.
+    const docs = await seedStrippedDocsCard();
+    expect(await clientSecrets.get(docs.id)).toBe('docs-own-secret');
+
+    await healGoogleOAuthConfigForService(db, clientSecrets, docs.id, { storeWriter });
+
+    expect((await db.getService(docs.id))?.oauthClientId).toBe('donor-client-id');
+    // The borrowed ID must pair with the donor's secret, not the unrelated
+    // existing secret, or Google rejects the refresh.
+    expect(await clientSecrets.get(docs.id)).toBe('donor-secret-value');
+
+    const fetchMock = stubTokenEndpoint('fresh-access');
+    expect(await manager.forceRefreshAccessToken(docs.id)).toBe('fresh-access');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://oauth2.googleapis.com/token');
+    const body = new URLSearchParams(String(init.body));
+    expect(body.get('grant_type')).toBe('refresh_token');
+    expect(body.get('client_id')).toBe('donor-client-id');
+    expect(body.get('client_secret')).toBe('donor-secret-value');
+  });
+
   it('leaves non-Google cards alone: no derived config', async () => {
     const linear = await db.createService({
       name: 'Linear',

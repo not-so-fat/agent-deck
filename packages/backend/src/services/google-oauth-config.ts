@@ -106,8 +106,9 @@ async function findGoogleDonor(
  * one from a sibling Google card whose secret is in this host's vault.
  *
  * Persists to SQLite and the store file. Never logs secret values; secrets
- * stay per-service in the vault (a donor secret is copied vault-to-vault only
- * when the target has none of its own).
+ * stay per-service in the vault (a borrowed client ID is always paired with a
+ * matching secret: the target's own when it matches the donor, otherwise the
+ * donor's secret copied vault-to-vault).
  */
 export async function healGoogleOAuthConfigForService(
   db: DatabaseManager,
@@ -173,8 +174,10 @@ export async function healGoogleOAuthConfigForService(
       }
     } else {
       patch.oauthClientId = donor.clientId;
-      if (!targetSecret) {
-        // Pair the borrowed client ID with the donor's secret, vault-to-vault.
+      if (!targetSecret || targetSecret !== donor.secret) {
+        // Pair the borrowed client ID with its matching secret, vault-to-vault.
+        // Without this, a borrowed ID would be posted with the target's
+        // unrelated secret and Google would reject the refresh.
         await clientSecrets.set(serviceId, donor.secret);
       }
     }
