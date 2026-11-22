@@ -97,6 +97,7 @@ export async function registerOAuthRoutes(fastify: FastifyInstance) {
         fastify.oauthClientSecretVault,
         request.params.serviceId,
         request.body ?? {},
+        { storeWriter: fastify.storeWriter },
       );
 
       if (!result.success) {
@@ -139,6 +140,7 @@ export async function registerOAuthRoutes(fastify: FastifyInstance) {
         fastify.oauthClientSecretVault,
         request.params.serviceId,
         request.body ?? {},
+        { storeWriter: fastify.storeWriter },
       );
 
       if (!result.success) {

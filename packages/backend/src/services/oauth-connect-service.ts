@@ -1,6 +1,8 @@
 import { MCPDiscoveryService } from './mcp-discovery-service';
 import { OAuthManager } from './oauth-manager';
 import { DatabaseManager } from '../models/database';
+import { storeServiceFromDb } from '../store/service-codec';
+import type { StoreService } from '@agent-deck/shared';
 import {
   getOAuthProviderGuide,
   getOAuthRedirectUri,
@@ -121,12 +123,17 @@ export async function getOAuthSetupInfo(
   };
 }
 
+export type OAuthConnectStoreWriter = {
+  writeService(service: StoreService): Promise<void>;
+};
+
 export async function startOAuthConnect(
   db: DatabaseManager,
   oauthManager: OAuthManager,
   clientSecrets: OAuthClientSecretVault,
   serviceId: string,
   input: OAuthConnectInput = {},
+  opts: { storeWriter?: OAuthConnectStoreWriter } = {},
 ): Promise<OAuthConnectResult> {
   const service = await db.getService(serviceId);
   if (!service) {
@@ -280,6 +287,17 @@ export async function startOAuthConnect(
     oauthTokenUrl: oauthConfig.tokenUrl,
     oauthScope: scope,
   });
+
+  // NOT-653: the services table is rebuilt from store files on restart/reindex,
+  // so Connect's non-secret OAuth config must reach the card's store file too.
+  // storeServiceFromDb strips secrets; keepCardClient already kept another
+  // host's client in SQLite, and the store write mirrors that row as-is.
+  if (opts.storeWriter) {
+    const updated = await db.getService(serviceId);
+    if (updated) {
+      await opts.storeWriter.writeService(storeServiceFromDb(updated));
+    }
+  }
 
   const { authorizationUrl, state } = await oauthManager.initiateOAuthFlow({
     serviceId,
