@@ -112,4 +112,99 @@ describe('GET /api/oauth/:serviceId/status', () => {
     expect(body.data.refreshFailed).toBe(true);
     expect(body.data.authenticated).toBe(false);
   });
+
+  async function createGoogleService() {
+    return db.createService({
+      name: 'Gmail',
+      type: 'mcp',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+      oauthClientId: 'google-client',
+      oauthAuthorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      oauthTokenUrl: 'https://oauth2.googleapis.com/token',
+      oauthRedirectUri: 'http://127.0.0.1:8000/api/oauth/callback',
+      oauthScope: 'https://www.googleapis.com/auth/gmail.readonly',
+    });
+  }
+
+  it('NOT-654: reports needs_reconnect/refresh_rejected for a revoked grant', async () => {
+    const google = await createGoogleService();
+    const pastExpiry = new Date(Date.now() - 60_000).toISOString();
+    await tokens.set(google.id, 'expired-access', 'revoked-refresh', pastExpiry);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: async () =>
+          JSON.stringify({
+            error: 'invalid_grant',
+            error_description: 'Token has been expired or revoked.',
+          }),
+      }),
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/oauth/${google.id}/status`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.authState).toBe('needs_reconnect');
+    expect(body.data.reason).toBe('refresh_rejected');
+    expect(body.data.refreshFailed).toBe(true);
+    expect(body.data.authenticated).toBe(false);
+  });
+
+  it('NOT-654: reports needs_reconnect/no_refresh_token for an expired token without one', async () => {
+    const google = await createGoogleService();
+    const pastExpiry = new Date(Date.now() - 60_000).toISOString();
+    await tokens.set(google.id, 'expired-access', undefined, pastExpiry);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/oauth/${google.id}/status`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.authState).toBe('needs_reconnect');
+    expect(body.data.reason).toBe('no_refresh_token');
+    expect(body.data.authenticated).toBe(false);
+  });
+
+  it('NOT-654: reports ok for a fresh token, with no reason', async () => {
+    const google = await createGoogleService();
+    const futureExpiry = new Date(Date.now() + 3_600_000).toISOString();
+    await tokens.set(google.id, 'fresh-access', 'fresh-refresh', futureExpiry);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/oauth/${google.id}/status`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.authState).toBe('ok');
+    expect(body.data.reason).toBeUndefined();
+    expect(body.data.authenticated).toBe(true);
+  });
+
+  it('NOT-654: reports ok for a non-Google card with a fresh token', async () => {
+    const futureExpiry = new Date(Date.now() + 3_600_000).toISOString();
+    await tokens.set(serviceId, 'fresh-access', 'fresh-refresh', futureExpiry);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/oauth/${serviceId}/status`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.authState).toBe('ok');
+    expect(body.data.authenticated).toBe(true);
+    expect(body.data.hasRefreshToken).toBe(true);
+    expect(body.data.refreshFailed).toBe(false);
+  });
 });
