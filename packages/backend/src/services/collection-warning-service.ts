@@ -7,10 +7,13 @@ import {
   type CollectionCardWarning,
   type CollectionWarningKind,
   type Credential,
+  type OAuthCardAuthState,
   type Playbook,
   type Service,
+  type ServiceWarningContext,
 } from '@agent-deck/shared';
 import { MCPDiscoveryService } from './mcp-discovery-service';
+import { isGoogleMcpServiceUrl } from './google-oauth-config';
 import type { OAuthManager } from './oauth-manager';
 
 export type CollectionWarningsPayload = {
@@ -100,7 +103,7 @@ export class CollectionWarningService {
     playbooks: Playbook[],
   ): Promise<CollectionWarningsPayload> {
     const catalog = buildCollectionCatalog(credentials, services);
-    const serviceWarningContext: Record<string, { oauthRequired?: boolean }> = {};
+    const serviceWarningContext: Record<string, ServiceWarningContext> = {};
 
     await Promise.all(
       services.map(async (service) => {
@@ -114,13 +117,35 @@ export class CollectionWarningService {
       }),
     );
 
-    const refreshTokenByServiceId: Record<string, boolean> = {};
+    // NOT-655: the server auth state (NOT-654) is the single source of truth
+    // for Google OAuth cards — the details modal reads the same state, so the
+    // face badge and the modal can never disagree. Non-Google cards keep the
+    // pre-NOT-655 stored-field + vault refresh-token behavior untouched.
     if (this.oauthManager) {
       await Promise.all(
         services.map(async (service) => {
           if (service.type !== 'mcp') {
             return;
           }
+          if (isGoogleMcpServiceUrl(service.url)) {
+            try {
+              const authState: OAuthCardAuthState = (
+                await this.oauthManager!.getOAuthAuthState(service.id)
+              ).authState;
+              serviceWarningContext[service.id] = {
+                ...serviceWarningContext[service.id],
+                authState,
+              };
+              return;
+            } catch {
+              // Round 3: a failed read must not silence an existing warning —
+              // fall through to the legacy inputs below (stored card fields
+              // plus the vault refresh-token bit), so a transient
+              // status/vault failure keeps the previous warning in place.
+            }
+          }
+          // Non-Google, plus Google when the auth-state read failed: preserve
+          // the exact pre-NOT-655 legacy inputs.
           const oauthLikely =
             service.oauthClientId ||
             service.oauthAuthorizationUrl ||
@@ -129,7 +154,17 @@ export class CollectionWarningService {
           if (!oauthLikely) {
             return;
           }
-          refreshTokenByServiceId[service.id] = await this.oauthManager!.hasRefreshToken(service.id);
+          try {
+            const hasRefreshToken = await this.oauthManager!.hasRefreshToken(
+              service.id,
+            );
+            serviceWarningContext[service.id] = {
+              ...serviceWarningContext[service.id],
+              hasRefreshToken,
+            };
+          } catch {
+            // Unreadable vault: legacy warns from stored fields alone.
+          }
         }),
       );
     }
@@ -142,7 +177,6 @@ export class CollectionWarningService {
     for (const service of services) {
       const warnings = getServiceWarnings(service, {
         ...serviceWarningContext[service.id],
-        hasRefreshToken: refreshTokenByServiceId[service.id],
       });
       if (warnings.length > 0) {
         servicesMap[service.id] = warnings;

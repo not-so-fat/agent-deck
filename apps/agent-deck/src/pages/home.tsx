@@ -17,6 +17,7 @@ import {
   type CollectionSortMode,
 } from "@/lib/collection-sort";
 import CardComponent from "@/components/card-component";
+import { createServiceCardClickHandler } from "@/lib/google-card-reconnect";
 import CredentialCardComponent from "@/components/credential-card-component";
 import PlaybookCardComponent from "@/components/playbook-card-component";
 import DeckBuilder from "@/components/deck-builder";
@@ -69,6 +70,7 @@ export default function Home() {
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
   const [serviceDetailsModalOpen, setServiceDetailsModalOpen] = useState(false);
+  const [serviceDetailsFocusConnect, setServiceDetailsFocusConnect] = useState(false);
   const [credentialModalOpen, setCredentialModalOpen] = useState(false);
   const [selectedCredentialId, setSelectedCredentialId] = useState<string | null>(null);
   const [credentialDetailsOpen, setCredentialDetailsOpen] = useState(false);
@@ -275,11 +277,18 @@ export default function Home() {
   const editingDeckServices = editingDeck?.services || [];
   const editingDeckPlaybooks = editingDeck?.playbooks || [];
 
-  // Handle card click to show service details
-  const handleCardClick = (service: Service) => {
-    setSelectedService(service);
-    setServiceDetailsModalOpen(true);
-  };
+  // Handle card click: Google cards in `needs_reconnect` with a saved client
+  // restart Google sign-in with one click; everything else opens details.
+  const handleCardClick = createServiceCardClickHandler({
+    getServiceWarnings: (serviceId) =>
+      collectionWarnings.serviceWarnings.get(serviceId),
+    openServiceDetails: (service, focusConnect) => {
+      setSelectedService(service);
+      setServiceDetailsFocusConnect(focusConnect);
+      setServiceDetailsModalOpen(true);
+    },
+    toast,
+  });
 
   const handlePlaybookClick = (playbook: Playbook) => {
     setSelectedPlaybookId(playbook.id);
@@ -894,7 +903,11 @@ export default function Home() {
       <ServiceDetailsModal
         service={selectedService}
         isOpen={serviceDetailsModalOpen}
-        onClose={() => setServiceDetailsModalOpen(false)}
+        focusConnect={serviceDetailsFocusConnect}
+        onClose={() => {
+          setServiceDetailsModalOpen(false);
+          setServiceDetailsFocusConnect(false);
+        }}
       />
 
       <CredentialRegistrationModal
