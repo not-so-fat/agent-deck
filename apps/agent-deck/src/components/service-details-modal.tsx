@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import McpToolsPanel from "@/components/mcp-tools-panel";
 import { OAuthConnectPanel } from "@/components/oauth-connect-panel";
 import { OAUTH_EXPIRED_MESSAGE } from "@/lib/collection-warnings";
+import { isGoogleMcpServiceUrl } from "@/lib/google-card-reconnect";
 import { invalidateDashboardServiceQueries } from "@/lib/invalidate-dashboard-queries";
 import {
   formatHeadersForEditor,
@@ -193,6 +194,12 @@ export default function ServiceDetailsModal({
 
   const oauthRequired = mcpDiscoveryData?.data?.oauth?.required === true;
 
+  // NOT-655 round 3: the server auth state is a Google-only interpretation —
+  // OAuthManager reports needs_reconnect for a configured first-time
+  // Linear/Slack card, whose details must keep the pre-NOT-655 probe-gated
+  // view (Authentication Required), not Token Expired.
+  const isGoogleCard = isGoogleMcpServiceUrl(apiService?.url);
+
   const { data: oauthStatusData, refetch: refetchOAuthStatus } = useQuery({
     queryKey: ['/api/oauth', apiService?.id, 'status'],
     queryFn: async () => {
@@ -212,10 +219,15 @@ export default function ServiceDetailsModal({
         reason?: string;
       };
     },
-    // NOT-655: the server auth state decides — never gated on the discovery
-    // probe, so the modal agrees with the card face even when the probe fails
-    // or has not finished.
-    enabled: hasValidService && apiService.type === 'mcp' && isOpen,
+    // NOT-655: for Google cards the server auth state decides — never gated
+    // on the discovery probe, so the modal agrees with the card face even
+    // when the probe fails or has not finished. Non-Google cards keep the
+    // pre-NOT-655 probe-gated read.
+    enabled:
+      hasValidService &&
+      apiService.type === 'mcp' &&
+      isOpen &&
+      (isGoogleCard || oauthRequired),
     refetchInterval: (query) => {
       const data = query.state.data;
       // Stop polling once auth is good OR refresh failed — retrying a dead
@@ -231,10 +243,17 @@ export default function ServiceDetailsModal({
     status: OAuthUiStatus;
     message: string | null;
   } => {
-    // NOT-655: the server auth state is the single source of truth — the
-    // same state behind the card face badge — and it decides without
-    // waiting on the discovery probe.
-    if (oauthStatusData?.authState === 'needs_reconnect') {
+    // Non-Google cards keep the exact pre-NOT-655 probe-gated view: when the
+    // probe does not require OAuth there is nothing to show, whatever the
+    // vault-backed status fields say.
+    if (!isGoogleCard && !oauthRequired) {
+      return { status: 'not_required', message: null };
+    }
+
+    // NOT-655: for Google cards the server auth state is the single source
+    // of truth — the same state behind the card face badge — and it decides
+    // without waiting on the discovery probe.
+    if (isGoogleCard && oauthStatusData?.authState === 'needs_reconnect') {
       return {
         status: 'expired',
         message: OAUTH_EXPIRED_MESSAGE,
@@ -259,7 +278,7 @@ export default function ServiceDetailsModal({
       return { status: 'authenticated', message: null };
     }
 
-    if (oauthStatusData?.authState === 'ok') {
+    if (isGoogleCard && oauthStatusData?.authState === 'ok') {
       if (!oauthStatusData.hasToken && oauthRequired) {
         return {
           status: 'required',
@@ -275,8 +294,9 @@ export default function ServiceDetailsModal({
       return { status: 'not_required', message: null };
     }
 
-    // Status not loaded yet (or the status read failed): fall back to the
-    // probe-gated view so the modal still says something useful.
+    // Probe-gated view: for non-Google cards this is the whole pre-NOT-655
+    // decision; for Google cards it is the fallback while the status read is
+    // still loading (or failed), so the modal still says something useful.
     if (!oauthRequired) {
       return { status: 'not_required', message: null };
     }
