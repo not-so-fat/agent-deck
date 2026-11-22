@@ -41,6 +41,7 @@ import { getAgentDeckVersion } from '../lib/version';
 import { seedDefaultServicesIfEmpty } from '../data/seed-default-services';
 import { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { startHealthReprobe } from '../services/health-reprobe';
+import { startOAuthBackgroundRefresh } from '../services/oauth-background-refresh';
 import { FileStoreWriter } from '../store/writer';
 import { ensureStoreReady } from '../store/startup';
 import { TrustedSessionStore } from '../trusted-session/store';
@@ -249,23 +250,51 @@ export async function createServer() {
   // self-heal without a dashboard visit. Declared before the onClose hook so
   // shutdown clears the timer; assigned below once all services are wired.
   let stopHealthReprobe: (() => void) | undefined;
+  let stopOAuthBackgroundRefresh: (() => void) | undefined;
 
   fastify.addHook('onClose', async () => {
     clearInterval(staleSessionTimer);
     liveDisplayRegistry.stopStaleSweep();
     stopHealthReprobe?.();
+    stopOAuthBackgroundRefresh?.();
     await mcpClient.cleanup();
     db.close();
   });
 
   // NOT-512: background self-heal for `unhealthy` MCP services. The probe's
-  // own token resolution refreshes OAuth on use, so no refresh scheduler is
-  // needed. `fastify.broadcastServiceUpdate` is the root-scope WebSocket hub
+  // own token resolution refreshes OAuth on use; idle Google cards are
+  // covered by the NOT-654 refresher below instead.
+  // `fastify.broadcastServiceUpdate` is the root-scope WebSocket hub
   // broadcaster; the timer is unref'd and cleared on shutdown.
   stopHealthReprobe = startHealthReprobe({
     listServices: () => serviceManager.getAllServices(),
     checkHealth: (serviceId) => serviceManager.checkServiceHealth(serviceId),
     broadcast: (update) => fastify.broadcastServiceUpdate(update),
+  });
+
+  // NOT-654: renew Google OAuth access tokens before they expire, even for
+  // idle cards, and surface a rejected grant as `unhealthy`. Started here —
+  // after the broadcast decorator exists — so the startup tick can already
+  // mark and broadcast a dead grant. The timer is unref'd and cleared on
+  // shutdown.
+  serviceManager.setStatusBroadcaster((update) =>
+    fastify.broadcastServiceUpdate(update),
+  );
+  stopOAuthBackgroundRefresh = startOAuthBackgroundRefresh({
+    listServices: () => db.getAllServices(),
+    getTokenBundle: (service) =>
+      oauthTokenVault.get(
+        service.id,
+        service.oauthAccessToken,
+        service.oauthRefreshToken,
+      ),
+    refresh: (serviceId, refreshToken) =>
+      oauthManager.refreshOAuthToken({ serviceId, refreshToken }),
+    isRefreshRejected: (serviceId) =>
+      oauthManager.isOAuthRefreshRejected(serviceId),
+    invalidateClient: (serviceId) => mcpClient.invalidateClient(serviceId),
+    onRefreshRejected: (serviceId) =>
+      serviceManager.markOAuthNeedsReconnect(serviceId),
   });
 
   return fastify;

@@ -45,9 +45,89 @@ interface OAuthStateEntry {
   codeVerifier: string;
 }
 
+/**
+ * NOT-654: server-side auth state per OAuth card. Computed from the vault
+ * and the classified refresh outcome — never from an MCP probe, because
+ * Google answers `tools/list` with 200 even for a dead token.
+ */
+export type OAuthAuthState = 'ok' | 'needs_reconnect';
+export type OAuthAuthReason =
+  | 'no_refresh_token'
+  | 'refresh_rejected'
+  | 'missing_config'
+  | 'no_token';
+
+export interface OAuthAuthStatus {
+  authState: OAuthAuthState;
+  reason?: OAuthAuthReason;
+}
+
+/** NOT-654: how a `refresh_token` grant failed. */
+export type OAuthRefreshFailureKind =
+  /** Token endpoint rejected the grant (4xx): retrying cannot help. */
+  | 'rejected'
+  /** Network error, 429/408, or 5xx: the grant may succeed on retry. */
+  | 'transient'
+  /** No token URL to post to (and NOT-653 heal found nothing). */
+  | 'missing_config';
+
+export class OAuthRefreshError extends Error {
+  readonly kind: OAuthRefreshFailureKind;
+  readonly status?: number;
+  readonly errorCode?: string;
+
+  constructor(
+    message: string,
+    kind: OAuthRefreshFailureKind,
+    opts: { status?: number; errorCode?: string; cause?: unknown } = {},
+  ) {
+    super(message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
+    this.name = 'OAuthRefreshError';
+    this.kind = kind;
+    this.status = opts.status;
+    this.errorCode = opts.errorCode;
+  }
+}
+
+/** Pull the RFC 6749 `error` code out of a token-endpoint error body. */
+function extractOAuthErrorCode(bodyText: string): string | undefined {
+  const trimmed = bodyText.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as { error?: unknown };
+      if (typeof parsed.error === 'string' && parsed.error) {
+        return parsed.error;
+      }
+    } catch {
+      // Fall through to the raw-text match below.
+    }
+  }
+  if (trimmed.includes('=')) {
+    const code = new URLSearchParams(trimmed).get('error');
+    if (code) {
+      return code;
+    }
+  }
+  const match =
+    /(invalid_grant|invalid_client|invalid_request|unauthorized_client|unsupported_grant_type|invalid_scope)/.exec(
+      trimmed,
+    );
+  return match?.[1];
+}
+
 export class OAuthManager {
   private oauthStates = new Map<string, OAuthStateEntry>();
   private refreshInFlight = new Map<string, Promise<OAuthToken>>();
+  /**
+   * NOT-654: services whose `refresh_token` grant was definitively rejected
+   * (`invalid_grant`, `invalid_client`, or another 4xx). Sticky until a
+   * refresh succeeds or the card is reconnected; while set, the background
+   * refresher leaves the card alone and its auth state is `needs_reconnect`.
+   */
+  private refreshRejected = new Set<string>();
 
   getOAuthState(state: string): string | undefined {
     return this.oauthStates.get(state)?.serviceId;
@@ -240,6 +320,8 @@ export class OAuthManager {
       token.refreshToken,
       token.expiresAt,
     );
+    // NOT-654: a reconnect clears a previously rejected grant.
+    this.refreshRejected.delete(serviceId);
 
     // Clear state - we'll need to implement this properly
     // await this.db.updateService(input.serviceId, {
@@ -303,7 +385,10 @@ export class OAuthManager {
     }
 
     if (!service.oauthTokenUrl) {
-      throw new Error('Service does not have OAuth token URL configured');
+      throw new OAuthRefreshError(
+        'Service does not have OAuth token URL configured',
+        'missing_config',
+      );
     }
 
     const client = await this.clientSecrets.resolveClient(service, getOAuthRedirectUri());
@@ -317,24 +402,67 @@ export class OAuthManager {
       refreshBody.set('client_secret', clientSecret);
     }
 
-    const tokenResponse = await guardedFetch(service.oauthTokenUrl, {
-      method: 'POST',
-      headers: oauthTokenRequestHeaders(),
-      body: refreshBody,
-    });
+    let tokenResponse: Response;
+    try {
+      tokenResponse = await guardedFetch(service.oauthTokenUrl, {
+        method: 'POST',
+        headers: oauthTokenRequestHeaders(),
+        body: refreshBody,
+      });
+    } catch (error) {
+      // NOT-654: network/hosted-guard failures are transient — the grant may
+      // succeed on retry, so the token stays and nothing is marked rejected.
+      throw new OAuthRefreshError(
+        `OAuth token refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+        'transient',
+        { cause: error },
+      );
+    }
 
     if (!tokenResponse.ok) {
       const errorText = await tokenResponse.text();
-      throw new Error(`OAuth token refresh failed: ${tokenResponse.status} ${errorText}`);
+      const status = tokenResponse.status;
+      if (status === 429 || status === 408 || status >= 500) {
+        throw new OAuthRefreshError(
+          `OAuth token refresh failed: ${status} ${errorText}`,
+          'transient',
+          { status },
+        );
+      }
+      // NOT-654: the endpoint refused the grant (`invalid_grant` for a
+      // revoked/expired grant, `invalid_client`, or another 4xx client
+      // error). Retrying the same grant cannot help — record it so the
+      // card reports `needs_reconnect` until a human reconnects it.
+      const errorCode = extractOAuthErrorCode(errorText);
+      this.refreshRejected.add(input.serviceId);
+      throw new OAuthRefreshError(
+        `OAuth token refresh failed: ${status} ${errorText}`,
+        'rejected',
+        { status, errorCode },
+      );
     }
 
-    const tokenData = await parseOAuthTokenResponse(tokenResponse);
-    
+    let tokenData: Awaited<ReturnType<typeof parseOAuthTokenResponse>>;
+    try {
+      tokenData = await parseOAuthTokenResponse(tokenResponse);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const rejectedCode = /invalid_grant|invalid_client/.exec(message)?.[0];
+      if (rejectedCode) {
+        this.refreshRejected.add(input.serviceId);
+        throw new OAuthRefreshError(message, 'rejected', {
+          errorCode: rejectedCode,
+          cause: error,
+        });
+      }
+      throw new OAuthRefreshError(message, 'transient', { cause: error });
+    }
+
     const token: OAuthToken = {
       accessToken: tokenData.access_token,
       refreshToken: tokenData.refresh_token || input.refreshToken,
-      expiresAt: tokenData.expires_in ? 
-        new Date(Date.now() + tokenData.expires_in * 1000).toISOString() : 
+      expiresAt: tokenData.expires_in ?
+        new Date(Date.now() + tokenData.expires_in * 1000).toISOString() :
         undefined,
       tokenType: tokenData.token_type || 'Bearer',
       scope: tokenData.scope,
@@ -347,6 +475,8 @@ export class OAuthManager {
       token.refreshToken,
       token.expiresAt,
     );
+    // NOT-654: a successful refresh clears a previously rejected grant.
+    this.refreshRejected.delete(input.serviceId);
 
     return token;
   }
@@ -458,6 +588,65 @@ export class OAuthManager {
       service.oauthRefreshToken,
     );
     return Boolean(bundle?.refreshToken);
+  }
+
+  /**
+   * NOT-654: whether the service's `refresh_token` grant was definitively
+   * rejected. While true, the background refresher skips the card — only a
+   * human reconnect (or a refresh that somehow succeeds) clears it.
+   */
+  isOAuthRefreshRejected(serviceId: string): boolean {
+    return this.refreshRejected.has(serviceId);
+  }
+
+  /**
+   * NOT-654: the card's true auth state, from the vault plus the classified
+   * refresh outcome — never from an MCP probe. A card whose token is expired
+   * but refreshable is `ok` (the background refresher renews it); only a
+   * card no automatic path can save reports `needs_reconnect`.
+   */
+  async getOAuthAuthState(serviceId: string): Promise<OAuthAuthStatus> {
+    const service = await this.db.getService(serviceId);
+    if (!service) {
+      throw new Error(`Service ${serviceId} not found`);
+    }
+    const hasOAuthConfig = Boolean(
+      service.oauthClientId ||
+        service.oauthAuthorizationUrl ||
+        service.oauthTokenUrl,
+    );
+    if (!hasOAuthConfig && !isGoogleMcpServiceUrl(service.url)) {
+      return { authState: 'ok' };
+    }
+    // Sticky first: the endpoint refused this grant, so the access token is
+    // dead even when its recorded expiry is still in the future.
+    if (this.refreshRejected.has(serviceId)) {
+      return { authState: 'needs_reconnect', reason: 'refresh_rejected' };
+    }
+    const bundle = await this.tokens.get(
+      serviceId,
+      service.oauthAccessToken,
+      service.oauthRefreshToken,
+    );
+    if (!bundle?.accessToken) {
+      return { authState: 'needs_reconnect', reason: 'no_token' };
+    }
+    const expiresAt = service.oauthTokenExpiresAt || bundle.expiresAt;
+    if (
+      !isOAuthAccessTokenExpired({
+        oauthHasToken: true,
+        oauthTokenExpiresAt: expiresAt,
+      })
+    ) {
+      return { authState: 'ok' };
+    }
+    if (!bundle.refreshToken) {
+      return { authState: 'needs_reconnect', reason: 'no_refresh_token' };
+    }
+    if (!service.oauthTokenUrl?.trim()) {
+      return { authState: 'needs_reconnect', reason: 'missing_config' };
+    }
+    return { authState: 'ok' };
   }
 
   async autoRegisterOAuthApp(serviceUrl: string, config: OAuthConfig): Promise<{

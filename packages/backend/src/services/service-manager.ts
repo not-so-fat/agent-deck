@@ -17,6 +17,7 @@ import {
 import { DatabaseManager } from '../models/database';
 import { MCPClientManager } from './mcp-client-manager';
 import { OAuthManager } from './oauth-manager';
+import { isGoogleMcpServiceUrl } from './google-oauth-config';
 import { OAuthClientSecretVault } from '../vault/oauth-client-secret-vault';
 import { CredentialManager } from '../vault/credential-manager';
 import { ConfigManager } from './config-manager';
@@ -59,6 +60,7 @@ interface A2AEndpoint {
 
 export class ServiceManager {
   private configManager: ConfigManager;
+  private statusBroadcaster?: (update: ServiceStatusUpdate) => void;
 
   constructor(
     private db: DatabaseManager,
@@ -70,6 +72,50 @@ export class ServiceManager {
     private headerVault?: ServiceHeaderVault,
   ) {
     this.configManager = new ConfigManager();
+  }
+
+  /**
+   * NOT-654: websocket broadcaster for auth-driven health transitions
+   * (wired in server/index). Without it the DB status is still updated.
+   */
+  setStatusBroadcaster(
+    broadcaster: (update: ServiceStatusUpdate) => void,
+  ): void {
+    this.statusBroadcaster = broadcaster;
+  }
+
+  /**
+   * NOT-654: mark a card `unhealthy` because its OAuth grant needs a human
+   * reconnect, and broadcast that so the dashboard stops showing it as
+   * healthy. Called by the background refresher on a rejected grant and by
+   * the discovery/health paths below.
+   */
+  async markOAuthNeedsReconnect(serviceId: string): Promise<void> {
+    await this.db.updateServiceStatus(serviceId, false, 'unhealthy');
+    this.statusBroadcaster?.({
+      serviceId,
+      health: 'unhealthy',
+      isConnected: false,
+      lastPing: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * NOT-654: whether this Google OAuth card's true auth state is
+   * `needs_reconnect`. Google answers `tools/list` with 200 even for a dead
+   * token, so discovery success must not override this. Non-Google cards
+   * always return false (no behavior change for them).
+   */
+  private async isGoogleNeedsReconnect(service: Service): Promise<boolean> {
+    if (!isGoogleMcpServiceUrl(service.url)) {
+      return false;
+    }
+    try {
+      const status = await this.oauthManager.getOAuthAuthState(service.id);
+      return status?.authState === 'needs_reconnect';
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -548,6 +594,15 @@ export class ServiceManager {
       }
 
       const annotated = this.annotateToolEnabledState(tools, service.disabledToolNames ?? []);
+      // NOT-654: Google serves `tools/list` without auth, so a successful
+      // discovery must not resurrect a card whose grant is dead.
+      if (await this.isGoogleNeedsReconnect(service)) {
+        await this.markOAuthNeedsReconnect(serviceId);
+        if (options?.forAgent) {
+          return annotated.filter((tool) => tool.enabled !== false);
+        }
+        return annotated;
+      }
       await this.db.updateServiceStatus(serviceId, true, 'healthy');
 
       if (options?.forAgent) {
@@ -694,6 +749,16 @@ export class ServiceManager {
 
     const result = await this.discoverServiceTools(serviceId);
     if (!Array.isArray(result)) {
+      return {
+        success: true,
+        health: 'unhealthy',
+        isConnected: false,
+      };
+    }
+
+    // NOT-654: discovery already marked the DB row; mirror a dead grant here
+    // too so the probe result never reports `healthy` for it.
+    if (await this.isGoogleNeedsReconnect(service)) {
       return {
         success: true,
         health: 'unhealthy',

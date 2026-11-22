@@ -342,6 +342,9 @@ export async function registerOAuthRoutes(fastify: FastifyInstance) {
       const refreshedService = await fastify.db.getService(serviceId);
       const isExpired = await fastify.oauthManager.isTokenExpired(serviceId);
       const authenticated = hasToken && !isExpired && !refreshFailed;
+      // NOT-654: read after the refresh attempt above, so a revoked grant
+      // discovered by this very call is already reflected.
+      const authStatus = await fastify.oauthManager.getOAuthAuthState(serviceId);
 
       const response: ApiResponse = {
         success: true,
@@ -352,6 +355,8 @@ export async function registerOAuthRoutes(fastify: FastifyInstance) {
           hasRefreshToken,
           refreshFailed,
           expiresAt: refreshedService?.oauthTokenExpiresAt ?? service.oauthTokenExpiresAt,
+          authState: authStatus.authState,
+          reason: authStatus.reason,
         },
       };
       
