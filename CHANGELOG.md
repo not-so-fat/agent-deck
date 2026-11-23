@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.6.2 — 2026-11-22
+
+Google OAuth card fixes: cards keep their OAuth config across restarts, renew their tokens in the background, and show one auth state everywhere.
+
+> **Action needed once:** Existing Gmail/Google Docs cards connected before 2.6.1 need one reconnect to get a refresh token; afterwards Google cards renew tokens automatically.
+
+### Fix: Google OAuth cards
+
+- The OAuth client config is now saved to the card file, so Google cards no longer lose it on restart. Google cards that are already missing it repair it themselves (NOT-653, #268).
+- A background token refresher renews Google access tokens before they expire. When a refresh is no longer possible, the card shows a "needs reconnect" state, and health reports the same state (NOT-654, #269).
+- The card face, card details and health now show the same auth state. A card that needs reconnecting can be reconnected with one click from the card (NOT-655, #270).
+
 ## 2.6.1 — 2026-11-21
 
 Mostly a docs and test release: the npm README and docs now match the 2.6 design. One small runtime fix is included: Google OAuth cards now get a refresh token.
