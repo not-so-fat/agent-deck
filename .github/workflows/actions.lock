@@ -9,6 +9,9 @@ workflows:
     '.github/workflows/hol-plugin-scanner.yml':
         - 'actions/checkout@v7.0.1'
         - 'hashgraph-online/ai-plugin-scanner-action@11cbacde361ef96e800316edbaadb332415798e7'
+    '.github/workflows/plumber.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'getplumber/plumber@v0.7.23'
     '.github/workflows/release.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-node@v7.1.0'
@@ -28,6 +31,24 @@ dependencies:
         commit: 'sha1-a309ff8b426b58ec0e2a45f0f869d46889d02405'
         owner_id: 44036562
         repo_id: 192625525
+    'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9':
+        ref: 'v7.0.2'
+        commit: 'sha1-cf430e030ddbb5b0abf93d22962f4752f3646cd9'
+        owner_id: 44036562
+        repo_id: 192625955
+    'getplumber/plumber@v0.7.23':
+        ref: 'v0.7.23'
+        commit: 'sha1-ec8cb3a7edd6a324b33e85109b627b2df6023d94'
+        owner_id: 255179076
+        repo_id: 1137327132
+        uses:
+            - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
+            - 'github/codeql-action@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee'
+    'github/codeql-action@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee':
+        ref: 'v4.39.0'
+        commit: 'sha1-6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee'
+        owner_id: 9919
+        repo_id: 259445878
     'github/codeql-action@e46ed2cbd01164d986452f91f178727624ae40d7':
         ref: 'v4.35.3'
         commit: 'sha1-e46ed2cbd01164d986452f91f178727624ae40d7'
