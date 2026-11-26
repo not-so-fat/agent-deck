@@ -41,11 +41,18 @@
  *   token. Every other entry of the real home (and of the real `.cursor`
  *   dir) is symlinked into the worker home, so sign-in, chats (resume),
  *   and agent-home reads/writes keep working; only `mcp.json` is per-run.
+ *   New agent-home paths the run creates inside the worker home are
+ *   mirrored back to the real home before cleanup (see
+ *   `syncCursorWorkerHomeWrites`), so edit runs keep their home side
+ *   effects; only the worker's `mcp.json` itself is never copied back.
  *   A project `.cursor/mcp.json` (cwd up to the filesystem root) that
  *   defines any non-`agent-deck` server fails closed before spawn, because
- *   `--approve-mcps` would approve it too. A project `agent-deck` entry is
- *   allowed: the user entry wins by Cursor's enterprise > user > project
- *   precedence, and the deck receipt check below guards a mismatch.
+ *   `--approve-mcps` would approve it too. A project `agent-deck` entry
+ *   also fails closed before spawn: Cursor prefers the project entry over
+ *   the user entry (`expectedPrecedence: 'project-over-global'` in
+ *   `inspectCursorMcpConfig`), so it would shadow the worker home's
+ *   token-bearing run entry and the worker would connect without its run
+ *   token and effective profile.
  * - Deck receipt is mandatory on start (not resume): a success whose output
  *   lacks a `◆ ... ·` display_summary line fails closed as `error`, because
  *   a missing receipt would otherwise look like a correctly bound run.
@@ -219,23 +226,47 @@ export const CURSOR_SANDBOX_USERNS_CLONE_SYSCTL = '/proc/sys/kernel/unprivileged
 export type CursorSandboxHostSupport = { supported: boolean; reason?: string };
 
 /**
+ * Authoritative startability probe for cursor-agent's `--sandbox enabled`
+ * runtime (NOT-671 repair round 3): the sandbox needs an unprivileged user
+ * namespace, so the probe creates one. Returns true only when the probe
+ * proves creation works right now on this host.
+ */
+export type CursorSandboxProbe = () => boolean;
+
+export function defaultCursorSandboxProbe(): boolean {
+  try {
+    const probed = spawnSync('unshare', ['-Ur', 'true'], { encoding: 'utf8', timeout: 15000 });
+    return probed.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether this host can start cursor-agent's `--sandbox enabled` runtime
  * (NOT-671): readonly-only — edit passes `--sandbox disabled` and never
- * needs the sandbox. On Linux a `1` in the AppArmor userns restriction (or
- * a `0` in the Debian-family userns clone knob) means the sandbox cannot
- * start, so the profile gate rejects readonly before spawn with a remedy
- * instead of spawning into an opaque client failure. Non-Linux hosts and
- * hosts where the knobs are absent or unreadable report supported: the
- * known-bad configuration is Linux-only, and an unknown host keeps the
- * previous behavior (attempt the run; the client error surfaces if the
- * sandbox truly cannot start). Pure except for the injected file reads.
+ * needs the sandbox. Fail-closed: non-Linux hosts are unsupported (the
+ * sandbox enforcement is verified on Linux only), Linux hosts whose kernel
+ * knobs affirmatively forbid unprivileged user namespaces are unsupported,
+ * and Linux hosts where the startability probe cannot prove user-namespace
+ * creation are unsupported too (indeterminate, e.g. `unshare` missing or
+ * the probe failing). Only a Linux host with no knob forbidding user
+ * namespaces AND a passing probe reports supported, so the profile gate
+ * rejects readonly before spawn with a remedy instead of spawning into an
+ * opaque client failure. Pure except for the injected reads and probe.
  */
 export function cursorSandboxHostSupport(input: {
   platform: NodeJS.Platform;
   readFile: CursorFileReader;
+  sandboxProbe: CursorSandboxProbe;
 }): CursorSandboxHostSupport {
   if (input.platform !== 'linux') {
-    return { supported: true };
+    return {
+      supported: false,
+      reason:
+        `the cursor-agent sandbox is verified on Linux only (this host is ${input.platform}), ` +
+        'so cursor-agent --sandbox enabled cannot be proven startable here',
+    };
   }
   const apparmor = input.readFile(CURSOR_SANDBOX_APPARMOR_USERNS_SYSCTL);
   if (apparmor !== null && apparmor.trim() === '1') {
@@ -253,6 +284,14 @@ export function cursorSandboxHostSupport(input: {
       reason:
         `unprivileged user namespaces are disabled (${CURSOR_SANDBOX_USERNS_CLONE_SYSCTL} is 0), ` +
         'so cursor-agent --sandbox enabled cannot start',
+    };
+  }
+  if (!input.sandboxProbe()) {
+    return {
+      supported: false,
+      reason:
+        'unprivileged user namespace creation could not be verified (the `unshare -Ur true` probe failed), ' +
+        'so cursor-agent --sandbox enabled cannot be proven startable',
     };
   }
   return { supported: true };
@@ -370,9 +409,12 @@ function mcpServerNames(documentText: string): string[] | null {
  * Non-`agent-deck` servers defined by project MCP configs for `cwd` (NOT-671).
  * Any entry here fails the run closed before spawn: `--approve-mcps`
  * approves every loaded server, so a foreign project server cannot be
- * isolated to the run entry. A project `agent-deck` entry is allowed (the
- * worker home's user entry wins by precedence). Unparseable project files
- * fail closed too — an unreadable config cannot be proven isolated.
+ * isolated to the run entry. A project `agent-deck` entry is NOT covered
+ * here — it fails closed separately (see
+ * `findCursorProjectAgentDeckEntries`): Cursor prefers the project entry
+ * over the user entry, so it would shadow the run's authenticated entry.
+ * Unparseable project files fail closed too — an unreadable config cannot
+ * be proven isolated.
  *
  * `realHome` (when given) excludes that home's own `.cursor/mcp.json` from
  * the walk: it is the user config, shadowed by the worker home, so its
@@ -409,6 +451,47 @@ export function findCursorForeignProjectServers(
     }
   }
   return foreign;
+}
+
+/**
+ * Project MCP configs for `cwd` that define their own `agent-deck` server
+ * (NOT-671 repair round 3). Any entry here fails the run closed before
+ * spawn: Cursor prefers the project entry over the user entry
+ * (`expectedPrecedence: 'project-over-global'` in `inspectCursorMcpConfig`,
+ * `packages/cli/src/cursor-mcp-inspect.ts`), so a project `agent-deck`
+ * entry would shadow the worker home's token-bearing run entry and the
+ * worker would connect without its run token and effective profile — on
+ * resume as well as start (resume carries no new deck receipt to catch the
+ * mismatch). Unparseable project files are NOT reported here (the foreign
+ * finder above already fails closed on those). The `realHome` exclusion
+ * mirrors the foreign finder: that file is the user config the worker home
+ * shadows, so its `agent-deck` entry can never load.
+ */
+export function findCursorProjectAgentDeckEntries(
+  cwd: string,
+  readFile: CursorFileReader,
+  realHome?: string,
+): string[] {
+  const shadowed: string[] = [];
+  const excluded =
+    realHome === undefined ? null : path.join(path.resolve(realHome), '.cursor', 'mcp.json');
+  for (const configPath of cursorProjectMcpPaths(cwd)) {
+    if (excluded !== null && configPath === excluded) {
+      continue;
+    }
+    const text = readFile(configPath);
+    if (text === null) {
+      continue;
+    }
+    const names = mcpServerNames(text);
+    if (names === null) {
+      continue;
+    }
+    if (names.includes('agent-deck')) {
+      shadowed.push(configPath);
+    }
+  }
+  return shadowed;
 }
 
 /**
@@ -476,6 +559,68 @@ export function cleanupCursorWorkerHome(workerHome: string): void {
     fs.rmSync(workerHome, { recursive: true, force: true });
   } catch {
     // Tmp reaping covers leftovers; a run must never fail on cleanup.
+  }
+}
+
+/**
+ * Mirror run-created agent-home writes back to the real home (NOT-671
+ * repair round 3). The worker home is a symlink overlay: writes through
+ * symlinked entries already landed in the real home, but new paths the
+ * agent created (e.g. `$HOME/profile-proof.txt`) are real files inside the
+ * temporary worker home, and cleanup would delete them — silently dropping
+ * the edit contract's persistent home side effects. This copies every
+ * non-symlink file and directory back, EXCEPT the worker's own
+ * `.cursor/mcp.json`: the per-run authenticated entry must never leak into
+ * the user's config. New files elsewhere under `.cursor` (client state from
+ * this run) DO copy back, so a later resume sees them. Non-regular files
+ * (sockets, fifos, devices) are skipped. Throws the first error after
+ * attempting every entry; the caller reports it without failing the run.
+ */
+export function syncCursorWorkerHomeWrites(input: {
+  workerHome: string;
+  realHome: string;
+}): void {
+  const { workerHome, realHome } = input;
+  const skipRel = path.join('.cursor', 'mcp.json');
+  let firstError: unknown = null;
+  const copyBack = (from: string): void => {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(from);
+    } catch {
+      // Vanished mid-run; nothing to preserve.
+      return;
+    }
+    if (stat.isSymbolicLink()) {
+      // Writes through the link already persisted in the real home.
+      return;
+    }
+    if (path.relative(workerHome, from) === skipRel) {
+      return;
+    }
+    const to = path.join(realHome, path.relative(workerHome, from));
+    try {
+      if (stat.isDirectory()) {
+        fs.mkdirSync(to, { recursive: true });
+        for (const entry of fs.readdirSync(from)) {
+          copyBack(path.join(from, entry));
+        }
+      } else if (stat.isFile()) {
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        fs.copyFileSync(from, to);
+      }
+    } catch (error) {
+      firstError ??= error;
+    }
+  };
+  for (const entry of fs.readdirSync(workerHome)) {
+    copyBack(path.join(workerHome, entry));
+  }
+  if (firstError !== null && firstError !== undefined) {
+    throw new Error(
+      `Cannot write cursor worker-home changes back to ${realHome}: ` +
+        `${firstError instanceof Error ? firstError.message : String(firstError)}`,
+    );
   }
 }
 
@@ -940,6 +1085,8 @@ export type CursorAdapterDeps = {
   makeWorkerHome?: () => string;
   /** Host platform for the sandbox startability check; defaults to `process.platform`. */
   platform?: NodeJS.Platform;
+  /** User-namespace startability probe; defaults to `unshare -Ur true`. */
+  sandboxProbe?: CursorSandboxProbe;
 };
 
 export function defaultCursorMakeWorkerHome(): string {
@@ -954,6 +1101,7 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
   const homedir = deps.homedir ?? os.homedir;
   const makeWorkerHome = deps.makeWorkerHome ?? defaultCursorMakeWorkerHome;
   const platform = deps.platform ?? process.platform;
+  const sandboxProbe = deps.sandboxProbe ?? defaultCursorSandboxProbe;
 
   return {
     id: 'cursor',
@@ -1019,26 +1167,48 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
             'then retry; no process was started.',
         };
       }
-      // 3. Readonly needs a startable sandbox: flag presence alone is not
+      // 3. A project agent-deck entry would shadow the run's authenticated
+      // entry (Cursor prefers project over user), so the worker would
+      // connect without its run token and effective profile — on resume as
+      // well as start. Reject before spawn.
+      const shadowed = findCursorProjectAgentDeckEntries(args.cwd, readFile, homedir());
+      if (shadowed.length > 0) {
+        return {
+          ok: false,
+          remedy:
+            `cursor-agent MCP isolation unavailable: ${shadowed[0]} defines its own MCP server "agent-deck", ` +
+            'which Cursor prefers over the run entry (project-over-global precedence), so the worker would connect ' +
+            'without its run token and effective profile. Remove the project agent-deck entry (or run in a folder without one), ' +
+            'then retry; no process was started.',
+        };
+      }
+      // 4. Readonly needs a startable sandbox: flag presence alone is not
       // enough — the target Linux host lists --sandbox yet cannot start it
-      // under its AppArmor configuration. Edit passes --sandbox disabled
-      // and skips this check.
+      // under its AppArmor configuration. Non-Linux and unverifiable hosts
+      // fail closed too. Edit passes --sandbox disabled and skips this
+      // check.
       if (args.tools === 'readonly') {
-        const host = cursorSandboxHostSupport({ platform, readFile });
+        const host = cursorSandboxHostSupport({ platform, readFile, sandboxProbe });
         if (!host.supported) {
+          const advice =
+            platform !== 'linux'
+              ? 'Run --tools readonly on a Linux host where cursor-agent --sandbox enabled starts. '
+              : 'To run --tools readonly here, allow the Cursor sandbox to start (AppArmor hosts: boot with ' +
+                'apparmor_restrict_unprivileged_userns=0 or add an AppArmor exception for cursor-agent; Debian-family ' +
+                'hosts: set kernel.unprivileged_userns_clone=1; containers: allow unprivileged user namespace creation; ' +
+                'all hosts: ensure `unshare` (util-linux) is installed so the startability probe can run), ' +
+                'or run on a host where the sandbox starts. ';
           return {
             ok: false,
             remedy:
               `cursor-agent readonly is unsupported on this host (tried "${bin}"): ${host.reason}. ` +
-              'To run --tools readonly here, allow the Cursor sandbox to start (AppArmor hosts: boot with ' +
-              'apparmor_restrict_unprivileged_userns=0 or add an AppArmor exception for cursor-agent; Debian-family ' +
-              'hosts: set kernel.unprivileged_userns_clone=1), or run on a host where the sandbox starts. ' +
+              advice +
               '--tools edit (--sandbox disabled) is unaffected on this host. ' +
               'Refusing to run --tools readonly without an enforceable sandbox; no process was started.',
           };
         }
       }
-      // 4. The worker-home overlay must build on this host (a dry run with a
+      // 5. The worker-home overlay must build on this host (a dry run with a
       // tokenless entry — the token is minted after the gate). Symlink
       // creation fails on hosts without the privilege (Windows without
       // developer mode), which rejects here instead of spawning unenforced.
@@ -1113,6 +1283,7 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
         // reads USERPROFILE on Windows, HOME everywhere else.
         childEnv.USERPROFILE = workerHome;
       }
+      let homeSyncError: string | null = null;
       try {
         let child: CursorChild;
         try {
@@ -1150,7 +1321,26 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
           ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
         });
       } finally {
+        // New agent-home paths the run created inside the worker home must
+        // survive cleanup (NOT-671 repair round 3): mirror them back to the
+        // real home first, so edit runs keep their home side effects. A
+        // write-back failure is reported as a notice below, never a run
+        // failure — the agent already ran.
+        try {
+          syncCursorWorkerHomeWrites({ workerHome, realHome: homedir() });
+        } catch (error) {
+          homeSyncError = error instanceof Error ? error.message : String(error);
+        }
         cleanupCursorWorkerHome(workerHome);
+      }
+      if (homeSyncError !== null) {
+        yield {
+          kind: 'notice',
+          message:
+            `cursor worker home write-back failed (${homeSyncError.slice(0, 300)}): ` +
+            'new agent-home paths from this run may be lost.',
+          ...(args.resumeId !== undefined ? { sessionId: args.resumeId } : {}),
+        };
       }
     },
   };

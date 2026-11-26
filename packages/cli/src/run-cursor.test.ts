@@ -37,10 +37,13 @@ import {
   cursorSandboxHostSupport,
   defaultCursorFileReader,
   findCursorForeignProjectServers,
+  findCursorProjectAgentDeckEntries,
   isCursorStatusAuthenticated,
   setupCursorWorkerHome,
+  syncCursorWorkerHomeWrites,
   type CursorFileReader,
   type CursorProbe,
+  type CursorSandboxProbe,
   type CursorSpawn,
 } from '@agent-deck/backend/agent-run';
 import { runRunCommand, type RunDeps, type RunMeta } from './run';
@@ -150,6 +153,16 @@ function supportingHostReadFile(): CursorFileReader {
       : defaultCursorFileReader(filePath);
 }
 
+/** A sandbox startability probe that proves user-namespace creation works. */
+function passingSandboxProbe(): CursorSandboxProbe {
+  return () => true;
+}
+
+/** A sandbox startability probe that cannot prove user-namespace creation. */
+function failingSandboxProbe(): CursorSandboxProbe {
+  return () => false;
+}
+
 /** A fake `$HOME` for the worker-home overlay: a dotfile, a dir, and a `.cursor` dir. */
 function makeOsHome(): string {
   const osHome = makeDir('agent-deck-cursor-oshome-');
@@ -176,6 +189,7 @@ function makeDeps(
     readFile?: CursorFileReader;
     osHome?: string;
     platform?: NodeJS.Platform;
+    sandboxProbe?: CursorSandboxProbe;
     /** When true the real NOT-671 profile gate runs instead of the bypass. */
     enforceProfile?: boolean;
   } = {},
@@ -188,6 +202,7 @@ function makeDeps(
     ...(overrides.readFile ? { readFile: overrides.readFile } : {}),
     homedir: () => osHome,
     ...(overrides.platform ? { platform: overrides.platform } : {}),
+    ...(overrides.sandboxProbe ? { sandboxProbe: overrides.sandboxProbe } : {}),
   };
   return {
     calls,
@@ -849,6 +864,8 @@ describe('cursor worker profile enforcement gate (NOT-671)', () => {
       spawn: fakeCursorSpawn().spawn,
       readFile: () => null,
       homedir: () => osHome,
+      platform: 'linux',
+      sandboxProbe: passingSandboxProbe(),
     });
 
     for (const tools of ['readonly', 'edit'] as const) {
@@ -952,56 +969,133 @@ describe('cursor worker profile enforcement gate (NOT-671)', () => {
     expect(findCursorForeignProjectServers(cwd, readFile, home)).toEqual([]);
   });
 
-  it('an agent-deck-only project entry still runs (user entry wins)', async () => {
-    const cwd = makeDir('agent-deck-cursor-cwd-');
-    const homeDir = makeDir('agent-deck-cursor-home-');
-    fs.mkdirSync(path.join(cwd, '.cursor'), { recursive: true });
-    fs.writeFileSync(
-      path.join(cwd, '.cursor', 'mcp.json'),
-      JSON.stringify({ mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:1110/mcp' } } }),
-      'utf8',
-    );
-    // Real project reads (this test covers MCP isolation) with a supporting
-    // sandbox host, so the run does not depend on the machine's own sysctls.
-    const deps = makeDeps(cwd, homeDir, { enforceProfile: true, readFile: supportingHostReadFile() });
+  it('a project agent-deck entry fails closed before spawn on start and resume (project shadows the run entry)', async () => {
+    for (const extra of [[], ['--resume', 'chat_1']] as string[][]) {
+      const cwd = makeDir('agent-deck-cursor-cwd-');
+      const homeDir = makeDir('agent-deck-cursor-home-');
+      fs.mkdirSync(path.join(cwd, '.cursor'), { recursive: true });
+      fs.writeFileSync(
+        path.join(cwd, '.cursor', 'mcp.json'),
+        JSON.stringify({ mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:1110/mcp' } } }),
+        'utf8',
+      );
+      // Real project reads (this test covers MCP isolation) with a
+      // supporting sandbox host, so the rejection is the shadowing check.
+      const deps = makeDeps(cwd, homeDir, {
+        enforceProfile: true,
+        readFile: supportingHostReadFile(),
+        platform: 'linux',
+        sandboxProbe: passingSandboxProbe(),
+      });
 
-    expect(await runRunCommand(cursorArgs(cwd), deps)).toBe(0);
-    expect(deps.calls).toHaveLength(1);
+      expect(await runRunCommand(cursorArgs(cwd, extra), deps)).not.toBe(0);
+      expect(deps.calls).toHaveLength(0);
+      expect(errors.join('\n')).toMatch(/MCP isolation unavailable/);
+      expect(errors.join('\n')).toMatch(/project-over-global precedence/);
+      expect(errors.join('\n')).toMatch(/without its run token/);
+      expect(errors.join('\n')).toMatch(/no process was started/i);
+      expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+      logs = [];
+      errors = [];
+    }
   });
 
-  it('the host check blocks readonly only when Linux forbids unprivileged userns creation', () => {
+  it('project agent-deck entries are found up the tree and the real-home user config is excluded', () => {
+    const home = makeDir('agent-deck-cursor-realhome-');
+    const cwd = path.join(home, 'work', 'repo', 'a');
+    fs.mkdirSync(cwd, { recursive: true });
+    const projectPath = path.join(home, 'work', 'repo', '.cursor', 'mcp.json');
+    const readFile: CursorFileReader = (filePath) => {
+      // The real-home user entry can never load (the worker home shadows
+      // it), so it must not fail the shadowing check.
+      if (filePath === path.join(home, '.cursor', 'mcp.json')) {
+        return JSON.stringify({ mcpServers: { 'agent-deck': {} } });
+      }
+      if (filePath === projectPath) {
+        return JSON.stringify({ mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:1110/mcp' } } });
+      }
+      return null;
+    };
+    expect(findCursorProjectAgentDeckEntries(cwd, readFile, home)).toEqual([projectPath]);
+    // Unparseable project files are the foreign finder's failure, not this one.
+    const garbage: CursorFileReader = (filePath) =>
+      filePath === path.join(cwd, '.cursor', 'mcp.json') ? 'not json {' : null;
+    expect(findCursorProjectAgentDeckEntries(cwd, garbage, home)).toEqual([]);
+    expect(findCursorForeignProjectServers(cwd, garbage, home)).toEqual([
+      { configPath: path.join(cwd, '.cursor', 'mcp.json'), server: '<unparseable mcp.json>' },
+    ]);
+  });
+
+  it('the host check fails closed unless Linux proves user-namespace creation', () => {
+    // Affirmatively blocked knobs reject without consulting the probe.
+    const probe = vi.fn(() => true);
     expect(
-      cursorSandboxHostSupport({ platform: 'linux', readFile: blockedHostReadFile() }),
+      cursorSandboxHostSupport({
+        platform: 'linux',
+        readFile: blockedHostReadFile(),
+        sandboxProbe: probe,
+      }),
     ).toEqual({
       supported: false,
       reason: expect.stringContaining('AppArmor blocks unprivileged user namespaces'),
     });
+    expect(probe).not.toHaveBeenCalled();
     const cloneDisabled: CursorFileReader = (filePath) =>
       filePath === CURSOR_SANDBOX_USERNS_CLONE_SYSCTL ? '0\n' : null;
     expect(
-      cursorSandboxHostSupport({ platform: 'linux', readFile: cloneDisabled }).supported,
+      cursorSandboxHostSupport({
+        platform: 'linux',
+        readFile: cloneDisabled,
+        sandboxProbe: passingSandboxProbe(),
+      }).supported,
     ).toBe(false);
-    // Absent or unreadable knobs fail open: an unknown host keeps the
-    // previous behavior instead of newly rejecting.
-    expect(cursorSandboxHostSupport({ platform: 'linux', readFile: () => null })).toEqual({
-      supported: true,
-    });
-    // The known-bad configuration is Linux-only.
+    // Non-Linux hosts reject: the sandbox enforcement is verified on Linux
+    // only, even when the probe would pass.
     for (const platform of ['darwin', 'win32'] as const) {
       expect(
-        cursorSandboxHostSupport({ platform, readFile: blockedHostReadFile() }),
-      ).toEqual({ supported: true });
+        cursorSandboxHostSupport({
+          platform,
+          readFile: blockedHostReadFile(),
+          sandboxProbe: passingSandboxProbe(),
+        }),
+      ).toEqual({
+        supported: false,
+        reason: expect.stringContaining('verified on Linux only'),
+      });
     }
-    // Permissive values pass.
+    // Unverifiable Linux hosts reject even with permissive knobs.
     const permissive: CursorFileReader = (filePath) =>
       filePath === CURSOR_SANDBOX_APPARMOR_USERNS_SYSCTL
         ? '0\n'
         : filePath === CURSOR_SANDBOX_USERNS_CLONE_SYSCTL
           ? '1\n'
           : null;
-    expect(cursorSandboxHostSupport({ platform: 'linux', readFile: permissive })).toEqual({
-      supported: true,
+    expect(
+      cursorSandboxHostSupport({
+        platform: 'linux',
+        readFile: permissive,
+        sandboxProbe: failingSandboxProbe(),
+      }),
+    ).toEqual({
+      supported: false,
+      reason: expect.stringContaining('could not be verified'),
     });
+    // Permissive knobs plus a passing probe pass; absent knobs (a kernel
+    // without those restrictions) pass too once the probe proves creation.
+    expect(
+      cursorSandboxHostSupport({
+        platform: 'linux',
+        readFile: permissive,
+        sandboxProbe: passingSandboxProbe(),
+      }),
+    ).toEqual({ supported: true });
+    expect(
+      cursorSandboxHostSupport({
+        platform: 'linux',
+        readFile: () => null,
+        sandboxProbe: passingSandboxProbe(),
+      }),
+    ).toEqual({ supported: true });
   });
 
   it('the gate rejects readonly but passes edit on a host that cannot start the sandbox', () => {
@@ -1047,6 +1141,52 @@ describe('cursor worker profile enforcement gate (NOT-671)', () => {
     }
   });
 
+  it('a non-Linux host rejects readonly before spawn on start and resume', async () => {
+    for (const extra of [[], ['--resume', 'chat_1']] as string[][]) {
+      const cwd = makeDir('agent-deck-cursor-cwd-');
+      const homeDir = makeDir('agent-deck-cursor-home-');
+      const deps = makeDeps(cwd, homeDir, {
+        enforceProfile: true,
+        platform: 'darwin',
+        readFile: supportingHostReadFile(),
+        sandboxProbe: passingSandboxProbe(),
+      });
+
+      expect(await runRunCommand(cursorArgs(cwd, extra), deps)).not.toBe(0);
+      expect(deps.calls).toHaveLength(0);
+      expect(errors.join('\n')).toMatch(/unsupported on this host/);
+      expect(errors.join('\n')).toMatch(/verified on Linux only/);
+      expect(errors.join('\n')).toMatch(/--tools edit .* unaffected/);
+      expect(errors.join('\n')).toMatch(/no process was started/i);
+      expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+      logs = [];
+      errors = [];
+    }
+  });
+
+  it('an unverifiable Linux host rejects readonly before spawn on start and resume', async () => {
+    for (const extra of [[], ['--resume', 'chat_1']] as string[][]) {
+      const cwd = makeDir('agent-deck-cursor-cwd-');
+      const homeDir = makeDir('agent-deck-cursor-home-');
+      const deps = makeDeps(cwd, homeDir, {
+        enforceProfile: true,
+        platform: 'linux',
+        readFile: supportingHostReadFile(),
+        sandboxProbe: failingSandboxProbe(),
+      });
+
+      expect(await runRunCommand(cursorArgs(cwd, extra), deps)).not.toBe(0);
+      expect(deps.calls).toHaveLength(0);
+      expect(errors.join('\n')).toMatch(/unsupported on this host/);
+      expect(errors.join('\n')).toMatch(/could not be verified/);
+      expect(errors.join('\n')).toMatch(/unshare/);
+      expect(errors.join('\n')).toMatch(/no process was started/i);
+      expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+      logs = [];
+      errors = [];
+    }
+  });
+
   it('edit skips the sandbox host check on start and resume (--sandbox disabled needs no sandbox)', async () => {
     for (const extra of [
       ['--tools', 'edit'],
@@ -1077,10 +1217,13 @@ describe('cursor worker profile enforcement gate (NOT-671)', () => {
       homedir: () => path.join(makeDir('agent-deck-cursor-gone-'), 'no-such-home'),
     });
 
+    // Edit skips the sandbox host check, so the failure is deterministically
+    // the overlay dry run on every platform; the overlay check itself is
+    // profile-independent.
     const gate = adapter.profileEnforcement({
       cwd: makeDir('agent-deck-cursor-cwd-'),
       prompt: 'p',
-      tools: 'readonly',
+      tools: 'edit',
     });
     expect(gate.ok).toBe(false);
     if (!gate.ok) {
@@ -1210,6 +1353,95 @@ describe('cursor worker MCP identity (NOT-671)', () => {
       }
     }).rejects.toThrow(/without a worker token/);
     expect(calls).toHaveLength(0);
+  });
+
+  it('write-back mirrors new home paths but never the worker mcp.json', () => {
+    const osHome = makeOsHome();
+    const workerHome = makeDir('agent-deck-cursor-worker-');
+    const document = buildCursorWorkerMcpDocument(buildCursorWorkerMcpEntry({ workspaceRoot: '/w' }));
+    setupCursorWorkerHome({ workerHome, realHome: osHome, mcpDocument: document });
+
+    // New paths the agent created inside the worker home.
+    fs.writeFileSync(path.join(workerHome, 'profile-proof.txt'), 'edit home write\n', 'utf8');
+    fs.mkdirSync(path.join(workerHome, 'newdir'), { recursive: true });
+    fs.writeFileSync(path.join(workerHome, 'newdir', 'nested.txt'), 'nested\n', 'utf8');
+    fs.writeFileSync(path.join(workerHome, '.cursor', 'new-state.json'), '{"run":1}', 'utf8');
+
+    syncCursorWorkerHomeWrites({ workerHome, realHome: osHome });
+
+    expect(fs.readFileSync(path.join(osHome, 'profile-proof.txt'), 'utf8')).toBe('edit home write\n');
+    expect(fs.readFileSync(path.join(osHome, 'newdir', 'nested.txt'), 'utf8')).toBe('nested\n');
+    expect(fs.readFileSync(path.join(osHome, '.cursor', 'new-state.json'), 'utf8')).toBe('{"run":1}');
+    // The per-run authenticated entry never leaks into the user config.
+    expect(JSON.parse(fs.readFileSync(path.join(osHome, '.cursor', 'mcp.json'), 'utf8'))).toEqual({
+      mcpServers: { 'agent-deck': { url: 'http://127.0.0.1:1110/mcp' } },
+    });
+    // Symlinked entries are left alone (writes through them already persist).
+    expect(fs.lstatSync(path.join(workerHome, '.gitconfig')).isSymbolicLink()).toBe(true);
+  });
+
+  it('start preserves new agent-home paths the run creates (edit home side effects survive cleanup)', async () => {
+    const osHome = makeOsHome();
+    const { spawn: inner, calls } = fakeCursorSpawn();
+    const spawn = ((bin: string, argv: string[], opts: { cwd: string; env?: NodeJS.ProcessEnv }) => {
+      const home = opts.env?.HOME ?? '';
+      fs.writeFileSync(path.join(home, 'profile-proof.txt'), 'edit home write\n', 'utf8');
+      return (inner as CursorSpawn)(bin, argv, opts);
+    }) as CursorSpawn;
+    const adapter = createCursorAdapter({
+      probe: okCursorProbe(),
+      spawn,
+      readFile: () => null,
+      homedir: () => osHome,
+    });
+
+    const events = [];
+    for await (const event of adapter.start({
+      cwd: makeDir('agent-deck-cursor-cwd-'),
+      prompt: 'p',
+      tools: 'edit',
+      runToken: 't'.repeat(64),
+    })) {
+      events.push(event);
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'result', subtype: 'success' }),
+    );
+    // The new home path survived the worker-home cleanup.
+    expect(fs.readFileSync(path.join(osHome, 'profile-proof.txt'), 'utf8')).toBe('edit home write\n');
+    const childHome = calls[0].env?.HOME as string;
+    expect(fs.existsSync(childHome)).toBe(false);
+  });
+
+  it('a failed home write-back yields a notice instead of failing the run', async () => {
+    const osHome = makeOsHome();
+    const blocker = path.join(makeDir('agent-deck-cursor-blocker-'), 'file');
+    fs.writeFileSync(blocker, 'not a dir', 'utf8');
+    // Setup reads the real home; write-back targets an impossible one.
+    let homedirCalls = 0;
+    const homedir = (): string => (++homedirCalls === 1 ? osHome : path.join(blocker, 'sub'));
+    const adapter = createCursorAdapter({
+      probe: okCursorProbe(),
+      spawn: fakeCursorSpawn().spawn,
+      readFile: () => null,
+      homedir,
+    });
+
+    const events = [];
+    for await (const event of adapter.start({
+      cwd: makeDir('agent-deck-cursor-cwd-'),
+      prompt: 'p',
+      tools: 'edit',
+      runToken: 't'.repeat(64),
+    })) {
+      events.push(event);
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'result', subtype: 'success' }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'notice', message: expect.stringContaining('write-back failed') }),
+    );
   });
 });
 

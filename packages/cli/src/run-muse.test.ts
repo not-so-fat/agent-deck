@@ -52,6 +52,7 @@ import {
   createMuseAdapter,
   createRunAdapter,
   findMuseForeignProjectServers,
+  findMuseProjectAgentDeckEntries,
   MUSE_APPROVAL_FLAGS,
   MUSE_EDIT_ONLY_FLAGS,
   MUSE_FLAGS_FOR_PROFILE,
@@ -1106,16 +1107,44 @@ describe('muse worker profile enforcement gate (NOT-671)', () => {
     ]);
   });
 
-  it('an agent-deck-only project entry still runs', async () => {
-    const cwd = makeDir('agent-deck-muse-cwd-');
-    const homeDir = makeDir('agent-deck-muse-home-');
-    const deps = makeDeps(cwd, homeDir, {
-      enforceProfile: true,
-      readFile: fakeMuseReadFile(cwd, { projectSettings: SETTINGS_WITH_ENTRY }),
-    });
+  it('a project agent-deck entry fails closed before spawn on start and resume (project shadows the run entry)', async () => {
+    for (const extra of [[], ['--resume', MUSE_SESSION_ID]] as string[][]) {
+      const cwd = makeDir('agent-deck-muse-cwd-');
+      const homeDir = makeDir('agent-deck-muse-home-');
+      const deps = makeDeps(cwd, homeDir, {
+        enforceProfile: true,
+        readFile: fakeMuseReadFile(cwd, { projectSettings: SETTINGS_WITH_ENTRY }),
+      });
 
-    expect(await runRunCommand(museArgs(cwd), deps)).toBe(0);
-    expect(deps.calls).toHaveLength(1);
+      expect(await runRunCommand(museArgs(cwd, extra), deps)).not.toBe(0);
+      expect(deps.calls).toHaveLength(0);
+      expect(errors.join('\n')).toMatch(/MCP isolation unavailable/);
+      expect(errors.join('\n')).toMatch(/project-over-user shadowing/);
+      expect(errors.join('\n')).toMatch(/without its run token/);
+      expect(errors.join('\n')).toMatch(/no process was started/i);
+      expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+      logs = [];
+      errors = [];
+    }
+  });
+
+  it('project agent-deck entries are found up the tree and unparseable files stay foreign', () => {
+    const cwd = path.join(makeDir('agent-deck-muse-tree-'), 'a', 'b');
+    fs.mkdirSync(cwd, { recursive: true });
+    const root = path.resolve(cwd, '..', '..');
+    const projectPath = path.join(root, '.mcp.json');
+    const readFile: MuseFileReader = (filePath) =>
+      filePath === projectPath
+        ? JSON.stringify({ mcpServers: { 'agent-deck': { type: 'http' } } })
+        : null;
+    expect(findMuseProjectAgentDeckEntries(cwd, readFile)).toEqual([projectPath]);
+    // Unparseable project files are the foreign finder's failure, not this one.
+    const garbage: MuseFileReader = (filePath) =>
+      filePath === path.join(cwd, '.mcp.json') ? 'not json {' : null;
+    expect(findMuseProjectAgentDeckEntries(cwd, garbage)).toEqual([]);
+    expect(findMuseForeignProjectServers(cwd, garbage)).toEqual([
+      { configPath: path.join(cwd, '.mcp.json'), server: '<unparseable .mcp.json>' },
+    ]);
   });
 
   it('an unwritable worker config fails the gate with a remedy', () => {

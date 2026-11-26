@@ -48,7 +48,11 @@
  *   `muse/auth.json` copied in so sign-in survives the isolation. Sessions
  *   live outside the config home, so resume is unaffected. A project
  *   `.mcp.json` (cwd up to the filesystem root) defining any non-`agent-deck`
- *   server fails closed before spawn.
+ *   server fails closed before spawn, and a project `agent-deck` entry
+ *   fails closed too: same-name project entries shadow the user-settings
+ *   entry (`docs/design/muse-pure-mcp-connection.md`), so the project
+ *   entry would replace the run's token-bearing entry in a trusted
+ *   repository.
  * - Signed-in preflight is `providers.meta` in the Muse auth file (or
  *   META_API_KEY), which makes no model call; there is no `login status`
  *   subcommand.
@@ -363,8 +367,10 @@ function museMcpServerNames(documentText: string): string[] | null {
  * Any entry here fails the run closed before spawn: in a trusted workspace
  * Muse would load it alongside the run entry, so the worker MCP session
  * cannot be proven isolated to the run entry. A project `agent-deck` entry
- * is allowed (same server the worker entry names). Unparseable project files
- * fail closed too — an unreadable config cannot be proven isolated.
+ * is NOT covered here — it fails closed separately (see
+ * `findMuseProjectAgentDeckEntries`): same-name project entries shadow the
+ * user-settings entry. Unparseable project files fail closed too — an
+ * unreadable config cannot be proven isolated.
  */
 export function findMuseForeignProjectServers(
   cwd: string,
@@ -388,6 +394,38 @@ export function findMuseForeignProjectServers(
     }
   }
   return foreign;
+}
+
+/**
+ * Project MCP configs for `cwd` that define their own `agent-deck` server
+ * (NOT-671 repair round 3). Any entry here fails the run closed before
+ * spawn: same-name project entries shadow the user-settings entry
+ * (`docs/design/muse-pure-mcp-connection.md`), so in a trusted repository
+ * the project entry would replace the worker config's token-bearing run
+ * entry — omitting or substituting the worker token and defeating
+ * authenticated profile enforcement, on resume as well as start.
+ * Unparseable project files are NOT reported here (the foreign finder above
+ * already fails closed on those).
+ */
+export function findMuseProjectAgentDeckEntries(
+  cwd: string,
+  readFile: MuseFileReader,
+): string[] {
+  const shadowed: string[] = [];
+  for (const configPath of museProjectMcpPaths(cwd)) {
+    const text = readFile(configPath);
+    if (text === null) {
+      continue;
+    }
+    const names = museMcpServerNames(text);
+    if (names === null) {
+      continue;
+    }
+    if (names.includes('agent-deck')) {
+      shadowed.push(configPath);
+    }
+  }
+  return shadowed;
 }
 
 export type MuseProbeResult = { code: number; stdout: string; stderr: string };
@@ -860,7 +898,22 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
             '(or run in a folder without one), then retry; no process was started.',
         };
       }
-      // 3. The worker config must be writable on this host (a dry run with a
+      // 3. A project agent-deck entry would shadow the run's authenticated
+      // entry (same-name project-over-user shadowing), so the worker would
+      // connect without its run token and effective profile — on resume as
+      // well as start. Reject before spawn.
+      const shadowed = findMuseProjectAgentDeckEntries(args.cwd, readFile);
+      if (shadowed.length > 0) {
+        return {
+          ok: false,
+          remedy:
+            `muse MCP isolation unavailable: ${shadowed[0]} defines its own MCP server "agent-deck", ` +
+            'which Muse prefers over the run entry (same-name project-over-user shadowing), so the worker would connect ' +
+            'without its run token and effective profile. Remove the project agent-deck entry (or run in a folder without one), ' +
+            'then retry; no process was started.',
+        };
+      }
+      // 4. The worker config must be writable on this host (a dry run with a
       // tokenless entry — the token is minted after the gate).
       let dryRunHome: string | null = null;
       try {
