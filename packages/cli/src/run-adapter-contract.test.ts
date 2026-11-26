@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  allowedToolsForProfile,
+  claudeAllowedToolsForProfile,
   createClaudeAdapter,
   createCodexAdapter,
   createCursorAdapter,
@@ -549,11 +549,14 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
 
     if (readonlyRecord.client === 'claude' && editRecord.client === 'claude') {
       expect(readonlyRecord.options['allowedTools']).toEqual([
-        ...allowedToolsForProfile('readonly'),
+        ...claudeAllowedToolsForProfile('readonly'),
       ]);
-      expect(editRecord.options['allowedTools']).toEqual([...allowedToolsForProfile('edit')]);
-      expect(readonlyRecord.options['permissionMode']).toBe('acceptEdits');
-      expect(JSON.stringify(editRecord.options)).not.toContain('bypassPermissions');
+      expect(editRecord.options['allowedTools']).toEqual([...claudeAllowedToolsForProfile('edit')]);
+      expect(readonlyRecord.options['permissionMode']).toBe('default');
+      expect(readonlyRecord.options['settingSources']).toEqual([]);
+      expect(JSON.stringify({ ...editRecord.options, canUseTool: undefined })).not.toContain(
+        'bypassPermissions',
+      );
     } else if (readonlyRecord.client === 'codex' && editRecord.client === 'codex') {
       expect(readonlyRecord.argv).toContain('-s');
       expect(readonlyRecord.argv).toContain('read-only');

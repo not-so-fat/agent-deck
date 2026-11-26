@@ -106,8 +106,8 @@ the process exits and status polling shows no intermediate lines
 
 | `--client` | `--tools readonly` | `--tools edit` (`agent-run/<client>.ts`) |
 |------------|--------------------|------------------------------------|
-| `claude` | SDK `allowedTools` = `RUN_READONLY_TOOLS`: `mcp__agent-deck__*`, `Read`, `Glob`, `Grep`, `git log`/`git status`/`ls`-scoped `Bash` | `allowedTools` = `RUN_EDIT_TOOLS`: readonly plus `Edit`, `Write`, `git diff`/`git add`/`git commit`/`git checkout -b`-scoped `Bash`. `permissionMode` is always `acceptEdits`; `settingSources` are `project` and `user`; `bypassPermissions` is never used (`agent-run/adapter.ts`, `agent-run/claude.ts`) |
-| `codex` | `-s read-only` | `-s workspace-write` (`CODEX_SANDBOX_FOR_PROFILE`). `--dangerously-bypass-approvals-and-sandbox` is never passed (`agent-run/codex.ts`) |
+| `claude` | Isolated SDK session: `settingSources: []`, no skills, `permissionMode: default` (every call no rule settles goes to the `canUseTool` policy gate, which never asks a human; `dontAsk` would deny ask-routed shell and writes without consulting it), explicit `allowedTools` (reads, web reads, todos, the profile's `mcp__agent-deck__<tool>` entries — nothing shell-shaped, so no call pre-approves past the host gate), matching flag-layer allow/ask/deny rules with `Bash` in `ask`, and a `canUseTool` handler deciding every shell call from the same policy (`agent-run/claude-policy.ts`, `agent-run/claude.ts`) | Same isolation plus subagents, task tracking, `Monitor`, and the edit MCP allow set; `Bash`, `Edit`, `Write`, and `NotebookEdit` route through `ask` to the host gate (classifier/sandbox veto, write scope) instead of pre-approving. `bypassPermissions` is never used |
+| `codex` (0.169.0+) | `-s read-only` plus `-c approval_policy="never"` and the per-run `mcp_servers.agent-deck` table (worker headers, `default_tools_approval_mode="approve"`, the profile's `enabled_tools`) | `-s workspace-write` plus the same `-c` pairs and explicit `-c sandbox_workspace_write.*` overrides (network on, exactly workspace-plus-agent-home writable roots) (`CODEX_SANDBOX_FOR_PROFILE`, `agent-run/codex.ts`). `--dangerously-bypass-approvals-and-sandbox` is never passed |
 | `cursor` | `--sandbox enabled --plan --approve-mcps` (verified in `cursor-agent --help`; the worker home's per-run MCP entry is the only approved server; the gate also requires Cursor's own model-free preflight `cursor-agent sandbox run true` to exit 0 — `cursorSandboxHostSupport` — and otherwise rejects readonly before spawn with the probe's first error line, because flag presence alone passed on a box whose sandbox cannot start; a project `.cursor/mcp.json` `agent-deck` entry is rejected because Cursor prefers it over the run entry)  | `--sandbox disabled --force --approve-mcps`: `--force` is command preapproval, not a sandbox, and edit selects the sandbox off explicitly (the target host cannot start it at all). The run uses a per-run `HOME` overlay for MCP isolation; at run end, new top-level home entries move to the real home (`.cursor` excluded; an entry the real home already has is kept and reported as a notice). `--yolo` is never passed (`CURSOR_FORBIDDEN_FLAGS`; `agent-run/cursor.ts`). Whether the mapping truly holds is settled by the operator edit-vs-readonly test, not by the flags |
 | `muse` | `--approval-mode never --disable-write --sandbox-network restricted` (fails closed unless the installed `muse` lists every flag in `muse exec --help`; `museEnforcementFlagsSupported`; no `--disable-shell`, so shell reads survive). A project `.mcp.json` `agent-deck` entry is allowed: the worker is never trusted (no `--trust-workspace`, no persisted trust in the per-run config), so Muse never loads project MCP servers | `--approval-mode never --disable-sandbox` (sandbox off, so workspace and agent-home writes work; `--sandbox-network` has no meaning without a sandbox). `--yolo`, `--trust-workspace`, `--disable-approval`, `--permission-profile`, `--disable-shell`, and `--disable-web-tools` are never passed (`MUSE_FORBIDDEN_FLAGS`; `agent-run/muse.ts`); `--disable-sandbox` is edit-only (`MUSE_EDIT_ONLY_FLAGS`) |
 
@@ -162,9 +162,11 @@ How it runs:
   Worker sessions also never learn their backend runtime session id, so the
   id cannot be reused for direct backend calls past the MCP layer.
 - Every adapter answers `profileEnforcement(args)` before any spawn; a
-  `false` answer fails the run with its remedy and no process starts. Each
-  adapter whose mapping is unproven rejects launch and resume until its own
-  mapping lands and is verified.
+  `false` answer fails the run with its remedy and no process starts.
+  `claude` and `codex` enforce their mappings (isolated settings/`canUseTool`-gated default mode
+  and `-s`/`-c` argv respectively, both with same-profile resume
+  provenance); `cursor` and `muse` still reject launch and resume until
+  their own mappings land and are verified.
 - Denials are recorded on the run (`RunMeta.denials`, oldest first) with
   `{ at, client, profile, source: "agent-deck" | "client", kind:
   "mcp_tool" | "shell" | "file_write" | "network" | "client_tool", target,
@@ -256,25 +258,32 @@ folder's assignment must already name the deck; `run` never rewrites it:
   false; `agent-run/claude.ts`).
 
 **Resume gates** (per client): `codex exec resume` accepts no sandbox flag, so a
-codex thread keeps the sandbox it started with. `validate`
+codex thread keeps the sandbox it started with — and a claude resume must
+never keep another profile's permissions. `validate`
 (`agent-run/service.ts`, via `agent-run/provenance.ts`
-`resolveResumeProvenance`) therefore resumes a codex session only when the
-earliest non-resume run record under `~/.agent-deck/runs/` that captured that
-`sessionId` (runs written to a custom `--log` path are not discoverable) matches
-the request on client, deck, canonical cwd (realpath, so a symlinked path to the
-same folder matches), and `--tools`. Edit→edit and readonly→readonly continue
-under the unchanged session id and record `resumedFrom`; everything else fails
-before codex is launched:
+`resolveResumeProvenance`) therefore resumes a codex or claude session only
+when the earliest non-resume run record under `~/.agent-deck/runs/` that
+captured that `sessionId` (runs written to a custom `--log` path are not
+discoverable) matches the request on client, deck, canonical cwd (realpath,
+so a symlinked path to the same folder matches), and `--tools`. Edit→edit
+and readonly→readonly continue under the unchanged session id and record
+`resumedFrom`; everything else fails before the client is launched. Codex
+additionally verifies the thread's recorded effective policy from its
+rollout file (`agent-run/codex.ts` `verifyCodexResumePolicy`): approval
+never plus a read-only sandbox for readonly, or approval never plus a
+network-enabled workspace-write sandbox covering the workspace and the
+agent home for edit; a missing or incompatible recording fails closed:
 
-- unknown or external session: ``Cannot resume codex session <id>: no Agent Deck run on this host started it, so its sandbox is unknown. Resume only a sessionId printed by `agent-deck run` (see `agent-deck run list`), or start a new run without --resume.``
-- client mismatch: `Cannot resume session <id> with --client codex: it was started by --client <client> in run <runId>. Resume it with --client <client>, or start a new run.`
+- unknown or external session: ``Cannot resume <client> session <id>: no Agent Deck run on this host started it, so its sandbox (codex) or permissions (claude) are unknown. Resume only a sessionId printed by `agent-deck run` (see `agent-deck run list`), or start a new run without --resume.``
+- client mismatch: `Cannot resume session <id> with --client <client>: it was started by --client <other> in run <runId>. Resume it with --client <other>, or start a new run.`
 - deck mismatch: `Cannot resume session <id> on deck "<deck>" (<deckId>): run <runId> started it on deck <originDeckId>. Resume it on that deck, or start a new run on "<deck>".`
 - cwd mismatch: `Cannot resume session <id> in <cwd>: run <runId> started it in <canonicalCwd>. Resume it with --cwd <canonicalCwd>, or start a new run here.`
-- profile mismatch (readonly→edit escalation, or edit→readonly, which would still write): `Cannot resume session <id> with --tools <requested>: run <runId> started it with --tools <origin>, and a resumed codex thread keeps its original sandbox. Resume with --tools <origin>, or start a new run with --tools <requested>.`
+- profile mismatch (readonly→edit escalation, or edit→readonly, which would still write): `Cannot resume session <id> with --tools <requested>: run <runId> started it with --tools <origin>, and a resumed codex thread keeps its original sandbox (claude: a resumed session must never keep another profile's permissions). Resume with --tools <origin>, or start a new run with --tools <requested>.`
 
-The codex adapter re-checks the profile against the resolved origin in
-`planStart`, so a caller that skips `validate` still fails closed.
-`--dangerously-bypass-approvals-and-sandbox` is never passed on start or resume.
+The codex and claude adapters re-check the profile against the resolved
+origin in `planStart`, so a caller that skips `validate` still fails
+closed. `--dangerously-bypass-approvals-and-sandbox` is never passed on
+start or resume.
 Cursor start with no deck receipt fails closed
 (`agent-run/cursor.ts`): `cursor-agent run produced no deck receipt (missing ◆ display_summary line): the session may be bound to another folder's deck. Ask the agent to call get_session_context and print display_summary verbatim, then retry.` (Resume is exempt: the harness prints the receipt on the first turn only.)
 
@@ -282,3 +291,4 @@ Cursor start with no deck receipt fails closed
 
 - Orchestrator skill (brief–launch–monitor–review–resume protocol): [skills/agent-deck-run/SKILL.md](../skills/agent-deck-run/SKILL.md)
 - Friend path (first delegated run walk-through): [FRIEND_PATH.md](./FRIEND_PATH.md)
+- Worker profile operator acceptance (NOT-672 runbook): [WORKER_PROFILE_ACCEPTANCE.md](./WORKER_PROFILE_ACCEPTANCE.md)

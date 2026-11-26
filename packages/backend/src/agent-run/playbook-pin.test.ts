@@ -69,11 +69,14 @@ describe('playbook pin carriage (NOT-537)', () => {
   });
 
   it('codex builds a full pure-HTTP mcp_servers override carrying the pin', () => {
-    expect(buildCodexPinConfigOverride(PIN, '/work/repo', { port: '1110', host: '127.0.0.1' })).toBe(
-      'mcp_servers.agent-deck={url="http://127.0.0.1:1110/mcp",' +
-        'http_headers={"x-agent-deck-workspace"="/work/repo",' +
-        '"x-agent-deck-playbook-pin"="pb_baseline=123e4567-e89b-42d3-a456-426614174000"}}',
-    );
+    const override = buildCodexPinConfigOverride(PIN, '/work/repo', { port: '1110', host: '127.0.0.1' });
+    expect(override).toContain('mcp_servers.agent-deck={url="http://127.0.0.1:1110/mcp",');
+    expect(override).toContain('"x-agent-deck-workspace"="/work/repo"');
+    expect(override).toContain(`"${CODEX_PIN_PLAYBOOK_PIN_HEADER}"="${PIN_VALUE}"`);
+    // NOT-672: the same table carries the enforcement half.
+    expect(override).toContain('default_tools_approval_mode="approve"');
+    expect(override).toContain('enabled_tools=[');
+    expect(override).toContain('"get_run"={approval_mode="approve"}');
   });
 
   it('codex pin header names match the shared contract', () => {
@@ -83,7 +86,7 @@ describe('playbook pin carriage (NOT-537)', () => {
     expect(CLAUDE_PIN_PLAYBOOK_PIN_HEADER).toBe('x-agent-deck-playbook-pin');
   });
 
-  it('codex puts the pin override on start and resume argv, and no -c without a pin', () => {
+  it('codex puts the pin override on start and resume argv, and always passes -c', () => {
     const start = buildCodexArgv({
       prompt: 'hi',
       tools: 'readonly',
@@ -110,13 +113,27 @@ describe('playbook pin carriage (NOT-537)', () => {
     expect(resume).toContain('-c');
     expect(resume[resume.indexOf('-c') + 1]).toContain(PIN_VALUE);
 
-    const unpinned = buildCodexArgv({ prompt: 'hi', tools: 'readonly', insideGitRepo: true });
-    expect(unpinned).not.toContain('-c');
+    // NOT-672: the per-run MCP table and approval policy ride on every run,
+    // pinned or not.
+    const unpinned = buildCodexArgv({
+      prompt: 'hi',
+      tools: 'readonly',
+      insideGitRepo: true,
+      workspaceRoot: '/work/repo',
+    });
+    expect(unpinned.filter((arg) => arg === '-c')).toHaveLength(2);
+    expect(unpinned[unpinned.indexOf('-c') + 1]).toContain('mcp_servers.agent-deck={');
   });
 
-  it('codex fails closed on a pin without a workspace root', () => {
+  it('codex fails closed without a workspace root', () => {
     expect(() =>
-      buildCodexArgv({ prompt: 'hi', tools: 'readonly', insideGitRepo: true, playbookPin: PIN }),
+      buildCodexArgv({
+        prompt: 'hi',
+        tools: 'readonly',
+        insideGitRepo: true,
+        playbookPin: PIN,
+        workspaceRoot: '' as unknown as string,
+      }),
     ).toThrow(/without workspaceRoot/);
   });
 
@@ -150,7 +167,7 @@ describe('playbook pin carriage (NOT-537)', () => {
     });
   });
 
-  it('claude passes the pinned server plus strictMcpConfig only when pinned', async () => {
+  it('claude passes the pinned server plus strictMcpConfig, and always isolates MCP', async () => {
     const seenOptions: RunQueryOptions[] = [];
     const adapter = createClaudeAdapter({
       query: (params) => {
@@ -185,8 +202,14 @@ describe('playbook pin carriage (NOT-537)', () => {
       seenOptions.length = 0;
       await drain(adapter.start({ cwd: '/tmp', prompt: 'hi', tools: 'readonly' }));
       expect(seenOptions).toHaveLength(1);
-      expect(seenOptions[0].strictMcpConfig).toBeUndefined();
-      expect(seenOptions[0].mcpServers).toBeUndefined();
+      // NOT-672: the inline worker server rides on every run (pin or not),
+      // and strictMcpConfig keeps it the only connected server.
+      expect(seenOptions[0].strictMcpConfig).toBe(true);
+      expect(seenOptions[0].mcpServers?.['agent-deck']).toEqual({
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
+        headers: { 'x-agent-deck-workspace': '/tmp' },
+      });
     } finally {
       if (previousPin === undefined) {
         delete process.env[PLAYBOOK_PIN_ENV_VAR];
@@ -275,7 +298,8 @@ describe('launch deck carriage for runs started from an MCP session', () => {
       launchDeckId: DECK_ID,
       workspaceRoot: '/work',
     });
-    expect(both.filter((arg) => arg === '-c')).toHaveLength(1);
+    // One MCP table carrying both headers, plus the approval policy (NOT-672).
+    expect(both.filter((arg) => arg === '-c')).toHaveLength(2);
     expect(both[both.indexOf('-c') + 1]).toContain(PIN_VALUE);
     expect(both[both.indexOf('-c') + 1]).toContain(DECK_ID);
   });

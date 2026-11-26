@@ -511,3 +511,57 @@ describe('launch-bound execution workspace (NOT-539)', () => {
     expect(store.getExecutionWorkspace('cleared')).toBeUndefined();
   });
 });
+
+describe('McpSessionBindingStore worker identity (NOT-669, NOT-672)', () => {
+  const FIRST = { runId: 'run-1', profile: 'edit' as const, client: 'codex' as const, metaPath: '/home/runs/run-1/meta.json' };
+  const SECOND = { runId: 'run-2', profile: 'readonly' as const, client: 'claude' as const, metaPath: '/home/runs/run-2/meta.json' };
+
+  it('adopts the first verified identity and preserves it across reconnects', () => {
+    const store = new McpSessionBindingStore();
+    expect(store.getWorkerSession('mcp-1')).toBeUndefined();
+
+    // First presentation binds the session to run-1/edit.
+    expect(store.setWorkerSession('mcp-1', FIRST)).toEqual(FIRST);
+    expect(store.getWorkerSession('mcp-1')).toEqual(FIRST);
+
+    // A reconnect re-presenting the same token resolves to the same
+    // identity: re-adopting is a no-op returning the stored one.
+    expect(store.setWorkerSession('mcp-1', { ...FIRST })).toEqual(FIRST);
+    expect(store.getWorkerSession('mcp-1')).toEqual(FIRST);
+
+    // Another run's token can never replace it on this transport.
+    expect(store.setWorkerSession('mcp-1', SECOND)).toEqual(FIRST);
+    expect(store.getWorkerSession('mcp-1')).toEqual(FIRST);
+
+    // A fresh transport presenting the same token adopts the same
+    // identity independently (the reconnect path after a 404).
+    expect(store.setWorkerSession('mcp-2', { ...FIRST })).toEqual(FIRST);
+    expect(store.getWorkerSession('mcp-2')).toEqual(FIRST);
+  });
+
+  it('hands out copies so callers cannot mutate the stored identity', () => {
+    const store = new McpSessionBindingStore();
+    const presented = { ...FIRST };
+    store.setWorkerSession('mcp-1', presented);
+    presented.profile = 'readonly';
+
+    const read = store.getWorkerSession('mcp-1');
+    expect(read?.profile).toBe('edit');
+    if (read) {
+      read.profile = 'readonly';
+    }
+    expect(store.getWorkerSession('mcp-1')?.profile).toBe('edit');
+  });
+
+  it('drops the identity only when the session is cleared or unassigned', () => {
+    const store = new McpSessionBindingStore();
+    store.setWorkerSession('mcp-1', FIRST);
+    store.setWorkerSession('mcp-2', FIRST);
+    store.clearSession('mcp-1');
+    expect(store.getWorkerSession('mcp-1')).toBeUndefined();
+    expect(store.getWorkerSession('mcp-2')).toEqual(FIRST);
+
+    store.markUnassigned('mcp-2');
+    expect(store.getWorkerSession('mcp-2')).toBeUndefined();
+  });
+});

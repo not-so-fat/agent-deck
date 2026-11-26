@@ -3,17 +3,44 @@
  *
  * Moved verbatim out of the CLI run.ts (NOT-400): same SDK `query()` params, same
  * message mapping, same missing-SDK remedy. No behavior change.
+ *
+ * Worker-profile enforcement (NOT-672, policy in `claude-policy.ts`): every
+ * start and resume runs isolated (`settingSources: []`, no skills), under
+ * `default` mode (every unsettled call goes to `canUseTool`) with the profile's explicit allow/ask/deny rules as flag-layer
+ * settings. `allow` pre-approves exact tools only; shell (both profiles)
+ * and file writes (edit) route through `ask` to the `canUseTool` host gate
+ * deciding from the same policy, so no call executes without its per-call
+ * verdict. Exactly one MCP server connects (the per-run inline `agent-deck`
+ * entry with the worker headers, `strictMcpConfig`). Client-reported
+ * denials — streaming `permission_denied` frames and the authoritative
+ * `result.permission_denials` list — become `denial` normalized events the
+ * run service records with the effective profile. Resume re-applies the
+ * requested profile's options and additionally requires trusted
+ * same-profile provenance (a resumed SDK session must never keep another
+ * profile's permissions).
  */
+import os from 'node:os';
+
 import {
-  allowedToolsForProfile,
+  defaultWorkerHomeDir,
   formatRunPlaybookPin,
-  RUN_PERMISSION_MODE,
-  RUN_SETTING_SOURCES,
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
   type RunPlaybookPin,
+  type RunToolsProfile,
 } from './adapter';
+import {
+  CLAUDE_WORKER_MCP_SERVER,
+  CLAUDE_WORKER_PERMISSION_MODE,
+  CLAUDE_WORKER_SETTING_SOURCES,
+  CLAUDE_WORKER_SKILLS,
+  claudeAllowedToolsForProfile,
+  claudeDenialKindForTool,
+  claudeDenialTargetForInput,
+  claudeSettingsForProfile,
+  decideClaudeToolCall,
+} from './claude-policy';
 
 /** Minimal structural view of the SDK `query()` surface (the SDK loads lazily). */
 export type RunQueryMessage = {
@@ -21,8 +48,50 @@ export type RunQueryMessage = {
   subtype?: string;
   session_id?: string;
   result?: unknown;
-  message?: {
-    content?: Array<{ type?: string; text?: string; name?: string }>;
+  /**
+   * Assistant message content blocks. A `permission_denied` system message
+   * instead carries a plain-text `message` (see below).
+   */
+  message?:
+    | {
+        content?: Array<{ type?: string; text?: string; name?: string; id?: string; input?: unknown }>;
+      }
+    | string;
+  /** `system`/`permission_denied` frame fields (NOT-672 denial events). */
+  tool_name?: string;
+  tool_use_id?: string;
+  decision_reason?: string;
+  /**
+   * Authoritative per-result denial records (NOT-672 denial events): the
+   * SDK's `SDKPermissionDenial` shape (`tool_name`, `tool_use_id`,
+   * `tool_input`).
+   */
+  permission_denials?: Array<{ tool_name?: string; tool_use_id?: string; tool_input?: unknown }>;
+};
+
+/**
+ * Minimal structural view of the SDK `canUseTool` permission handler (the
+ * real signature takes a third options argument, which the worker handler
+ * ignores). Returned for every consulted tool call; the SDK executes the
+ * call on `allow` (with `updatedInput` when present) and refuses it on
+ * `deny`, surfacing a `permission_denied` frame the adapter maps back.
+ */
+export type RunCanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+) => Promise<
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | { behavior: 'deny'; message: string }
+>;
+
+/** Minimal structural view of the flag-layer worker settings. */
+export type RunWorkerSettings = {
+  permissions: {
+    allow: string[];
+    deny: string[];
+    ask: string[];
+    defaultMode: string;
+    additionalDirectories: string[];
   };
 };
 
@@ -48,7 +117,44 @@ export type RunQueryOptions = {
   mcpServers?: Record<string, RunPinHttpMcpServer>;
   /** Ignore every configured MCP server except `mcpServers` (NOT-537). */
   strictMcpConfig?: boolean;
+  /** Flag-layer worker settings: explicit allow/ask/deny, never a human (NOT-672). */
+  settings?: RunWorkerSettings;
+  /** Tools removed from the model context (NOT-672: always empty — denied tools stay visible so attempts are recorded). */
+  disallowedTools?: readonly string[];
+  /** Skills enabled for the session (NOT-672: always none on workers). */
+  skills?: readonly string[] | 'all';
+  /** Extra working directories file tools may touch (NOT-672: home + temp). */
+  additionalDirectories?: readonly string[];
+  /** Host permission handler deciding from the worker policy (NOT-672). */
+  canUseTool?: RunCanUseTool;
 };
+
+/**
+ * The `canUseTool` handler for one worker run (NOT-672): every consulted
+ * call is decided by `decideClaudeToolCall` against the run's profile —
+ * synchronously answered, so nothing ever waits on a human. A readonly
+ * `git` call the classifier hardens runs with the rewritten command.
+ */
+export function createClaudeWorkerCanUseTool(input: {
+  cwd: string;
+  homeDir: string;
+  tmpDir: string;
+  tools: RunToolsProfile;
+}): RunCanUseTool {
+  return async (toolName, toolInput) => {
+    const verdict = decideClaudeToolCall(
+      toolName,
+      toolInput,
+      { profile: input.tools, cwd: input.cwd, homeDir: input.homeDir, tmpDir: input.tmpDir },
+    );
+    if (verdict.decision === 'allow') {
+      return verdict.updatedCommand !== undefined
+        ? { behavior: 'allow', updatedInput: { ...toolInput, command: verdict.updatedCommand } }
+        : { behavior: 'allow' };
+    }
+    return { behavior: 'deny', message: verdict.reason };
+  };
+}
 
 /**
  * Header names the pinned server sends. Literals (not `@agent-deck/shared` —
@@ -139,6 +245,10 @@ export type ClaudeAdapterDeps = {
   loadQuery?: () => RunQueryFn;
   /** Where the default loader resolves the SDK from (see {@link loadClaudeSdkQuery}). */
   sdkSearchPaths?: readonly string[];
+  /** Agent user's home for the edit file-write scope; defaults to `os.homedir()`. */
+  homeDir?: string;
+  /** OS temp dir for the edit file-write scope; defaults to `os.tmpdir()`. */
+  tmpDir?: string;
 };
 
 export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter {
@@ -150,6 +260,8 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
     }
     return cachedQuery;
   };
+  const homeDir = deps.homeDir ?? defaultWorkerHomeDir();
+  const tmpDir = deps.tmpDir ?? os.tmpdir();
 
   return {
     id: 'claude',
@@ -163,22 +275,64 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
       }
     },
 
-    planStart() {
+    planStart(args: AdapterStartArgs) {
+      // NOT-672: a resumed SDK session must never keep another profile's
+      // permissions, so a resume continues only a session an Agent Deck
+      // run started with the same profile (provenance resolved by the run
+      // service, as for codex). The requested profile's options are still
+      // passed on resume and govern wherever the SDK applies them.
+      if (args.resumeId !== undefined) {
+        const origin = args.resumedFrom;
+        if (!origin || origin.sessionId !== args.resumeId) {
+          return {
+            ok: false,
+            remedy:
+              `Cannot resume claude session ${args.resumeId}: no trusted Agent Deck run is known to have started it. ` +
+              'Resume a sessionId printed by `agent-deck run`, or start a new run.',
+          };
+        }
+        if (origin.tools !== args.tools) {
+          return {
+            ok: false,
+            remedy:
+              `Cannot resume claude session ${args.resumeId} with --tools ${args.tools}: run ${origin.runId} started it with ` +
+              `--tools ${origin.tools}. Resume with --tools ${origin.tools}, or start a new run.`,
+          };
+        }
+      }
       return { ok: true, trustOverride: false };
     },
 
-    profileEnforcement() {
-      // NOT-669: unproven until the Claude mapping sibling lands — every
-      // launch and resume fails here with the remedy and nothing spawns.
-      return {
-        ok: false,
-        remedy:
-          'Worker profile enforcement is not implemented for --client claude yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Claude mapping lands; no process was started.',
-      };
+    profileEnforcement(args: AdapterStartArgs) {
+      // NOT-672: the mapping is implemented (isolated settings, canUseTool-gated default mode,
+      // explicit lists and rules, canUseTool, worker-only MCP) and the
+      // resume gate re-checks provenance behind planStart.
+      if (args.resumeId !== undefined) {
+        const origin = args.resumedFrom;
+        if (!origin || origin.sessionId !== args.resumeId || origin.tools !== args.tools) {
+          return {
+            ok: false,
+            remedy:
+              `Cannot resume claude session ${args.resumeId}: no trusted Agent Deck run is known to have started it with ` +
+              `--tools ${args.tools}. Resume a sessionId printed by \`agent-deck run\`, or start a new run.`,
+          };
+        }
+      }
+      return { ok: true };
     },
 
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
       const query = getQuery();
+      // planStart rejects a resume without a matching resumedFrom.
+      if (args.resumeId !== undefined && args.resumedFrom) {
+        yield {
+          kind: 'notice',
+          message:
+            `Resuming claude session ${args.resumeId} started by run ${args.resumedFrom.runId}: ` +
+            `the requested profile (--tools ${args.tools}) is re-applied to the resumed session.`,
+          sessionId: args.resumeId,
+        };
+      }
       let abortController: AbortController | undefined;
       if (args.control) {
         abortController = new AbortController();
@@ -189,53 +343,155 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
           args.control.signal.addEventListener('abort', () => controller.abort(), { once: true });
         }
       }
-      // NOT-537: a pinned run passes its own pure-HTTP `agent-deck` MCP
-      // server (NOT-566) with the pin in the explicit per-server headers
-      // (inherited process env never reaches an MCP server started with a
-      // restricted env) and `strictMcpConfig` so exactly that one server
-      // connects — no same-name merge ambiguity with the configured entry.
-      // The run allowlist needs no other MCP server
-      // (`mcp__agent-deck__*` plus built-ins), so nothing else is lost.
-      // NOT-669: a run carrying a worker token passes the same inline
-      // server for the token header; runs with no pin, launch deck, or
-      // token pass neither key and behave exactly as before.
+      // NOT-537: the run's own pure-HTTP `agent-deck` MCP server (NOT-566)
+      // with the pin in the explicit per-server headers (inherited process
+      // env never reaches an MCP server started with a restricted env) and
+      // `strictMcpConfig` so exactly that one server connects — no
+      // same-name merge ambiguity with the configured entry. NOT-669: the
+      // same inline server carries the worker token header binding the MCP
+      // session to the run's effective profile. NOT-672: the inline server
+      // rides on every run, and the session is isolated (`settingSources:
+      // []`, no skills), non-interactive (`default` mode, every unsettled call answered by `canUseTool`), explicitly listed
+      // (`allowedTools` plus flag-layer allow/ask/deny rules — `allow`
+      // pre-approves exact tools only, shell and edit writes route through
+      // `ask`), and host-gated (`canUseTool` from the same policy).
       const stream = query({
         prompt: args.prompt,
         options: {
           cwd: args.cwd,
           ...(args.resumeId ? { resume: args.resumeId } : {}),
-          settingSources: [...RUN_SETTING_SOURCES],
-          permissionMode: RUN_PERMISSION_MODE,
-          allowedTools: [...allowedToolsForProfile(args.tools)],
+          settingSources: [...CLAUDE_WORKER_SETTING_SOURCES],
+          permissionMode: CLAUDE_WORKER_PERMISSION_MODE,
+          allowedTools: [...claudeAllowedToolsForProfile(args.tools)],
+          disallowedTools: [],
+          skills: [...CLAUDE_WORKER_SKILLS],
+          settings: claudeSettingsForProfile(args.tools, { homeDir, tmpDir }),
+          additionalDirectories: [homeDir, tmpDir],
+          canUseTool: createClaudeWorkerCanUseTool({
+            cwd: args.cwd,
+            homeDir,
+            tmpDir,
+            tools: args.tools,
+          }),
           ...(abortController ? { abortController } : {}),
-          ...(args.playbookPin || args.launchDeckId || args.runToken
-            ? {
-                mcpServers: {
-                  'agent-deck': buildClaudeRunMcpServer({
-                    cwd: args.cwd,
-                    ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
-                    ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
-                    ...(args.runToken ? { runToken: args.runToken } : {}),
-                  }),
-                },
-                strictMcpConfig: true,
-              }
-            : {}),
+          mcpServers: {
+            [CLAUDE_WORKER_MCP_SERVER]: buildClaudeRunMcpServer({
+              cwd: args.cwd,
+              ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+              ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+              ...(args.runToken ? { runToken: args.runToken } : {}),
+            }),
+          },
+          strictMcpConfig: true,
         },
       });
+      // Denial evidence arrives from three places, richest wins: the refused
+      // call's `tool_use` input (captured below by tool_use_id), the
+      // authoritative `result.permission_denials[].tool_input`, and — when
+      // neither exists — the bare tool name. Advisory `permission_denied`
+      // frames carry no input, so they wait for the authoritative record
+      // instead of emitting immediately: one denial event per tool_use_id,
+      // always with the best-known target. Frames without an authoritative
+      // twin flush at the result (ahead of it), or at stream end when no
+      // result arrives.
+      const toolInputs = new Map<string, { name: string; input: unknown }>();
+      const seenDenials = new Set<string>();
+      const pendingDenials = new Map<
+        string,
+        { toolName: string; toolUseId: string | undefined; reason: string; sessionId?: string }
+      >();
+      const denialKey = (toolUseId: string | undefined, toolName: string): string =>
+        toolUseId ? `id:${toolUseId}` : `name:${toolName}`;
+      const denialInputFor = (toolUseId: string | undefined): unknown =>
+        toolUseId ? toolInputs.get(toolUseId)?.input : undefined;
       for await (const message of stream) {
         const sessionId =
           typeof message.session_id === 'string' && message.session_id ? message.session_id : undefined;
         const withSession = sessionId ? { sessionId } : {};
-        if (message.type === 'assistant') {
+        if (message.type === 'assistant' && typeof message.message === 'object') {
           for (const block of message.message?.content ?? []) {
             if (block.type === 'text' && typeof block.text === 'string') {
               yield { kind: 'text', text: block.text, ...withSession };
             } else if (block.type === 'tool_use' && typeof block.name === 'string') {
+              if (typeof block.id === 'string' && block.id && !toolInputs.has(block.id)) {
+                toolInputs.set(block.id, { name: block.name, input: block.input });
+              }
               yield { kind: 'tool', name: block.name, ...withSession };
             }
           }
+        } else if (message.type === 'system' && message.subtype === 'permission_denied') {
+          const toolName = typeof message.tool_name === 'string' ? message.tool_name : 'unknown';
+          const toolUseId =
+            typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined;
+          const key = denialKey(toolUseId, toolName);
+          if (!seenDenials.has(key) && !pendingDenials.has(key)) {
+            const reason =
+              (typeof message.decision_reason === 'string' && message.decision_reason) ||
+              (typeof message.message === 'string' && message.message) ||
+              `worker profile "${args.tools}" denied ${toolName}`;
+            pendingDenials.set(key, {
+              toolName,
+              toolUseId,
+              reason,
+              ...(sessionId ? { sessionId } : {}),
+            });
+          }
         } else if (message.type === 'result') {
+          const authoritative = new Map<
+            string,
+            { toolName: string; toolUseId: string | undefined; input: unknown }
+          >();
+          for (const denial of message.permission_denials ?? []) {
+            const entry =
+              typeof denial === 'object' && denial !== null
+                ? (denial as { tool_name?: unknown; tool_use_id?: unknown; tool_input?: unknown })
+                : null;
+            const toolName =
+              entry && typeof entry.tool_name === 'string' ? entry.tool_name : 'unknown';
+            const toolUseId =
+              entry && typeof entry.tool_use_id === 'string' ? entry.tool_use_id : undefined;
+            const key = denialKey(toolUseId, toolName);
+            if (!seenDenials.has(key) && !authoritative.has(key)) {
+              authoritative.set(key, { toolName, toolUseId, input: entry?.tool_input });
+            }
+          }
+          // Pending frames first (arrival order), enriched by their
+          // authoritative twins; then authoritative-only records.
+          for (const [key, pending] of pendingDenials) {
+            if (seenDenials.has(key)) {
+              continue;
+            }
+            seenDenials.add(key);
+            const twin = authoritative.get(key);
+            authoritative.delete(key);
+            yield {
+              kind: 'denial',
+              target: claudeDenialTargetForInput(
+                pending.toolName,
+                twin?.input ?? denialInputFor(pending.toolUseId),
+              ),
+              reason: pending.reason.slice(0, 500),
+              denialKind: claudeDenialKindForTool(pending.toolName),
+              ...(pending.sessionId ? { sessionId: pending.sessionId } : {}),
+            };
+          }
+          pendingDenials.clear();
+          for (const [key, record] of authoritative) {
+            if (seenDenials.has(key)) {
+              continue;
+            }
+            seenDenials.add(key);
+            yield {
+              kind: 'denial',
+              target: claudeDenialTargetForInput(
+                record.toolName,
+                record.input ?? denialInputFor(record.toolUseId),
+              ),
+              reason: `worker profile "${args.tools}" denied ${record.toolName}`.slice(0, 500),
+              denialKind: claudeDenialKindForTool(record.toolName),
+              ...(sessionId ? { sessionId } : {}),
+            };
+          }
           yield {
             kind: 'result',
             subtype: message.subtype ?? '',
@@ -243,6 +499,21 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
             ...withSession,
           };
         }
+      }
+      // No result arrived (the stream was cut short): flush whatever was
+      // observed so the refusals are still recorded.
+      for (const [key, pending] of pendingDenials) {
+        if (seenDenials.has(key)) {
+          continue;
+        }
+        seenDenials.add(key);
+        yield {
+          kind: 'denial',
+          target: claudeDenialTargetForInput(pending.toolName, denialInputFor(pending.toolUseId)),
+          reason: pending.reason.slice(0, 500),
+          denialKind: claudeDenialKindForTool(pending.toolName),
+          ...(pending.sessionId ? { sessionId: pending.sessionId } : {}),
+        };
       }
     },
   };
