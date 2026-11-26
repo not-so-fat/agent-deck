@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.6.3 — 2026-11-26
+
+worker profiles with server-side MCP enforcement across Cursor, Muse, Codex and Claude
+
+- NOT-672: Agent Deck: Enforce worker profiles in Codex and Claude (#275)
+- NOT-671: Agent Deck: Enforce worker profiles in Cursor and Muse (#274)
+- NOT-669: Agent Deck worker profiles: shared readonly/edit definition, server-side MCP enforcement and recorded denials (#273)
+- ci: run Plumber on the workflows and show its score badge
+
 ## 2.6.2 — 2026-11-22
 
 Google OAuth card fixes: cards keep their OAuth config across restarts, renew their tokens in the background, and show one auth state everywhere.
