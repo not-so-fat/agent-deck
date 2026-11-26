@@ -3,31 +3,38 @@
  *
  * Maps the shared `WORKER_PROFILES` definition (`profiles.ts`) onto the
  * Claude Agent SDK surface: isolated worker settings, `dontAsk`, explicit
- * tool lists, and profile allow/deny rules. Enforcement lives here and in
- * the SDK permission system the generated settings drive — never in prompt
- * instructions.
+ * allow/ask/deny rules, and a host permission gate. Enforcement lives here
+ * and in the SDK permission system the generated settings drive — never in
+ * prompt instructions.
  *
- * Two layers, same policy, in force wherever the SDK consults them:
+ * How the SDK applies the rules (verified against
+ * `@anthropic-ai/claude-agent-sdk` 0.3.296's permission engine, which the
+ * host drives with a `canUseTool` permission-prompt callback):
  *
- * - Declarative: `claudeSettingsForProfile` (flag-layer settings with
- *   `permissions.allow/deny`, `ask: []`, `defaultMode: "dontAsk"`,
- *   `additionalDirectories`) plus the mirrored `allowedTools` list and
- *   `settingSources: []` (no project/user settings leak in). Under
- *   `dontAsk` anything without an allow rule is denied immediately — no
- *   prompt surface, no waits. `disallowedTools` stays empty on purpose:
- *   denied tools stay visible so an attempt surfaces as a recorded denial
- *   instead of the model routing around a hidden tool.
- * - Programmatic: `decideClaudeToolCall`, wired as the SDK `canUseTool`
- *   handler by `claude.ts`. It re-checks every consulted call against the
- *   same policy — including the read-only shell classifier
- *   (`isReadonlyShellCommand`), which sees compound commands, redirections,
- *   and per-tool flags the prefix patterns cannot express.
+ * - `allow` pre-approves: a matching call executes WITHOUT consulting
+ *   `canUseTool`. So `allow` holds only tools whose every call the profile
+ *   permits unconditionally (reads, web reads, todos, and exactly the
+ *   profile's Agent Deck MCP tools) — nothing whose verdict needs
+ *   per-call precision may appear here.
+ * - `ask` consults the host gate: a matching call is decided by
+ *   `decideClaudeToolCall` (wired as `canUseTool` by `claude.ts`), which
+ *   answers synchronously — no human, no waits. Shell (`Bash`) in both
+ *   profiles and file writes (`Edit`, `Write`, `NotebookEdit`) in edit
+ *   route through `ask`, so the read-only shell classifier
+ *   (`classifyReadonlyShell`, with its git hardening rewrite) and the
+ *   edit file-write scope check decide every call.
+ * - `deny` refuses immediately, and under `dontAsk` anything matching no
+ *   rule is denied immediately too — no prompt surface, no waits.
+ *   `disallowedTools` stays empty on purpose: denied tools stay visible so
+ *   an attempt surfaces as a recorded denial instead of the model routing
+ *   around a hidden tool.
  *
- * The layers agree exactly on what each profile allows; where they differ
- * is precision, never verdict direction. The operator acceptance runs
- * (compound Bash, git, gh, curl, Python, WebFetch, Monitor against
- * fixtures) pin which layer fires on the installed SDK — either way the
- * verdict is the profile's.
+ * There are deliberately NO `Bash(...)` prefix patterns in `allow`: a
+ * prefix pattern cannot express compound safety, redirections, per-tool
+ * flags, or the git `--no-ext-diff` hardening, and an allow match would
+ * skip the classifier that does. The operator acceptance runs (compound
+ * Bash, git, gh, curl, Python, WebFetch, Monitor against fixtures) verify
+ * the ask-routed verdicts on the installed SDK.
  *
  * Node built-ins and sibling modules only (see the module-boundary test).
  */
@@ -108,14 +115,14 @@ export const CLAUDE_EDIT_DENY_RULES: readonly string[] = ['AskUserQuestion', 'Sk
 
 /**
  * Read-only shell: commands whose every invocation is a read (no flag can
- * turn them into a write, an execution vector, or a secret printer).
- * Single source for the declarative `Bash(<cmd>:*)` patterns and the
- * classifier below — the two can never drift.
+ * turn them into a write, an execution vector, or a secret printer). The
+ * classifier below is the only enforcement point for shell (every `Bash`
+ * call routes through `ask` to `decideClaudeToolCall`), so these lists
+ * document exactly what it allows.
  *
  * Deliberately absent (fail-closed, each covered by a fixture):
- * - `curl`/`wget`: the prefix patterns cannot express GET-only, and the
- *   classifier cannot run where the SDK never consults it — web reads go
- *   through WebFetch/WebSearch instead.
+ * - `curl`/`wget`: the classifier cannot prove GET-only statically — web
+ *   reads go through WebFetch/WebSearch instead.
  * - `python*`/`node`/`npm exec`/`sh -c` and friends: arbitrary code whose
  *   effects cannot be proven read-only statically.
  * - `env`/`printenv`/`set`/`export`/`declare`: print secrets.
@@ -123,8 +130,8 @@ export const CLAUDE_EDIT_DENY_RULES: readonly string[] = ['AskUserQuestion', 'Sk
  *   the `e` command and `-f` scripts, which no flag check can bound).
  * - `find`/`sort`/`uniq`/`tar`/`rg`/`base64`: flag-dependent writes or
  *   execution (`-delete`/`-exec`, `-o`/`-T`, two-positional output,
- *   `-x`, `--pre`, macOS `-o`) — allowed only through the precise
- *   classifier forms, never through a coarse prefix pattern.
+ *   `-x`, `--pre`, macOS `-o`) — allowed only in the precise forms the
+ *   special-command gates below check argument by argument.
  * - `sudo`/`ssh`/`docker`/`psql` and friends: privilege, network, or
  *   stateful side effects.
  */
@@ -215,14 +222,13 @@ export const CLAUDE_READONLY_SIMPLE_COMMANDS: readonly string[] = [
 /**
  * Read-only shell, flag-sensitive half: commands allowed only in precise
  * forms the classifier checks argument by argument. `date` (`-s` sets the
- * clock — privileged-only, but still excluded from the coarse patterns),
- * `hostname` (bare args set the hostname), `base64` (macOS `-o` writes a
- * file), `rg` (`--pre`/`--hostname-bin` execute a command), `sort`
- * (`-o`/`-T`/`--compress-program` write or execute), `uniq` (a second
- * positional arg is an output file), `find` (`-exec*`/`-delete`/`-fprint*`),
- * `tar` (extract/create/append/update and `--to-command`), and `unzip`
- * (extract modes) stay out of the declarative patterns unless a pinned
- * safe form exists below — the classifier is their only path.
+ * clock), `hostname` (bare args set the hostname), `base64` (macOS `-o`
+ * writes a file), `rg` (`--pre`/`--hostname-bin` execute a command),
+ * `sort` (`-o`/`-T`/`--compress-program` write or execute), `uniq` (a
+ * second positional arg is an output file), `find`
+ * (`-exec*`/`-delete`/`-fprint*`), `tar` (extract/create/append/update and
+ * `--to-command`), and `unzip` (extract modes) each have a dedicated gate
+ * below — that gate is their only path.
  */
 export const CLAUDE_READONLY_SPECIAL_COMMANDS: readonly string[] = [
   'base64',
@@ -240,21 +246,18 @@ export const CLAUDE_READONLY_SPECIAL_COMMANDS: readonly string[] = [
 ];
 
 /**
- * Read-only `git`: subcommands whose every argument form is a read. Kept in
- * one list so the declarative patterns and the classifier share it.
+ * Read-only `git`: subcommands whose every argument form is a read.
  * Arg-sensitive subcommands (`branch`, `tag`, `config`, `stash`, `clean`,
  * `apply`, `archive`, `remote`, `worktree`, `submodule`, `notes`, `grep`)
- * are NOT here: the classifier gates their precise safe forms, and only
- * the flag-pinned safe forms below get declarative patterns.
+ * are NOT here: the classifier gates their precise safe forms (including
+ * the flag-pinned safe forms below).
  *
- * Two documented residuals on the coarse patterns (verified against git
- * 2.x `--help`): `diff`/`log`/`show` accept `--output=<file>` (writes that
- * subcommand's own output to a file — limited content, never arbitrary
- * bytes), and honor an external diff driver from repo config/attributes.
- * The classifier rejects `--output` and rewrites in `--no-ext-diff` where
- * consulted; the operator runs use benign fixtures without hostile
- * attributes. `grep` stays out entirely: `--open-files-in-pager` executes
- * an arbitrary command, so only the classifier's exact form runs it.
+ * Two vectors the classifier closes on every call (verified against git
+ * 2.x `--help`): `diff`/`log`/`show` accept `--output=<file>` (rejected)
+ * and honor an external diff driver from repo config/attributes (the
+ * classifier rewrites in `--no-ext-diff`, so a hostile driver never runs).
+ * `grep` stays out entirely: `--open-files-in-pager` executes an arbitrary
+ * command, so only the classifier's exact form runs it.
  */
 export const CLAUDE_READONLY_GIT_READ_SUBCOMMANDS: readonly string[] = [
   'blame',
@@ -299,11 +302,9 @@ export const CLAUDE_READONLY_GIT_PINNED_FORMS: readonly string[] = [
 
 /**
  * Read-only `gh`: read-only subcommand paths. `api` is absent (arbitrary
- * method), `auth status` is absent (the pattern cannot exclude
- * `--show-token`, which prints the credential — the classifier allows the
- * exact form), and every listed form rejects `-w`/`--web` in the
- * classifier (a declarative pattern cannot exclude it either, so `--web`
- * opening a browser tab is the accepted residual there).
+ * method); `auth status` allows only the exact form (`--show-token` prints
+ * the credential); and every listed form rejects `-w`/`--web` (a browser
+ * tab the classifier never opens).
  */
 export const CLAUDE_READONLY_GH_READ_PATHS: readonly string[] = [
   'gist list',
@@ -339,46 +340,9 @@ export const CLAUDE_READONLY_NPM_READ_SUBCOMMANDS: readonly string[] = [
 
 /**
  * Read-only `unzip`: list and stdout-only modes. Bare `unzip` extracts, so
- * it has no pattern — the classifier requires one of these flags.
+ * the classifier requires one of these flags.
  */
 export const CLAUDE_READONLY_UNZIP_LIST_FLAGS: readonly string[] = ['-c', '-l', '-p', '-v', '-Z'];
-
-/** Format one `Bash(<prefix>:*)` permission pattern. */
-export function bashPattern(prefix: string): string {
-  return `Bash(${prefix}:*)`;
-}
-
-/**
- * Declarative read-only Bash patterns: one per simple command plus the
- * pinned safe forms. Every pattern is safe even if the SDK matches it as a
- * bare prefix: the pinned forms name a read-only flag or subcommand, and
- * no simple command has a write mode under any suffix. Compound safety
- * (whether `ls; evil` matches `Bash(ls:*)`) is a matcher property the
- * operator runs verify; the classifier below splits compounds regardless.
- */
-export function claudeReadonlyBashPatterns(): string[] {
-  const patterns = CLAUDE_READONLY_SIMPLE_COMMANDS.map(bashPattern);
-  for (const sub of CLAUDE_READONLY_GIT_READ_SUBCOMMANDS) {
-    patterns.push(bashPattern(`git ${sub}`));
-  }
-  for (const form of CLAUDE_READONLY_GIT_PINNED_FORMS) {
-    patterns.push(bashPattern(`git ${form}`));
-  }
-  patterns.push(bashPattern('git --version'), bashPattern('git --help'));
-  for (const form of CLAUDE_READONLY_GH_READ_PATHS) {
-    patterns.push(bashPattern(`gh ${form}`));
-  }
-  patterns.push(bashPattern('gh --version'));
-  for (const sub of CLAUDE_READONLY_NPM_READ_SUBCOMMANDS) {
-    patterns.push(bashPattern(`npm ${sub}`));
-  }
-  patterns.push(bashPattern('npm --version'));
-  for (const flag of CLAUDE_READONLY_UNZIP_LIST_FLAGS) {
-    patterns.push(bashPattern(`unzip ${flag}`));
-  }
-  patterns.push(bashPattern('command -v'), bashPattern('command -V'));
-  return patterns;
-}
 
 /** `mcp__agent-deck__<tool>` for every tool `profile` allows. */
 export function claudeMcpToolRules(profile: RunToolsProfile): string[] {
@@ -1301,18 +1265,36 @@ function isReadonlySpecialCommand(name: string, args: string[]): boolean {
 }
 
 /**
- * Explicit allow rules for `profile`: built-ins, the Bash surface
- * (patterns for readonly, bare `Bash` for edit), and the profile's Agent
- * Deck MCP tools. Single source for the SDK `allowedTools` option and the
- * flag-layer `settings.permissions.allow` — the two can never drift.
+ * Tools whose every call the host gate must decide (`ask` rules): shell in
+ * both profiles (the readonly classifier, or the edit sandbox-escape veto)
+ * and file writes in edit (the workspace/home/tmp scope check). Bare tool
+ * names — every call consults `decideClaudeToolCall`, so no invocation
+ * shape can dodge the per-call verdict the way an `allow` pre-approval
+ * would let it.
+ */
+export const CLAUDE_READONLY_ASK_TOOLS: readonly string[] = ['Bash'];
+export const CLAUDE_EDIT_ASK_TOOLS: readonly string[] = ['Bash', 'Edit', 'Write', 'NotebookEdit'];
+
+/** Explicit ask rules for `profile` (see `CLAUDE_*_ASK_TOOLS`). */
+export function claudeAskRulesForProfile(profile: RunToolsProfile): string[] {
+  return [...(profile === 'edit' ? CLAUDE_EDIT_ASK_TOOLS : CLAUDE_READONLY_ASK_TOOLS)];
+}
+
+/**
+ * Explicit allow rules for `profile`: built-ins the profile permits
+ * unconditionally, plus the profile's Agent Deck MCP tools. Single source
+ * for the SDK `allowedTools` option and the flag-layer
+ * `settings.permissions.allow` — the two can never drift. Ask-routed tools
+ * are excluded by construction (an `allow` match would pre-approve the
+ * call without consulting the host gate), as this function's filter
+ * guarantees.
  */
 export function claudeAllowedToolsForProfile(profile: RunToolsProfile): string[] {
-  const builtins =
-    profile === 'edit'
-      ? [...CLAUDE_WORKER_BASE_TOOLS, ...CLAUDE_EDIT_ONLY_TOOLS]
-      : [...CLAUDE_WORKER_BASE_TOOLS];
-  const bash = profile === 'edit' ? ['Bash'] : claudeReadonlyBashPatterns();
-  return [...builtins, ...bash, ...claudeMcpToolRules(profile)];
+  const ask = new Set(claudeAskRulesForProfile(profile));
+  const builtins = (
+    profile === 'edit' ? [...CLAUDE_WORKER_BASE_TOOLS, ...CLAUDE_EDIT_ONLY_TOOLS] : [...CLAUDE_WORKER_BASE_TOOLS]
+  ).filter((tool) => !ask.has(tool));
+  return [...builtins, ...claudeMcpToolRules(profile)];
 }
 
 /** Explicit deny rules for `profile` (see `CLAUDE_*_DENY_RULES`). */
@@ -1322,10 +1304,11 @@ export function claudeDenyRulesForProfile(profile: RunToolsProfile): string[] {
 
 /**
  * Flag-layer worker settings for `profile` (the SDK `settings` option):
- * explicit allow/deny, never ask, `dontAsk` default, and the working
- * directories file tools may touch (the run workspace is implicit in
- * `cwd`; home and the OS temp dir ride here so edit writes and every
- * profile's temp-file reads have a scope).
+ * explicit allow/ask/deny, `dontAsk` default, and the working directories
+ * file tools may touch (the run workspace is implicit in `cwd`; home and
+ * the OS temp dir ride here so edit writes and every profile's temp-file
+ * reads have a scope). `ask` routes to the host gate — never to a human —
+ * so nothing waits.
  */
 export function claudeSettingsForProfile(
   profile: RunToolsProfile,
@@ -1343,7 +1326,7 @@ export function claudeSettingsForProfile(
     permissions: {
       allow: claudeAllowedToolsForProfile(profile),
       deny: claudeDenyRulesForProfile(profile),
-      ask: [],
+      ask: claudeAskRulesForProfile(profile),
       defaultMode: CLAUDE_WORKER_PERMISSION_MODE,
       additionalDirectories: [input.homeDir, input.tmpDir],
     },

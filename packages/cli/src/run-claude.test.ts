@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { McpLaunchPlan } from './mcp-launcher';
 import {
   claudeAllowedToolsForProfile,
+  claudeAskRulesForProfile,
   createClaudeAdapter,
   createRunAdapter,
   type NormalizedEvent,
@@ -112,17 +113,24 @@ describe('claude worker options (NOT-672)', () => {
     expect(seen).toHaveLength(2);
     expect(seen[0].allowedTools).toEqual([...claudeAllowedToolsForProfile('readonly')]);
     expect(seen[1].allowedTools).toEqual([...claudeAllowedToolsForProfile('edit')]);
+    expect(seen[0].settings?.permissions.ask).toEqual([...claudeAskRulesForProfile('readonly')]);
+    expect(seen[1].settings?.permissions.ask).toEqual([...claudeAskRulesForProfile('edit')]);
     for (const options of seen) {
       expect(options.settingSources).toEqual([]);
       expect(options.permissionMode).toBe('dontAsk');
       expect(options.disallowedTools).toEqual([]);
       expect(options.skills).toEqual([]);
-      expect(options.settings?.permissions.ask).toEqual([]);
       expect(options.settings?.permissions.defaultMode).toBe('dontAsk');
       expect(options.additionalDirectories).toEqual(['/home/agent', '/tmp']);
       expect(typeof options.canUseTool).toBe('function');
       expect(options.strictMcpConfig).toBe(true);
       expect(Object.keys(options.mcpServers ?? {})).toEqual(['agent-deck']);
+      // Nothing shell-shaped is pre-approved in either layer: shell routes
+      // through ask to the host gate.
+      expect(options.allowedTools.filter((rule) => rule === 'Bash' || rule.startsWith('Bash('))).toEqual([]);
+      expect(
+        (options.settings?.permissions.allow ?? []).filter((rule) => rule === 'Bash' || rule.startsWith('Bash(')),
+      ).toEqual([]);
     }
     expect(seen[0].resume).toBeUndefined();
     expect(seen[1].resume).toBe('ses_1');

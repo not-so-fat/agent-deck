@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { McpLaunchPlan } from './mcp-launcher';
 import {
   claudeAllowedToolsForProfile,
+  claudeAskRulesForProfile,
   claudeDenyRulesForProfile,
   createRunAdapter,
   type RunCanUseTool,
@@ -103,26 +104,34 @@ describe('run tool profiles (NOT-400, NOT-672)', () => {
     expect(options.allowedTools).toEqual([...claudeAllowedToolsForProfile('readonly')]);
     expect(options.allowedTools).toContain('Read');
     expect(options.allowedTools).toContain('WebFetch');
-    expect(options.allowedTools).toContain('Bash(git log:*)');
     expect(options.allowedTools).toContain('mcp__agent-deck__get_run');
     expect(options.allowedTools).not.toContain('Edit');
     expect(options.allowedTools).not.toContain('Write');
     expect(options.allowedTools).not.toContain('Bash');
+    // No Bash entry of any shape is pre-approved: shell routes through ask.
+    expect(options.allowedTools.filter((rule) => rule === 'Bash' || rule.startsWith('Bash('))).toEqual([]);
+    expect(options.settings.permissions.ask).toEqual([...claudeAskRulesForProfile('readonly')]);
+    expect(options.settings.permissions.ask).toEqual(['Bash']);
     expect(options.allowedTools).not.toContain('mcp__agent-deck__switch_deck');
   });
 
-  it('--tools edit passes the edit worker list with writes and full shell', async () => {
+  it('--tools edit passes the edit worker list; shell and writes route through ask', async () => {
     const { cwd, deps } = setup();
 
     expect(await runRunCommand(argsFor(cwd, ['--tools', 'edit']), deps)).toBe(0);
 
     const options = queryOptions(deps);
     expect(options.allowedTools).toEqual([...claudeAllowedToolsForProfile('edit')]);
-    expect(options.allowedTools).toContain('Edit');
-    expect(options.allowedTools).toContain('Write');
-    expect(options.allowedTools).toContain('Bash');
     expect(options.allowedTools).toContain('Monitor');
     expect(options.allowedTools).toContain('mcp__agent-deck__bind_workspace');
+    // Shell and file writes are never pre-approved: the host gate decides
+    // every call (sandbox veto, write scope).
+    expect(options.allowedTools).not.toContain('Edit');
+    expect(options.allowedTools).not.toContain('Write');
+    expect(options.allowedTools).not.toContain('NotebookEdit');
+    expect(options.allowedTools).not.toContain('Bash');
+    expect(options.settings.permissions.ask).toEqual([...claudeAskRulesForProfile('edit')]);
+    expect(options.settings.permissions.ask).toEqual(['Bash', 'Edit', 'Write', 'NotebookEdit']);
     expect(options.allowedTools).not.toContain('mcp__agent-deck__switch_deck');
   });
 
@@ -159,7 +168,7 @@ describe('run tool profiles (NOT-400, NOT-672)', () => {
       expect(options.disallowedTools).toEqual([]);
       expect(options.settings.permissions.allow).toEqual([...claudeAllowedToolsForProfile(profile)]);
       expect(options.settings.permissions.deny).toEqual([...claudeDenyRulesForProfile(profile)]);
-      expect(options.settings.permissions.ask).toEqual([]);
+      expect(options.settings.permissions.ask).toEqual([...claudeAskRulesForProfile(profile)]);
       expect(options.settings.permissions.defaultMode).toBe('dontAsk');
       expect(options.settings.permissions.additionalDirectories).toHaveLength(2);
       expect(options.additionalDirectories).toEqual(options.settings.permissions.additionalDirectories);

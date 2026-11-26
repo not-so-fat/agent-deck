@@ -6,11 +6,13 @@
  *
  * Worker-profile enforcement (NOT-672, policy in `claude-policy.ts`): every
  * start and resume runs isolated (`settingSources: []`, no skills), under
- * `dontAsk` with the profile's explicit allow/deny rules as flag-layer
- * settings, a `canUseTool` handler deciding from the same policy, and
- * exactly one MCP server (the per-run inline `agent-deck` entry with the
- * worker headers, `strictMcpConfig`). Client-reported denials — streaming
- * `permission_denied` frames and the authoritative
+ * `dontAsk` with the profile's explicit allow/ask/deny rules as flag-layer
+ * settings. `allow` pre-approves exact tools only; shell (both profiles)
+ * and file writes (edit) route through `ask` to the `canUseTool` host gate
+ * deciding from the same policy, so no call executes without its per-call
+ * verdict. Exactly one MCP server connects (the per-run inline `agent-deck`
+ * entry with the worker headers, `strictMcpConfig`). Client-reported
+ * denials — streaming `permission_denied` frames and the authoritative
  * `result.permission_denials` list — become `denial` normalized events the
  * run service records with the effective profile. Resume re-applies the
  * requested profile's options and additionally requires trusted
@@ -110,7 +112,7 @@ export type RunQueryOptions = {
   mcpServers?: Record<string, RunPinHttpMcpServer>;
   /** Ignore every configured MCP server except `mcpServers` (NOT-537). */
   strictMcpConfig?: boolean;
-  /** Flag-layer worker settings: explicit allow/deny, never ask (NOT-672). */
+  /** Flag-layer worker settings: explicit allow/ask/deny, never a human (NOT-672). */
   settings?: RunWorkerSettings;
   /** Tools removed from the model context (NOT-672: always empty — denied tools stay visible so attempts are recorded). */
   disallowedTools?: readonly string[];
@@ -345,8 +347,9 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
       // session to the run's effective profile. NOT-672: the inline server
       // rides on every run, and the session is isolated (`settingSources:
       // []`, no skills), non-interactive (`dontAsk`), explicitly listed
-      // (`allowedTools`, flag-layer settings rules), and host-gated
-      // (`canUseTool` from the same policy).
+      // (`allowedTools` plus flag-layer allow/ask/deny rules — `allow`
+      // pre-approves exact tools only, shell and edit writes route through
+      // `ask`), and host-gated (`canUseTool` from the same policy).
       const stream = query({
         prompt: args.prompt,
         options: {

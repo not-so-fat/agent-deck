@@ -13,18 +13,19 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  CLAUDE_EDIT_ASK_TOOLS,
   CLAUDE_EDIT_DENY_RULES,
+  CLAUDE_READONLY_ASK_TOOLS,
   CLAUDE_READONLY_DENY_RULES,
   CLAUDE_WORKER_BASE_TOOLS,
   CLAUDE_WORKER_MCP_TOOL_PREFIX,
   CLAUDE_WORKER_PERMISSION_MODE,
   CLAUDE_WORKER_SETTING_SOURCES,
   CLAUDE_WORKER_SKILLS,
-  bashPattern,
   claudeAllowedToolsForProfile,
+  claudeAskRulesForProfile,
   claudeDenyRulesForProfile,
   claudeMcpToolRules,
-  claudeReadonlyBashPatterns,
   claudeSettingsForProfile,
   classifyReadonlyShell,
   decideClaudeToolCall,
@@ -48,35 +49,52 @@ describe('claude worker settings and tool lists (NOT-672)', () => {
     expect([...CLAUDE_WORKER_SKILLS]).toEqual([]);
   });
 
-  it('readonly allows reads, web reads, todos, and shell patterns — never writes', () => {
+  it('readonly allows reads, web reads, todos, and MCP reads — never writes or shell', () => {
     const allow = claudeAllowedToolsForProfile('readonly');
     for (const tool of CLAUDE_WORKER_BASE_TOOLS) {
       expect(allow).toContain(tool);
     }
-    expect(allow).toContain(bashPattern('ls'));
-    expect(allow).toContain(bashPattern('git log'));
-    expect(allow).toContain(bashPattern('gh pr view'));
-    expect(allow).toContain(bashPattern('npm view'));
-    expect(allow).toContain(bashPattern('unzip -l'));
     expect(allow).toContain(`${CLAUDE_WORKER_MCP_TOOL_PREFIX}get_run`);
+    // Nothing shell-shaped may pre-approve: every Bash call routes through
+    // ask to the host gate, so no prefix pattern can skip the classifier.
     for (const tool of ['Edit', 'Write', 'NotebookEdit', 'Agent', 'Monitor', 'Bash']) {
       expect(allow).not.toContain(tool);
     }
-    // No coarse pattern for flag-sensitive commands: find/sort/uniq/tar/rg
-    // and bare git/gh/npm/unzip never match a prefix.
-    for (const prefix of ['find', 'sort', 'uniq', 'tar', 'rg', 'base64', 'git branch', 'git tag', 'gh api', 'unzip']) {
-      expect(allow).not.toContain(bashPattern(prefix));
-    }
+    expect(allow.filter((rule) => rule === 'Bash' || rule.startsWith('Bash('))).toEqual([]);
     expect(claudeDenyRulesForProfile('readonly')).toEqual([...CLAUDE_READONLY_DENY_RULES]);
+    expect(claudeAskRulesForProfile('readonly')).toEqual([...CLAUDE_READONLY_ASK_TOOLS]);
+    expect(claudeAskRulesForProfile('readonly')).toEqual(['Bash']);
   });
 
-  it('edit allows writes, subagents, tasks, Monitor, and any shell', () => {
+  it('edit allows subagents, tasks, Monitor, and MCP — shell and writes route through ask', () => {
     const allow = claudeAllowedToolsForProfile('edit');
-    for (const tool of [...CLAUDE_WORKER_BASE_TOOLS, 'Edit', 'Write', 'NotebookEdit', 'Agent', 'Monitor', 'TaskCreate', 'Bash']) {
+    for (const tool of [...CLAUDE_WORKER_BASE_TOOLS, 'Agent', 'Monitor', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList']) {
       expect(allow).toContain(tool);
     }
     expect(allow).toContain(`${CLAUDE_WORKER_MCP_TOOL_PREFIX}bind_workspace`);
+    // Shell and file writes are ask-routed, never pre-approved: the host
+    // gate decides every call (classifier/sandbox veto, write scope).
+    for (const tool of ['Bash', 'Edit', 'Write', 'NotebookEdit']) {
+      expect(allow).not.toContain(tool);
+    }
+    expect(allow.filter((rule) => rule === 'Bash' || rule.startsWith('Bash('))).toEqual([]);
     expect(claudeDenyRulesForProfile('edit')).toEqual([...CLAUDE_EDIT_DENY_RULES]);
+    expect(claudeAskRulesForProfile('edit')).toEqual([...CLAUDE_EDIT_ASK_TOOLS]);
+    expect(claudeAskRulesForProfile('edit')).toEqual(['Bash', 'Edit', 'Write', 'NotebookEdit']);
+  });
+
+  it('allow, ask, and deny are pairwise disjoint in both profiles', () => {
+    for (const profile of ['readonly', 'edit'] as const) {
+      const allow = new Set(claudeAllowedToolsForProfile(profile));
+      const ask = claudeAskRulesForProfile(profile);
+      const deny = claudeDenyRulesForProfile(profile);
+      for (const rule of [...ask, ...deny]) {
+        expect(allow.has(rule), `${profile} allow/ask-deny overlap on ${rule}`).toBe(false);
+      }
+      for (const rule of ask) {
+        expect(deny.includes(rule), `${profile} ask/deny overlap on ${rule}`).toBe(false);
+      }
+    }
   });
 
   it('enumerates exactly the shared profile MCP allow sets (no wildcard)', () => {
@@ -94,39 +112,19 @@ describe('claude worker settings and tool lists (NOT-672)', () => {
     expect(claudeMcpToolRules('readonly')).not.toContain(`${CLAUDE_WORKER_MCP_TOOL_PREFIX}bind_workspace`);
   });
 
-  it('builds flag-layer settings with allow/deny, never ask, and working dirs', () => {
+  it('builds flag-layer settings with allow/ask/deny and working dirs', () => {
     const settings = claudeSettingsForProfile('readonly', { homeDir: '/home/agent', tmpDir: '/tmp' });
     expect(settings.permissions.allow).toEqual(claudeAllowedToolsForProfile('readonly'));
     expect(settings.permissions.deny).toEqual(claudeDenyRulesForProfile('readonly'));
-    expect(settings.permissions.ask).toEqual([]);
+    expect(settings.permissions.ask).toEqual(claudeAskRulesForProfile('readonly'));
+    expect(settings.permissions.ask).toEqual(['Bash']);
     expect(settings.permissions.defaultMode).toBe('dontAsk');
     expect(settings.permissions.additionalDirectories).toEqual(['/home/agent', '/tmp']);
     // The SDK option list and the settings rules are the same source: the
     // two can never drift.
-    expect(claudeSettingsForProfile('edit', { homeDir: '/h', tmpDir: '/t' }).permissions.allow).toEqual(
-      claudeAllowedToolsForProfile('edit'),
-    );
-  });
-
-  it('every readonly Bash pattern pins a safe prefix', () => {
-    const patterns = claudeReadonlyBashPatterns();
-    const prefixes = patterns.map((pattern) => {
-      expect(pattern).toMatch(/^Bash\(.+:\*\)$/);
-      return pattern.slice('Bash('.length, -':*)'.length);
-    });
-    // A pattern whose prefix is itself a write or an execution vector
-    // would be exploitable under prefix matching: none may appear.
-    for (const bad of [
-      'git push', 'git commit', 'git checkout', 'git switch', 'git clean', 'git fetch',
-      'git pull', 'git clone', 'git merge', 'git rebase', 'git reset', 'git branch', 'git tag',
-      'gh api', 'gh pr create', 'gh pr merge', 'gh auth status', 'gh run rerun',
-      'npm install', 'npm run', 'npm exec', 'npm test', 'npm publish',
-      'tar', 'tar -x', 'tar -c', 'unzip', 'find -exec', 'find -delete',
-      'sort -o', 'uniq', 'sed', 'awk', 'curl', 'wget', 'python', 'node',
-      'sudo', 'rm', 'cp', 'mv', 'sh', 'bash -c', 'env',
-    ]) {
-      expect(prefixes, bad).not.toContain(bad);
-    }
+    const edit = claudeSettingsForProfile('edit', { homeDir: '/h', tmpDir: '/t' });
+    expect(edit.permissions.allow).toEqual(claudeAllowedToolsForProfile('edit'));
+    expect(edit.permissions.ask).toEqual(claudeAskRulesForProfile('edit'));
   });
 });
 
