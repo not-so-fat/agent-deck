@@ -1,14 +1,19 @@
 /**
- * Muse adapter for `agent-deck run` (NOT-407).
+ * Muse adapter for `agent-deck run` (NOT-407; worker-profile enforcement NOT-671).
  *
  * Drives `muse exec --json` (start) and `muse exec --json --session-id <id>`
  * (resume) as a child process and maps the JSONL stream onto normalized
  * events. Verified against Muse Code 1.4.4 (1.4.4-R5419.1) via `muse
  * --version`, `muse --help`, `muse exec --help`, `muse mcp --help`, `muse mcp
  * login --help`, `muse config --help`, and echo-provider captures in
- * /tmp/smoke. Tool mapping for this version: readonly passes
- * `--disable-write --disable-shell`; edit passes no extra flags (Muse's
- * default bounded permissions: approval on-request, sandbox on):
+ * /tmp/smoke, with the enforcement flags re-verified on 1.4.25. Tool mapping
+ * (NOT-671): both profiles pass `--approval-mode never` (no prompt can
+ * occur, on start and resume); `readonly` adds `--disable-write` plus
+ * `--sandbox-network restricted` (sandbox stays ON); `edit` adds
+ * `--disable-sandbox` (the sandbox stays OFF so workspace AND agent-home
+ * writes work — the operator probe proved the client sandbox lets
+ * workspace writes through but fails `$HOME` writes with `Read-only file
+ * system`, violating the shared edit contract):
  *
  * - Every stdout record carries `stream: {kind: "session", id}`; that id is
  *   the session id. Assistant text streams as `run.output.delta`
@@ -26,22 +31,40 @@
  * - `--permission-profile` selects ONLY enterprise-plane profiles: 1.4.4
  *   ships with none, user settings.json has no such key ("profile does not
  *   exist" for every candidate id), so the adapter never passes it. Tool
- *   profiles map to Muse's own enforcement flags instead (see below). A
- *   literal `--permission-profile` mapping would fail closed on every
- *   default (`readonly`) run, so the product call is capability flags with
- *   runtime verification: readonly fails closed unless the installed muse
- *   lists both enforcement flags in `muse exec --help`.
+ *   profiles map to Muse's own enforcement flags instead (see below), and
+ *   the gate fails closed unless the installed muse lists every flag the
+ *   requested profile needs in `muse exec --help`.
+ * - Readonly keeps shell reads and web reads: `--disable-shell` would block
+ *   all shell execution and `--disable-web-tools` all web tools, so neither
+ *   is passed — filesystem writes are blocked by `--disable-write` plus the
+ *   sandbox, outbound mutations by `--sandbox-network restricted`. Edit
+ *   lifts the sandbox entirely (`--disable-sandbox`), so shell, network,
+ *   and web run unrestricted there; mutating Agent Deck operations stay
+ *   gated server-side per the shared profile (NOT-669).
+ * - Per-run MCP identity (NOT-671): the child spawns with `XDG_CONFIG_HOME`
+ *   pointed at a per-run worker config whose `muse/settings.json` holds
+ *   ONLY the run's `agent-deck` entry (daemon URL plus the workspace,
+ *   launch-deck, playbook-pin, and worker-token headers), with the real
+ *   `muse/auth.json` copied in so sign-in survives the isolation. Sessions
+ *   live outside the config home, so resume is unaffected. A project
+ *   `.mcp.json` (cwd up to the filesystem root) defining any non-`agent-deck`
+ *   server is allowed, and so is a project `agent-deck` entry: same-name project entries shadow the user entry only in a
+ *   trusted workspace, and a worker is never trusted (no `--trust-workspace`
+ *   in argv, no persisted trust in the per-run config, which holds only
+ *   settings.json and auth.json).
  * - Signed-in preflight is `providers.meta` in the Muse auth file (or
  *   META_API_KEY), which makes no model call; there is no `login status`
  *   subcommand.
  *
  * Never selected, with no flag, env var, or option that selects them:
- * `--yolo`, `--trust-workspace`, `--disable-approval`, `--disable-sandbox`
- * (all disable checks or mark the workspace trusted), and
- * `--permission-profile` (no valid id exists; any value aborts the run).
- * `--disable-write`/`--disable-shell` only narrow capabilities for readonly
- * and leave approval and the sandbox on. Tests assert no generated argv ever
- * contains the forbidden flags.
+ * `--yolo`, `--trust-workspace`, `--disable-approval` (all disable checks
+ * or mark the workspace trusted), `--permission-profile` (no valid id
+ * exists; any value aborts the run), `--disable-shell` (would block
+ * readonly shell reads), and `--disable-web-tools` (would block readonly
+ * web reads). Tests assert no generated argv ever contains the forbidden
+ * flags. `--disable-sandbox` is the one exception: edit alone passes it
+ * (`MUSE_EDIT_ONLY_FLAGS`) so agent-home writes work; readonly must never
+ * contain it.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -50,61 +73,106 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 import {
+  formatRunPlaybookPin,
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
+  type RunPlaybookPin,
   type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
 
-/**
- * readonly: Muse's own read-only enforcement — `--disable-write` blocks
- * non-shell workspace file writes and `--disable-shell` blocks workspace
- * shell execution, so a readonly run cannot modify the checkout.
- */
-export const MUSE_READONLY_FLAGS: readonly string[] = ['--disable-write', '--disable-shell'];
+/** Enforcement flags re-verified against this build (`muse exec --help`). */
+export const MUSE_ENFORCEMENT_VERSION_NOTE = 'Muse Code 1.4.25';
 
 /**
- * edit: default bounded permissions (approval on-request, sandbox on) with
- * no extra flags — there is no named profile to select, and the default
- * never disables checks.
+ * Both profiles: no approval prompt can occur, on start and resume alike.
+ * Enforcement comes from the profile flags below (readonly keeps the
+ * sandbox ON; edit lifts it), never from interactive approval.
  */
-export const MUSE_EDIT_FLAGS: readonly string[] = [];
+export const MUSE_APPROVAL_FLAGS: readonly string[] = ['--approval-mode', 'never'];
+
+/**
+ * readonly: `--disable-write` blocks non-shell workspace file writes and
+ * `--sandbox-network restricted` blocks outbound mutations, while the
+ * sandbox (ON) confines shell filesystem access — shell reads and web reads
+ * stay available. `--disable-shell` is deliberately NOT passed: it would
+ * block shell reads too.
+ */
+export const MUSE_READONLY_FLAGS: readonly string[] = [
+  '--disable-write',
+  '--sandbox-network',
+  'restricted',
+];
+
+/**
+ * edit: the filesystem sandbox stays OFF so workspace AND agent-home
+ * writes work (the client sandbox fails `$HOME` writes with `Read-only
+ * file system`, violating the shared edit contract). No
+ * `--sandbox-network`: with the sandbox off there is no sandbox network
+ * mode to select — shell, network, and web run unrestricted, while
+ * mutating Agent Deck operations stay gated server-side (NOT-669).
+ */
+export const MUSE_EDIT_FLAGS: readonly string[] = ['--disable-sandbox'];
 
 export const MUSE_FLAGS_FOR_PROFILE: Record<RunToolsProfile, readonly string[]> = {
   readonly: MUSE_READONLY_FLAGS,
   edit: MUSE_EDIT_FLAGS,
 };
 
-/** Flags that must never appear in generated argv (bypass checks or trust). */
+/** Flags that must never appear in generated argv (bypass checks, trust, or reads). */
 export const MUSE_FORBIDDEN_FLAGS: readonly string[] = [
   '--yolo',
   '--trust-workspace',
   '--disable-approval',
-  '--disable-sandbox',
   '--permission-profile',
+  '--disable-shell',
+  '--disable-web-tools',
 ];
+
+/**
+ * Flags only the edit profile may pass: `--disable-sandbox` lifts the
+ * client filesystem sandbox so agent-home writes work. Readonly argv must
+ * never contain them (tests assert both sides).
+ */
+export const MUSE_EDIT_ONLY_FLAGS: readonly string[] = ['--disable-sandbox'];
 
 export function resolveMuseBin(): string {
   return process.env.MUSE_BIN?.trim() || 'muse';
 }
 
 /**
- * Readonly enforcement is structural AND verified: the flags exist in
- * `muse exec --help` output (Muse Code 1.4.4), and planStart fails closed
- * when the installed muse does not list them, so readonly never silently
- * runs under default permissions. Help text, not a model call.
+ * Help-text markers the installed `muse` must list for the requested profile
+ * (NOT-671): `--approval-mode` always, plus `--disable-write` and
+ * `--sandbox-network` for readonly (sandbox ON, writes blocked, network
+ * restricted) or `--disable-sandbox` for edit (sandbox OFF so home writes
+ * work). Each profile verifies exactly the flags it passes.
  */
-export function museReadonlyFlagsSupported(
+export function museHelpTextSupportsEnforcement(helpText: string, tools: RunToolsProfile): boolean {
+  if (!helpText.includes('--approval-mode')) {
+    return false;
+  }
+  return tools === 'edit'
+    ? helpText.includes('--disable-sandbox')
+    : helpText.includes('--disable-write') && helpText.includes('--sandbox-network');
+}
+
+/**
+ * Enforcement is structural AND verified: the flags must exist in
+ * `muse exec --help` output, and the profile gate fails closed when the
+ * installed muse does not list them, so a run never silently proceeds under
+ * default permissions. Help text, not a model call.
+ */
+export function museEnforcementFlagsSupported(
   probe: (bin: string, argv: string[]) => { code: number; stdout: string; stderr: string },
   bin: string,
+  tools: RunToolsProfile,
 ): boolean {
   const help = probe(bin, ['exec', '--help']);
   if (help.code !== 0) {
     return false;
   }
-  const text = `${help.stdout}\n${help.stderr}`;
-  return MUSE_READONLY_FLAGS.every((flag) => text.includes(flag));
+  return museHelpTextSupportsEnforcement(`${help.stdout}\n${help.stderr}`, tools);
 }
 
 export type MuseArgvArgs = {
@@ -129,20 +197,235 @@ export function assertSafeMuseResumeId(resumeId: string): void {
 
 /**
  * Pure argv builder (everything after the `muse` binary). Start:
- * `exec --json [--disable-write --disable-shell] -- <prompt>`; resume:
- * `exec --json --session-id <id> [--disable-write --disable-shell] -- <prompt>`.
- * The `--` terminator (accepted by `muse exec`, verified with the echo
- * provider) keeps dash-leading prompts from being parsed as muse options.
+ * `exec --json --approval-mode never <profile flags> -- <prompt>`; resume:
+ * `exec --json --approval-mode never <profile flags> --session-id <id> --
+ * <prompt>`. The `--` terminator (accepted by `muse exec`, verified with the
+ * echo provider) keeps dash-leading prompts from being parsed as muse
+ * options.
  */
 export function buildMuseArgv(args: MuseArgvArgs): string[] {
-  const argv = ['exec', '--json'];
+  const argv = ['exec', '--json', ...MUSE_APPROVAL_FLAGS];
+  argv.push(...MUSE_FLAGS_FOR_PROFILE[args.tools]);
   if (args.resumeId !== undefined) {
     assertSafeMuseResumeId(args.resumeId);
     argv.push('--session-id', args.resumeId);
   }
-  argv.push(...MUSE_FLAGS_FOR_PROFILE[args.tools]);
   argv.push('--', args.prompt);
   return argv;
+}
+
+/**
+ * Header names the run's MCP entry sends. Literals (not `@agent-deck/shared` —
+ * this module imports node built-ins and siblings only, NOT-479); they must
+ * match `AGENT_DECK_WORKSPACE_HEADER` / `AGENT_DECK_PLAYBOOK_PIN_HEADER` /
+ * `AGENT_DECK_DECK_ID_HEADER` / `AGENT_DECK_RUN_TOKEN_HEADER`.
+ */
+export const MUSE_WORKER_WORKSPACE_HEADER = 'x-agent-deck-workspace';
+export const MUSE_WORKER_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
+export const MUSE_WORKER_LAUNCH_DECK_HEADER = 'x-agent-deck-deck-id';
+export const MUSE_WORKER_RUN_TOKEN_HEADER = 'x-agent-deck-run-token';
+
+/**
+ * MCP endpoint the worker entry preserves. Malformed values fall back to the
+ * defaults rather than breaking a run.
+ */
+export function museWorkerEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+): { port: string; host: string } {
+  const port = env.AGENT_DECK_MCP_PORT?.trim() ?? '';
+  const host = env.AGENT_DECK_HOST?.trim() ?? '';
+  return {
+    port: /^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535 ? port : '1110',
+    host: host ? host : '127.0.0.1',
+  };
+}
+
+export type MuseWorkerMcpEntryInput = {
+  workspaceRoot: string;
+  playbookPin?: RunPlaybookPin;
+  launchDeckId?: string;
+  runToken?: string;
+};
+
+/**
+ * The run's `agent-deck` MCP entry for the worker config's
+ * `muse/settings.json` (NOT-671): the daemon URL plus the workspace header,
+ * the playbook pin, the launch deck header, and/or the worker token header
+ * when the run has them. Same `{ type: 'http', url, headers }` shape
+ * `agent-deck use --client muse` writes for per-folder entries — only the
+ * headers are per-run.
+ */
+export function buildMuseWorkerMcpEntry(
+  input: MuseWorkerMcpEntryInput,
+  endpoint: { port: string; host: string } = museWorkerEndpoint(),
+): Record<string, unknown> {
+  const headers: Record<string, string> = {
+    [MUSE_WORKER_WORKSPACE_HEADER]: input.workspaceRoot,
+    ...(input.playbookPin
+      ? { [MUSE_WORKER_PLAYBOOK_PIN_HEADER]: formatRunPlaybookPin(input.playbookPin) }
+      : {}),
+    ...(input.launchDeckId ? { [MUSE_WORKER_LAUNCH_DECK_HEADER]: input.launchDeckId } : {}),
+    ...(input.runToken ? { [MUSE_WORKER_RUN_TOKEN_HEADER]: input.runToken } : {}),
+  };
+  return {
+    type: 'http',
+    url: `http://${endpoint.host}:${endpoint.port}/mcp`,
+    headers,
+  };
+}
+
+/**
+ * Full `muse/settings.json` document holding ONLY the run's entry (NOT-671).
+ * The schema version is the exact value Muse requires (NOT-387); without it
+ * the worker config is rejected at startup.
+ */
+export function buildMuseWorkerSettingsDocument(
+  entry: Record<string, unknown>,
+): Record<string, unknown> {
+  return { schema_version: 1, mcpServers: { 'agent-deck': entry } };
+}
+
+/**
+ * Write the per-run worker config (NOT-671): `<configHome>/muse/settings.json`
+ * holding only the run's entry, plus `<configHome>/muse/auth.json` when the
+ * caller passes the real auth text through, so sign-in survives the
+ * isolation. Throws with an actionable message when the config cannot be
+ * written; the caller removes the directory afterwards (best effort).
+ */
+export function setupMuseWorkerConfig(input: {
+  configHome: string;
+  settingsDocument: Record<string, unknown>;
+  authText?: string;
+}): string {
+  const { configHome, settingsDocument, authText } = input;
+  try {
+    fs.mkdirSync(path.join(configHome, 'muse'), { recursive: true });
+    fs.writeFileSync(
+      path.join(configHome, 'muse', 'settings.json'),
+      `${JSON.stringify(settingsDocument, null, 2)}\n`,
+      'utf8',
+    );
+    if (authText !== undefined) {
+      fs.writeFileSync(path.join(configHome, 'muse', 'auth.json'), authText, 'utf8');
+    }
+  } catch (error) {
+    throw new Error(
+      `Cannot isolate the muse worker config under ${configHome}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return configHome;
+}
+
+/** Best-effort removal of a per-run worker config. */
+export function cleanupMuseWorkerConfig(configHome: string): void {
+  try {
+    fs.rmSync(configHome, { recursive: true, force: true });
+  } catch {
+    // Tmp reaping covers leftovers; a run must never fail on cleanup.
+  }
+}
+
+/**
+ * Project MCP config paths that can contribute servers to a run in `cwd`
+ * (NOT-671): `cwd` itself up to the filesystem root, since Muse loads
+ * project entries from the repository root down to the cwd.
+ */
+export function museProjectMcpPaths(cwd: string): string[] {
+  const paths: string[] = [];
+  let dir = path.resolve(cwd);
+  for (;;) {
+    paths.push(path.join(dir, '.mcp.json'));
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      return paths;
+    }
+    dir = parent;
+  }
+}
+
+function museMcpServerNames(documentText: string): string[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(documentText) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  const servers = (parsed as Record<string, unknown>).mcpServers;
+  if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) {
+    return [];
+  }
+  return Object.keys(servers as Record<string, unknown>);
+}
+
+/**
+ * Non-`agent-deck` servers defined by project MCP configs for `cwd` (NOT-671).
+ * Any entry here fails the run closed before spawn: in a trusted workspace
+ * Muse would load it alongside the run entry, so the worker MCP session
+ * cannot be proven isolated to the run entry. A project `agent-deck` entry
+ * is NOT covered here — it is allowed (see
+ * `findMuseProjectAgentDeckEntries`): same-name project entries shadow the
+ * user-settings entry only in a trusted workspace, and the worker is never
+ * trusted. Unparseable project files fail closed too — an unreadable config
+ * cannot be proven isolated.
+ */
+export function findMuseForeignProjectServers(
+  cwd: string,
+  readFile: MuseFileReader,
+): Array<{ configPath: string; server: string }> {
+  const foreign: Array<{ configPath: string; server: string }> = [];
+  for (const configPath of museProjectMcpPaths(cwd)) {
+    const text = readFile(configPath);
+    if (text === null) {
+      continue;
+    }
+    const names = museMcpServerNames(text);
+    if (names === null) {
+      foreign.push({ configPath, server: '<unparseable .mcp.json>' });
+      continue;
+    }
+    for (const name of names) {
+      if (name !== 'agent-deck') {
+        foreign.push({ configPath, server: name });
+      }
+    }
+  }
+  return foreign;
+}
+
+/**
+ * Project MCP configs for `cwd` that define their own `agent-deck` server
+ * (NOT-671). Informational only: same-name project entries shadow the
+ * user-settings entry (`docs/design/muse-pure-mcp-connection.md`) solely in
+ * a trusted workspace, and the worker is never trusted (no
+ * `--trust-workspace`/`--yolo` in argv, per-run config holds only
+ * settings.json and auth.json with no persisted trust), so a project entry
+ * cannot shadow the run's token-bearing entry — start and resume allow it.
+ * Unparseable project files are NOT reported here (the foreign finder above
+ * already fails closed on those).
+ */
+export function findMuseProjectAgentDeckEntries(
+  cwd: string,
+  readFile: MuseFileReader,
+): string[] {
+  const shadowed: string[] = [];
+  for (const configPath of museProjectMcpPaths(cwd)) {
+    const text = readFile(configPath);
+    if (text === null) {
+      continue;
+    }
+    const names = museMcpServerNames(text);
+    if (names === null) {
+      continue;
+    }
+    if (names.includes('agent-deck')) {
+      shadowed.push(configPath);
+    }
+  }
+  return shadowed;
 }
 
 export type MuseProbeResult = { code: number; stdout: string; stderr: string };
@@ -246,11 +529,81 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value ? value : null;
 }
 
+/** Client denial kind carried by the `denial` normalized event (never `mcp_tool`). */
+export type MuseClientDenialKind = Extract<
+  NormalizedEvent,
+  { kind: 'denial' }
+>['denialKind'];
+
+/** Marks a client-reported refusal in payload reason/error/status fields. */
+export const MUSE_DENIAL_PATTERN = /denied|blocked|sandbox|not allowed|needs approval|approval required/i;
+
+function museDenialKind(message: string): MuseClientDenialKind {
+  if (/writ|file|edit|save|mkdir|delete|unlink|director/i.test(message)) {
+    return 'file_write';
+  }
+  if (/command|shell|exec|terminal|bash|script/i.test(message)) {
+    return 'shell';
+  }
+  if (/network|http|fetch|url|request|connect/i.test(message)) {
+    return 'network';
+  }
+  return 'client_tool';
+}
+
+export type MuseDenialSignal = {
+  target: string;
+  reason: string;
+  denialKind: MuseClientDenialKind;
+};
+
+/**
+ * Client-reported refusal in one JSONL payload (NOT-671): an explicit
+ * `denied: true`, a denied/blocked status or policy decision, or a
+ * reason/error matching {@link MUSE_DENIAL_PATTERN}. Free answer text
+ * (`run.output.delta`, terminal `text`) is deliberately NOT scanned — an
+ * agent explaining the profile would otherwise record phantom denials. The
+ * run service records each signal on the run with the effective profile
+ * (`source: "client"`). Heuristic: the operator profile runs verify muse
+ * surfaces refusals in these fields, and refine the matchers when it does
+ * not. Never throws.
+ */
+export function museDenialFromPayload(
+  payloadType: string,
+  payload: Record<string, unknown> | null,
+): MuseDenialSignal | null {
+  if (!payload || payloadType === 'run.output.delta' || payloadType === 'turn.input.user') {
+    return null;
+  }
+  const decision = nonEmptyString(payload.policy_decision);
+  const deniedFlag = payload.denied === true;
+  const status = nonEmptyString(payload.status) ?? nonEmptyString(payload.state);
+  const reason =
+    nonEmptyString(payload.reason) ??
+    nonEmptyString(payload.error) ??
+    nonEmptyString(payload.message);
+  const denied =
+    deniedFlag ||
+    (decision !== null && /denied|blocked|reject/i.test(decision)) ||
+    (status !== null && /denied|blocked|rejected/i.test(status)) ||
+    (reason !== null && MUSE_DENIAL_PATTERN.test(reason));
+  if (!denied) {
+    return null;
+  }
+  const operation = nonEmptyString(payload.operation);
+  const item = asRecord(payload.record);
+  const toolName = item ? (nonEmptyString(item.tool_name) ?? nonEmptyString(item.call_id)) : null;
+  const target = (toolName ?? operation ?? reason ?? decision ?? status ?? payloadType).slice(0, 200);
+  const detail = (reason ?? decision ?? status ?? 'denied').slice(0, 500);
+  return { target, reason: detail, denialKind: museDenialKind(`${target} ${detail}`) };
+}
+
 /**
  * Map one `muse exec --json` stdout line onto normalized events. The session
  * id is captured from `stream: {kind: "session", id}` on every record (no
  * log line); `run.output.delta` becomes `text`; `tool_batch.effect.started`
- * becomes `tool`; `run.terminal.completed` becomes `result` (subtype
+ * becomes `tool`; client-reported refusals become `denial` (ahead of the
+ * line's other events); `run.terminal.completed` becomes `result` (subtype
  * `success`, result text); any other `run.terminal.*` becomes `result`
  * (subtype `failed`). Unknown kinds are ignored so a newer CLI cannot break
  * the log. Never throws: unparseable lines become `notice`.
@@ -287,6 +640,20 @@ export function museEventsFromLine(line: string, ctx: MuseLineContext): Normaliz
     return [];
   }
   const payload = asRecord(record.payload);
+  const denial = museDenialFromPayload(payloadType, payload);
+  const denialPrefix = denial
+    ? [
+        withSession(
+          {
+            kind: 'denial' as const,
+            target: denial.target,
+            reason: denial.reason,
+            denialKind: denial.denialKind,
+          },
+          ctx,
+        ),
+      ]
+    : [];
 
   if (payloadType === 'run.output.delta') {
     const text = payload ? nonEmptyString(payload.text) : null;
@@ -298,7 +665,7 @@ export function museEventsFromLine(line: string, ctx: MuseLineContext): Normaliz
       (item ? nonEmptyString(item.tool_name) : null) ??
       (item ? nonEmptyString(item.call_id) : null) ??
       'tool';
-    return [withSession({ kind: 'tool', name }, ctx)];
+    return [...denialPrefix, withSession({ kind: 'tool', name }, ctx)];
   }
   if (payloadType === 'run.terminal.completed') {
     const text = payload ? nonEmptyString(payload.text) : null;
@@ -307,9 +674,12 @@ export function museEventsFromLine(line: string, ctx: MuseLineContext): Normaliz
   if (payloadType.startsWith('run.terminal.')) {
     const text = payload ? nonEmptyString(payload.text) : null;
     const reason = payload ? nonEmptyString(payload.reason) : null;
-    return [withSession({ kind: 'result', subtype: 'failed', result: text ?? reason ?? null }, ctx)];
+    return [
+      ...denialPrefix,
+      withSession({ kind: 'result', subtype: 'failed', result: text ?? reason ?? null }, ctx),
+    ];
   }
-  return [];
+  return denialPrefix;
 }
 
 /** Stderr lines matching this surface as `notice` events; others are ignored. */
@@ -423,15 +793,6 @@ function museAuthFilePath(): string {
 }
 
 /**
- * Where `agent-deck use --client muse` writes the agent-deck MCP entry:
- * global Muse settings, then the cwd's project `.mcp.json`. Mirrors
- * resolveConfigPath('muse', 'global' | 'project', cwd) in CLI mcp-config.ts.
- */
-export function museMcpConfigPaths(cwd: string): string[] {
-  return [path.join(museConfigHome(), 'muse', 'settings.json'), path.join(cwd, '.mcp.json')];
-}
-
-/**
  * Non-model signed-in check: META_API_KEY takes priority over the account
  * login (`muse login --help`), otherwise the auth file must record a `meta`
  * provider (token itself lives in the keychain; only the metadata is read).
@@ -448,37 +809,25 @@ export function isMuseSignedIn(readFile: MuseFileReader): boolean {
   return asRecord(providers)?.meta != null;
 }
 
-/**
- * The agent-deck MCP entry must exist in the global Muse settings or the
- * cwd's project `.mcp.json` (whichever `agent-deck use --client muse` wrote);
- * without it no session receipt can ever appear in the log.
- */
-export function hasMuseMcpEntry(cwd: string, readFile: MuseFileReader): boolean {
-  for (const candidate of museMcpConfigPaths(cwd)) {
-    const text = readFile(candidate);
-    if (!text) {
-      continue;
-    }
-    const servers = parseJsonObject(text)?.mcpServers;
-    if (asRecord(servers)?.['agent-deck'] != null) {
-      return true;
-    }
-  }
-  return false;
-}
-
 export type MuseAdapterDeps = {
   bin?: string;
   probe?: MuseProbe;
   spawn?: MuseSpawn;
   readFile?: MuseFileReader;
+  /** Allocate a fresh worker-config directory; defaults to a tmpdir mkdtemp. */
+  makeWorkerConfig?: () => string;
 };
+
+export function defaultMuseMakeWorkerConfig(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-muse-worker-'));
+}
 
 export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
   const bin = deps.bin ?? resolveMuseBin();
   const probe = deps.probe ?? defaultMuseProbe;
   const spawnFn = deps.spawn ?? defaultMuseSpawn;
   const readFile = deps.readFile ?? defaultMuseFileReader;
+  const makeWorkerConfig = deps.makeWorkerConfig ?? defaultMuseMakeWorkerConfig;
 
   return {
     id: 'muse',
@@ -510,59 +859,63 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
             'Pass the session id printed as sessionId in a previous run log.',
         };
       }
-      if (args.tools === 'readonly' && !museReadonlyFlagsSupported(probe, bin)) {
-        return {
-          ok: false,
-          remedy:
-            'muse readonly enforcement unavailable: this muse build does not list --disable-write --disable-shell ' +
-            'in `muse exec --help`. Upgrade to Muse Code 1.4+, then retry. ' +
-            'Refusing to run --tools readonly under default permissions.',
-        };
-      }
-      if (!hasMuseMcpEntry(args.cwd, readFile)) {
-        return {
-          ok: false,
-          remedy:
-            'agent-deck MCP server is not registered with Muse: run `agent-deck setup --client muse` to register it, ' +
-            'then retry. If Muse reports the server needs authorization, run `muse mcp login agent-deck` (see `muse mcp --help`).',
-        };
-      }
-      // NOT-537: `muse exec -c` only sets session settings (unknown keys
-      // refuse the run), not MCP server env — and MCP stdio servers never
-      // see inherited process env. A pinned run would silently read the live
-      // playbook, so fail closed before any model work.
-      if (args.playbookPin) {
-        return {
-          ok: false,
-          remedy:
-            '--playbook-version is not supported with --client muse: muse has no per-run MCP env override, so the pin would never reach the session. Re-run with --client codex or --client claude.',
-        };
-      }
-      // The run's deck came from an MCP session and a headerless connection
-      // from this folder would bind another deck; muse has no per-run MCP
-      // override to carry the launch deck header, so fail closed instead of
-      // running on the wrong deck.
-      if (args.launchDeckId && args.headerlessDeckMismatch) {
-        return {
-          ok: false,
-          remedy:
-            'This session\'s deck differs from the folder\'s deck (or the default deck), and --client muse cannot carry the session deck to its MCP connection. Re-run with --client codex or --client claude.',
-        };
-      }
+      // NOT-671: the profile flags are verified in profileEnforcement; the
+      // agent-deck MCP entry is written per run into the worker config (no
+      // pre-registration needed); the playbook pin and the launch deck
+      // travel as headers in that entry. No rejection here.
       // Never trust the workspace from run: no --trust-workspace/--yolo, so
       // trustOverride stays false and the untrusted warning surfaces as a
       // notice (agent delegation unavailable is a known limit).
       return { ok: true, trustOverride: false };
     },
 
-    profileEnforcement() {
-      // NOT-669: unproven until the Muse mapping sibling lands — every
-      // launch and resume fails here with the remedy and nothing spawns.
-      return {
-        ok: false,
-        remedy:
-          'Worker profile enforcement is not implemented for --client muse yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Muse mapping lands; no process was started.',
-      };
+    profileEnforcement(args: AdapterStartArgs) {
+      // 1. The installed build must list every flag the profile needs.
+      if (!museEnforcementFlagsSupported(probe, bin, args.tools)) {
+        const needed =
+          args.tools === 'readonly'
+            ? '--approval-mode, --disable-write, and --sandbox-network'
+            : '--approval-mode and --disable-sandbox';
+        return {
+          ok: false,
+          remedy:
+            `muse enforcement unavailable (tried "${bin}"): this build does not list ${needed} ` +
+            `in \`muse exec --help\` (verified on ${MUSE_ENFORCEMENT_VERSION_NOTE}). Upgrade Muse Code, then retry. ` +
+            `Refusing to run --tools ${args.tools} without enforceable approval, sandbox, and network boundaries; no process was started.`,
+        };
+      }
+      // 2. Project `.mcp.json` servers (foreign or `agent-deck`) are NOT
+      // rejected: Muse loads the project MCP layer only in a trusted
+      // workspace, and a worker is never trusted (see 3).
+      // 3. A project `agent-deck` entry is NOT rejected: Muse loads project
+      // `.mcp.json` servers only in a trusted workspace, worker argv never
+      // carries `--trust-workspace`/`--yolo` (MUSE_FORBIDDEN_FLAGS), and the
+      // per-run worker config holds only settings.json and auth.json — no
+      // persisted trust — so the project entry cannot shadow the run entry.
+      // 4. The worker config must be writable on this host (a dry run with a
+      // tokenless entry — the token is minted after the gate).
+      let dryRunHome: string | null = null;
+      try {
+        dryRunHome = makeWorkerConfig();
+        setupMuseWorkerConfig({
+          configHome: dryRunHome,
+          settingsDocument: buildMuseWorkerSettingsDocument(
+            buildMuseWorkerMcpEntry({ workspaceRoot: args.cwd }),
+          ),
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          remedy:
+            `muse worker config isolation unavailable: ${error instanceof Error ? error.message : String(error)} ` +
+            'No process was started.',
+        };
+      } finally {
+        if (dryRunHome) {
+          cleanupMuseWorkerConfig(dryRunHome);
+        }
+      }
+      return { ok: true };
     },
 
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
@@ -571,6 +924,13 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
         tools: args.tools,
         ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
       });
+      // Authenticated worker MCP only: without the run token the worker
+      // session could not bind its profile server-side.
+      if (!args.runToken) {
+        throw new Error(
+          'Cannot start a muse worker run without a worker token: the run service always provides one; direct adapter use must pass AdapterStartArgs.runToken.',
+        );
+      }
       if (args.resumeId !== undefined) {
         yield {
           kind: 'notice',
@@ -583,43 +943,73 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
         new Error(
           `muse run failed: ${String(error instanceof Error ? error.message : error).slice(0, 300)}`,
         );
-      let child: MuseChild;
+      // Per-run worker config: the child's XDG_CONFIG_HOME, holding only the
+      // run's MCP entry (the profile gate already proved the config builds
+      // here). The real auth file rides along so sign-in survives.
+      let workerConfig: string | null = null;
       try {
-        child = spawnFn(bin, argv, {
-          cwd: args.cwd,
-          ...(args.control ? { control: args.control } : {}),
+        workerConfig = makeWorkerConfig();
+        const authText = readFile(museAuthFilePath());
+        setupMuseWorkerConfig({
+          configHome: workerConfig,
+          settingsDocument: buildMuseWorkerSettingsDocument(
+            buildMuseWorkerMcpEntry({
+              workspaceRoot: args.cwd,
+              ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+              ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+              runToken: args.runToken,
+            }),
+          ),
+          ...(authText ? { authText } : {}),
         });
       } catch (error) {
-        throw wrapSpawnError(error);
-      }
-      const ctx: MuseLineContext = { sessionId: args.resumeId ?? null };
-      try {
-        for await (const merged of mergeMuseLines(child.stdout, child.stderr)) {
-          if (merged.source === 'err') {
-            const message = museNoticeFromStderr(merged.line);
-            if (message) {
-              yield withSession({ kind: 'notice', message }, ctx);
-            }
-            continue;
-          }
-          for (const event of museEventsFromLine(merged.line, ctx)) {
-            yield event;
-          }
+        if (workerConfig) {
+          cleanupMuseWorkerConfig(workerConfig);
         }
-      } catch (error) {
         throw wrapSpawnError(error);
       }
-      let settled: { code: number | null; stderrTail: string };
       try {
-        settled = await child.wait();
-      } catch (error) {
-        throw wrapSpawnError(error);
-      }
-      const { code, stderrTail } = settled;
-      if (code !== 0) {
-        throw new Error(
-          `muse exited with code ${code}${stderrTail ? `: ${stderrTail.slice(0, 300)}` : ''}`,
-        );
+        let child: MuseChild;
+        try {
+          child = spawnFn(bin, argv, {
+            cwd: args.cwd,
+            ...(args.control ? { control: args.control } : {}),
+            env: { ...process.env, XDG_CONFIG_HOME: workerConfig },
+          });
+        } catch (error) {
+          throw wrapSpawnError(error);
+        }
+        const ctx: MuseLineContext = { sessionId: args.resumeId ?? null };
+        try {
+          for await (const merged of mergeMuseLines(child.stdout, child.stderr)) {
+            if (merged.source === 'err') {
+              const message = museNoticeFromStderr(merged.line);
+              if (message) {
+                yield withSession({ kind: 'notice', message }, ctx);
+              }
+              continue;
+            }
+            for (const event of museEventsFromLine(merged.line, ctx)) {
+              yield event;
+            }
+          }
+        } catch (error) {
+          throw wrapSpawnError(error);
+        }
+        let settled: { code: number | null; stderrTail: string };
+        try {
+          settled = await child.wait();
+        } catch (error) {
+          throw wrapSpawnError(error);
+        }
+        const { code, stderrTail } = settled;
+        if (code !== 0) {
+          throw new Error(
+            `muse exited with code ${code}${stderrTail ? `: ${stderrTail.slice(0, 300)}` : ''}`,
+          );
+        }
+      } finally {
+        cleanupMuseWorkerConfig(workerConfig);
       }
     },
   };

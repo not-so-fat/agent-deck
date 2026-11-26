@@ -462,11 +462,13 @@ key instead); API-key setup is otherwise out of scope for this path.
                          claude runs isolated (no project/user settings) under
                          canUseTool-gated default mode with explicit rules; codex maps
                          --tools to -s read-only|workspace-write plus
-                         approval never; cursor maps --tools edit to --force
-                         (readonly passes no write flag) and all log lines
-                         land when the run ends; muse maps readonly to
-                         --disable-write --disable-shell (edit uses the
-                         default bounded permissions).
+                         approval never; cursor maps --tools to --sandbox
+                         enabled --plan (readonly) or --sandbox disabled
+                         --force (edit), both with --approve-mcps; all log
+                         lines land when the run ends; muse maps --tools to
+                         --approval-mode never plus --disable-write and
+                         --sandbox-network restricted (readonly) or
+                         --disable-sandbox (edit).
   --cwd <dir>            Required. Session working directory.
   --prompt <text>        Brief text (exactly one of --prompt/--prompt-file).
   --prompt-file <path>   Brief read from a file.

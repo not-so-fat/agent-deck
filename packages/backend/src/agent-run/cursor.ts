@@ -1,10 +1,11 @@
 /**
- * Cursor adapter for `agent-deck run` (NOT-406).
+ * Cursor adapter for `agent-deck run` (NOT-406; worker-profile enforcement NOT-671).
  *
  * Drives `cursor-agent -p --trust --output-format json` (start and resume, the
  * latter adding `--resume <chatId>`) as a child process and maps the single
  * result object onto normalized events. Verified against cursor-agent
- * 2026.10.01 (`cursor-agent --help`, `cursor-agent status --format json`):
+ * 2026.10.01 (`cursor-agent --help`, `cursor-agent status --format json`) for
+ * the output shape and 2026.11.22 for the enforcement flags:
  *
  * - Output format is single-shot `json`, not `stream-json`: the stream-json
  *   event shape is uncaptured (no incremental events were observed), while
@@ -14,19 +15,49 @@
  * - The answer text is yielded as one `text` event (so the shared session
  *   receipt check sees it) followed by `result`; the full result object is
  *   the `result` payload.
- * - Tool mapping: `readonly` passes no write-enabling flag; `edit` passes
- *   `--force`. `--yolo` (an alias for `--force`) is never passed and no
- *   option can select it; `--approve-mcps` is never passed (separate owner
- *   decision required).
+ * - Tool mapping (NOT-671): the sandbox value is explicit per profile —
+ *   `readonly` passes `--sandbox enabled --plan` (read-only/planning mode,
+ *   no edits) and `edit` passes `--sandbox disabled --force` (`--force` is
+ *   command preapproval, "allow commands unless explicitly denied", not a
+ *   sandbox; the Linux box defaults to a disabled Cursor sandbox and its
+ *   AppArmor configuration cannot start the sandbox at all, which the
+ *   operator probe proved by exiting before running anything — so edit
+ *   selects disabled explicitly instead of inheriting the default). Both
+ *   profiles pass `--approve-mcps` (preapproved MCP, isolated to the run's
+ *   own entry, so no prompt can occur). `--yolo` (an alias for `--force`)
+ *   is never passed and no option can select it. Every enforcement flag
+ *   is verified in `cursor-agent --help` before spawn; a build without
+ *   any of them fails closed with an upgrade remedy and nothing spawns.
+ *   Readonly additionally requires the sandbox to be startable on this
+ *   host (see `cursorSandboxHostSupport`): flag presence alone is not
+ *   enough, because the target host lists the flags yet cannot start the
+ *   sandbox — such a host rejects readonly before spawn as
+ *   `profile_unsupported` instead of failing opaquely mid-run.
+ * - Per-run MCP identity (NOT-671): the child spawns with `HOME` pointed at
+ *   a per-run worker home whose `.cursor/mcp.json` holds ONLY the run's
+ *   `agent-deck` entry (daemon URL plus the workspace, launch-deck,
+ *   playbook-pin, and worker-token headers), so `--approve-mcps` can only
+ *   approve that entry and the worker's MCP session always carries its
+ *   token. Every other entry of the real home (and of the real `.cursor`
+ *   dir) is symlinked into the worker home, so sign-in, chats (resume),
+ *   and agent-home reads/writes keep working; only `mcp.json` is per-run.
+ *   New agent-home paths the run creates inside the worker home are
+ *   mirrored back to the real home before cleanup (see
+ *   `syncCursorWorkerHomeWrites`), so edit runs keep their home side
+ *   effects; only the worker's `mcp.json` itself is never copied back.
+ *   A project `.cursor/mcp.json` (cwd up to the filesystem root) that
+ *   defines any non-`agent-deck` server fails closed before spawn, because
+ *   `--approve-mcps` would approve it too. A project `agent-deck` entry
+ *   also fails closed before spawn: Cursor prefers the project entry over
+ *   the user entry (`expectedPrecedence: 'project-over-global'` in
+ *   `inspectCursorMcpConfig`), so it would shadow the worker home's
+ *   token-bearing run entry and the worker would connect without its run
+ *   token and effective profile.
  * - Deck receipt is mandatory on start (not resume): a success whose output
  *   lacks a `◆ ... ·` display_summary line fails closed as `error`, because
- *   Cursor's global MCP entry is last-workspace-wins and a missing receipt
- *   would otherwise look like a correctly bound run. Resume is exempt (the
- *   harness prints the receipt on the first turn only).
- * - `--force` means "allow commands unless explicitly denied" (auto-approval),
- *   and `-p` help says print mode "has access to all tools, including write
- *   and shell", so whether readonly truly cannot write is settled by the
- *   operator edit-vs-readonly test, not by the flags.
+ *   a missing receipt would otherwise look like a correctly bound run.
+ *   Resume is exempt (the harness prints the receipt on the first turn
+ *   only).
  * - `--trust` is passed on every launch (the caller named --cwd explicitly)
  *   and recorded as `trustOverride: true` in meta.json — the existing meta
  *   field for "launch bypassed a client workspace-trust guard". Without it
@@ -41,17 +72,26 @@
  *   options. Resume ids starting with `-` fail closed in planStart.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import readline from 'node:readline';
 
 import {
+  formatRunPlaybookPin,
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
+  type RunPlaybookPin,
   type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
 
 export const CURSOR_JSON_VERSION_NOTE = 'cursor-agent 2026.10.01';
+
+/** Enforcement flags verified against this build (`cursor-agent --help`). */
+export const CURSOR_ENFORCEMENT_VERSION_NOTE = 'cursor-agent 2026.11.22';
 
 /** Single-shot result object; stream-json incremental shape is unverified. */
 export const CURSOR_OUTPUT_FORMAT = 'json';
@@ -82,23 +122,507 @@ export function assertSafeCursorResumeId(resumeId: string): void {
 }
 
 /**
+ * Sandbox value per profile (NOT-671): `readonly` needs the sandbox on
+ * (plan mode alone does not confine shell filesystem access); `edit`
+ * selects it off explicitly — the operator probe proved the target Linux
+ * host cannot start the Cursor sandbox at all (AppArmor), so edit must
+ * not inherit `--sandbox enabled` and exit before running anything.
+ * `--force` stays command preapproval, not a sandbox.
+ */
+export const CURSOR_SANDBOX_FOR_PROFILE: Record<RunToolsProfile, 'enabled' | 'disabled'> = {
+  readonly: 'enabled',
+  edit: 'disabled',
+};
+
+/**
+ * Profile flags (NOT-671): `readonly` runs plan mode (no edits) without
+ * command preapproval; `edit` runs the default mode with `--force` command
+ * preapproval. `--force` is NOT a sandbox — the sandbox value comes from
+ * {@link CURSOR_SANDBOX_FOR_PROFILE} (see {@link buildCursorArgv}).
+ */
+export const CURSOR_FLAGS_FOR_PROFILE: Record<RunToolsProfile, readonly string[]> = {
+  readonly: ['--plan'],
+  edit: ['--force'],
+};
+
+/** Flags that must never appear in generated argv (bypass checks). */
+export const CURSOR_FORBIDDEN_FLAGS: readonly string[] = ['--yolo'];
+
+/**
  * Pure argv builder (everything after the `cursor-agent` binary):
- * `-p --trust --output-format json [--force] [--resume <id>] -- <prompt>`.
- * `--force` only for the edit profile; `--yolo` and `--approve-mcps` are
- * never emitted. The `--` terminator keeps dash-leading prompts from being
- * parsed as cursor-agent options.
+ * `-p --trust --output-format json --sandbox <enabled|disabled>
+ * [--plan | --force] --approve-mcps [--resume <id>] -- <prompt>`.
+ * The sandbox value is explicit per profile (`--sandbox enabled` for
+ * readonly, `--sandbox disabled` for edit — edit must not inherit an
+ * unstartable sandbox); `--approve-mcps` preapproves the run's own MCP
+ * entry (isolated via the worker home, so no prompt can occur);
+ * `--plan` only for readonly, `--force` only for edit; `--yolo` is never
+ * emitted. The `--` terminator keeps dash-leading prompts from being parsed
+ * as cursor-agent options.
  */
 export function buildCursorArgv(args: CursorArgvArgs): string[] {
-  const argv = ['-p', '--trust', '--output-format', CURSOR_OUTPUT_FORMAT];
-  if (args.tools === 'edit') {
-    argv.push('--force');
-  }
+  const argv = [
+    '-p',
+    '--trust',
+    '--output-format',
+    CURSOR_OUTPUT_FORMAT,
+    '--sandbox',
+    CURSOR_SANDBOX_FOR_PROFILE[args.tools],
+  ];
+  argv.push(...CURSOR_FLAGS_FOR_PROFILE[args.tools]);
+  argv.push('--approve-mcps');
   if (args.resumeId !== undefined) {
     assertSafeCursorResumeId(args.resumeId);
     argv.push('--resume', args.resumeId);
   }
   argv.push('--', args.prompt);
   return argv;
+}
+
+/**
+ * Help-text markers the installed `cursor-agent` must list for enforcement
+ * (NOT-671). `--plan` and `--mode` are alternatives (the former is shorthand
+ * for `--mode plan`); the other two are required literally.
+ */
+export const CURSOR_ENFORCEMENT_HELP_MARKERS: readonly string[] = [
+  '--sandbox',
+  '--approve-mcps',
+];
+
+export function cursorHelpTextSupportsEnforcement(helpText: string): boolean {
+  return (
+    CURSOR_ENFORCEMENT_HELP_MARKERS.every((flag) => helpText.includes(flag)) &&
+    (helpText.includes('--plan') || helpText.includes('--mode'))
+  );
+}
+
+/**
+ * Enforcement support probe (NOT-671): `cursor-agent --help` must exit 0 and
+ * list `--sandbox`, `--approve-mcps`, and `--plan`/`--mode`. Help text, not a
+ * model call. A build without any of them cannot enforce the profile, so the
+ * run fails closed with an upgrade remedy and nothing spawns.
+ */
+export function cursorEnforcementFlagsSupported(
+  probe: (bin: string, argv: string[]) => { code: number; stdout: string; stderr: string },
+  bin: string,
+): boolean {
+  const help = probe(bin, ['--help']);
+  if (help.code !== 0) {
+    return false;
+  }
+  return cursorHelpTextSupportsEnforcement(`${help.stdout}\n${help.stderr}`);
+}
+
+export type CursorSandboxHostSupport = { supported: boolean; reason?: string };
+
+/**
+ * Authoritative, model-free startability probe for cursor-agent's
+ * `--sandbox enabled` runtime (NOT-671): `cursor-agent sandbox run true`
+ * runs Cursor's own sandbox policy generation and runtime preflight. Exit 0
+ * means the sandbox starts on this host; any non-zero exit, timeout, or
+ * spawn error means it cannot. `detail` carries the probe's first error line.
+ */
+export type CursorSandboxProbeResult = { ok: boolean; detail?: string };
+export type CursorSandboxProbe = (bin: string) => CursorSandboxProbeResult;
+
+export const CURSOR_SANDBOX_PROBE_ARGS: readonly string[] = ['sandbox', 'run', 'true'];
+const CURSOR_SANDBOX_PROBE_TIMEOUT_MS = 20_000;
+
+/** First line that names an error, else the first non-empty line. */
+export function firstCursorProbeErrorLine(output: string): string | undefined {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.find((line) => /error|unsupported|failed/i.test(line)) ?? lines[0];
+}
+
+export function defaultCursorSandboxProbe(bin: string): CursorSandboxProbeResult {
+  try {
+    const probed = spawnSync(bin, [...CURSOR_SANDBOX_PROBE_ARGS], {
+      encoding: 'utf8',
+      timeout: CURSOR_SANDBOX_PROBE_TIMEOUT_MS,
+      cwd: os.tmpdir(),
+    });
+    if (probed.error) {
+      return { ok: false, detail: probed.error.message };
+    }
+    if (probed.status === 0) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      detail:
+        firstCursorProbeErrorLine(`${probed.stderr ?? ''}\n${probed.stdout ?? ''}`) ??
+        (probed.signal ? `terminated by ${probed.signal}` : `exit ${String(probed.status)}`),
+    };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Whether this host can start cursor-agent's `--sandbox enabled` runtime
+ * (NOT-671): readonly-only — edit passes `--sandbox disabled` and never
+ * needs the sandbox. Decided solely by Cursor's own preflight probe
+ * (`cursor-agent sandbox run true`), on every platform: fail-closed on any
+ * non-zero exit, timeout, or error.
+ */
+export function cursorSandboxHostSupport(input: {
+  bin: string;
+  sandboxProbe: CursorSandboxProbe;
+}): CursorSandboxHostSupport {
+  const result = input.sandboxProbe(input.bin);
+  if (result.ok) {
+    return { supported: true };
+  }
+  return {
+    supported: false,
+    reason:
+      `\`${input.bin} ${CURSOR_SANDBOX_PROBE_ARGS.join(' ')}\` failed` +
+      (result.detail ? ` (${result.detail})` : '') +
+      ', so cursor-agent --sandbox enabled cannot start here',
+  };
+}
+
+/**
+ * Header names the run's MCP entry sends. Literals (not `@agent-deck/shared` —
+ * this module imports node built-ins and siblings only, NOT-479); they must
+ * match `AGENT_DECK_WORKSPACE_HEADER` / `AGENT_DECK_PLAYBOOK_PIN_HEADER` /
+ * `AGENT_DECK_DECK_ID_HEADER` / `AGENT_DECK_RUN_TOKEN_HEADER`.
+ */
+export const CURSOR_WORKER_WORKSPACE_HEADER = 'x-agent-deck-workspace';
+export const CURSOR_WORKER_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
+export const CURSOR_WORKER_LAUNCH_DECK_HEADER = 'x-agent-deck-deck-id';
+export const CURSOR_WORKER_RUN_TOKEN_HEADER = 'x-agent-deck-run-token';
+
+/**
+ * MCP endpoint the worker entry preserves. Malformed values fall back to the
+ * defaults rather than breaking a run.
+ */
+export function cursorWorkerEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+): { port: string; host: string } {
+  const port = env.AGENT_DECK_MCP_PORT?.trim() ?? '';
+  const host = env.AGENT_DECK_HOST?.trim() ?? '';
+  return {
+    port: /^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535 ? port : '1110',
+    host: host ? host : '127.0.0.1',
+  };
+}
+
+export type CursorWorkerMcpEntryInput = {
+  workspaceRoot: string;
+  playbookPin?: RunPlaybookPin;
+  launchDeckId?: string;
+  runToken?: string;
+};
+
+/**
+ * The run's `agent-deck` MCP entry for the worker home's `.cursor/mcp.json`
+ * (NOT-671): the daemon URL plus the workspace header, the playbook pin, the
+ * launch deck header, and/or the worker token header when the run has them.
+ * Same `{ url, headers }` shape `agent-deck use --client cursor` writes for
+ * per-folder entries — only the headers are per-run.
+ */
+export function buildCursorWorkerMcpEntry(
+  input: CursorWorkerMcpEntryInput,
+  endpoint: { port: string; host: string } = cursorWorkerEndpoint(),
+): Record<string, unknown> {
+  const headers: Record<string, string> = {
+    [CURSOR_WORKER_WORKSPACE_HEADER]: input.workspaceRoot,
+    ...(input.playbookPin
+      ? { [CURSOR_WORKER_PLAYBOOK_PIN_HEADER]: formatRunPlaybookPin(input.playbookPin) }
+      : {}),
+    ...(input.launchDeckId ? { [CURSOR_WORKER_LAUNCH_DECK_HEADER]: input.launchDeckId } : {}),
+    ...(input.runToken ? { [CURSOR_WORKER_RUN_TOKEN_HEADER]: input.runToken } : {}),
+  };
+  return {
+    url: `http://${endpoint.host}:${endpoint.port}/mcp`,
+    headers,
+  };
+}
+
+/** Full `.cursor/mcp.json` document holding ONLY the run's entry. */
+export function buildCursorWorkerMcpDocument(entry: Record<string, unknown>): Record<string, unknown> {
+  return { mcpServers: { 'agent-deck': entry } };
+}
+
+/**
+ * Project MCP config paths that can contribute servers to a run in `cwd`
+ * (NOT-671): `cwd` itself up to the filesystem root, since Cursor resolves
+ * the project entry from the project root, not necessarily the run cwd.
+ */
+export function cursorProjectMcpPaths(cwd: string): string[] {
+  const paths: string[] = [];
+  let dir = path.resolve(cwd);
+  for (;;) {
+    paths.push(path.join(dir, '.cursor', 'mcp.json'));
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      return paths;
+    }
+    dir = parent;
+  }
+}
+
+export type CursorFileReader = (path: string) => string | null;
+
+export function defaultCursorFileReader(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function mcpServerNames(documentText: string): string[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(documentText) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  const servers = (parsed as Record<string, unknown>).mcpServers;
+  if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) {
+    return [];
+  }
+  return Object.keys(servers as Record<string, unknown>);
+}
+
+/**
+ * Non-`agent-deck` servers defined by project MCP configs for `cwd` (NOT-671).
+ * Any entry here fails the run closed before spawn: `--approve-mcps`
+ * approves every loaded server, so a foreign project server cannot be
+ * isolated to the run entry. A project `agent-deck` entry is NOT covered
+ * here — it fails closed separately (see
+ * `findCursorProjectAgentDeckEntries`): Cursor prefers the project entry
+ * over the user entry, so it would shadow the run's authenticated entry.
+ * Unparseable project files fail closed too — an unreadable config cannot
+ * be proven isolated.
+ *
+ * `realHome` (when given) excludes that home's own `.cursor/mcp.json` from
+ * the walk: it is the user config, shadowed by the worker home, so its
+ * servers can never load. Without the exclusion every user with a foreign
+ * global MCP server would fail the gate. Edge case: a run whose cwd IS the
+ * home directory would still load that file as the project entry — such
+ * runs should use a workspace directory below the home.
+ */
+export function findCursorForeignProjectServers(
+  cwd: string,
+  readFile: CursorFileReader,
+  realHome?: string,
+): Array<{ configPath: string; server: string }> {
+  const foreign: Array<{ configPath: string; server: string }> = [];
+  const excluded =
+    realHome === undefined ? null : path.join(path.resolve(realHome), '.cursor', 'mcp.json');
+  for (const configPath of cursorProjectMcpPaths(cwd)) {
+    if (excluded !== null && configPath === excluded) {
+      continue;
+    }
+    const text = readFile(configPath);
+    if (text === null) {
+      continue;
+    }
+    const names = mcpServerNames(text);
+    if (names === null) {
+      foreign.push({ configPath, server: '<unparseable mcp.json>' });
+      continue;
+    }
+    for (const name of names) {
+      if (name !== 'agent-deck') {
+        foreign.push({ configPath, server: name });
+      }
+    }
+  }
+  return foreign;
+}
+
+/**
+ * Project MCP configs for `cwd` that define their own `agent-deck` server
+ * (NOT-671 repair round 3). Any entry here fails the run closed before
+ * spawn: Cursor prefers the project entry over the user entry
+ * (`expectedPrecedence: 'project-over-global'` in `inspectCursorMcpConfig`,
+ * `packages/cli/src/cursor-mcp-inspect.ts`), so a project `agent-deck`
+ * entry would shadow the worker home's token-bearing run entry and the
+ * worker would connect without its run token and effective profile — on
+ * resume as well as start (resume carries no new deck receipt to catch the
+ * mismatch). Unparseable project files are NOT reported here (the foreign
+ * finder above already fails closed on those). The `realHome` exclusion
+ * mirrors the foreign finder: that file is the user config the worker home
+ * shadows, so its `agent-deck` entry can never load.
+ */
+export function findCursorProjectAgentDeckEntries(
+  cwd: string,
+  readFile: CursorFileReader,
+  realHome?: string,
+): string[] {
+  const shadowed: string[] = [];
+  const excluded =
+    realHome === undefined ? null : path.join(path.resolve(realHome), '.cursor', 'mcp.json');
+  for (const configPath of cursorProjectMcpPaths(cwd)) {
+    if (excluded !== null && configPath === excluded) {
+      continue;
+    }
+    const text = readFile(configPath);
+    if (text === null) {
+      continue;
+    }
+    const names = mcpServerNames(text);
+    if (names === null) {
+      continue;
+    }
+    if (names.includes('agent-deck')) {
+      shadowed.push(configPath);
+    }
+  }
+  return shadowed;
+}
+
+/**
+ * Create the per-run worker home (NOT-671): a fresh directory whose
+ * `.cursor/mcp.json` holds ONLY the run's entry, with every other entry of
+ * the real home — and of the real `.cursor` dir — symlinked in, so sign-in,
+ * chats (resume), skills, and agent-home reads/writes keep working while
+ * only `mcp.json` is per-run. Returns the worker home path. Throws with an
+ * actionable message when the overlay cannot be built; the caller removes
+ * the directory afterwards (best effort).
+ */
+export function setupCursorWorkerHome(input: {
+  workerHome: string;
+  realHome: string;
+  mcpDocument: Record<string, unknown>;
+}): string {
+  const { workerHome, realHome, mcpDocument } = input;
+  fs.mkdirSync(path.join(workerHome, '.cursor'), { recursive: true });
+  const linkIfMissing = (target: string, linkPath: string): void => {
+    try {
+      fs.lstatSync(linkPath);
+      return;
+    } catch {
+      // Missing: create the symlink below.
+    }
+    fs.symlinkSync(target, linkPath);
+  };
+  let homeEntries: string[];
+  try {
+    homeEntries = fs.readdirSync(realHome);
+  } catch (error) {
+    throw new Error(
+      `Cannot isolate the cursor worker config: cannot read home directory ${realHome}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const entry of homeEntries) {
+    if (entry === '.cursor') {
+      continue;
+    }
+    linkIfMissing(path.join(realHome, entry), path.join(workerHome, entry));
+  }
+  try {
+    for (const entry of fs.readdirSync(path.join(realHome, '.cursor'))) {
+      if (entry === 'mcp.json') {
+        continue;
+      }
+      linkIfMissing(path.join(realHome, '.cursor', entry), path.join(workerHome, '.cursor', entry));
+    }
+  } catch {
+    // No real `.cursor` dir (fresh machine): the worker home's own
+    // `.cursor/mcp.json` below is still complete.
+  }
+  fs.writeFileSync(
+    path.join(workerHome, '.cursor', 'mcp.json'),
+    `${JSON.stringify(mcpDocument, null, 2)}\n`,
+    'utf8',
+  );
+  return workerHome;
+}
+
+/** Best-effort removal of a per-run worker home (symlinks, never targets). */
+export function cleanupCursorWorkerHome(workerHome: string): void {
+  try {
+    fs.rmSync(workerHome, { recursive: true, force: true });
+  } catch {
+    // Tmp reaping covers leftovers; a run must never fail on cleanup.
+  }
+}
+
+/**
+ * Move run-created agent-home entries back to the real home (NOT-671). The
+ * worker home is a symlink overlay: writes through symlinked entries (every
+ * entry the real home had at setup) already landed in the real home, but a
+ * new top-level path the agent created (e.g. `$HOME/profile-proof.txt` or
+ * `$HOME/new-dir/`) is a real entry inside the temporary worker home, and
+ * cleanup would delete it. Every such top-level entry is moved into the real
+ * home, except:
+ * - `.cursor` — the overlay's own config dir (it holds the per-run
+ *   authenticated `mcp.json`, which must never leak into the user config);
+ * - symlinks — the overlay links themselves;
+ * - conflicts — when the real home already has that name (created
+ *   concurrently), the real entry is kept untouched and the name is
+ *   returned in `conflicts` for the caller to report.
+ * Throws the first move error after attempting every entry; the caller
+ * reports it without failing the run.
+ */
+export function syncCursorWorkerHomeWrites(input: { workerHome: string; realHome: string }): {
+  moved: string[];
+  conflicts: string[];
+} {
+  const { workerHome, realHome } = input;
+  const moved: string[] = [];
+  const conflicts: string[] = [];
+  let firstError: unknown = null;
+  for (const entry of fs.readdirSync(workerHome)) {
+    if (entry === '.cursor') {
+      continue;
+    }
+    const from = path.join(workerHome, entry);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(from);
+    } catch {
+      continue; // Vanished mid-run; nothing to preserve.
+    }
+    if (stat.isSymbolicLink()) {
+      continue;
+    }
+    const to = path.join(realHome, entry);
+    let exists = true;
+    try {
+      fs.lstatSync(to);
+    } catch {
+      exists = false;
+    }
+    if (exists) {
+      conflicts.push(entry);
+      continue;
+    }
+    try {
+      try {
+        fs.renameSync(from, to);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EXDEV') {
+          throw error;
+        }
+        // Different filesystems (tmp vs home): copy, then drop the source.
+        fs.cpSync(from, to, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
+        fs.rmSync(from, { recursive: true, force: true });
+      }
+      moved.push(entry);
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  if (firstError !== null && firstError !== undefined) {
+    throw new Error(
+      `Cannot write cursor worker-home changes back to ${realHome}: ` +
+        `${firstError instanceof Error ? firstError.message : String(firstError)}`,
+    );
+  }
+  return { moved, conflicts };
 }
 
 export type CursorProbeResult = { code: number; stdout: string; stderr: string };
@@ -267,11 +791,105 @@ function toolNames(value: unknown): string[] {
   return names;
 }
 
+/** Client denial kind carried by the `denial` normalized event (never `mcp_tool`). */
+export type CursorClientDenialKind = Extract<
+  NormalizedEvent,
+  { kind: 'denial' }
+>['denialKind'];
+
+/** Marks a client-reported refusal in warnings, messages, errors, and tool status. */
+export const CURSOR_DENIAL_PATTERN = /denied|blocked|sandbox|not allowed|needs approval|approval required/i;
+
+function cursorDenialKind(message: string): CursorClientDenialKind {
+  if (/writ|file|edit|save|mkdir|delete|unlink|director/i.test(message)) {
+    return 'file_write';
+  }
+  if (/command|shell|exec|terminal|bash|script/i.test(message)) {
+    return 'shell';
+  }
+  if (/network|http|fetch|url|request|connect/i.test(message)) {
+    return 'network';
+  }
+  return 'client_tool';
+}
+
+export type CursorDenialSignal = {
+  target: string;
+  reason: string;
+  denialKind: CursorClientDenialKind;
+};
+
+/**
+ * Client-reported refusals in the single-shot result object (NOT-671): every
+ * warning/notice/message/error string matching {@link CURSOR_DENIAL_PATTERN},
+ * plus tool records carrying an explicit denied/blocked status. Free answer
+ * text is deliberately NOT scanned — an agent explaining the profile would
+ * otherwise record phantom denials. The run service records each signal on
+ * the run with the effective profile (`source: "client"`). Heuristic: the
+ * operator profile runs verify cursor-agent surfaces refusals in these
+ * fields, and refine the matchers when it does not.
+ */
+export function cursorDenialsFromResult(
+  resultObject: Record<string, unknown>,
+): CursorDenialSignal[] {
+  const denials: CursorDenialSignal[] = [];
+  const candidates = [
+    ...stringArray(resultObject.warnings),
+    ...stringArray(resultObject.notices),
+    ...stringArray(resultObject.messages),
+  ];
+  const errorText = nonEmptyString(resultObject.error);
+  if (errorText) {
+    candidates.push(errorText);
+  }
+  for (const text of candidates) {
+    if (CURSOR_DENIAL_PATTERN.test(text)) {
+      denials.push({
+        target: text.slice(0, 200),
+        reason: text.slice(0, 500),
+        denialKind: cursorDenialKind(text),
+      });
+    }
+  }
+  for (const key of ['tool_calls', 'tools_used', 'tools'] as const) {
+    const value = resultObject[key];
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    for (const entry of value) {
+      const record = asRecord(entry);
+      if (!record) {
+        continue;
+      }
+      const status = nonEmptyString(record.status) ?? nonEmptyString(record.state);
+      const reason =
+        nonEmptyString(record.error) ??
+        nonEmptyString(record.reason) ??
+        nonEmptyString(record.message);
+      const denied =
+        (status && /denied|blocked|rejected/i.test(status)) ||
+        (reason && CURSOR_DENIAL_PATTERN.test(reason));
+      if (!denied) {
+        continue;
+      }
+      const name = nonEmptyString(record.name) ?? nonEmptyString(record.tool) ?? 'tool';
+      const detail = reason ?? status ?? 'denied';
+      denials.push({
+        target: name.slice(0, 200),
+        reason: detail.slice(0, 500),
+        denialKind: cursorDenialKind(`${name} ${detail}`),
+      });
+    }
+  }
+  return denials;
+}
+
 /**
  * Map the single-shot `--output-format json` stdout onto normalized events:
  * the result object's `session_id` becomes `sessionId`; the answer text
  * becomes one `text` event; tool arrays become `tool` events; warning arrays
- * become `notice` events; the full object becomes the `result` payload
+ * become `notice` events; client-reported refusals become `denial` events;
+ * the full object becomes the `result` payload
  * (subtype `success`, or `failed` when the object carries `error`,
  * `is_error: true`, or a non-`success` subtype).
  *
@@ -351,10 +969,18 @@ export function cursorEventsFromOutput(
   const nonSuccessSubtype =
     subtypeRaw && subtypeRaw !== 'success' ? subtypeRaw : null;
   if (errorText || asRecord(errorValue) || isErrorFlag || nonSuccessSubtype) {
+    const denials: NormalizedEvent[] = cursorDenialsFromResult(resultObject).map((denial) => ({
+      kind: 'denial' as const,
+      target: denial.target,
+      reason: denial.reason,
+      denialKind: denial.denialKind,
+      ...withSession,
+    }));
     return [
       ...notices.map((notice) =>
         sessionId ? { ...notice, sessionId } : notice,
       ),
+      ...denials,
       {
         kind: 'result',
         subtype: nonSuccessSubtype ?? 'failed',
@@ -424,17 +1050,25 @@ export function cursorEventsFromOutput(
   }
 
   // Mandatory deck receipt on start: without a `◆ ... ·` display_summary
-  // line the run cannot prove it bound to the requested deck (Cursor's
-  // global MCP entry is last-workspace-wins). Resume is exempt — the
-  // harness prints the receipt on the first turn only, so a resumed turn
-  // legitimately carries no new receipt. A present-but-wrong receipt is
-  // caught by the shared mismatch check in service.ts.
+  // line the run cannot prove it bound to the requested deck. Resume is
+  // exempt — the harness prints the receipt on the first turn only, so a
+  // resumed turn legitimately carries no new receipt. A present-but-wrong
+  // receipt is caught by the shared mismatch check in service.ts.
   if (opts.resumeId === undefined && !/◆\s*[^·\r\n]+?\s*·/.test(stdout)) {
     throw new Error(
       "cursor-agent run produced no deck receipt (missing ◆ display_summary line): the session may be bound to another folder's deck. Ask the agent to call get_session_context and print display_summary verbatim, then retry.",
     );
   }
 
+  for (const denial of cursorDenialsFromResult(resultObject)) {
+    events.push({
+      kind: 'denial',
+      target: denial.target,
+      reason: denial.reason,
+      denialKind: denial.denialKind,
+      ...withSession,
+    });
+  }
   events.push({ kind: 'result', subtype: 'success', result: resultObject, ...withSession });
   return sessionId
     ? events.map((event) => ('sessionId' in event && event.sessionId ? event : { ...event, sessionId }))
@@ -445,12 +1079,27 @@ export type CursorAdapterDeps = {
   bin?: string;
   probe?: CursorProbe;
   spawn?: CursorSpawn;
+  readFile?: CursorFileReader;
+  /** Real home the worker-home overlay links from; defaults to `os.homedir()`. */
+  homedir?: () => string;
+  /** Allocate a fresh worker-home directory; defaults to a tmpdir mkdtemp. */
+  makeWorkerHome?: () => string;
+  /** Sandbox startability probe; defaults to `cursor-agent sandbox run true`. */
+  sandboxProbe?: CursorSandboxProbe;
 };
+
+export function defaultCursorMakeWorkerHome(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-deck-cursor-worker-'));
+}
 
 export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter {
   const bin = deps.bin ?? resolveCursorBin();
   const probe = deps.probe ?? defaultCursorProbe;
   const spawnFn = deps.spawn ?? defaultCursorSpawn;
+  const readFile = deps.readFile ?? defaultCursorFileReader;
+  const homedir = deps.homedir ?? os.homedir;
+  const makeWorkerHome = deps.makeWorkerHome ?? defaultCursorMakeWorkerHome;
+  const sandboxProbe = deps.sandboxProbe ?? defaultCursorSandboxProbe;
 
   return {
     id: 'cursor',
@@ -483,41 +1132,100 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
             'Pass the chat id printed as sessionId in a previous run log.',
         };
       }
-      // NOT-537: cursor-agent offers no per-run MCP server env override, and
-      // MCP stdio servers never see inherited process env — so a pinned run
-      // would silently read the live playbook. Fail closed before any model
-      // work instead of producing a wrong baseline.
-      if (args.playbookPin) {
-        return {
-          ok: false,
-          remedy:
-            '--playbook-version is not supported with --client cursor: cursor-agent has no per-run MCP env override, so the pin would never reach the session. Re-run with --client codex or --client claude.',
-        };
-      }
-      // The run's deck came from an MCP session and a headerless connection
-      // from this folder would bind another deck; cursor has no per-run MCP
-      // override to carry the launch deck header, so fail closed instead of
-      // running on the wrong deck.
-      if (args.launchDeckId && args.headerlessDeckMismatch) {
-        return {
-          ok: false,
-          remedy:
-            'This session\'s deck differs from the folder\'s deck (or the default deck), and --client cursor cannot carry the session deck to its MCP connection. Re-run with --client codex or --client claude.',
-        };
-      }
+      // NOT-671: the playbook pin and the launch deck travel as headers in
+      // the worker home's per-run MCP entry (see profileEnforcement/start),
+      // so pinned and session-deck runs are supported — no rejection here.
       // --trust is passed on every launch, so every cursor run records the
       // workspace-trust grant.
       return { ok: true, trustOverride: true };
     },
 
-    profileEnforcement() {
-      // NOT-669: unproven until the Cursor mapping sibling lands — every
-      // launch and resume fails here with the remedy and nothing spawns.
-      return {
-        ok: false,
-        remedy:
-          'Worker profile enforcement is not implemented for --client cursor yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Cursor mapping lands; no process was started.',
-      };
+    profileEnforcement(args: AdapterStartArgs) {
+      // 1. The installed build must list every enforcement flag.
+      if (!cursorEnforcementFlagsSupported(probe, bin)) {
+        return {
+          ok: false,
+          remedy:
+            `cursor-agent enforcement unavailable (tried "${bin}"): this build does not list --sandbox, --approve-mcps, and --plan/--mode ` +
+            `in \`cursor-agent --help\` (verified on ${CURSOR_ENFORCEMENT_VERSION_NOTE}). Upgrade cursor-agent, then retry. ` +
+            `Refusing to run --tools ${args.tools} without an enforceable sandbox and MCP preapproval; no process was started.`,
+        };
+      }
+      // 2. MCP preapproval must isolate to the run entry: a project config
+      // contributing any foreign server would be approved too. The real
+      // home's own config is excluded — the worker home shadows it.
+      const foreign = findCursorForeignProjectServers(args.cwd, readFile, homedir());
+      if (foreign.length > 0) {
+        const first = foreign[0];
+        return {
+          ok: false,
+          remedy:
+            `cursor-agent MCP isolation unavailable: ${first.configPath} defines MCP server "${first.server}" outside the run entry, ` +
+            'and --approve-mcps would approve it too. Remove the foreign server from the project MCP config (or run in a folder without one), ' +
+            'then retry; no process was started.',
+        };
+      }
+      // 3. A project agent-deck entry would shadow the run's authenticated
+      // entry (Cursor prefers project over user), so the worker would
+      // connect without its run token and effective profile — on resume as
+      // well as start. Reject before spawn.
+      const shadowed = findCursorProjectAgentDeckEntries(args.cwd, readFile, homedir());
+      if (shadowed.length > 0) {
+        return {
+          ok: false,
+          remedy:
+            `cursor-agent MCP isolation unavailable: ${shadowed[0]} defines its own MCP server "agent-deck", ` +
+            'which Cursor prefers over the run entry (project-over-global precedence), so the worker would connect ' +
+            'without its run token and effective profile. Remove the project agent-deck entry (or run in a folder without one), ' +
+            'then retry; no process was started.',
+        };
+      }
+      // 4. Readonly needs a startable sandbox, proven by Cursor's own
+      // preflight (`cursor-agent sandbox run true`): flag presence alone is
+      // not enough — the target Linux host lists --sandbox yet cannot start
+      // it. Edit passes --sandbox disabled and skips this check.
+      if (args.tools === 'readonly') {
+        const host = cursorSandboxHostSupport({ bin, sandboxProbe });
+        if (!host.supported) {
+          return {
+            ok: false,
+            remedy:
+              `cursor-agent readonly is unsupported on this host: ${host.reason}. ` +
+              'To run --tools readonly here, make the Cursor sandbox start (see https://cursor.com/docs/agent/terminal; ' +
+              'Linux hosts typically need unprivileged user namespaces allowed for cursor-agent), or run on a host where ' +
+              `\`${bin} ${CURSOR_SANDBOX_PROBE_ARGS.join(' ')}\` exits 0. ` +
+              '--tools edit (--sandbox disabled) is unaffected on this host. ' +
+              'Refusing to run --tools readonly without an enforceable sandbox; no process was started.',
+          };
+        }
+      }
+      // 5. The worker-home overlay must build on this host (a dry run with a
+      // tokenless entry — the token is minted after the gate). Symlink
+      // creation fails on hosts without the privilege (Windows without
+      // developer mode), which rejects here instead of spawning unenforced.
+      let dryRunHome: string | null = null;
+      try {
+        dryRunHome = makeWorkerHome();
+        setupCursorWorkerHome({
+          workerHome: dryRunHome,
+          realHome: homedir(),
+          mcpDocument: buildCursorWorkerMcpDocument(
+            buildCursorWorkerMcpEntry({ workspaceRoot: args.cwd }),
+          ),
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          remedy:
+            `cursor-agent worker config isolation unavailable: ${error instanceof Error ? error.message : String(error)} ` +
+            'No process was started.',
+        };
+      } finally {
+        if (dryRunHome) {
+          cleanupCursorWorkerHome(dryRunHome);
+        }
+      }
+      return { ok: true };
     },
 
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
@@ -526,44 +1234,115 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
         tools: args.tools,
         ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
       });
+      // Authenticated worker MCP only: without the run token the worker
+      // session could not bind its profile server-side.
+      if (!args.runToken) {
+        throw new Error(
+          'Cannot start a cursor worker run without a worker token: the run service always provides one; direct adapter use must pass AdapterStartArgs.runToken.',
+        );
+      }
       const wrapSpawnError = (error: unknown): Error =>
         new Error(
           `cursor-agent run failed: ${String(error instanceof Error ? error.message : error).slice(0, 300)}`,
         );
-      let child: CursorChild;
+      // Per-run worker home: the child's HOME, holding only the run's MCP
+      // entry (the profile gate already proved the overlay builds here).
+      let workerHome: string | null = null;
       try {
-        child = spawnFn(bin, argv, {
-          cwd: args.cwd,
-          ...(args.control ? { control: args.control } : {}),
+        workerHome = makeWorkerHome();
+        setupCursorWorkerHome({
+          workerHome,
+          realHome: homedir(),
+          mcpDocument: buildCursorWorkerMcpDocument(
+            buildCursorWorkerMcpEntry({
+              workspaceRoot: args.cwd,
+              ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+              ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+              runToken: args.runToken,
+            }),
+          ),
         });
       } catch (error) {
-        throw wrapSpawnError(error);
-      }
-      const lines: string[] = [];
-      try {
-        for await (const line of child.stdout) {
-          lines.push(line);
+        if (workerHome) {
+          cleanupCursorWorkerHome(workerHome);
         }
-      } catch (error) {
         throw wrapSpawnError(error);
       }
-      let settled: { code: number | null; stderrTail: string };
+      const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: workerHome };
+      if (process.platform === 'win32') {
+        // Node's homedir() (which cursor-agent uses to locate `.cursor`)
+        // reads USERPROFILE on Windows, HOME everywhere else.
+        childEnv.USERPROFILE = workerHome;
+      }
+      let homeSyncError: string | null = null;
+      let homeSyncConflicts: string[] = [];
       try {
-        settled = await child.wait();
-      } catch (error) {
-        throw wrapSpawnError(error);
+        let child: CursorChild;
+        try {
+          child = spawnFn(bin, argv, {
+            cwd: args.cwd,
+            ...(args.control ? { control: args.control } : {}),
+            env: childEnv,
+          });
+        } catch (error) {
+          throw wrapSpawnError(error);
+        }
+        const lines: string[] = [];
+        try {
+          for await (const line of child.stdout) {
+            lines.push(line);
+          }
+        } catch (error) {
+          throw wrapSpawnError(error);
+        }
+        let settled: { code: number | null; stderrTail: string };
+        try {
+          settled = await child.wait();
+        } catch (error) {
+          throw wrapSpawnError(error);
+        }
+        const { code, stderrTail } = settled;
+        if (code !== 0) {
+          throw new Error(
+            `cursor-agent exited with code ${code}${stderrTail ? `: ${stderrTail.slice(0, 300)}` : ''}`,
+          );
+        }
+        // Single-shot json: the whole stdout is one result object, so every
+        // event lands here, when the process exits.
+        yield* cursorEventsFromOutput(lines.join('\n'), {
+          ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
+        });
+      } finally {
+        // New agent-home paths the run created inside the worker home must
+        // survive cleanup (NOT-671 repair round 3): mirror them back to the
+        // real home first, so edit runs keep their home side effects. A
+        // write-back failure is reported as a notice below, never a run
+        // failure — the agent already ran.
+        try {
+          homeSyncConflicts = syncCursorWorkerHomeWrites({ workerHome, realHome: homedir() }).conflicts;
+        } catch (error) {
+          homeSyncError = error instanceof Error ? error.message : String(error);
+        }
+        cleanupCursorWorkerHome(workerHome);
       }
-      const { code, stderrTail } = settled;
-      if (code !== 0) {
-        throw new Error(
-          `cursor-agent exited with code ${code}${stderrTail ? `: ${stderrTail.slice(0, 300)}` : ''}`,
-        );
+      if (homeSyncConflicts.length > 0) {
+        yield {
+          kind: 'notice',
+          message:
+            `cursor worker home write-back kept the existing real-home entries for: ${homeSyncConflicts.join(', ').slice(0, 300)} ` +
+            '(the run created the same names; its copies were discarded).',
+          ...(args.resumeId !== undefined ? { sessionId: args.resumeId } : {}),
+        };
       }
-      // Single-shot json: the whole stdout is one result object, so every
-      // event lands here, when the process exits.
-      yield* cursorEventsFromOutput(lines.join('\n'), {
-        ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
-      });
+      if (homeSyncError !== null) {
+        yield {
+          kind: 'notice',
+          message:
+            `cursor worker home write-back failed (${homeSyncError.slice(0, 300)}): ` +
+            'new agent-home paths from this run may be lost.',
+          ...(args.resumeId !== undefined ? { sessionId: args.resumeId } : {}),
+        };
+      }
     },
   };
 }
