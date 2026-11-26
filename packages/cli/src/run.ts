@@ -52,7 +52,6 @@ import { getCliPackageRoot } from './paths';
 // lives in the shared host-local run service; re-exported so existing
 // `from './run'` imports keep working.
 export {
-  allowedToolsForProfile,
   CLAUDE_AUTH_LOGIN_COMMAND,
   claudeAuthStatusShowsLogin,
   defaultClaudeClientProbe,
@@ -61,10 +60,6 @@ export {
   newRunId,
   RUN_CLAUDE_NOT_INSTALLED_ERROR,
   RUN_CLAUDE_NOT_SIGNED_IN_ERROR,
-  RUN_EDIT_TOOLS,
-  RUN_PERMISSION_MODE,
-  RUN_READONLY_TOOLS,
-  RUN_SETTING_SOURCES,
   RUN_TOOL_PROFILES,
   writeRunMeta,
   type ClaudeAdapterDeps,
@@ -464,24 +459,31 @@ key instead); API-key setup is otherwise out of scope for this path.
 
   --client claude|codex|cursor|muse
                          Required.
-                         codex maps --tools to -s read-only|workspace-write;
-                         cursor maps --tools edit to --force (readonly passes
-                         no write flag); all log lines land when the run ends;
-                         muse maps readonly to --disable-write --disable-shell
-                         (edit uses the default bounded permissions).
+                         claude runs isolated (no project/user settings) under
+                         dontAsk with explicit allow/deny rules; codex maps
+                         --tools to -s read-only|workspace-write plus
+                         approval never; cursor maps --tools edit to --force
+                         (readonly passes no write flag) and all log lines
+                         land when the run ends; muse maps readonly to
+                         --disable-write --disable-shell (edit uses the
+                         default bounded permissions).
   --cwd <dir>            Required. Session working directory.
   --prompt <text>        Brief text (exactly one of --prompt/--prompt-file).
   --prompt-file <path>   Brief read from a file.
-  --tools readonly|edit  Tool profile, default readonly. edit adds Edit, Write
-                         and git-scoped Bash (diff/add/commit/checkout -b).
+  --tools readonly|edit  Tool profile, default readonly. readonly permits
+                         file reads, read-only shell and web reads; edit adds
+                         workspace and agent-home writes, full shell and
+                         network, git commit/push, and approved MCP tools.
   --log <path>           Log file. Default: ~/.agent-deck/runs/<runId>/run.jsonl
                          (meta.json sits next to the log in both cases).
   --resume <sessionId>   Continue a previous session id. The profile
                          passed on this invocation applies; nothing is inherited.
-                         codex resume keeps the thread's original sandbox, so
-                         it continues only a session an agent-deck run started
-                         on this deck, client, and canonical cwd with the same
-                         --tools; anything else fails closed before launch.
+                         codex resume keeps the thread's original sandbox and
+                         claude resume must never keep another profile's
+                         permissions, so both continue only a session an
+                         agent-deck run started on this deck, client, and
+                         canonical cwd with the same --tools; anything else
+                         fails closed before launch.
   --playbook-version <playbookId>=<versionId>
                          Pin one playbook to a stored version for this run
                          only, so a baseline-vs-candidate evaluation can run

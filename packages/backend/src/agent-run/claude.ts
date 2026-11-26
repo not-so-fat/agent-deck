@@ -3,17 +3,41 @@
  *
  * Moved verbatim out of the CLI run.ts (NOT-400): same SDK `query()` params, same
  * message mapping, same missing-SDK remedy. No behavior change.
+ *
+ * Worker-profile enforcement (NOT-672, policy in `claude-policy.ts`): every
+ * start and resume runs isolated (`settingSources: []`, no skills), under
+ * `dontAsk` with the profile's explicit allow/deny rules as flag-layer
+ * settings, a `canUseTool` handler deciding from the same policy, and
+ * exactly one MCP server (the per-run inline `agent-deck` entry with the
+ * worker headers, `strictMcpConfig`). Client-reported denials — streaming
+ * `permission_denied` frames and the authoritative
+ * `result.permission_denials` list — become `denial` normalized events the
+ * run service records with the effective profile. Resume re-applies the
+ * requested profile's options and additionally requires trusted
+ * same-profile provenance (a resumed SDK session must never keep another
+ * profile's permissions).
  */
+import os from 'node:os';
+
 import {
-  allowedToolsForProfile,
   formatRunPlaybookPin,
-  RUN_PERMISSION_MODE,
-  RUN_SETTING_SOURCES,
   type AdapterStartArgs,
   type ClientAdapter,
   type NormalizedEvent,
   type RunPlaybookPin,
+  type RunToolsProfile,
 } from './adapter';
+import {
+  CLAUDE_WORKER_MCP_SERVER,
+  CLAUDE_WORKER_PERMISSION_MODE,
+  CLAUDE_WORKER_SETTING_SOURCES,
+  CLAUDE_WORKER_SKILLS,
+  claudeAllowedToolsForProfile,
+  claudeDenialKindForTool,
+  claudeDenyRulesForProfile,
+  claudeSettingsForProfile,
+  decideClaudeToolCall,
+} from './claude-policy';
 
 /** Minimal structural view of the SDK `query()` surface (the SDK loads lazily). */
 export type RunQueryMessage = {
@@ -21,8 +45,46 @@ export type RunQueryMessage = {
   subtype?: string;
   session_id?: string;
   result?: unknown;
-  message?: {
-    content?: Array<{ type?: string; text?: string; name?: string }>;
+  /**
+   * Assistant message content blocks. A `permission_denied` system message
+   * instead carries a plain-text `message` (see below).
+   */
+  message?:
+    | {
+        content?: Array<{ type?: string; text?: string; name?: string }>;
+      }
+    | string;
+  /** `system`/`permission_denied` frame fields (NOT-672 denial events). */
+  tool_name?: string;
+  tool_use_id?: string;
+  decision_reason?: string;
+  /** Authoritative per-result denial record (NOT-672 denial events). */
+  permission_denials?: Array<{ tool_name?: string; tool_use_id?: string }>;
+};
+
+/**
+ * Minimal structural view of the SDK `canUseTool` permission handler (the
+ * real signature takes a third options argument, which the worker handler
+ * ignores). Returned for every consulted tool call; the SDK executes the
+ * call on `allow` (with `updatedInput` when present) and refuses it on
+ * `deny`, surfacing a `permission_denied` frame the adapter maps back.
+ */
+export type RunCanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+) => Promise<
+  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
+  | { behavior: 'deny'; message: string }
+>;
+
+/** Minimal structural view of the flag-layer worker settings. */
+export type RunWorkerSettings = {
+  permissions: {
+    allow: string[];
+    deny: string[];
+    ask: string[];
+    defaultMode: string;
+    additionalDirectories: string[];
   };
 };
 
@@ -48,7 +110,44 @@ export type RunQueryOptions = {
   mcpServers?: Record<string, RunPinHttpMcpServer>;
   /** Ignore every configured MCP server except `mcpServers` (NOT-537). */
   strictMcpConfig?: boolean;
+  /** Flag-layer worker settings: explicit allow/deny, never ask (NOT-672). */
+  settings?: RunWorkerSettings;
+  /** Tools removed from the model context (NOT-672: always empty — denied tools stay visible so attempts are recorded). */
+  disallowedTools?: readonly string[];
+  /** Skills enabled for the session (NOT-672: always none on workers). */
+  skills?: readonly string[] | 'all';
+  /** Extra working directories file tools may touch (NOT-672: home + temp). */
+  additionalDirectories?: readonly string[];
+  /** Host permission handler deciding from the worker policy (NOT-672). */
+  canUseTool?: RunCanUseTool;
 };
+
+/**
+ * The `canUseTool` handler for one worker run (NOT-672): every consulted
+ * call is decided by `decideClaudeToolCall` against the run's profile —
+ * synchronously answered, so nothing ever waits on a human. A readonly
+ * `git` call the classifier hardens runs with the rewritten command.
+ */
+export function createClaudeWorkerCanUseTool(input: {
+  cwd: string;
+  homeDir: string;
+  tmpDir: string;
+  tools: RunToolsProfile;
+}): RunCanUseTool {
+  return async (toolName, toolInput) => {
+    const verdict = decideClaudeToolCall(
+      toolName,
+      toolInput,
+      { profile: input.tools, cwd: input.cwd, homeDir: input.homeDir, tmpDir: input.tmpDir },
+    );
+    if (verdict.decision === 'allow') {
+      return verdict.updatedCommand !== undefined
+        ? { behavior: 'allow', updatedInput: { ...toolInput, command: verdict.updatedCommand } }
+        : { behavior: 'allow' };
+    }
+    return { behavior: 'deny', message: verdict.reason };
+  };
+}
 
 /**
  * Header names the pinned server sends. Literals (not `@agent-deck/shared` —
@@ -139,6 +238,10 @@ export type ClaudeAdapterDeps = {
   loadQuery?: () => RunQueryFn;
   /** Where the default loader resolves the SDK from (see {@link loadClaudeSdkQuery}). */
   sdkSearchPaths?: readonly string[];
+  /** Agent user's home for the edit file-write scope; defaults to `os.homedir()`. */
+  homeDir?: string;
+  /** OS temp dir for the edit file-write scope; defaults to `os.tmpdir()`. */
+  tmpDir?: string;
 };
 
 export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter {
@@ -150,6 +253,8 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
     }
     return cachedQuery;
   };
+  const homeDir = deps.homeDir ?? os.homedir();
+  const tmpDir = deps.tmpDir ?? os.tmpdir();
 
   return {
     id: 'claude',
@@ -163,22 +268,64 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
       }
     },
 
-    planStart() {
+    planStart(args: AdapterStartArgs) {
+      // NOT-672: a resumed SDK session must never keep another profile's
+      // permissions, so a resume continues only a session an Agent Deck
+      // run started with the same profile (provenance resolved by the run
+      // service, as for codex). The requested profile's options are still
+      // passed on resume and govern wherever the SDK applies them.
+      if (args.resumeId !== undefined) {
+        const origin = args.resumedFrom;
+        if (!origin || origin.sessionId !== args.resumeId) {
+          return {
+            ok: false,
+            remedy:
+              `Cannot resume claude session ${args.resumeId}: no trusted Agent Deck run is known to have started it. ` +
+              'Resume a sessionId printed by `agent-deck run`, or start a new run.',
+          };
+        }
+        if (origin.tools !== args.tools) {
+          return {
+            ok: false,
+            remedy:
+              `Cannot resume claude session ${args.resumeId} with --tools ${args.tools}: run ${origin.runId} started it with ` +
+              `--tools ${origin.tools}. Resume with --tools ${origin.tools}, or start a new run.`,
+          };
+        }
+      }
       return { ok: true, trustOverride: false };
     },
 
-    profileEnforcement() {
-      // NOT-669: unproven until the Claude mapping sibling lands — every
-      // launch and resume fails here with the remedy and nothing spawns.
-      return {
-        ok: false,
-        remedy:
-          'Worker profile enforcement is not implemented for --client claude yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Claude mapping lands; no process was started.',
-      };
+    profileEnforcement(args: AdapterStartArgs) {
+      // NOT-672: the mapping is implemented (isolated settings, dontAsk,
+      // explicit lists and rules, canUseTool, worker-only MCP) and the
+      // resume gate re-checks provenance behind planStart.
+      if (args.resumeId !== undefined) {
+        const origin = args.resumedFrom;
+        if (!origin || origin.sessionId !== args.resumeId || origin.tools !== args.tools) {
+          return {
+            ok: false,
+            remedy:
+              `Cannot resume claude session ${args.resumeId}: no trusted Agent Deck run is known to have started it with ` +
+              `--tools ${args.tools}. Resume a sessionId printed by \`agent-deck run\`, or start a new run.`,
+          };
+        }
+      }
+      return { ok: true };
     },
 
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
       const query = getQuery();
+      // planStart rejects a resume without a matching resumedFrom.
+      if (args.resumeId !== undefined && args.resumedFrom) {
+        yield {
+          kind: 'notice',
+          message:
+            `Resuming claude session ${args.resumeId} started by run ${args.resumedFrom.runId}: ` +
+            `the requested profile (--tools ${args.tools}) is re-applied to the resumed session.`,
+          sessionId: args.resumeId,
+        };
+      }
       let abortController: AbortController | undefined;
       if (args.control) {
         abortController = new AbortController();
@@ -189,45 +336,58 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
           args.control.signal.addEventListener('abort', () => controller.abort(), { once: true });
         }
       }
-      // NOT-537: a pinned run passes its own pure-HTTP `agent-deck` MCP
-      // server (NOT-566) with the pin in the explicit per-server headers
-      // (inherited process env never reaches an MCP server started with a
-      // restricted env) and `strictMcpConfig` so exactly that one server
-      // connects — no same-name merge ambiguity with the configured entry.
-      // The run allowlist needs no other MCP server
-      // (`mcp__agent-deck__*` plus built-ins), so nothing else is lost.
-      // NOT-669: a run carrying a worker token passes the same inline
-      // server for the token header; runs with no pin, launch deck, or
-      // token pass neither key and behave exactly as before.
+      // NOT-537: the run's own pure-HTTP `agent-deck` MCP server (NOT-566)
+      // with the pin in the explicit per-server headers (inherited process
+      // env never reaches an MCP server started with a restricted env) and
+      // `strictMcpConfig` so exactly that one server connects — no
+      // same-name merge ambiguity with the configured entry. NOT-669: the
+      // same inline server carries the worker token header binding the MCP
+      // session to the run's effective profile. NOT-672: the inline server
+      // rides on every run, and the session is isolated (`settingSources:
+      // []`, no skills), non-interactive (`dontAsk`), explicitly listed
+      // (`allowedTools`, flag-layer settings rules), and host-gated
+      // (`canUseTool` from the same policy).
       const stream = query({
         prompt: args.prompt,
         options: {
           cwd: args.cwd,
           ...(args.resumeId ? { resume: args.resumeId } : {}),
-          settingSources: [...RUN_SETTING_SOURCES],
-          permissionMode: RUN_PERMISSION_MODE,
-          allowedTools: [...allowedToolsForProfile(args.tools)],
+          settingSources: [...CLAUDE_WORKER_SETTING_SOURCES],
+          permissionMode: CLAUDE_WORKER_PERMISSION_MODE,
+          allowedTools: [...claudeAllowedToolsForProfile(args.tools)],
+          disallowedTools: [],
+          skills: [...CLAUDE_WORKER_SKILLS],
+          settings: claudeSettingsForProfile(args.tools, { homeDir, tmpDir }),
+          additionalDirectories: [homeDir, tmpDir],
+          canUseTool: createClaudeWorkerCanUseTool({
+            cwd: args.cwd,
+            homeDir,
+            tmpDir,
+            tools: args.tools,
+          }),
           ...(abortController ? { abortController } : {}),
-          ...(args.playbookPin || args.launchDeckId || args.runToken
-            ? {
-                mcpServers: {
-                  'agent-deck': buildClaudeRunMcpServer({
-                    cwd: args.cwd,
-                    ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
-                    ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
-                    ...(args.runToken ? { runToken: args.runToken } : {}),
-                  }),
-                },
-                strictMcpConfig: true,
-              }
-            : {}),
+          mcpServers: {
+            [CLAUDE_WORKER_MCP_SERVER]: buildClaudeRunMcpServer({
+              cwd: args.cwd,
+              ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+              ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+              ...(args.runToken ? { runToken: args.runToken } : {}),
+            }),
+          },
+          strictMcpConfig: true,
         },
       });
+      // `permission_denied` frames stream live; `result.permission_denials`
+      // is the authoritative record and may repeat them — one event per
+      // tool_use_id, whichever arrives first.
+      const seenDenials = new Set<string>();
+      const denialKey = (toolUseId: string | undefined, toolName: string): string =>
+        toolUseId ? `id:${toolUseId}` : `name:${toolName}`;
       for await (const message of stream) {
         const sessionId =
           typeof message.session_id === 'string' && message.session_id ? message.session_id : undefined;
         const withSession = sessionId ? { sessionId } : {};
-        if (message.type === 'assistant') {
+        if (message.type === 'assistant' && typeof message.message === 'object') {
           for (const block of message.message?.content ?? []) {
             if (block.type === 'text' && typeof block.text === 'string') {
               yield { kind: 'text', text: block.text, ...withSession };
@@ -235,7 +395,44 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
               yield { kind: 'tool', name: block.name, ...withSession };
             }
           }
+        } else if (message.type === 'system' && message.subtype === 'permission_denied') {
+          const toolName = typeof message.tool_name === 'string' ? message.tool_name : 'unknown';
+          const key = denialKey(
+            typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined,
+            toolName,
+          );
+          if (!seenDenials.has(key)) {
+            seenDenials.add(key);
+            const reason =
+              (typeof message.decision_reason === 'string' && message.decision_reason) ||
+              (typeof message.message === 'string' && message.message) ||
+              `worker profile "${args.tools}" denied ${toolName}`;
+            yield {
+              kind: 'denial',
+              target: toolName,
+              reason: reason.slice(0, 500),
+              denialKind: claudeDenialKindForTool(toolName),
+              ...withSession,
+            };
+          }
         } else if (message.type === 'result') {
+          for (const denial of message.permission_denials ?? []) {
+            const toolName = typeof denial.tool_name === 'string' ? denial.tool_name : 'unknown';
+            const key = denialKey(
+              typeof denial.tool_use_id === 'string' ? denial.tool_use_id : undefined,
+              toolName,
+            );
+            if (!seenDenials.has(key)) {
+              seenDenials.add(key);
+              yield {
+                kind: 'denial',
+                target: toolName,
+                reason: `worker profile "${args.tools}" denied ${toolName}`,
+                denialKind: claudeDenialKindForTool(toolName),
+                ...withSession,
+              };
+            }
+          }
           yield {
             kind: 'result',
             subtype: message.subtype ?? '',

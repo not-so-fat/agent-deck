@@ -154,7 +154,7 @@ describe('playbook pin carriage (NOT-537)', () => {
     });
   });
 
-  it('claude passes the pinned server plus strictMcpConfig only when pinned', async () => {
+  it('claude passes the pinned server plus strictMcpConfig, and always isolates MCP', async () => {
     const seenOptions: RunQueryOptions[] = [];
     const adapter = createClaudeAdapter({
       query: (params) => {
@@ -189,8 +189,14 @@ describe('playbook pin carriage (NOT-537)', () => {
       seenOptions.length = 0;
       await drain(adapter.start({ cwd: '/tmp', prompt: 'hi', tools: 'readonly' }));
       expect(seenOptions).toHaveLength(1);
-      expect(seenOptions[0].strictMcpConfig).toBeUndefined();
-      expect(seenOptions[0].mcpServers).toBeUndefined();
+      // NOT-672: the inline worker server rides on every run (pin or not),
+      // and strictMcpConfig keeps it the only connected server.
+      expect(seenOptions[0].strictMcpConfig).toBe(true);
+      expect(seenOptions[0].mcpServers?.['agent-deck']).toEqual({
+        type: 'http',
+        url: 'http://127.0.0.1:1110/mcp',
+        headers: { 'x-agent-deck-workspace': '/tmp' },
+      });
     } finally {
       if (previousPin === undefined) {
         delete process.env[PLAYBOOK_PIN_ENV_VAR];

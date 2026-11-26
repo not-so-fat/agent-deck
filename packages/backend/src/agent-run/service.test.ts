@@ -25,6 +25,7 @@ import {
   type NormalizedEvent,
   type RunClient,
   type RunMeta,
+  type RunQueryFn,
 } from './index';
 
 const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -491,6 +492,33 @@ function codexService(
   return { service, calls };
 }
 
+/** The shipped claude adapter over a fake SDK `query()` reporting `session`. */
+function claudeService(
+  homeDir: string,
+  overrides: Partial<AgentRunServiceDeps> = {},
+  session = THREAD,
+): { service: ReturnType<typeof createAgentRunService>; calls: { queries: number } } {
+  const calls = { queries: 0 };
+  const query: RunQueryFn = async function* () {
+    calls.queries += 1;
+    yield {
+      type: 'assistant',
+      session_id: session,
+      message: { content: [{ type: 'text', text: '◆ api · 1 MCP · 0 keys · 2 playbooks' }] },
+    };
+    yield { type: 'result', subtype: 'success', session_id: session, result: 'done' };
+  };
+  const service = createAgentRunService({
+    homeDir,
+    resolveDeck: async (ref) => (ref === DECK.name || ref === DECK.id ? { ...DECK } : null),
+    resolveDeckBinding: async () => ({ deckId: DECK.id, deckName: DECK.name }),
+    claudeProbe: async () => ({ ok: true }),
+    createAdapter: (client) => createRunAdapter(client, { claude: { query } }),
+    ...overrides,
+  });
+  return { service, calls };
+}
+
 function runDirs(home: string): string[] {
   const root = path.join(home, 'runs');
   return fs.existsSync(root) ? fs.readdirSync(root).sort() : [];
@@ -878,6 +906,88 @@ describe('codex resume provenance (NOT-484)', () => {
   });
 });
 
+describe('claude resume provenance (NOT-672)', () => {
+  it.each(['edit', 'readonly'] as const)(
+    'resumes a trusted %s session with the same profile under the unchanged session id',
+    async (tools) => {
+      const home = makeDir('ad-svc-home-');
+      const cwd = makeDir('ad-svc-cwd-');
+      const { service, calls } = claudeService(home);
+      const origin = await service.start(request(cwd, { client: 'claude', tools }));
+      if (origin.kind !== 'finished') throw new Error(JSON.stringify(origin));
+      expect(origin).toMatchObject({ state: 'ended', sessionId: THREAD });
+
+      const resumed = await service.start(request(cwd, { client: 'claude', tools, resumeId: THREAD, prompt: 'again' }));
+
+      if (resumed.kind !== 'finished') throw new Error(JSON.stringify(resumed));
+      expect(resumed).toMatchObject({ state: 'ended', sessionId: THREAD });
+      expect(resumed.runId).not.toBe(origin.runId);
+      expect(calls.queries).toBe(2);
+      expect(readMeta(resumed.metaPath)).toMatchObject({
+        tools,
+        sessionId: THREAD,
+        resumedFrom: { runId: origin.runId, sessionId: THREAD, tools },
+      });
+    },
+  );
+
+  it('rejects unknown sessions and cross-profile resumes before the SDK runs', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const { service, calls } = claudeService(home);
+
+    const unknown = await service.start(request(cwd, { client: 'claude', resumeId: THREAD }));
+    expect(unknown).toEqual({
+      kind: 'rejected',
+      code: 'resume_unverified',
+      message:
+        `Cannot resume claude session ${THREAD}: no Agent Deck run on this host started it, ` +
+        'so its permissions are unknown. Resume only a sessionId printed by `agent-deck run` ' +
+        '(see `agent-deck run list`), or start a new run without --resume.',
+    });
+
+    const origin = await service.start(request(cwd, { client: 'claude', tools: 'readonly' }));
+    if (origin.kind !== 'finished') throw new Error(JSON.stringify(origin));
+    const before = runDirs(home);
+    const escalate = await service.start(request(cwd, { client: 'claude', tools: 'edit', resumeId: THREAD }));
+    expect(escalate).toEqual({
+      kind: 'rejected',
+      code: 'resume_unverified',
+      message:
+        `Cannot resume session ${THREAD} with --tools edit: run ${origin.runId} started it ` +
+        `with --tools readonly, and a resumed session must never keep another profile's permissions. ` +
+        'Resume with --tools readonly, or start a new run with --tools edit.',
+    });
+
+    expect(calls.queries).toBe(1);
+    expect(runDirs(home)).toEqual(before);
+  });
+
+  it('fails closed in the claude plan when execute is handed a resume without provenance', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const { service, calls } = claudeService(home);
+
+    const unproven = await service.execute({
+      request: request(cwd, { client: 'claude', tools: 'edit', resumeId: THREAD }),
+      deck: DECK,
+    });
+    expect(unproven.kind === 'rejected' && unproven.code).toBe('profile_unsupported');
+    expect(unproven.kind === 'rejected' && unproven.message).toContain(
+      `Cannot resume claude session ${THREAD}: no trusted Agent Deck run is known to have started it`,
+    );
+    const mismatched = await service.execute({
+      request: request(cwd, { client: 'claude', tools: 'edit', resumeId: THREAD }),
+      deck: DECK,
+      resumedFrom: { runId: 'run-x', sessionId: THREAD, tools: 'readonly' },
+    });
+    expect(mismatched.kind === 'rejected' && mismatched.message).toContain(
+      `Cannot resume claude session ${THREAD} with --tools edit: run run-x started it with --tools readonly`,
+    );
+    expect(calls.queries).toBe(0);
+  });
+});
+
 describe('worker profile enforcement gate and run token (NOT-669)', () => {
   const REMEDY = 'Worker profile enforcement is not implemented for this client yet.';
 
@@ -892,9 +1002,9 @@ describe('worker profile enforcement gate and run token (NOT-669)', () => {
     expect(adapter.starts).toEqual([]);
     expect(createAdapter).toHaveBeenCalled();
 
-    // Resume goes through the same gate (claude needs no resume provenance,
+    // Resume goes through the same gate (muse needs no resume provenance,
     // so the request reaches the gate instead of failing validation first).
-    const resumed = await service.start(request(cwd, { client: 'claude', resumeId: 'ses_prev' }));
+    const resumed = await service.start(request(cwd, { client: 'muse', resumeId: 'ses_prev' }));
     expect(resumed).toEqual({ kind: 'rejected', code: 'profile_unsupported', message: REMEDY });
     expect(adapter.starts).toEqual([]);
 

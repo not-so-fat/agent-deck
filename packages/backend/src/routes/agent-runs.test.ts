@@ -887,7 +887,13 @@ describe('GET /api/agent-runs/capabilities (NOT-481)', () => {
     const data = AgentRunCapabilitiesResponseSchema.parse(response.json().data);
     expect(data.host).toBe('same-host');
     expect(data.clients).toEqual([
-      { client: 'claude', start: ['readonly', 'edit'], resume: ['readonly', 'edit'], resumeRequires: 'none' },
+      // claude resumes must never keep another profile's permissions (NOT-672).
+      {
+        client: 'claude',
+        start: ['readonly', 'edit'],
+        resume: ['readonly', 'edit'],
+        resumeRequires: 'same_profile_provenance',
+      },
       // codex resume cannot re-apply a sandbox: same-profile Agent Deck provenance only.
       {
         client: 'codex',

@@ -15,45 +15,6 @@ import type { RunDenialKind, RunResumeOrigin } from './records';
 export { RUN_TOOL_PROFILES, type RunToolsProfile } from './profiles';
 import { RUN_TOOL_PROFILES, type RunToolsProfile } from './profiles';
 
-/** Read-only profile: exactly the botmancers prototype allowlist. */
-export const RUN_READONLY_TOOLS: readonly string[] = [
-  'mcp__agent-deck__*',
-  'Read',
-  'Glob',
-  'Grep',
-  'Bash(git log:*)',
-  'Bash(git status:*)',
-  'Bash(ls:*)',
-];
-
-/**
- * Edit profile: readonly plus file writes and git-scoped Bash. No `git push`,
- * no unscoped `Bash`, no network tools. One-line reason per git entry:
- * - `git diff` reviews local changes before staging or committing;
- * - `git add` stages the files the session created or edited;
- * - `git commit` records the work as a commit for handoff;
- * - `git checkout -b` starts delegated work on a fresh branch.
- */
-export const RUN_EDIT_TOOLS: readonly string[] = [
-  ...RUN_READONLY_TOOLS,
-  'Edit',
-  'Write',
-  'Bash(git diff:*)',
-  'Bash(git add:*)',
-  'Bash(git commit:*)',
-  'Bash(git checkout -b:*)',
-];
-
-/** Both profiles run with `acceptEdits`; `bypassPermissions` is never used. */
-export const RUN_PERMISSION_MODE = 'acceptEdits';
-
-/** Setting sources copied from the prototype. */
-export const RUN_SETTING_SOURCES: readonly string[] = ['project', 'user'];
-
-export function allowedToolsForProfile(profile: RunToolsProfile): readonly string[] {
-  return profile === 'edit' ? RUN_EDIT_TOOLS : RUN_READONLY_TOOLS;
-}
-
 /** Clients with a working adapter. */
 export const RUN_SUPPORTED_CLIENTS = ['claude', 'codex', 'cursor', 'muse'] as const;
 export type RunClient = (typeof RUN_SUPPORTED_CLIENTS)[number];
@@ -114,7 +75,8 @@ export type RunClientProfiles = {
 };
 
 export const RUN_CLIENT_PROFILES: Record<RunClient, RunClientProfiles> = {
-  claude: { start: RUN_TOOL_PROFILES, resume: RUN_TOOL_PROFILES, resumeRequires: 'none' },
+  // A resumed SDK session must never keep another profile's permissions (NOT-672).
+  claude: { start: RUN_TOOL_PROFILES, resume: RUN_TOOL_PROFILES, resumeRequires: 'same_profile_provenance' },
   // `codex exec resume` accepts no sandbox flag, so resume keeps the origin run's sandbox.
   codex: { start: RUN_TOOL_PROFILES, resume: RUN_TOOL_PROFILES, resumeRequires: 'same_profile_provenance' },
   cursor: { start: RUN_TOOL_PROFILES, resume: RUN_TOOL_PROFILES, resumeRequires: 'none' },

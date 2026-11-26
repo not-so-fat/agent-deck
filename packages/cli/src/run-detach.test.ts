@@ -13,9 +13,8 @@ import {
   isAlive,
   waitUntil,
 } from './cli-integration-harness';
+import { claudeAllowedToolsForProfile } from '@agent-deck/backend/agent-run';
 import {
-  RUN_EDIT_TOOLS,
-  RUN_READONLY_TOOLS,
   parseRunArgs,
   printRunHelp,
   runRunCommand,
@@ -556,8 +555,8 @@ describe('run --detach against the built CLI (NOT-401)', () => {
         options: { allowedTools: string[]; permissionMode: string; resume?: string };
       };
       expect(recorded.prompt).toBe('detach brief');
-      expect(recorded.options.allowedTools).toEqual([...RUN_READONLY_TOOLS]);
-      expect(recorded.options.permissionMode).toBe('acceptEdits');
+      expect(recorded.options.allowedTools).toEqual([...claudeAllowedToolsForProfile('readonly')]);
+      expect(recorded.options.permissionMode).toBe('dontAsk');
       expect(recorded.options.resume).toBeUndefined();
     },
   );
@@ -573,6 +572,27 @@ describe('run --detach against the built CLI (NOT-401)', () => {
       const promptFile = path.join(setup.cwd, 'brief.md');
       fs.writeFileSync(promptFile, 'file brief for edit run');
       const customLog = path.join(setup.home, 'custom', 'session.jsonl');
+      // NOT-672: claude resumes need trusted same-profile provenance — seed
+      // the run that started ses_old.
+      const originDir = path.join(setup.home, 'runs', 'run-20200101T000000-origin00');
+      fs.mkdirSync(originDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(originDir, 'meta.json'),
+        `${JSON.stringify({
+          runId: 'run-20200101T000000-origin00',
+          deck: DECK.id,
+          deckName: DECK.name,
+          client: 'claude',
+          tools: 'edit',
+          cwd: setup.cwd,
+          canonicalCwd: fs.realpathSync(setup.cwd),
+          pid: 2147483647,
+          startedAt: new Date().toISOString(),
+          state: 'ended',
+          sessionId: 'ses_old',
+        })}\n`,
+        'utf8',
+      );
 
       const { done } = runStarter(
         [
@@ -611,7 +631,7 @@ describe('run --detach against the built CLI (NOT-401)', () => {
         options: { allowedTools: string[]; resume?: string; cwd: string };
       };
       expect(recorded.prompt).toBe('file brief for edit run');
-      expect(recorded.options.allowedTools).toEqual([...RUN_EDIT_TOOLS]);
+      expect(recorded.options.allowedTools).toEqual([...claudeAllowedToolsForProfile('edit')]);
       expect(recorded.options.resume).toBe('ses_old');
       expect(recorded.options.cwd).toBe(setup.cwd);
     },
