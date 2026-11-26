@@ -1063,21 +1063,27 @@ describe('muse worker profile enforcement gate (NOT-671)', () => {
     }
   });
 
-  it('a project config with a foreign MCP server does not block launch: the untrusted worker never loads it', async () => {
-    const cwd = makeDir('agent-deck-muse-cwd-');
-    const homeDir = makeDir('agent-deck-muse-home-');
-    const deps = makeDeps(cwd, homeDir, {
-      enforceProfile: true,
-      readFile: fakeMuseReadFile(cwd, {
-        projectSettings: JSON.stringify({
-          mcpServers: { 'agent-deck': { type: 'http', url: 'http://127.0.0.1:1110/mcp' }, other: {} },
+  it('a project config with a foreign MCP server does not block start or resume: the untrusted worker never loads it', async () => {
+    for (const extra of [[], ['--resume', MUSE_SESSION_ID]] as string[][]) {
+      const cwd = makeDir('agent-deck-muse-cwd-');
+      const homeDir = makeDir('agent-deck-muse-home-');
+      const deps = makeDeps(cwd, homeDir, {
+        enforceProfile: true,
+        readFile: fakeMuseReadFile(cwd, {
+          projectSettings: JSON.stringify({
+            mcpServers: { 'agent-deck': { type: 'http', url: 'http://127.0.0.1:1110/mcp' }, other: {} },
+          }),
         }),
-      }),
-    });
+      });
 
-    expect(await runRunCommand(museArgs(cwd), deps)).toBe(0);
-    expect(deps.calls).toHaveLength(1);
-    expect(deps.calls[0].argv).not.toContain('--trust-workspace');
+      expect(await runRunCommand(museArgs(cwd, extra), deps)).toBe(0);
+      expect(deps.calls).toHaveLength(1);
+      // The worker is never trusted, so project .mcp.json entries never load.
+      expect(deps.calls[0].argv).not.toContain('--trust-workspace');
+      expect(deps.calls[0].argv).not.toContain('--yolo');
+      logs = [];
+      errors = [];
+    }
   });
 
   it('foreign servers are found up the tree, agent-deck-only projects pass', () => {
