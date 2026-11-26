@@ -1063,7 +1063,7 @@ describe('muse worker profile enforcement gate (NOT-671)', () => {
     }
   });
 
-  it('a project config with a foreign MCP server fails closed before spawn', async () => {
+  it('a project config with a foreign MCP server does not block launch: the untrusted worker never loads it', async () => {
     const cwd = makeDir('agent-deck-muse-cwd-');
     const homeDir = makeDir('agent-deck-muse-home-');
     const deps = makeDeps(cwd, homeDir, {
@@ -1075,11 +1075,9 @@ describe('muse worker profile enforcement gate (NOT-671)', () => {
       }),
     });
 
-    expect(await runRunCommand(museArgs(cwd), deps)).not.toBe(0);
-    expect(deps.calls).toHaveLength(0);
-    expect(errors.join('\n')).toMatch(/MCP isolation unavailable/);
-    expect(errors.join('\n')).toContain('"other"');
-    expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+    expect(await runRunCommand(museArgs(cwd), deps)).toBe(0);
+    expect(deps.calls).toHaveLength(1);
+    expect(deps.calls[0].argv).not.toContain('--trust-workspace');
   });
 
   it('foreign servers are found up the tree, agent-deck-only projects pass', () => {

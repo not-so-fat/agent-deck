@@ -77,7 +77,7 @@ Pinned playbook runs (`run.ts` `parseRunArgs`, `agent-run/service.ts` validation
 | `claude` | Claude Agent SDK `query()` in-process (`@anthropic-ai/claude-agent-sdk`, lazily required; `agent-run/claude.ts`) | `claude` CLI on PATH, plus `claude auth status` reporting a login — or `ANTHROPIC_API_KEY` set, which skips the login check once the CLI is found (`agent-run/claude-probe.ts` `defaultClaudeClientProbe`); fix: `claude auth login` | No trust gate; `trustOverride` is always false (`agent-run/claude.ts` `planStart`) |
 | `codex` | `codex` binary (`CODEX_BIN` override; verified against codex-cli 0.157.1; `agent-run/codex.ts`) | `codex login status` exits 0 and reports `Logged in`; fix: `codex login` | `trustOverride` is true only when `--cwd` is outside a git work tree, in which case `--skip-git-repo-check` is passed (`agent-run/codex.ts` `codexTrustOverride`) |
 | `cursor` | `cursor-agent` binary (`CURSOR_BIN` override; verified against cursor-agent 2026.10.01; `agent-run/cursor.ts`) | `cursor-agent status --format json` parses as authenticated (exit code alone is not enough); fix: `cursor-agent login` | `--trust` is passed on every launch, so `trustOverride` is always true (`agent-run/cursor.ts` `planStart`) |
-| `muse` | `muse` binary (`MUSE_BIN` override; verified against Muse Code 1.4.4; `agent-run/muse.ts`) | `META_API_KEY` set, or the Muse auth file's `providers` object containing a `meta` entry (`agent-run/muse.ts` `isMuseSignedIn`); fix: `muse login`. The `agent-deck` MCP entry must also exist in the Muse global or project config (`agent-run/muse.ts` `hasMuseMcpEntry`); fix: `agent-deck setup --client muse` | Never trusted from `run`: `--trust-workspace` is never passed, so `trustOverride` is always false; an untrusted-workspace warning surfaces as a log notice instead (`agent-run/muse.ts` `planStart`) |
+| `muse` | `muse` binary (`MUSE_BIN` override; verified against Muse Code 1.4.4; `agent-run/muse.ts`) | `META_API_KEY` set, or the Muse auth file's `providers` object containing a `meta` entry (`agent-run/muse.ts` `isMuseSignedIn`); fix: `muse login`. No pre-registered `agent-deck` MCP entry is needed: the run writes its own entry into a per-run worker config | Never trusted from `run`: `--trust-workspace` is never passed, so `trustOverride` is always false; an untrusted-workspace warning surfaces as a log notice instead (`agent-run/muse.ts` `planStart`) |
 
 ## Resume: where the session id comes from
 
@@ -236,7 +236,7 @@ folder's assignment must already name the deck; `run` never rewrites it:
 - claude (`agent-run/claude-probe.ts`): ``Claude Code is not installed (no `claude` on PATH). Install Claude Code, then run `claude auth login` to sign in, then retry.`` or ``Claude Code is not signed in. Run `claude auth login` to sign in with your own account, then retry.`` A missing SDK adds (`agent-run/claude.ts`): ``The Claude Agent SDK is not installed. Reinstall the CLI (`agent-deck upgrade` or `npm install -g @agent-deck/cli@latest`) so @anthropic-ai/claude-agent-sdk is present, then retry.``
 - codex (`agent-run/codex.ts`): ``codex CLI not found (tried "<bin>"): install codex-cli 0.157+ and ensure 'codex' is on PATH (or set CODEX_BIN=/path/to/codex), then retry.`` or ``codex is not signed in: run `codex login`, then retry.``
 - cursor (`agent-run/cursor.ts`): ``cursor-agent CLI not found (tried "<bin>"): install cursor-agent 2026.10+ and ensure 'cursor-agent' is on PATH (or set CURSOR_BIN=/path/to/cursor-agent), then retry.`` or ``cursor-agent is not signed in: run `cursor-agent login`, then retry.``
-- muse (`agent-run/muse.ts`): ``muse CLI not found (tried "<bin>"): install Muse Code 1.4+ and ensure 'muse' is on PATH (or set MUSE_BIN=/path/to/muse), then retry.`` or ``muse is not signed in: run `muse login`, then retry.`` A missing MCP entry adds: ``agent-deck MCP server is not registered with Muse: run `agent-deck setup --client muse` to register it, then retry. If Muse reports the server needs authorization, run `muse mcp login agent-deck` (see `muse mcp --help`).``
+- muse (`agent-run/muse.ts`): ``muse CLI not found (tried "<bin>"): install Muse Code 1.4+ and ensure 'muse' is on PATH (or set MUSE_BIN=/path/to/muse), then retry.`` or ``muse is not signed in: run `muse login`, then retry.`` No pre-registered MCP entry is needed: the run writes its own `agent-deck` entry into a per-run worker config.
 
 **Untrusted workspace** (per client):
 
@@ -248,9 +248,10 @@ folder's assignment must already name the deck; `run` never rewrites it:
 - muse: never trusted from `run` (`trustOverride: false`); stderr lines
   matching `warning|untrusted|delegation|error|fail`
   (`MUSE_STDERR_NOTICE_PATTERN`) surface as log notices and never fail the run
-  (`agent-run/muse.ts`). Which capabilities an untrusted workspace actually loses is
-  `<TBD: confirm>` on the installed Muse build — `run` only surfaces the
-  warning and continues.
+  (`agent-run/muse.ts`). An untrusted workspace does not load project
+  `.mcp.json` servers (Muse prints "project MCP servers from .mcp.json … are
+  not loaded because the workspace is untrusted"; operator-verified on Muse
+  Code 1.4.25), so worker runs only see their per-run `agent-deck` entry.
 - claude: no workspace-trust gate in the adapter (`trustOverride` always
   false; `agent-run/claude.ts`).
 

@@ -48,8 +48,7 @@
  *   `muse/auth.json` copied in so sign-in survives the isolation. Sessions
  *   live outside the config home, so resume is unaffected. A project
  *   `.mcp.json` (cwd up to the filesystem root) defining any non-`agent-deck`
- *   server fails closed before spawn. A project `agent-deck` entry is
- *   allowed: same-name project entries shadow the user entry only in a
+ *   server is allowed, and so is a project `agent-deck` entry: same-name project entries shadow the user entry only in a
  *   trusted workspace, and a worker is never trusted (no `--trust-workspace`
  *   in argv, no persisted trust in the per-run config, which holds only
  *   settings.json and auth.json).
@@ -885,20 +884,9 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
             `Refusing to run --tools ${args.tools} without enforceable approval, sandbox, and network boundaries; no process was started.`,
         };
       }
-      // 2. The worker MCP session must isolate to the run entry: a project
-      // config contributing any foreign server would load alongside it in a
-      // trusted workspace.
-      const foreign = findMuseForeignProjectServers(args.cwd, readFile);
-      if (foreign.length > 0) {
-        const first = foreign[0];
-        return {
-          ok: false,
-          remedy:
-            `muse MCP isolation unavailable: ${first.configPath} defines MCP server "${first.server}" outside the run entry, ` +
-            'which Muse would load alongside it in a trusted workspace. Remove the foreign server from the project MCP config ' +
-            '(or run in a folder without one), then retry; no process was started.',
-        };
-      }
+      // 2. Project `.mcp.json` servers (foreign or `agent-deck`) are NOT
+      // rejected: Muse loads the project MCP layer only in a trusted
+      // workspace, and a worker is never trusted (see 3).
       // 3. A project `agent-deck` entry is NOT rejected: Muse loads project
       // `.mcp.json` servers only in a trusted workspace, worker argv never
       // carries `--trust-workspace`/`--yolo` (MUSE_FORBIDDEN_FLAGS), and the
