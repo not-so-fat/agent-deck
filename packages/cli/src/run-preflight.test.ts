@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createRunAdapter } from '@agent-deck/backend/agent-run';
 import {
   RUN_CLAUDE_NOT_INSTALLED_ERROR,
   RUN_CLAUDE_NOT_SIGNED_IN_ERROR,
@@ -55,6 +56,12 @@ function makeDeps(
   });
   return {
     query,
+    // Real adapter behavior with the NOT-669 gate bypassed: these tests
+    // exercise sign-in preflight, not the sibling-ticket mapping.
+    createAdapter: (client) => ({
+      ...createRunAdapter(client, { claude: { query } }),
+      profileEnforcement: () => ({ ok: true as const }),
+    }),
     resolveDeck: vi.fn(async (ref: string) =>
       ref === DECK.name || ref === DECK.id ? { ...DECK } : null,
     ),

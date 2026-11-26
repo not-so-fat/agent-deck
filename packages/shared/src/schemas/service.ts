@@ -67,6 +67,8 @@ export const ServiceToolSchema = z.object({
   description: z.string().min(1, 'Tool description is required'),
   inputSchema: z.record(z.any()),
   enabled: z.boolean().optional(),
+  /** NOT-669: MCP tool annotations as advertised by the service (readOnlyHint gates readonly workers). */
+  annotations: z.record(z.any()).optional(),
 });
 
 export const UpdateServiceToolSettingsSchema = z.object({

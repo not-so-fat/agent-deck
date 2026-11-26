@@ -41,6 +41,7 @@ import {
   assertSafeMuseResumeId,
   buildMuseArgv,
   createMuseAdapter,
+  createRunAdapter,
   MUSE_FLAGS_FOR_PROFILE,
   MUSE_FORBIDDEN_FLAGS,
   mergeMuseLines,
@@ -200,13 +201,20 @@ function makeDeps(
     ...(overrides.code !== undefined ? { code: overrides.code } : {}),
     ...(overrides.stderrTail !== undefined ? { stderrTail: overrides.stderrTail } : {}),
   });
+  const muse = {
+    probe: overrides.probe ?? okMuseProbe(),
+    spawn,
+    readFile: overrides.readFile ?? fakeMuseReadFile(cwd),
+  };
   return {
     calls,
-    muse: {
-      probe: overrides.probe ?? okMuseProbe(),
-      spawn,
-      readFile: overrides.readFile ?? fakeMuseReadFile(cwd),
-    },
+    muse,
+    // Real adapter behavior with the NOT-669 gate bypassed: these tests
+    // exercise argv/event mapping, not the sibling-ticket mapping.
+    createAdapter: (client) => ({
+      ...createRunAdapter(client, { muse }),
+      profileEnforcement: () => ({ ok: true as const }),
+    }),
     resolveDeck: async (ref: string) => (ref === DECK.name || ref === DECK.id ? { ...DECK } : null),
     resolveLaunchPlan: (async () => overrides.plan ?? matchingPlan(cwd)) as RunDeps['resolveLaunchPlan'],
     homeDir,

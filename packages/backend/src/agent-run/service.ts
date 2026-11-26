@@ -19,6 +19,7 @@ import path from 'node:path';
 import {
   RUN_CLIENT_PROFILES,
   RUN_SUPPORTED_CLIENTS,
+  type AdapterStartArgs,
   type ClientAdapter,
   type RunClient,
   type RunClientProfiles,
@@ -41,16 +42,20 @@ import {
   appendRunLogLine,
   collectRunStatus,
   findReceiptDeckMismatch,
+  hashRunToken,
   isRunPidAlive,
   listRunInfos,
   metaPathForLog,
+  mintRunToken,
   newRunId,
   readRunLog,
   readRunMeta,
   reconcileRunState,
+  recordRunDenial,
   runPaths,
   runsRoot,
   writeRunMeta,
+  writeRunTokenPointer,
   type CollectedStatus,
   type LogRead,
   type RunLogLine,
@@ -533,7 +538,7 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     if (!preflight.ok) {
       return { kind: 'rejected', code: 'client_unavailable', message: preflight.remedy };
     }
-    const startArgs = {
+    const startArgs: AdapterStartArgs = {
       cwd: request.cwd,
       prompt: request.prompt,
       tools: request.tools,
@@ -546,6 +551,14 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     const startPlan = adapter.planStart(startArgs);
     if (!startPlan.ok) {
       return { kind: 'rejected', code: 'profile_unsupported', message: startPlan.remedy };
+    }
+    // NOT-669: the enforcement gate, for start and resume alike and before
+    // any spawn. An adapter that cannot enforce the requested profile
+    // refuses here with its remedy; nothing is recorded and no process
+    // starts.
+    const enforcement = adapter.profileEnforcement(startArgs);
+    if (!enforcement.ok) {
+      return { kind: 'rejected', code: 'profile_unsupported', message: enforcement.remedy };
     }
     if (launch.beforeStart) {
       const gate = await launch.beforeStart();
@@ -560,6 +573,14 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
 
     const canonical = canonicalCwd(request.cwd);
+    // NOT-669: a fresh unguessable worker token for this launch/resume —
+    // always, including custom-`--log` runs (unlike resume provenance, which
+    // cannot discover those records, worker enforcement must reach every
+    // headless run, so the token pointer below makes custom locations
+    // resolvable). The record keeps only the hash; the plaintext travels to
+    // the adapter only.
+    const runToken = mintRunToken();
+    startArgs.runToken = runToken;
     const meta: RunMeta = {
       runId,
       deck: deck.id,
@@ -575,8 +596,13 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       ...(resumedFrom ? { resumedFrom } : {}),
       ...(request.playbookPin ? { playbookPin: request.playbookPin } : {}),
       ...(request.startedBySessionId ? { startedBySessionId: request.startedBySessionId } : {}),
+      runTokenHash: hashRunToken(runToken),
     };
     writeRunMeta(metaPath, meta);
+    // NOT-669: the token pointer makes this run resolvable from its worker
+    // token whatever the record location — without it a custom-`--log` run
+    // would reach the MCP server as an unenforced leader session.
+    writeRunTokenPointer(deps.homeDir, hashRunToken(runToken), runId, metaPath);
 
     const live: LiveRun = {
       meta,
@@ -661,6 +687,20 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
               result: event.result,
               ...(event.usage !== undefined ? { usage: event.usage } : {}),
             });
+          } else if (event.kind === 'denial') {
+            // NOT-669: a client-reported denial lands on the run record the
+            // same way a server-side denial does — `source: "client"`, no
+            // log line (denials are status, not events).
+            recordRunDenial(meta, {
+              at: new Date().toISOString(),
+              client: request.client,
+              profile: request.tools,
+              source: 'client',
+              kind: event.denialKind,
+              target: event.target,
+              reason: event.reason,
+            });
+            writeRunMeta(metaPath, meta);
           } else {
             appendLine({
               t: 'notice',

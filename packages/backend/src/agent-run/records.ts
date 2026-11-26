@@ -11,11 +11,12 @@
  * is available.
  */
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { RunClient, RunPlaybookPin, RunToolsProfile } from './adapter';
+import type { RunClient, RunPlaybookPin } from './adapter';
+import type { RunToolsProfile } from './profiles';
 
 export type RunLogLine =
   | { t: 'text'; ts: string; text: string }
@@ -48,6 +49,37 @@ export type RunResumeOrigin = {
 
 /** Recorded lifecycle. `died` and evidence-derived states are written only by reconciliation (NOT-481). */
 export type RunMetaState = 'running' | 'ended' | 'error' | 'canceled' | 'died';
+
+/**
+ * NOT-669: what denied an action. `agent-deck` is the MCP server's own
+ * enforcement (an MCP tool call outside the effective profile); `client`
+ * is a denial the client adapter reported back.
+ */
+export type RunDenialSource = 'agent-deck' | 'client';
+
+/**
+ * NOT-669: what kind of action was denied. `mcp_tool` is reserved for
+ * Agent Deck's server-side enforcement; adapters report the client-native
+ * kinds through the `denial` normalized event.
+ */
+export type RunDenialKind = 'mcp_tool' | 'shell' | 'file_write' | 'network' | 'client_tool';
+
+/**
+ * NOT-669: one profile denial recorded on a run. `target` names what was
+ * denied (the MCP tool name for `kind: "mcp_tool"`); `profile` is the
+ * run's effective profile at denial time. Same shape as the shared
+ * `AgentRunDenialSchema`, declared here because agent-run imports nothing
+ * outside node built-ins and its own modules.
+ */
+export type RunDenial = {
+  at: string;
+  client: RunClient;
+  profile: RunToolsProfile;
+  source: RunDenialSource;
+  kind: RunDenialKind;
+  target: string;
+  reason: string;
+};
 
 export type RunMeta = {
   runId: string;
@@ -83,6 +115,14 @@ export type RunMeta = {
    * on runs written before NOT-640 and on non-session starts (CLI, grants).
    */
   startedBySessionId?: string;
+  /**
+   * NOT-669: SHA-256 hex of the run's unguessable worker token, minted at
+   * launch/resume. The plaintext token is passed to the adapter only and
+   * never appears in the record, the log, or status reads.
+   */
+  runTokenHash?: string;
+  /** NOT-669: profile denials recorded on this run, oldest first. */
+  denials?: RunDenial[];
 };
 
 export type RunInspectState = RunMetaState;
@@ -98,11 +138,34 @@ export type RunStatusInfo = {
   logPath: string;
   /** Present only when this run resumed a session another run started. */
   resumedFrom?: RunResumeOrigin;
+  /** NOT-669: the worker profile enforced on this run. */
+  effectiveProfile: RunToolsProfile;
+  /** NOT-669: profile denials recorded on this run, oldest first. */
+  denials: RunDenial[];
 };
 
 export function newRunId(): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '');
   return `run-${stamp}-${randomBytes(3).toString('hex')}`;
+}
+
+/**
+ * NOT-669: mint one run's unguessable worker token (32 random bytes, hex).
+ * Passed to the adapter as `AdapterStartArgs.runToken`; only
+ * {@link hashRunToken} of it is ever stored.
+ */
+export function mintRunToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+/** NOT-669: SHA-256 hex of a worker token — the only form ever stored. */
+export function hashRunToken(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+/** NOT-669: tokens are exactly the minted shape; anything else is rejected without a lookup. */
+export function isRunTokenFormat(value: string): boolean {
+  return /^[0-9a-f]{64}$/.test(value);
 }
 
 export function runsRoot(homeDir: string): string {
@@ -124,6 +187,104 @@ export function metaPathForLog(logPath: string): string {
 }
 
 /**
+ * NOT-669 repair: cross-process mutual exclusion for one run record.
+ * `meta.json` is written from several processes at once — the run service
+ * (state, session, client-reported denials), the MCP server (server-side
+ * denials), the CLI, reconciliation — and every write is read-modify-write,
+ * so two processes interleaving read/write lose each other's update (in
+ * particular a recorded denial). The lock serializes the whole critical
+ * section; the atomic rename below then only keeps readers on complete
+ * documents.
+ *
+ * The lock is a sibling directory (`meta.json.lock`): `mkdir` is atomic on
+ * POSIX and Windows, and an empty directory needs no cleanup protocol. A
+ * lock older than `RUN_META_LOCK_STALE_MS` belongs to a crashed holder and
+ * is broken. Reentrant within one process (nested `withRunMetaLock` for the
+ * same record runs straight through — `appendRunDenial` calls
+ * `writeRunMeta` under its own lock); across processes the directory still
+ * serializes. When the lock cannot be acquired in time the critical section
+ * NEVER runs unlocked — that would reintroduce the lost-update race the
+ * lock exists to prevent — and {@link RunMetaLockTimeoutError} is thrown
+ * instead. Callers fail loudly (`writeRunMeta`) or degrade safely
+ * (`appendRunDenial` retries once, then reports `false`).
+ */
+const RUN_META_LOCK_STALE_MS = 10_000;
+const RUN_META_LOCK_WAIT_MS = 5_000;
+const RUN_META_LOCK_POLL_MS = 20;
+
+/** NOT-669 repair round 3: the record lock stayed held past the wait budget. Never bypassed. */
+export class RunMetaLockTimeoutError extends Error {
+  readonly metaPath: string;
+  constructor(metaPath: string) {
+    super(`Timed out acquiring the run record lock for ${metaPath}`);
+    this.name = 'RunMetaLockTimeoutError';
+    this.metaPath = metaPath;
+  }
+}
+
+const RUN_META_LOCKS_HELD = new Set<string>();
+
+function sleepSyncMs(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // No shared memory in this runtime: busy-spin briefly instead.
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      // Intentional spin: lock polling only.
+    }
+  }
+}
+
+export function withRunMetaLock<T>(metaPath: string, fn: () => T, waitMs: number = RUN_META_LOCK_WAIT_MS): T {
+  const lockDir = `${metaPath}.lock`;
+  if (RUN_META_LOCKS_HELD.has(lockDir)) {
+    return fn();
+  }
+  const deadline = Date.now() + waitMs;
+  let acquired = false;
+  for (let first = true; first || Date.now() < deadline; first = false) {
+    try {
+      fs.mkdirSync(lockDir);
+      acquired = true;
+      break;
+    } catch {
+      try {
+        const ageMs = Date.now() - fs.statSync(lockDir).mtimeMs;
+        if (ageMs > RUN_META_LOCK_STALE_MS) {
+          try {
+            fs.rmdirSync(lockDir);
+          } catch {
+            // Another process broke or released it first; retry.
+          }
+          continue;
+        }
+      } catch {
+        // The lock vanished between mkdir and stat; retry.
+      }
+      if (Date.now() + RUN_META_LOCK_POLL_MS >= deadline) {
+        break;
+      }
+      sleepSyncMs(RUN_META_LOCK_POLL_MS);
+    }
+  }
+  if (!acquired) {
+    throw new RunMetaLockTimeoutError(metaPath);
+  }
+  RUN_META_LOCKS_HELD.add(lockDir);
+  try {
+    return fn();
+  } finally {
+    RUN_META_LOCKS_HELD.delete(lockDir);
+    try {
+      fs.rmdirSync(lockDir);
+    } catch {
+      // Broken as stale by a waiter, or removed with the run dir.
+    }
+  }
+}
+
+/**
  * Atomic run-record write: readers (`run status`, detach tests, orchestrators)
  * poll meta.json while the run child rewrites it, and a plain writeFileSync
  * truncates before writing — a concurrent read lands on empty/partial bytes
@@ -131,15 +292,211 @@ export function metaPathForLog(logPath: string): string {
  * every observed state a complete document (rename is atomic on POSIX and
  * Windows). The pid suffix keeps the starter's and the child's temp files
  * distinct when both target the same meta.json.
+ *
+ * NOT-669: denials are append-only across processes — the MCP server records
+ * server-side denials while the run service holds its own in-memory meta —
+ * so a write never drops denials recorded since the caller's meta was read:
+ * the disk read, the union, and the rename all run under the record lock,
+ * and entries on disk that the caller's meta lacks are unioned in (by value;
+ * entries are immutable once written, so this cannot duplicate or resurrect
+ * anything). The union is merged chronologically by `at` (stable for ties)
+ * so the record keeps its oldest-first contract no matter which side wrote
+ * first. No caller clears denials.
  */
 export function writeRunMeta(metaPath: string, meta: RunMeta): void {
-  const tmpPath = `${metaPath}.tmp-${process.pid}`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmpPath, metaPath);
+  withRunMetaLock(metaPath, () => {
+    let merged = meta.denials;
+    try {
+      const disk = readRunMeta(metaPath);
+      if (disk.ok && disk.meta.denials?.length) {
+        // Multiset merge: equal-valued denials are distinct calls, so keep
+        // as many copies of each as either side holds (never collapse them).
+        const memoryCounts = new Map<string, number>();
+        for (const denial of meta.denials ?? []) {
+          const key = JSON.stringify(denial);
+          memoryCounts.set(key, (memoryCounts.get(key) ?? 0) + 1);
+        }
+        const missing = disk.meta.denials.filter((denial) => {
+          const key = JSON.stringify(denial);
+          const left = memoryCounts.get(key) ?? 0;
+          if (left > 0) {
+            memoryCounts.set(key, left - 1);
+            return false;
+          }
+          return true;
+        });
+        if (missing.length > 0) {
+          merged = [...(meta.denials ?? []), ...missing].sort((a, b) => {
+            const left = typeof a.at === 'string' ? a.at : '';
+            const right = typeof b.at === 'string' ? b.at : '';
+            return left < right ? -1 : left > right ? 1 : 0;
+          });
+        }
+      }
+    } catch {
+      // Best effort: the state write below still lands.
+    }
+    const tmpPath = `${metaPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpPath, `${JSON.stringify({ ...meta, ...(merged ? { denials: merged } : {}) }, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmpPath, metaPath);
+  });
 }
 
 export function appendRunLogLine(logPath: string, line: RunLogLine): void {
   fs.appendFileSync(logPath, `${JSON.stringify(line)}\n`, 'utf8');
+}
+
+/**
+ * NOT-669: append one denial to a run record, oldest first. Read-modify-write
+ * through the atomic meta write, for recorders that hold no live meta (the
+ * MCP server process recording a server-side denial). Returns false when the
+ * record is missing or corrupt, or when the record stays locked through a
+ * bounded retry, instead of throwing — so a denial can never fail an
+ * unrelated request (the denial itself was still enforced). The caller logs
+ * a `false` loudly.
+ *
+ * The read, the append, and the write all run under the record lock, so a
+ * concurrent service write in another process cannot land between them and
+ * lose the entry. One retry after a lock timeout (the critical section never
+ * ran, so nothing can double-append). The MCP server does not use this
+ * blocking form on the response path — see {@link tryAppendRunDenial}.
+ */
+export function appendRunDenial(metaPath: string, denial: RunDenial): boolean {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const outcome = tryAppendRunDenial(metaPath, denial, RUN_META_LOCK_WAIT_MS);
+    if (outcome !== 'busy') {
+      return outcome === 'recorded';
+    }
+  }
+  return false;
+}
+
+/**
+ * NOT-669 repair round 4: one append attempt with a caller-chosen lock wait
+ * (`0` = a single non-blocking try). Under the lock the denial is appended
+ * exactly once — no fingerprint de-duplication, because equal-valued
+ * denials are distinct denied calls — at its chronological position, so
+ * `denials` stays oldest first even when a deferred append lands late.
+ * `busy` means the critical section never ran (nothing was written), so a
+ * retry cannot double-append.
+ */
+export function tryAppendRunDenial(
+  metaPath: string,
+  denial: RunDenial,
+  waitMs: number,
+): 'recorded' | 'missing' | 'busy' {
+  try {
+    return withRunMetaLock(
+      metaPath,
+      () => {
+        const read = readRunMeta(metaPath);
+        if (!read.ok) {
+          return 'missing' as const;
+        }
+        const existing = read.meta.denials ?? [];
+        let index = existing.length;
+        while (index > 0 && String(existing[index - 1].at ?? '') > String(denial.at ?? '')) {
+          index -= 1;
+        }
+        read.meta.denials = [...existing.slice(0, index), denial, ...existing.slice(index)];
+        writeRunMeta(metaPath, read.meta);
+        return 'recorded' as const;
+      },
+      waitMs,
+    );
+  } catch (error) {
+    if (error instanceof RunMetaLockTimeoutError) {
+      return 'busy';
+    }
+    throw error;
+  }
+}
+
+/**
+ * NOT-669: append one denial to a live in-memory meta (the run service
+ * recording a client-reported `denial` event). Pure push — the caller owns
+ * the write, so nothing the live meta holds is clobbered by a re-read.
+ */
+export function recordRunDenial(meta: RunMeta, denial: RunDenial): void {
+  meta.denials = [...(meta.denials ?? []), denial];
+}
+
+/**
+ * NOT-669: root of the token→record pointer index. A sibling of the runs
+ * root (never inside it) so raw `runs/` scans keep seeing run dirs only.
+ */
+export function runTokenPointerRoot(homeDir: string): string {
+  return path.join(homeDir, 'runs-by-token');
+}
+
+/**
+ * NOT-669: where the token→record pointer for `tokenHash` lives. Every
+ * launch/resume writes one — including runs with a custom `--log` path,
+ * whose records live outside the runs root and are otherwise undiscoverable
+ * (unlike resume provenance, worker enforcement must reach those runs).
+ * The pointer names the meta path; the token itself never appears.
+ */
+export function runTokenPointerPath(homeDir: string, tokenHash: string): string {
+  return path.join(runTokenPointerRoot(homeDir), `${tokenHash}.json`);
+}
+
+/**
+ * NOT-669: record where the run carrying `tokenHash` keeps its meta. Atomic
+ * (sibling temp file + rename), idempotent, and safe to call from any
+ * process — concurrent launches mint distinct hashes, so pointers never
+ * collide. Failure to write the pointer must fail the launch (the caller
+ * decides): without it a custom-`--log` run's worker session could never
+ * resolve server-side.
+ */
+export function writeRunTokenPointer(
+  homeDir: string,
+  tokenHash: string,
+  runId: string,
+  metaPath: string,
+): void {
+  const pointerPath = runTokenPointerPath(homeDir, tokenHash);
+  fs.mkdirSync(path.dirname(pointerPath), { recursive: true });
+  const tmpPath = `${pointerPath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify({ runId, metaPath })}\n`, 'utf8');
+  fs.renameSync(tmpPath, pointerPath);
+}
+
+/**
+ * NOT-669: resolve a worker token hash to its run record. The token pointer
+ * (written at every launch/resume, including custom-`--log` runs) is read
+ * first; the default-records scan stays as a fallback for records written
+ * before pointers existed. Returns null when no record carries the hash.
+ */
+export function findRunMetaByTokenHash(
+  homeDir: string,
+  tokenHash: string,
+): { runId: string; metaPath: string; meta: RunMeta } | null {
+  try {
+    const raw = fs.readFileSync(runTokenPointerPath(homeDir, tokenHash), 'utf8');
+    const pointer = JSON.parse(raw) as { runId?: unknown; metaPath?: unknown };
+    if (typeof pointer.metaPath === 'string' && pointer.metaPath) {
+      const read = readRunMeta(pointer.metaPath);
+      if (read.ok && read.meta.runTokenHash === tokenHash) {
+        return { runId: read.meta.runId, metaPath: pointer.metaPath, meta: read.meta };
+      }
+    }
+  } catch {
+    // No pointer (or a stale one): fall through to the scan.
+  }
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(runsRoot(homeDir));
+  } catch {
+    return null;
+  }
+  for (const runId of entries) {
+    const metaPath = runPaths(homeDir, runId).metaPath;
+    const read = readRunMeta(metaPath);
+    if (read.ok && read.meta.runTokenHash === tokenHash) {
+      return { runId, metaPath, meta: read.meta };
+    }
+  }
+  return null;
 }
 
 const RUN_META_STATES: readonly RunMetaState[] = ['running', 'ended', 'error', 'canceled', 'died'];
@@ -420,6 +777,8 @@ export function collectRunStatus(runId: string, homeDir: string): CollectedStatu
         lastLogTs: log.lastTs,
         logPath,
         ...(meta.resumedFrom ? { resumedFrom: meta.resumedFrom } : {}),
+        effectiveProfile: meta.tools,
+        denials: meta.denials ?? [],
       },
     };
   }
@@ -443,6 +802,8 @@ export function collectRunStatus(runId: string, homeDir: string): CollectedStatu
       startedAt: typeof partial.startedAt === 'string' ? partial.startedAt : 'unknown',
       lastLogTs: log.lastTs,
       logPath,
+      effectiveProfile: partial.tools === 'edit' ? 'edit' : 'readonly',
+      denials: Array.isArray(partial.denials) ? (partial.denials as RunDenial[]) : [],
     },
   };
 }

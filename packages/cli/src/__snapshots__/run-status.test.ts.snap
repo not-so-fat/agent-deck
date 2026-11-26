@@ -4,6 +4,8 @@ exports[`agent-deck run status (NOT-402) > --json output of status has the keys 
 {
   "client": "claude",
   "deck": "deck-planner",
+  "denials": [],
+  "effectiveProfile": "readonly",
   "lastLogTs": "2026-10-09T09:00:04.000Z",
   "logPath": "<home>/runs/run-snapshot/run.jsonl",
   "runId": "run-snapshot",

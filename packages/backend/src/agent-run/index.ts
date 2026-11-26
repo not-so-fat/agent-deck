@@ -12,3 +12,24 @@ export * from './muse';
 export * from './provenance';
 export * from './records';
 export * from './service';
+// Named (not `export *`): `RUN_TOOL_PROFILES`/`RunToolsProfile` already come
+// through `./adapter`'s re-export, and a second star-export would shadow them.
+export {
+  RUN_TOKEN_HEADER,
+  WORKER_ADMIN_ONLY_MCP_TOOLS,
+  WORKER_DASHBOARD_ONLY_MUTATING_MCP_TOOLS,
+  WORKER_EDIT_ALLOW_MCP_TOOLS,
+  WORKER_EDIT_DENY_MCP_TOOLS,
+  WORKER_LEGACY_DECK_CARD_MUTATING_MCP_TOOLS,
+  WORKER_LEGACY_READ_MCP_TOOLS,
+  WORKER_PROFILES,
+  WORKER_READONLY_ALLOW_MCP_TOOLS,
+  WORKER_READONLY_DENY_MCP_TOOLS,
+  WORKER_SHARED_DENY_MCP_TOOLS,
+  isMcpToolDeniedByProfile,
+  mcpToolDenialReason,
+  type WorkerFileWriteScope,
+  type WorkerNetworkCapability,
+  type WorkerProfile,
+  type WorkerShellCapability,
+} from './profiles';

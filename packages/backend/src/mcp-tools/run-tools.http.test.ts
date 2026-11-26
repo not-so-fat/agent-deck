@@ -172,6 +172,9 @@ describe('MCP agent run tools (NOT-539)', () => {
       planStart() {
         return { ok: true, trustOverride: false };
       },
+      profileEnforcement() {
+        return { ok: true };
+      },
       async *start(args) {
         starts.push(args);
         for (const step of steps()) {

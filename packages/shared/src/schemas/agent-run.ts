@@ -130,6 +130,26 @@ export const AgentRunFinalizationStatusSchema = z
   })
   .strict();
 
+/**
+ * NOT-669: one profile denial recorded on a run. `source: "agent-deck"` is a
+ * server-side enforcement denial (an MCP tool call outside the effective
+ * profile, denied immediately with `PROFILE_DENIED`); `source: "client"` is
+ * a denial the client adapter reported back (shell, file write, network, or
+ * client-tool refusal). `target` names what was denied (the MCP tool name for
+ * `kind: "mcp_tool"`).
+ */
+export const AgentRunDenialSchema = z
+  .object({
+    at: z.string(),
+    client: AgentRunClientSchema,
+    profile: AgentRunToolsSchema,
+    source: z.enum(['agent-deck', 'client']),
+    kind: z.enum(['mcp_tool', 'shell', 'file_write', 'network', 'client_tool']),
+    target: z.string(),
+    reason: z.string(),
+  })
+  .strict();
+
 export const AgentRunStatusSchema = z
   .object({
     runId: AgentRunIdSchema,
@@ -143,6 +163,10 @@ export const AgentRunStatusSchema = z
     lastEventAt: z.string().nullable(),
     /** NOT-486: present only when the run was started with `prepareFinalization`. */
     finalization: AgentRunFinalizationStatusSchema.nullable(),
+    /** NOT-669: the worker profile enforced on this run. */
+    effectiveProfile: AgentRunToolsSchema,
+    /** NOT-669: profile denials recorded on this run, oldest first. */
+    denials: z.array(AgentRunDenialSchema),
   })
   .strict();
 
@@ -331,6 +355,7 @@ export type SessionAgentRunResponse = z.infer<typeof SessionAgentRunResponseSche
 export type CreateAgentRunResponse =z.infer<typeof CreateAgentRunResponseSchema>;
 export type AgentRunState = z.infer<typeof AgentRunStateSchema>;
 export type AgentRunStatus = z.infer<typeof AgentRunStatusSchema>;
+export type AgentRunDenial = z.infer<typeof AgentRunDenialSchema>;
 export type AgentRunEvent = z.infer<typeof AgentRunEventSchema>;
 export type AgentRunEventsQuery = z.infer<typeof AgentRunEventsQuerySchema>;
 export type AgentRunEventsResponse = z.infer<typeof AgentRunEventsResponseSchema>;

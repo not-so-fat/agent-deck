@@ -248,7 +248,7 @@ describe('agent-deck run status (NOT-402)', () => {
     expect(code).toBe(0);
     const info = statusJson();
     expect(Object.keys(info).sort()).toEqual(
-      ['client', 'deck', 'lastLogTs', 'logPath', 'runId', 'sessionId', 'startedAt', 'state'].sort(),
+      ['client', 'deck', 'denials', 'effectiveProfile', 'lastLogTs', 'logPath', 'runId', 'sessionId', 'startedAt', 'state'].sort(),
     );
     for (const key of ['runId', 'deck', 'client', 'state', 'sessionId', 'startedAt', 'logPath'] as const) {
       expect(info).toHaveProperty(key);

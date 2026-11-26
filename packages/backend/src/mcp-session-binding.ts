@@ -11,6 +11,7 @@ import {
   type BindingActiveSource,
   type PlaybookPin,
 } from '@agent-deck/shared';
+import type { RunClient, RunToolsProfile } from './agent-run';
 import type { ClientPrincipal } from './auth/client-grants';
 import type { UnassignedDefaultDeckIssue } from './mcp-unassigned';
 
@@ -45,6 +46,24 @@ export type GrantSessionScope = {
   label: string;
   defaultDeck: string;
   allowedDecks: string[];
+};
+
+/**
+ * NOT-669: worker identity bound to one MCP session. The session presented
+ * the run's unguessable worker token, so it is that run's worker and every
+ * MCP tool call is enforced against the run's effective profile.
+ */
+export type WorkerSessionIdentity = {
+  runId: string;
+  profile: RunToolsProfile;
+  client: RunClient;
+  /**
+   * NOT-669 repair round 3: the run record's resolved meta.json path, as the
+   * token lookup found it. Server-side denials are recorded here — never
+   * reconstructed from the run id, which would miss custom-`--log` runs
+   * whose records live outside the runs root.
+   */
+  metaPath: string;
 };
 
 /** Per-MCP-session workspace + trusted runtime session. */
@@ -137,6 +156,14 @@ export class McpSessionBindingStore {
    * `active_source: "session"`; never consulted for deck, mode, or auth.
    */
   private approvedSessionOverrideByMcp = new Set<string>();
+  /**
+   * NOT-669: worker identity per MCP session. Adopt-once like the
+   * correlation id: the first verified identity sticks for the session
+   * lifetime, so it can never be dropped by omitting the header, replaced
+   * by another token, or bypassed by reconnecting — a reconnect mints a
+   * fresh session that must present its own valid token.
+   */
+  private workerByMcp = new Map<string, WorkerSessionIdentity>();
   private readonly defaultWorkspace?: string;
   private readonly defaultDeckId?: string;
 
@@ -326,6 +353,7 @@ export class McpSessionBindingStore {
     this.modeByMcp.delete(mcpSessionId);
     this.correlationByMcp.delete(mcpSessionId);
     this.pinByMcp.delete(mcpSessionId);
+    this.workerByMcp.delete(mcpSessionId);
     this.executionWorkspaceByMcp.delete(mcpSessionId);
     this.assignmentByMcp.delete(mcpSessionId);
     this.missingDeckNameByMcp.delete(mcpSessionId);
@@ -470,6 +498,28 @@ export class McpSessionBindingStore {
     return this.pinByMcp.get(mcpSessionId);
   }
 
+  /**
+   * NOT-669: adopt a verified worker identity. First identity wins; later
+   * calls — same or different — are ignored so the identity bound at
+   * session start can never be dropped or replaced. Returns the stored
+   * identity.
+   */
+  setWorkerSession(mcpSessionId: string, identity: WorkerSessionIdentity): WorkerSessionIdentity {
+    const existing = this.workerByMcp.get(mcpSessionId);
+    if (existing) {
+      return existing;
+    }
+    const stored = { ...identity };
+    this.workerByMcp.set(mcpSessionId, stored);
+    return stored;
+  }
+
+  /** NOT-669: the worker identity bound to this session, if it is a worker session. */
+  getWorkerSession(mcpSessionId: string): WorkerSessionIdentity | undefined {
+    const identity = this.workerByMcp.get(mcpSessionId);
+    return identity ? { ...identity } : undefined;
+  }
+
   isUnassigned(mcpSessionId: string): boolean {
     return this.unassignedByMcp.has(mcpSessionId);
   }
@@ -494,6 +544,7 @@ export class McpSessionBindingStore {
     this.correlationByMcp.delete(sessionId);
     this.hostSessionByMcp.delete(sessionId);
     this.pinByMcp.delete(sessionId);
+    this.workerByMcp.delete(sessionId);
     this.executionWorkspaceByMcp.delete(sessionId);
     this.launchByMcp.delete(sessionId);
     this.grantByMcp.delete(sessionId);

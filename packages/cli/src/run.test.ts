@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { writeAssignment } from './assignment';
+import { createRunAdapter } from '@agent-deck/backend/agent-run';
 import { runCli, suggestTopLevelCommand } from './index';
 import { resolveMcpLaunchPlan, type McpLaunchPlan } from './mcp-launcher';
 import {
@@ -97,6 +98,12 @@ function makeDeps(
   const { query } = fakeQuery(messages);
   return {
     query,
+    // Real adapter behavior with the NOT-669 gate bypassed: these tests
+    // exercise CLI prompting and records, not the sibling-ticket mapping.
+    createAdapter: (client) => ({
+      ...createRunAdapter(client, { claude: { query } }),
+      profileEnforcement: () => ({ ok: true as const }),
+    }),
     resolveDeck: vi.fn(async (ref: string) =>
       ref === DECK.name || ref === DECK.id ? { ...DECK } : null,
     ),
@@ -295,6 +302,10 @@ describe('agent-deck run (NOT-400)', () => {
     const { query } = fakeQuery(successMessages());
     const deps: RunDeps = {
       query,
+      createAdapter: (client) => ({
+        ...createRunAdapter(client, { claude: { query } }),
+        profileEnforcement: () => ({ ok: true as const }),
+      }),
       resolveDeck: async () => ({ ...DECK }),
       resolveLaunchPlan: resolveMcpLaunchPlan,
       claudeProbe: async () => ({ ok: true }),

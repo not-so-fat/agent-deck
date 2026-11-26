@@ -16,7 +16,11 @@ import {
 import { validateAssignmentWorkspace } from '../deck-assignment-validation';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
 import { readUseManifest } from '../playbooks/stub-sync';
-import { resolveBindingActiveSource, resolveDeckBindingSource } from '../mcp-session-binding';
+import {
+  resolveBindingActiveSource,
+  resolveDeckBindingSource,
+  type WorkerSessionIdentity,
+} from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
 import { SWITCH_BEFORE_BIND_MESSAGE, mcpPolicyError, mcpPolicyErrorWithMessage, requireMcpAdmin, requireMcpDashboard } from './policy';
@@ -89,6 +93,8 @@ export type McpToolHost = {
     getUnassignedMissingDeckName?(sessionId: string): string | undefined;
     /** NOT-606: why the user default deck did not apply, if this unassigned session holds one. */
     getUnassignedDefaultDeckIssue?(sessionId: string): UnassignedDefaultDeckIssue | undefined;
+    /** NOT-669 repair: worker identity of this session, if it is a worker session. */
+    getWorkerSession?(sessionId: string): WorkerSessionIdentity | undefined;
   };
   /**
    * NOT-597: best-effort promotion of an unassigned session whose

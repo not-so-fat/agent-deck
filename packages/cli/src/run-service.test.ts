@@ -66,6 +66,9 @@ function fixtureAdapter(
     planStart() {
       return { ok: true, trustOverride: false };
     },
+    profileEnforcement() {
+      return { ok: true };
+    },
     async *start(args) {
       starts.push(args);
       yield* events;
@@ -117,7 +120,9 @@ describe('agent-deck run on the shared run service (NOT-479)', () => {
 
     expect(errors).toEqual([]);
     expect(code).toBe(0);
-    expect(first.starts).toEqual([{ cwd, prompt: 'brief', tools: 'readonly' }]);
+    expect(first.starts).toEqual([
+      { cwd, prompt: 'brief', tools: 'readonly', runToken: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    ]);
     const runId = runIdFromLog(logs[0]);
     const logPath = path.join(home, 'runs', runId, 'run.jsonl');
     expect(logs).toEqual([`run ${runId} ended: log ${logPath} sessionId thread-1`]);
@@ -151,6 +156,7 @@ describe('agent-deck run on the shared run service (NOT-479)', () => {
       startedAt: expect.stringMatching(ISO_TS),
       state: 'ended',
       sessionId: 'thread-1',
+      runTokenHash: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
 
     // Observe through the CLI poll commands...
@@ -192,6 +198,7 @@ describe('agent-deck run on the shared run service (NOT-479)', () => {
         tools: 'readonly',
         resumeId: 'thread-1',
         resumedFrom: { runId, sessionId: 'thread-1', tools: 'readonly' },
+        runToken: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
     ]);
     const resumedId = runIdFromLog(logs[0]);
@@ -330,7 +337,13 @@ describe('agent-deck run --playbook-version (NOT-537)', () => {
     expect(errors).toEqual([]);
     expect(code).toBe(0);
     expect(adapter.starts).toEqual([
-      { cwd, prompt: 'brief', tools: 'readonly', playbookPin: { playbookId: 'pb_baseline', versionId: VERSION } },
+      {
+        cwd,
+        prompt: 'brief',
+        tools: 'readonly',
+        playbookPin: { playbookId: 'pb_baseline', versionId: VERSION },
+        runToken: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     ]);
   });
 });
