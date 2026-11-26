@@ -618,7 +618,7 @@ describe('MCP worker profiles (NOT-669)', () => {
     ]);
   });
 
-  it('a tokenless bind into a live-run workspace is refused; token binds; other workspaces and release reopen', async () => {
+  it('leaders still bind into a live-run workspace (no hold); workers learn no runtime session id', async () => {
     const hold = deferred();
     const release = hold.release;
     const ctx = await setup({
@@ -628,103 +628,14 @@ describe('MCP worker profiles (NOT-669)', () => {
     const leader = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
     const { runId, token } = await startRun(ctx, leader, { tools: 'edit' });
 
-    // A fresh tokenless transport beside the run: refused before any session.
-    rpcId += 1;
-    const refused = await postInitialize(ctx.port, rpcId, 'vitest', dealerHeaders(ctx.deckA.id, wt));
-    expect(refused.status).toBe(401);
-    expect(refused.headers.get('mcp-session-id')).toBeNull();
-    const refusedBody = (await refused.json()) as { error?: { message?: string } };
-    expect(refusedBody.error?.message).toContain('WORKER_RUN_ACTIVE');
-    expect(refusedBody.error?.message).toContain(runId);
-
-    // The run's own token still binds as the worker.
-    const worker = await open(ctx, dealerHeaders(ctx.deckA.id, wt, { [AGENT_DECK_RUN_TOKEN_HEADER]: token }));
-    const denied = await call(ctx, worker, 'switch_deck', { target: ctx.deckB.name });
-    expect(denied.data).toMatchObject({ code: 'PROFILE_DENIED', profile: 'edit' });
-
-    // A tokenless leader session anywhere else keeps the approval flow.
-    const elsewhere = await open(ctx, dealerHeaders(ctx.deckA.id, worktree()));
-    const pending = await call(ctx, elsewhere, 'switch_deck', { target: ctx.deckB.name });
-    expect(pending.isError, JSON.stringify(pending.data)).toBe(false);
-    expect(pending.data.status).toBe('pending');
-
-    release();
-    await untilTerminal(ctx, leader, runId);
-
-    // After the run ends the workspace binds tokenless again.
-    const after = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
-    const pendingAfter = await call(ctx, after, 'switch_deck', { target: ctx.deckB.name });
-    expect(pendingAfter.isError, JSON.stringify(pendingAfter.data)).toBe(false);
-    expect(pendingAfter.data.status).toBe('pending');
-  });
-
-  it('a tokenless stale-session recovery into a held workspace is refused; with the token it adopts the worker', async () => {
-    const hold = deferred();
-    const release = hold.release;
-    const ctx = await setup({
-      steps: () => [{ event: { kind: 'text', text: 'working', sessionId: 'ses_1' }, gate: hold.promise }, ...successSteps().slice(1)],
-    });
-    const wt = worktree();
-    const leader = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
-    const { token } = await startRun(ctx, leader, { tools: 'edit' });
-
-    async function postStale(staleId: string, headers: Record<string, string>) {
-      rpcId += 1;
-      return fetch(`http://127.0.0.1:${ctx.port}/mcp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: MCP_ACCEPT,
-          'mcp-session-id': staleId,
-          ...headers,
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: rpcId,
-          method: 'tools/call',
-          params: { name: 'get_session_context', arguments: {} },
-        }),
-      });
-    }
-
-    // Tokenless: no recovery, the restart 404 stands.
-    const refused = await postStale('stale-never-existed-1', dealerHeaders(ctx.deckA.id, wt));
-    expect(refused.status).toBe(404);
-
-    // With the run token the same recovery serves as the worker.
-    const staleId = 'stale-never-existed-2';
-    const recovered = await postStale(staleId, dealerHeaders(ctx.deckA.id, wt, { [AGENT_DECK_RUN_TOKEN_HEADER]: token }));
-    expect(recovered.status).toBe(200);
-    const switched = await call(
-      ctx,
-      { id: staleId, headers: dealerHeaders(ctx.deckA.id, wt, { [AGENT_DECK_RUN_TOKEN_HEADER]: token }) },
-      'switch_deck',
-      { target: ctx.deckB.name },
-    );
-    expect(switched.isError).toBe(true);
-    expect(switched.data).toMatchObject({ code: 'PROFILE_DENIED', profile: 'edit', tool: 'switch_deck' });
-
-    release();
-  });
-
-  it('bind_workspace into a held workspace is refused; re-bind works and workers learn no runtime session id', async () => {
-    const hold = deferred();
-    const release = hold.release;
-    const ctx = await setup({
-      steps: () => [{ event: { kind: 'text', text: 'working', sessionId: 'ses_1' }, gate: hold.promise }, ...successSteps().slice(1)],
-    });
-    const wt = worktree();
-    const leader = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
-    const { runId, token } = await startRun(ctx, leader, { tools: 'edit' });
-
-    // A leader-shaped session bound elsewhere cannot move into the held workspace.
+    // Leader/owner sessions are unchanged: a tokenless session may bind into a live-run workspace.
     const outsider = await open(ctx, dealerHeaders(ctx.deckA.id, worktree()));
-    const refused = await call(ctx, outsider, 'bind_workspace', { workspaceRoot: wt, deckId: ctx.deckA.id });
-    expect(refused.isError).toBe(true);
-    expect(JSON.stringify(refused.data)).toContain('WORKER_RUN_ACTIVE');
-    const stillOutside = await call(ctx, outsider, 'get_session_binding', {});
-    expect(stillOutside.isError, JSON.stringify(stillOutside.data)).toBe(false);
-    expect(stillOutside.data.workspaceRoot).not.toBe(wt);
+    const moved = await call(ctx, outsider, 'bind_workspace', { workspaceRoot: wt, deckId: ctx.deckA.id });
+    expect(moved.isError, JSON.stringify(moved.data)).toBe(false);
+    expect(typeof moved.data.runtime_session_id).toBe('string');
+    const fresh = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
+    const freshBinding = await call(ctx, fresh, 'get_session_binding', {});
+    expect(freshBinding.isError, JSON.stringify(freshBinding.data)).toBe(false);
 
     // The leader session bound before the run re-binds the same workspace and deck.
     const rebind = await call(ctx, leader, 'bind_workspace', { workspaceRoot: wt, deckId: ctx.deckA.id });

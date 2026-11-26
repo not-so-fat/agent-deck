@@ -34,14 +34,12 @@ import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error'
 import { formatMcpToolError } from './mcp-tools/policy';
 import {
   appendRunDenial,
-  findLiveWorkerRunsForWorkspace,
   findRunMetaByTokenHash,
   hashRunToken,
   isRunTokenFormat,
   mcpToolDenialReason,
   runPaths,
   WORKER_PROFILES,
-  type LiveWorkerRunRef,
   type RunToolsProfile,
 } from './agent-run';
 import {
@@ -834,44 +832,6 @@ export class AgentDeckMCPServer {
   }
 
   /**
-   * NOT-669 repair: live worker runs holding `workspaceRoot`, or []. Fail
-   * open (leaders bind as before) when the run store is unresolvable —
-   * workers still authenticate through their token.
-   */
-  private findHoldingWorkerRuns(workspaceRoot: string | undefined): LiveWorkerRunRef[] {
-    if (!workspaceRoot) {
-      return [];
-    }
-    try {
-      return findLiveWorkerRunsForWorkspace(this.resolveRunHomeDir(), workspaceRoot);
-    } catch {
-      return [];
-    }
-  }
-
-  /**
-   * NOT-669 repair: refuse a tokenless bind into a worker-held workspace.
-   * A worker that reconnects without its token (a fresh transport, the
-   * headerless global fallback, a stale-session recovery) must never land
-   * as a leader beside its own run. Presenting the run's token binds as
-   * the worker; existing sessions are unaffected — only new binds wait.
-   */
-  private sendWorkerWorkspaceHeld(res: Response, runs: LiveWorkerRunRef[]): void {
-    const ids = runs.map((run) => run.runId).join(', ');
-    res.status(401).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32001,
-        message:
-          `WORKER_RUN_ACTIVE: a worker run is live in this workspace (${ids}); ` +
-          'bind with its x-agent-deck-run-token header, or bind after it ends. ' +
-          'Existing sessions are unaffected.',
-      },
-      id: null,
-    });
-  }
-
-  /**
    * NOT-669: bind a verified worker identity to the session (adopt-once in
    * the store). A session that already has one keeps it whatever the
    * request carries — the identity can never be dropped by omitting the
@@ -1544,7 +1504,6 @@ export class AgentDeckMCPServer {
       syncWorkspaceOnBind: (workspaceRoot, deck) =>
         this.syncWorkspaceOnBind(workspaceRoot, deck, sessionId),
       sessionBinding: this.sessionBinding,
-      findHoldingWorkerRuns: (workspaceRoot) => this.findHoldingWorkerRuns(workspaceRoot),
       badgeBySession: this.badgeBySession,
       backendUrl: this.backendUrl,
       toolResult: (data) => this.toolResult(data),
@@ -3023,17 +2982,6 @@ export class AgentDeckMCPServer {
           this.sendRunTokenInvalid(res, verified.reason);
           return;
         }
-      } else if (!readBearerToken(req)) {
-        // NOT-669 repair: a tokenless bearer-free initialize into a
-        // worker-held workspace is a worker reconnecting without its token
-        // (or someone standing where a run is live) — refuse the bind
-        // before any runtime session is created. Bearer-grant initializes
-        // are remote principals and keep their own path.
-        const holding = this.findHoldingWorkerRuns(readWorkspaceRootHeader(req));
-        if (holding.length > 0) {
-          this.sendWorkerWorkspaceHeld(res, holding);
-          return;
-        }
       }
     }
 
@@ -3269,15 +3217,6 @@ export class AgentDeckMCPServer {
     // A session this process closed stays closed — never resurrect it.
     if (this.closedSessionIds.has(staleSessionId)) {
       return false;
-    }
-    // NOT-669 repair: a tokenless recovery into a worker-held workspace
-    // refuses like a tokenless initialize — the client re-initializes, with
-    // its worker token (the per-run override) or onto the held-workspace
-    // refusal. A recovery carrying the token proceeds and adopts below.
-    if (!readRunTokenHeader(req) && !readBearerToken(req) && !isBearerGrantRequired()) {
-      if (this.findHoldingWorkerRuns(readWorkspaceRootHeader(req)).length > 0) {
-        return false;
-      }
     }
     // Bearer / hosted requests: header-based recovery stays local
     // bearer-free only (grant clients re-initialize). NOT-634 adds one

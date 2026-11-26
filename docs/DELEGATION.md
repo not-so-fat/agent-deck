@@ -150,11 +150,14 @@ How it runs:
   error `{ code: "PROFILE_DENIED", profile, tool, reason }`. An invalid or
   expired token (no live run matches) is rejected with 401. Leader/owner
   sessions without a token are unchanged, including the `switch_deck`
-  human approval — except that a new tokenless bind into a workspace with a
-  live worker run is refused with `WORKER_RUN_ACTIVE` (a worker reconnecting
-  without its token must never land as a leader beside its own run):
-  present the run's token, or bind after it ends. Existing sessions are
-  unaffected; a session already bound to the workspace re-binds as before.
+  human approval (there is no workspace hold: a tokenless session may bind
+  anywhere, including a workspace with a live run). Each adapter's per-run
+  MCP override must replace the global agent-deck entry under the same server
+  name (adapter tickets), so the worker's own client always connects with its token.
+  Known limitation: profiles are not a sandbox against a deliberately
+  adversarial `edit` worker — with shell, `curl` and agent-home writes it
+  could open a tokenless loopback session; closing that would tighten
+  `edit`, which is out of scope.
   Worker sessions also never learn their backend runtime session id, so the
   id cannot be reused for direct backend calls past the MCP layer.
 - Every adapter answers `profileEnforcement(args)` before any spawn; a
