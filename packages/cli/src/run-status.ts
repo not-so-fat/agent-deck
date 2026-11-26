@@ -62,12 +62,19 @@ function printStatusHuman(info: RunStatusInfo): void {
   console.log(`run ${terminalStyle.bold(info.runId, color)} ${formatState(info.state, color)}`);
   console.log(`  deck ${info.deck}`);
   console.log(`  client ${info.client}`);
+  console.log(`  profile ${info.effectiveProfile}`);
   console.log(`  started ${info.startedAt}`);
   if (info.sessionId) {
     console.log(`  session ${info.sessionId}`);
   }
   if (info.resumedFrom) {
     console.log(`  resumed from ${info.resumedFrom.runId} (--tools ${info.resumedFrom.tools})`);
+  }
+  if (info.denials.length > 0) {
+    console.log(`  denials ${info.denials.length}`);
+    for (const denial of info.denials) {
+      console.log(`    ${denial.at} ${denial.source} ${denial.kind} ${denial.target}: ${denial.reason}`);
+    }
   }
   console.log(`  last log ${info.lastLogTs ?? 'never'}`);
   console.log(`  log ${info.logPath}`);
@@ -85,9 +92,10 @@ export function printRunStatusHelp(): void {
   console.log(`Usage:
   agent-deck run status <runId> [--json]
 
-Prints runId, deck, client, state (running|ended|error|died), sessionId when
-known, the origin run a resume continued (resumedFrom), startedAt, last log
-line time, and the log path. A running meta whose
+Prints runId, deck, client, the effective worker profile, state
+(running|ended|error|died), sessionId when known, the origin run a resume
+continued (resumedFrom), recorded profile denials when any, startedAt, last
+log line time, and the log path. A running meta whose
 pid is no longer alive is reported as died. Exit 0 for any state; non-zero
 only when the run id is unknown.`);
 }

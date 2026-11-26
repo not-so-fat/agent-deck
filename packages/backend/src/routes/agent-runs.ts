@@ -365,6 +365,10 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
 
   const statusBody = (entry: Pick<AgentRunIndexEntry, 'runId' | 'deckId' | 'client' | 'tools' | 'createdAt'>) => {
     const current = publicState(entry.runId);
+    // NOT-669: the effective profile and denials come from the run record;
+    // a record that never survived the launch falls back to the indexed
+    // request with no denials.
+    const record = service.record(entry.runId);
     return AgentRunStatusSchema.parse({
       runId: entry.runId,
       deckId: entry.deckId,
@@ -375,6 +379,8 @@ export async function registerAgentRunRoutes(fastify: FastifyInstance, options: 
       startedAt: current.startedAt ?? entry.createdAt,
       lastEventAt: current.lastEventAt,
       finalization: finalizationStatus(entry.runId),
+      effectiveProfile: record?.tools ?? entry.tools,
+      denials: record?.denials ?? [],
     });
   };
 

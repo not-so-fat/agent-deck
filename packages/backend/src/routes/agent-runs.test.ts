@@ -73,6 +73,9 @@ function fixtureAdapter(client: RunClient, script: () => Script): Fixture {
     planStart() {
       return { ok: true, trustOverride: false };
     },
+    profileEnforcement() {
+      return { ok: true };
+    },
     async *start(args) {
       starts.push(args);
       const current = script();
@@ -505,6 +508,7 @@ describe('POST /api/agent-runs validation (NOT-480)', () => {
       prompt: PROMPT_SENTINEL,
       tools: 'readonly',
       control: expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      runToken: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
 
     const first = await terminalStatus(app, created.runId);
@@ -521,6 +525,7 @@ describe('POST /api/agent-runs validation (NOT-480)', () => {
       resumeId: 'ses_1',
       resumedFrom: { runId: created.runId, sessionId: 'ses_1', tools: 'readonly' },
       control: expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      runToken: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
   });
 });
@@ -713,6 +718,8 @@ describe('redaction and audit (NOT-480)', () => {
     expect(statusKeys).toEqual([
       'client',
       'deckId',
+      'denials',
+      'effectiveProfile',
       'finalization',
       'lastEventAt',
       'runId',
@@ -958,7 +965,12 @@ describe('POST /api/agent-runs/:runId/cancel (NOT-481)', () => {
     const { bin, grandchildPidFile } = codexFixtureBin();
     const kills: number[] = [];
     const app = await buildApp({
-      createAdapter: () => createCodexAdapter({ bin, probe: probeFrom(codexSignedIn), isGitRepo: () => true }),
+      // Real codex process behavior with the NOT-669 gate bypassed: this
+      // test exercises cancellation, not the sibling-ticket mapping.
+      createAdapter: () => ({
+        ...createCodexAdapter({ bin, probe: probeFrom(codexSignedIn), isGitRepo: () => true }),
+        profileEnforcement: () => ({ ok: true as const }),
+      }),
       service: {
         killProcessGroup: (pgid) => {
           kills.push(pgid);

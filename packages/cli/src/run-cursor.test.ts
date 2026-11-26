@@ -23,6 +23,7 @@ import type { NormalizedEvent, RunToolsProfile } from '@agent-deck/backend/agent
 import {
   buildCursorArgv,
   createCursorAdapter,
+  createRunAdapter,
   cursorEventsFromOutput,
   isCursorStatusAuthenticated,
   type CursorProbe,
@@ -121,12 +122,19 @@ function makeDeps(
   } = {},
 ): RunDeps & { calls: Array<{ bin: string; argv: string[]; cwd: string }> } {
   const { spawn, calls } = fakeCursorSpawn(overrides.stdout, overrides.code, overrides.stderrTail);
+  const cursor = {
+    probe: overrides.probe ?? okCursorProbe(),
+    spawn,
+  };
   return {
     calls,
-    cursor: {
-      probe: overrides.probe ?? okCursorProbe(),
-      spawn,
-    },
+    cursor,
+    // Real adapter behavior with the NOT-669 gate bypassed: these tests
+    // exercise argv/event mapping, not the sibling-ticket mapping.
+    createAdapter: (client) => ({
+      ...createRunAdapter(client, { cursor }),
+      profileEnforcement: () => ({ ok: true as const }),
+    }),
     resolveDeck: async (ref: string) => (ref === DECK.name || ref === DECK.id ? { ...DECK } : null),
     resolveLaunchPlan: (async () => overrides.plan ?? matchingPlan(cwd)) as RunDeps['resolveLaunchPlan'],
     homeDir,

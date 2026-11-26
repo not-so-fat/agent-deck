@@ -111,6 +111,60 @@ the process exits and status polling shows no intermediate lines
 | `cursor` | No write-enabling flag | `--force`. `--yolo` and `--approve-mcps` are never passed (`agent-run/cursor.ts`). Print mode (`-p`) reports access to all tools including write and shell, so whether `readonly` truly cannot write is `<TBD: confirm>` — settled by the operator edit-vs-readonly test, not by the flags (`agent-run/cursor.ts`) |
 | `muse` | `--disable-write --disable-shell` (fails closed unless the installed `muse` lists both in `muse exec --help`; `museReadonlyFlagsSupported`) | No extra flags: default bounded permissions (approval on-request, sandbox on). `--yolo`, `--trust-workspace`, `--disable-approval`, `--disable-sandbox`, and `--permission-profile` are never passed (`MUSE_FORBIDDEN_FLAGS`; `agent-run/muse.ts`) |
 
+## Worker profiles
+
+Agent Deck owns two worker profiles, `readonly` and `edit`, as one shared
+definition: `packages/backend/src/agent-run/profiles.ts` (`WORKER_PROFILES`).
+It is the single source of truth every client adapter maps onto its own
+flags, and the MCP server enforces the Agent Deck tool sets server-side.
+Contents are the owner decision of 2026-11-25 — one profile pair mapped
+consistently onto claude, codex, cursor and muse, not tightened beyond the
+table below.
+
+| Capability | `readonly` | `edit` |
+|---|---|---|
+| Shell | Read-only commands | Any command |
+| File writes | None | The run workspace and the agent user's home (git checkouts, `~/workspace/obsidian` Lexicon vault, caches) |
+| Network and web | Reads | Full access |
+| Git | No commit or push | Commit and push |
+| Host CLIs | No mutations | `gh`, `npm`, `curl` (including `curl` to Agent Dealer at `127.0.0.1:2222`) |
+| Claude `Monitor` | No | Yes |
+| Agent Deck MCP tools | Read-only tools; `call_service_tool` only when the target service tool is annotated `readOnlyHint: true` | All non-admin tools, including `call_service_tool` and `propose_playbook_patch` |
+| Always denied | `switch_deck` (and the retired `switch_bound_deck` alias), `request_admin_elevation` and every admin-only tool (`exit_admin_mode`, `manage_deck_card`, `list_collection`, `create_deck`), `start_run` (workers must not re-delegate), plus every mutating Agent Deck tool (`propose_playbook_patch`, deck/card/service writes) | `switch_deck` (and `switch_bound_deck`), `request_admin_elevation` and every admin-only tool, `start_run` |
+
+How it runs:
+
+- The run service mints an unguessable per-run worker token at
+  launch/resume, stores only its SHA-256 hash in `meta.json`
+  (`runTokenHash`), and passes the plaintext to the adapter
+  (`AdapterStartArgs.runToken`). Codex and Claude carry it as the
+  `x-agent-deck-run-token` header in their per-run MCP override
+  (`agent-run/codex.ts` `buildCodexMcpConfigOverride`,
+  `agent-run/claude.ts` `buildClaudeRunMcpServer`). Runs written to a
+  custom `--log` path carry no token — like resume provenance, the lookup
+  only scans the default run records, so a token there could never resolve
+  and would only fail the worker's MCP session.
+- An MCP session presenting a valid token is a worker session bound to its
+  run's effective profile (adopt-once per session: the identity can never be
+  dropped, replaced, or bypassed). Tool calls outside the profile return
+  immediately — no elicitation, no pending approval — with the structured
+  error `{ code: "PROFILE_DENIED", profile, tool, reason }`. An invalid or
+  expired token (no live run matches) is rejected with 401. Leader/owner
+  sessions without a token are unchanged, including the `switch_deck`
+  human approval.
+- Every adapter answers `profileEnforcement(args)` before any spawn; a
+  `false` answer fails the run with its remedy and no process starts. Each
+  adapter whose mapping is unproven rejects launch and resume until its own
+  mapping lands and is verified.
+- Denials are recorded on the run (`RunMeta.denials`, oldest first) with
+  `{ at, client, profile, source: "agent-deck" | "client", kind:
+  "mcp_tool" | "shell" | "file_write" | "network" | "client_tool", target,
+  reason }`: `agent-deck` denials come from the MCP enforcement above,
+  `client` denials from the `denial` normalized event adapters yield for
+  client-reported refusals. `get_run` and `agent-deck run status` return
+  `effectiveProfile` and `denials`. The plaintext token never appears in
+  run records, logs, or `get_run`.
+
 ## Log and status fields (shared by all clients)
 
 The JSONL log (`agent-run/records.ts` `RunLogLine`) has one line per event: `text`
@@ -136,8 +190,10 @@ run that started the session) only on a codex resume.
 `agent-deck run status` (`agent-run/records.ts` `RunStatusInfo`) reports `runId`,
 `deck`, `client`, `state` (`running`|`ended`|`error`|`died` — a `running` meta
 whose pid is gone reads as `died`), `sessionId`, `startedAt`, `lastLogTs`,
-`logPath`, and `resumedFrom` when the run resumed another run's session (human
-output: `resumed from <runId> (--tools <profile>)`); `run log` prints one readable line per event (`--json` prints raw
+`logPath`, `effectiveProfile` (the enforced worker profile), `denials` (the
+recorded profile denials, see **Worker profiles**), and `resumedFrom` when the
+run resumed another run's session (human output: `resumed from <runId>
+(--tools <profile>)`); `run log` prints one readable line per event (`--json` prints raw
 JSONL, `--tail` limits, `--follow` streams until `end`/`error`); `run list`
 shows recent runs newest first (default limit 20).
 

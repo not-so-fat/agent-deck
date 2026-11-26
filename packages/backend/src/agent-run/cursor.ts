@@ -510,6 +510,16 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
       return { ok: true, trustOverride: true };
     },
 
+    profileEnforcement() {
+      // NOT-669: unproven until the Cursor mapping sibling lands — every
+      // launch and resume fails here with the remedy and nothing spawns.
+      return {
+        ok: false,
+        remedy:
+          'Worker profile enforcement is not implemented for --client cursor yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Cursor mapping lands; no process was started.',
+      };
+    },
+
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
       const argv = buildCursorArgv({
         prompt: args.prompt,

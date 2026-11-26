@@ -61,3 +61,13 @@ export const AGENT_DECK_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
  * access, changes mode, or participates in authorization.
  */
 export const AGENT_DECK_HOST_SESSION_ID_HEADER = 'x-agent-deck-host-session-id';
+
+/**
+ * Per-run worker token (NOT-669). The run service mints an unguessable token
+ * at launch/resume and the worker's MCP connection carries it on every
+ * request; a session presenting a valid token is a worker session bound to
+ * that run's effective profile, and Agent Deck MCP tool calls outside the
+ * profile are denied immediately. Unlike the metadata headers above this one
+ * participates in authorization: an invalid or expired token is rejected.
+ */
+export const AGENT_DECK_RUN_TOKEN_HEADER = 'x-agent-deck-run-token';

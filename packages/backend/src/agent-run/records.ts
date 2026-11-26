@@ -11,11 +11,12 @@
  * is available.
  */
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { RunClient, RunPlaybookPin, RunToolsProfile } from './adapter';
+import type { RunClient, RunPlaybookPin } from './adapter';
+import type { RunToolsProfile } from './profiles';
 
 export type RunLogLine =
   | { t: 'text'; ts: string; text: string }
@@ -48,6 +49,37 @@ export type RunResumeOrigin = {
 
 /** Recorded lifecycle. `died` and evidence-derived states are written only by reconciliation (NOT-481). */
 export type RunMetaState = 'running' | 'ended' | 'error' | 'canceled' | 'died';
+
+/**
+ * NOT-669: what denied an action. `agent-deck` is the MCP server's own
+ * enforcement (an MCP tool call outside the effective profile); `client`
+ * is a denial the client adapter reported back.
+ */
+export type RunDenialSource = 'agent-deck' | 'client';
+
+/**
+ * NOT-669: what kind of action was denied. `mcp_tool` is reserved for
+ * Agent Deck's server-side enforcement; adapters report the client-native
+ * kinds through the `denial` normalized event.
+ */
+export type RunDenialKind = 'mcp_tool' | 'shell' | 'file_write' | 'network' | 'client_tool';
+
+/**
+ * NOT-669: one profile denial recorded on a run. `target` names what was
+ * denied (the MCP tool name for `kind: "mcp_tool"`); `profile` is the
+ * run's effective profile at denial time. Same shape as the shared
+ * `AgentRunDenialSchema`, declared here because agent-run imports nothing
+ * outside node built-ins and its own modules.
+ */
+export type RunDenial = {
+  at: string;
+  client: RunClient;
+  profile: RunToolsProfile;
+  source: RunDenialSource;
+  kind: RunDenialKind;
+  target: string;
+  reason: string;
+};
 
 export type RunMeta = {
   runId: string;
@@ -83,6 +115,14 @@ export type RunMeta = {
    * on runs written before NOT-640 and on non-session starts (CLI, grants).
    */
   startedBySessionId?: string;
+  /**
+   * NOT-669: SHA-256 hex of the run's unguessable worker token, minted at
+   * launch/resume. The plaintext token is passed to the adapter only and
+   * never appears in the record, the log, or status reads.
+   */
+  runTokenHash?: string;
+  /** NOT-669: profile denials recorded on this run, oldest first. */
+  denials?: RunDenial[];
 };
 
 export type RunInspectState = RunMetaState;
@@ -98,11 +138,34 @@ export type RunStatusInfo = {
   logPath: string;
   /** Present only when this run resumed a session another run started. */
   resumedFrom?: RunResumeOrigin;
+  /** NOT-669: the worker profile enforced on this run. */
+  effectiveProfile: RunToolsProfile;
+  /** NOT-669: profile denials recorded on this run, oldest first. */
+  denials: RunDenial[];
 };
 
 export function newRunId(): string {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '');
   return `run-${stamp}-${randomBytes(3).toString('hex')}`;
+}
+
+/**
+ * NOT-669: mint one run's unguessable worker token (32 random bytes, hex).
+ * Passed to the adapter as `AdapterStartArgs.runToken`; only
+ * {@link hashRunToken} of it is ever stored.
+ */
+export function mintRunToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+/** NOT-669: SHA-256 hex of a worker token — the only form ever stored. */
+export function hashRunToken(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+/** NOT-669: tokens are exactly the minted shape; anything else is rejected without a lookup. */
+export function isRunTokenFormat(value: string): boolean {
+  return /^[0-9a-f]{64}$/.test(value);
 }
 
 export function runsRoot(homeDir: string): string {
@@ -131,15 +194,103 @@ export function metaPathForLog(logPath: string): string {
  * every observed state a complete document (rename is atomic on POSIX and
  * Windows). The pid suffix keeps the starter's and the child's temp files
  * distinct when both target the same meta.json.
+ *
+ * NOT-669: denials are append-only across processes — the MCP server records
+ * server-side denials while the run service holds its own in-memory meta —
+ * so a write never drops denials recorded since the caller's meta was read:
+ * entries on disk that the caller's meta lacks are unioned in (by value;
+ * entries are immutable once written, so this cannot duplicate or resurrect
+ * anything). No caller clears denials.
  */
 export function writeRunMeta(metaPath: string, meta: RunMeta): void {
+  let merged = meta.denials;
+  try {
+    const disk = readRunMeta(metaPath);
+    if (disk.ok && disk.meta.denials?.length) {
+      const known = new Set((meta.denials ?? []).map((denial) => JSON.stringify(denial)));
+      const missing = disk.meta.denials.filter((denial) => !known.has(JSON.stringify(denial)));
+      if (missing.length > 0) {
+        merged = [...(meta.denials ?? []), ...missing];
+      }
+    }
+  } catch {
+    // Best effort: the state write below still lands.
+  }
   const tmpPath = `${metaPath}.tmp-${process.pid}`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(tmpPath, `${JSON.stringify({ ...meta, ...(merged ? { denials: merged } : {}) }, null, 2)}\n`, 'utf8');
   fs.renameSync(tmpPath, metaPath);
 }
 
 export function appendRunLogLine(logPath: string, line: RunLogLine): void {
   fs.appendFileSync(logPath, `${JSON.stringify(line)}\n`, 'utf8');
+}
+
+/**
+ * NOT-669: append one denial to a run record, oldest first. Read-modify-write
+ * through the atomic meta write, for recorders that hold no live meta (the
+ * MCP server process recording a server-side denial). Returns false when the
+ * record is missing or corrupt instead of throwing, so a denial can never
+ * fail an unrelated request — the denial itself was still enforced.
+ *
+ * A concurrent service write that read before this append can still land
+ * after it; the write is verified and retried (bounded) so the entry lands
+ * durably — service writes are finite (the terminal write is the last one),
+ * so the retry converges instead of racing forever.
+ */
+export function appendRunDenial(metaPath: string, denial: RunDenial): boolean {
+  const fingerprint = JSON.stringify(denial);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const read = readRunMeta(metaPath);
+    if (!read.ok) {
+      return false;
+    }
+    const meta = read.meta;
+    if ((meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)) {
+      return true;
+    }
+    meta.denials = [...(meta.denials ?? []), denial];
+    writeRunMeta(metaPath, meta);
+    const verify = readRunMeta(metaPath);
+    if (verify.ok && (verify.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * NOT-669: append one denial to a live in-memory meta (the run service
+ * recording a client-reported `denial` event). Pure push — the caller owns
+ * the write, so nothing the live meta holds is clobbered by a re-read.
+ */
+export function recordRunDenial(meta: RunMeta, denial: RunDenial): void {
+  meta.denials = [...(meta.denials ?? []), denial];
+}
+
+/**
+ * NOT-669: resolve a worker token hash to its run record. Scans the default
+ * run records under `homeDir` (runs written to a custom `--log` path are
+ * not discoverable, as with resume provenance). Returns null when no record
+ * carries the hash.
+ */
+export function findRunMetaByTokenHash(
+  homeDir: string,
+  tokenHash: string,
+): { runId: string; metaPath: string; meta: RunMeta } | null {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(runsRoot(homeDir));
+  } catch {
+    return null;
+  }
+  for (const runId of entries) {
+    const metaPath = runPaths(homeDir, runId).metaPath;
+    const read = readRunMeta(metaPath);
+    if (read.ok && read.meta.runTokenHash === tokenHash) {
+      return { runId, metaPath, meta: read.meta };
+    }
+  }
+  return null;
 }
 
 const RUN_META_STATES: readonly RunMetaState[] = ['running', 'ended', 'error', 'canceled', 'died'];
@@ -420,6 +571,8 @@ export function collectRunStatus(runId: string, homeDir: string): CollectedStatu
         lastLogTs: log.lastTs,
         logPath,
         ...(meta.resumedFrom ? { resumedFrom: meta.resumedFrom } : {}),
+        effectiveProfile: meta.tools,
+        denials: meta.denials ?? [],
       },
     };
   }
@@ -443,6 +596,8 @@ export function collectRunStatus(runId: string, homeDir: string): CollectedStatu
       startedAt: typeof partial.startedAt === 'string' ? partial.startedAt : 'unknown',
       lastLogTs: log.lastTs,
       logPath,
+      effectiveProfile: partial.tools === 'edit' ? 'edit' : 'readonly',
+      denials: Array.isArray(partial.denials) ? (partial.denials as RunDenial[]) : [],
     },
   };
 }

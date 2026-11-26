@@ -189,8 +189,9 @@ function safeStringify(value: unknown): string {
 export async function startMcpServer(
   backendUrl: string,
   profile: McpToolProfile = 'standard',
+  options?: ConstructorParameters<typeof AgentDeckMCPServer>[4],
 ): Promise<{ port: number; server: AgentDeckMCPServer }> {
-  const server = new AgentDeckMCPServer(0, backendUrl, profile);
+  const server = new AgentDeckMCPServer(0, backendUrl, profile, '127.0.0.1', options);
   await server.start();
   const port = server.getPort();
   if (!port || port <= 0) {

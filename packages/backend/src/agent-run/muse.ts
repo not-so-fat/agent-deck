@@ -555,6 +555,16 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
       return { ok: true, trustOverride: false };
     },
 
+    profileEnforcement() {
+      // NOT-669: unproven until the Muse mapping sibling lands — every
+      // launch and resume fails here with the remedy and nothing spawns.
+      return {
+        ok: false,
+        remedy:
+          'Worker profile enforcement is not implemented for --client muse yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Muse mapping lands; no process was started.',
+      };
+    },
+
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
       const argv = buildMuseArgv({
         prompt: args.prompt,

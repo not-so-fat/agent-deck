@@ -271,6 +271,8 @@ export class MCPClientManager {
         title: typeof tool.title === 'string' && tool.title.trim() ? tool.title.trim() : undefined,
         description: tool.description || '',
         inputSchema: tool.inputSchema || {},
+        // NOT-669: keep the MCP annotations (readOnlyHint gates readonly workers).
+        ...(tool.annotations && typeof tool.annotations === 'object' ? { annotations: tool.annotations } : {}),
       }));
 
       console.log(`✅ Successfully discovered ${serviceTools.length} tools for ${service.url}`);

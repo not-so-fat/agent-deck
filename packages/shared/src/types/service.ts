@@ -89,6 +89,8 @@ export interface ServiceTool {
   description: string;
   inputSchema: Record<string, any>;
   enabled?: boolean;
+  /** NOT-669: MCP tool annotations as advertised by the service (readOnlyHint gates readonly workers). */
+  annotations?: Record<string, any>;
 }
 
 export interface ServiceCallInput {

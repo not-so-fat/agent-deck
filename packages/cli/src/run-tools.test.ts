@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { McpLaunchPlan } from './mcp-launcher';
+import { createRunAdapter } from '@agent-deck/backend/agent-run';
 import {
   RUN_EDIT_TOOLS,
   RUN_READONLY_TOOLS,
@@ -74,6 +75,12 @@ function setup(): { cwd: string; deps: RunDeps & { query: ReturnType<typeof vi.f
   };
   const deps: RunDeps & { query: ReturnType<typeof vi.fn> } = {
     query,
+    // Real adapter behavior with the NOT-669 gate bypassed: these tests
+    // exercise tool-profile mapping, not the sibling-ticket mapping.
+    createAdapter: (client) => ({
+      ...createRunAdapter(client, { claude: { query } }),
+      profileEnforcement: () => ({ ok: true as const }),
+    }),
     resolveDeck: vi.fn(async () => ({ ...DECK })),
     resolveLaunchPlan: vi.fn(async () => plan) as unknown as RunDeps['resolveLaunchPlan'],
     claudeProbe: vi.fn(async () => ({ ok: true as const })),

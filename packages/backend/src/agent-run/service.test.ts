@@ -4,11 +4,14 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  appendRunDenial,
   appendRunLogLine,
   createAgentRunService,
   createCodexAdapter,
   createCursorAdapter,
   createRunAdapter,
+  hashRunToken,
+  metaPathForLog,
   readRunMeta,
   runPaths,
   RUN_SUPPORTED_CLIENTS,
@@ -48,6 +51,7 @@ type FixtureScript = {
   hold?: Promise<void>;
   preflightRemedy?: string;
   planRemedy?: string;
+  enforcementRemedy?: string;
 };
 
 type FixtureAdapter = ClientAdapter & { starts: AdapterStartArgs[] };
@@ -65,6 +69,9 @@ function fixtureAdapter(client: RunClient, script: FixtureScript): FixtureAdapte
       return script.planRemedy
         ? { ok: false, remedy: script.planRemedy }
         : { ok: true, trustOverride: false };
+    },
+    profileEnforcement() {
+      return script.enforcementRemedy ? { ok: false, remedy: script.enforcementRemedy } : { ok: true };
     },
     async *start(args) {
       starts.push(args);
@@ -130,7 +137,9 @@ describe('agent run service through injected adapters (NOT-479)', () => {
     const outcome = await service.start(request(cwd));
 
     expect(createAdapter).toHaveBeenCalledWith('codex');
-    expect(adapter.starts).toEqual([{ cwd, prompt: 'brief', tools: 'readonly' }]);
+    expect(adapter.starts).toEqual([
+      { cwd, prompt: 'brief', tools: 'readonly', runToken: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    ]);
     if (outcome.kind !== 'finished') throw new Error(outcome.message);
     expect(outcome).toMatchObject({
       state: 'ended',
@@ -162,8 +171,9 @@ describe('agent run service through injected adapters (NOT-479)', () => {
 
     const meta = JSON.parse(fs.readFileSync(outcome.metaPath, 'utf8')) as RunMeta;
     expect(Object.keys(meta)).toEqual([
-      'runId', 'deck', 'deckName', 'client', 'tools', 'cwd', 'canonicalCwd', 'pid', 'startedAt', 'state', 'sessionId',
+      'runId', 'deck', 'deckName', 'client', 'tools', 'cwd', 'canonicalCwd', 'pid', 'startedAt', 'state', 'runTokenHash', 'sessionId',
     ]);
+    expect(meta.runTokenHash).toMatch(/^[0-9a-f]{64}$/);
     expect(meta).toMatchObject({
       runId: outcome.runId,
       deck: DECK.id,
@@ -227,7 +237,13 @@ describe('agent run service through injected adapters (NOT-479)', () => {
     );
 
     expect(adapter.starts).toEqual([
-      { cwd, prompt: 'brief', tools: 'edit', resumeId: 'ses_prev' },
+      {
+        cwd,
+        prompt: 'brief',
+        tools: 'edit',
+        resumeId: 'ses_prev',
+        runToken: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     ]);
     if (outcome.kind !== 'finished') throw new Error(outcome.message);
     expect(outcome).toMatchObject({ state: 'ended', sessionId: 'ses_prev' });
@@ -448,25 +464,26 @@ function codexService(
     }),
     JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }),
   ];
+  const codexDeps = {
+    probe: () => ({ code: 0, stdout: '', stderr: 'Logged in using ChatGPT' }),
+    isGitRepo: () => true,
+    spawn: (_bin: string, argv: string[], opts: { cwd: string }) => {
+      calls.push({ argv, cwd: opts.cwd });
+      return {
+        stdout: (async function* (): AsyncGenerator<string> {
+          yield* lines;
+        })(),
+        wait: async () => ({ code: 0, stderrTail: '' }),
+      };
+    },
+  };
   const service = createAgentRunService({
     homeDir,
     resolveDeck: async (ref) => (ref === DECK.name || ref === DECK.id ? { ...DECK } : null),
     resolveDeckBinding: async () => ({ deckId: DECK.id, deckName: DECK.name }),
-    adapters: {
-      codex: {
-        probe: () => ({ code: 0, stdout: '', stderr: 'Logged in using ChatGPT' }),
-        isGitRepo: () => true,
-        spawn: (_bin, argv, opts) => {
-          calls.push({ argv, cwd: opts.cwd });
-          return {
-            stdout: (async function* (): AsyncGenerator<string> {
-              yield* lines;
-            })(),
-            wait: async () => ({ code: 0, stderrTail: '' }),
-          };
-        },
-      },
-    },
+    // The real codex adapter with the NOT-669 gate bypassed: provenance
+    // tests exercise planStart/spawn, not the sibling-ticket mapping.
+    createAdapter: (client) => ({ ...createRunAdapter(client, { codex: codexDeps }), profileEnforcement: () => ({ ok: true as const }) }),
     ...overrides,
   });
   return { service, calls };
@@ -506,10 +523,23 @@ describe('codex resume provenance (NOT-484)', () => {
       if (resumed.kind !== 'finished') throw new Error(resumed.message);
       expect(resumed).toMatchObject({ state: 'ended', sessionId: THREAD });
       expect(resumed.runId).not.toBe(origin.runId);
-      expect(calls.map((call) => call.argv)).toEqual([
-        ['exec', '--json', '-s', tools === 'edit' ? 'workspace-write' : 'read-only', '--', 'brief'],
-        ['exec', 'resume', '--json', '--', THREAD, 'again'],
+      // Every run carries its worker token in the per-run MCP override
+      // (NOT-669): `-c` sits right after `exec [resume]`, before `--json`.
+      expect(calls).toHaveLength(2);
+      const [startArgv, resumeArgv] = calls.map((call) => call.argv);
+      expect(startArgv[0]).toBe('exec');
+      expect(startArgv[1]).toBe('-c');
+      expect(startArgv[2]).toMatch(
+        /^mcp_servers\.agent-deck=\{url="http:\/\/[^"]+\/mcp",http_headers=\{"x-agent-deck-workspace"="[^"]+","x-agent-deck-run-token"="[0-9a-f]{64}"\}\}$/,
+      );
+      expect(startArgv.slice(3)).toEqual([
+        '--json', '-s', tools === 'edit' ? 'workspace-write' : 'read-only', '--', 'brief',
       ]);
+      expect(resumeArgv[0]).toBe('exec');
+      expect(resumeArgv[1]).toBe('resume');
+      expect(resumeArgv[2]).toBe('-c');
+      expect(resumeArgv[3]).toMatch(/"x-agent-deck-run-token"="[0-9a-f]{64}"/);
+      expect(resumeArgv.slice(4)).toEqual(['--json', '--', THREAD, 'again']);
       for (const call of calls) {
         expect(call.argv).not.toContain(BYPASS);
       }
@@ -830,6 +860,166 @@ describe('codex resume provenance (NOT-484)', () => {
     const cli = fixtureAdapter('codex', { events: successEvents() });
     await makeService(home, cli, { resolveHeaderlessDeck }).service.start(request(cwd));
     expect(cli.starts[0]).not.toHaveProperty('launchDeckId');
+  });
+});
+
+describe('worker profile enforcement gate and run token (NOT-669)', () => {
+  const REMEDY = 'Worker profile enforcement is not implemented for this client yet.';
+
+  it('rejects start and resume before spawn when the adapter cannot enforce the profile', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const adapter = fixtureAdapter('codex', { events: successEvents(), enforcementRemedy: REMEDY });
+    const { service, createAdapter } = makeService(home, adapter);
+
+    const started = await service.start(request(cwd));
+    expect(started).toEqual({ kind: 'rejected', code: 'profile_unsupported', message: REMEDY });
+    expect(adapter.starts).toEqual([]);
+    expect(createAdapter).toHaveBeenCalled();
+
+    // Resume goes through the same gate (claude needs no resume provenance,
+    // so the request reaches the gate instead of failing validation first).
+    const resumed = await service.start(request(cwd, { client: 'claude', resumeId: 'ses_prev' }));
+    expect(resumed).toEqual({ kind: 'rejected', code: 'profile_unsupported', message: REMEDY });
+    expect(adapter.starts).toEqual([]);
+
+    // Nothing was recorded: the gate fires before the run record is written.
+    expect(fs.existsSync(path.join(home, 'runs'))).toBe(false);
+  });
+
+  it('rejects launch (not only start) before the record is written', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const adapter = fixtureAdapter('claude', { events: successEvents(), enforcementRemedy: REMEDY });
+    const { service } = makeService(home, adapter);
+
+    const outcome = await service.launch(request(cwd, { client: 'claude' }));
+    expect(outcome).toEqual({ kind: 'rejected', code: 'profile_unsupported', message: REMEDY });
+    expect(adapter.starts).toEqual([]);
+    expect(fs.existsSync(path.join(home, 'runs'))).toBe(false);
+  });
+
+  it('mints a fresh token per launch, stores only its hash, and passes it to the adapter', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const adapter = fixtureAdapter('codex', { events: successEvents() });
+    const { service } = makeService(home, adapter);
+
+    const first = await service.start(request(cwd));
+    const second = await service.start(request(cwd));
+    if (first.kind !== 'finished' || second.kind !== 'finished') {
+      throw new Error('expected finished runs');
+    }
+    const [tokenA, tokenB] = adapter.starts.map((start) => start.runToken);
+    expect(tokenA).toMatch(/^[0-9a-f]{64}$/);
+    expect(tokenB).toMatch(/^[0-9a-f]{64}$/);
+    expect(tokenA).not.toBe(tokenB);
+
+    for (const [outcome, token] of [[first, tokenA], [second, tokenB]] as const) {
+      const meta = readRunMeta(runPaths(home, outcome.runId).metaPath);
+      if (!meta.ok) throw new Error(meta.reason);
+      expect(meta.meta.runTokenHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(meta.meta.runTokenHash).toBe(hashRunToken(token as string));
+      // The plaintext token appears nowhere in the run directory.
+      const dir = path.join(home, 'runs', outcome.runId);
+      for (const file of fs.readdirSync(dir)) {
+        expect(fs.readFileSync(path.join(dir, file), 'utf8')).not.toContain(token as string);
+      }
+    }
+  });
+
+  it('keeps server-side denials recorded mid-run across the terminal write', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const adapter = fixtureAdapter('codex', { events: successEvents(), hold });
+    const { service } = makeService(home, adapter);
+
+    const pending = service.start(request(cwd, { tools: 'edit' }));
+    const runId = await vi.waitFor(async () => {
+      const runs = service.list(10);
+      expect(runs).toHaveLength(1);
+      return runs[0].runId;
+    });
+    // The MCP server process appends while the service holds its own meta.
+    const metaPath = runPaths(home, runId).metaPath;
+    expect(
+      appendRunDenial(metaPath, {
+        at: new Date().toISOString(),
+        client: 'codex',
+        profile: 'edit',
+        source: 'agent-deck',
+        kind: 'mcp_tool',
+        target: 'switch_deck',
+        reason: 'not allowed for worker profile "edit"',
+      }),
+    ).toBe(true);
+
+    release();
+    const outcome = await pending;
+    if (outcome.kind !== 'finished') throw new Error(JSON.stringify(outcome));
+    expect(outcome.state).toBe('ended');
+    const meta = readRunMeta(metaPath);
+    if (!meta.ok) throw new Error(meta.reason);
+    expect(meta.meta.denials?.map((denial) => denial.target)).toEqual(['switch_deck']);
+    const status = service.status(runId);
+    expect(status.found && status.info).toMatchObject({ effectiveProfile: 'edit' });
+    expect(status.found && status.info.denials).toHaveLength(1);
+  });
+
+  it('mints no token for a custom log path, which the server could never resolve', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const customLog = path.join(makeDir('ad-svc-log-'), 'custom.jsonl');
+    const adapter = fixtureAdapter('codex', { events: successEvents() });
+    const { service } = makeService(home, adapter);
+
+    const outcome = await service.start(request(cwd), { logPath: customLog });
+    if (outcome.kind !== 'finished') throw new Error(JSON.stringify(outcome));
+    expect(outcome.state).toBe('ended');
+    expect(adapter.starts[0]).not.toHaveProperty('runToken');
+    const meta = readRunMeta(metaPathForLog(customLog));
+    if (!meta.ok) throw new Error(meta.reason);
+    expect(meta.meta).not.toHaveProperty('runTokenHash');
+  });
+
+  it('records a yielded denial event on the run with source client', async () => {
+    const home = makeDir('ad-svc-home-');
+    const cwd = makeDir('ad-svc-cwd-');
+    const adapter = fixtureAdapter('codex', {
+      events: [
+        { kind: 'text', text: 'working', sessionId: 'ses_1' },
+        { kind: 'denial', target: 'rm -rf /tmp/x', reason: 'read-only shell', denialKind: 'shell', sessionId: 'ses_1' },
+        { kind: 'result', subtype: 'success', result: 'done', sessionId: 'ses_1' },
+      ],
+    });
+    const { service } = makeService(home, adapter);
+
+    const outcome = await service.start(request(cwd, { tools: 'readonly' }));
+    if (outcome.kind !== 'finished') throw new Error(JSON.stringify(outcome));
+    expect(outcome.state).toBe('ended');
+    const meta = readRunMeta(runPaths(home, outcome.runId).metaPath);
+    if (!meta.ok) throw new Error(meta.reason);
+    expect(meta.meta.denials).toHaveLength(1);
+    expect(meta.meta.denials?.[0]).toMatchObject({
+      client: 'codex',
+      profile: 'readonly',
+      source: 'client',
+      kind: 'shell',
+      target: 'rm -rf /tmp/x',
+      reason: 'read-only shell',
+    });
+    expect(meta.meta.denials?.[0].at).toMatch(ISO_TS);
+    // Denials are status, not events: no log line is written for them.
+    expect(readJsonl(outcome.logPath).map((line) => line.t)).toEqual(['text', 'result', 'end']);
+    const status = service.status(outcome.runId);
+    expect(status.found && status.info).toMatchObject({
+      effectiveProfile: 'readonly',
+      denials: meta.meta.denials,
+    });
   });
 });
 

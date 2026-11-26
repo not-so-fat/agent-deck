@@ -19,6 +19,7 @@ import {
   buildCodexArgv,
   codexEventsFromLine,
   createCodexAdapter,
+  createRunAdapter,
   type CodexLineContext,
   type CodexProbe,
   type CodexSpawn,
@@ -121,13 +122,20 @@ function makeDeps(
   } = {},
 ): RunDeps & { calls: Array<{ bin: string; argv: string[]; cwd: string }> } {
   const { spawn, calls } = fakeCodexSpawn(overrides.lines, overrides.code, overrides.stderrTail);
+  const codex = {
+    probe: overrides.probe ?? okCodexProbe(),
+    spawn,
+    isGitRepo: overrides.isGitRepo ?? (() => true),
+  };
   return {
     calls,
-    codex: {
-      probe: overrides.probe ?? okCodexProbe(),
-      spawn,
-      isGitRepo: overrides.isGitRepo ?? (() => true),
-    },
+    codex,
+    // Real adapter behavior with the NOT-669 gate bypassed: these tests
+    // exercise argv/event mapping, not the sibling-ticket mapping.
+    createAdapter: (client) => ({
+      ...createRunAdapter(client, { codex }),
+      profileEnforcement: () => ({ ok: true as const }),
+    }),
     resolveDeck: async (ref: string) => (ref === DECK.name || ref === DECK.id ? { ...DECK } : null),
     resolveLaunchPlan: (async () => overrides.plan ?? matchingPlan(cwd)) as RunDeps['resolveLaunchPlan'],
     homeDir,
@@ -136,6 +144,21 @@ function makeDeps(
 
 function codexArgs(cwd: string, extra: string[] = []): string[] {
   return ['planner', '--client', 'codex', '--cwd', cwd, '--prompt', 'remember kiwi', ...extra];
+}
+
+/**
+ * Real runs carry the worker token in a `-c` per-run MCP override (NOT-669);
+ * assert the argv around it (the endpoint comes from env, the token is random).
+ */
+function expectRunArgv(argv: string[], resume: boolean, tail: string[]): void {
+  const head = resume ? ['exec', 'resume'] : ['exec'];
+  expect(argv.slice(0, head.length)).toEqual(head);
+  const rest = argv.slice(head.length);
+  expect(rest[0]).toBe('-c');
+  expect(rest[1]).toMatch(
+    /^mcp_servers\.agent-deck=\{url="http:\/\/[^"]+\/mcp",http_headers=\{"x-agent-deck-workspace"="[^"]+","x-agent-deck-run-token"="[0-9a-f]{64}"\}\}$/,
+  );
+  expect(rest.slice(2)).toEqual(tail);
 }
 
 function readJsonLines(logPath: string): Array<Record<string, unknown>> {
@@ -422,7 +445,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     expect(await runRunCommand(codexArgs(cwd, ['--tools', 'readonly']), deps)).toBe(0);
 
     expect(deps.calls).toHaveLength(1);
-    expect(deps.calls[0].argv).toEqual(['exec', '--json', '-s', 'read-only', '--', 'remember kiwi']);
+    expectRunArgv(deps.calls[0].argv, false, ['--json', '-s', 'read-only', '--', 'remember kiwi']);
     expect(deps.calls[0].cwd).toBe(cwd);
     expect(readMeta(logPathFromStdout())).toMatchObject({ tools: 'readonly' });
   });
@@ -434,7 +457,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
 
     expect(await runRunCommand(codexArgs(cwd, ['--tools', 'edit']), deps)).toBe(0);
 
-    expect(deps.calls[0].argv).toEqual(['exec', '--json', '-s', 'workspace-write', '--', 'remember kiwi']);
+    expectRunArgv(deps.calls[0].argv, false, ['--json', '-s', 'workspace-write', '--', 'remember kiwi']);
     expect(readMeta(logPathFromStdout())).toMatchObject({ tools: 'edit' });
   });
 
@@ -553,7 +576,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     const code = await runRunCommand(codexArgs(cwd, ['--resume', CODEX_THREAD_ID]), deps);
 
     expect(code).toBe(0);
-    expect(deps.calls[0].argv).toEqual(['exec', 'resume', '--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
+    expectRunArgv(deps.calls[0].argv, true, ['--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
     const lines = readJsonLines(logPathFromStdout());
     expect(lines.map((line) => line.t)).toEqual(['notice', 'text', 'result', 'end']);
     expect(String(lines[0]['message'])).toContain('keeps its original sandbox');
@@ -576,7 +599,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     const deps = makeDeps(cwd, homeDir);
     expect(await runRunCommand(codexArgs(cwd, ['--resume', CODEX_THREAD_ID, '--tools', 'edit']), deps)).toBe(0);
 
-    expect(deps.calls[0].argv).toEqual(['exec', 'resume', '--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
+    expectRunArgv(deps.calls[0].argv, true, ['--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
     for (const call of [...first.calls, ...deps.calls]) {
       expect(call.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     }

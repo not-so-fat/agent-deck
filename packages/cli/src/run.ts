@@ -20,6 +20,7 @@ import path from 'node:path';
 
 import {
   createAgentRunService,
+  createRunAdapter,
   defaultClaudeClientProbe,
   missingRunClientMessage,
   runClientMessage,
@@ -360,6 +361,21 @@ function selectClaudeQuery(deps: RunDeps): RunQueryFn | undefined {
 export function createCliRunService(deps: RunDeps = {}): AgentRunService {
   const resolveLaunchPlan = deps.resolveLaunchPlan ?? resolveMcpLaunchPlan;
   const query = selectClaudeQuery(deps);
+  const adapterDeps = {
+    claude: {
+      sdkSearchPaths: [getCliPackageRoot()],
+      ...deps.claude,
+      ...(query ? { query } : {}),
+    },
+    codex: deps.codex,
+    cursor: deps.cursor,
+    muse: deps.muse,
+  };
+  // Test-only detach fake (the detached child is a real process, so the
+  // behavior file is its only seam): the fake simulates a client whose
+  // profile mapping is proven, so it bypasses the NOT-669 gate the same way
+  // unit tests do via `createAdapter`. Never set in production.
+  const fakeBypassesGate = !deps.createAdapter && !deps.query && !deps.claude?.query && loadRunFakeBehavior();
   return createAgentRunService({
     homeDir: deps.homeDir ?? agentDeckHome(),
     resolveDeck: selectResolveDeck(deps),
@@ -374,17 +390,17 @@ export function createCliRunService(deps: RunDeps = {}): AgentRunService {
     },
     // Selected per probe so the fake is only consulted for claude runs.
     claudeProbe: () => selectClaudeProbe(deps)(),
-    adapters: {
-      claude: {
-        sdkSearchPaths: [getCliPackageRoot()],
-        ...deps.claude,
-        ...(query ? { query } : {}),
-      },
-      codex: deps.codex,
-      cursor: deps.cursor,
-      muse: deps.muse,
-    },
-    ...(deps.createAdapter ? { createAdapter: deps.createAdapter } : {}),
+    adapters: adapterDeps,
+    ...(deps.createAdapter
+      ? { createAdapter: deps.createAdapter }
+      : fakeBypassesGate
+        ? {
+            createAdapter: (client: RunClient): ClientAdapter => ({
+              ...createRunAdapter(client, adapterDeps),
+              profileEnforcement: () => ({ ok: true as const }),
+            }),
+          }
+        : {}),
   });
 }
 

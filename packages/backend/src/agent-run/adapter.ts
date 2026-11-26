@@ -9,7 +9,11 @@
  * Tool profiles (`readonly`/`edit`) and meta.json stay owned by the shared run
  * service: adapters receive the profile name and map it to client flags.
  */
-import type { RunResumeOrigin } from './records';
+import type { RunDenialKind, RunResumeOrigin } from './records';
+
+/** Tool profiles live in the shared definition (NOT-669); re-exported here. */
+export { RUN_TOOL_PROFILES, type RunToolsProfile } from './profiles';
+import { RUN_TOOL_PROFILES, type RunToolsProfile } from './profiles';
 
 /** Read-only profile: exactly the botmancers prototype allowlist. */
 export const RUN_READONLY_TOOLS: readonly string[] = [
@@ -45,9 +49,6 @@ export const RUN_PERMISSION_MODE = 'acceptEdits';
 
 /** Setting sources copied from the prototype. */
 export const RUN_SETTING_SOURCES: readonly string[] = ['project', 'user'];
-
-export const RUN_TOOL_PROFILES = ['readonly', 'edit'] as const;
-export type RunToolsProfile = (typeof RUN_TOOL_PROFILES)[number];
 
 export function allowedToolsForProfile(profile: RunToolsProfile): readonly string[] {
   return profile === 'edit' ? RUN_EDIT_TOOLS : RUN_READONLY_TOOLS;
@@ -91,7 +92,14 @@ export type NormalizedEvent =
   | { kind: 'text'; text: string; sessionId?: string }
   | { kind: 'tool'; name: string; sessionId?: string }
   | { kind: 'result'; subtype: string; result: unknown; usage?: unknown; sessionId?: string }
-  | { kind: 'notice'; message: string; sessionId?: string };
+  | { kind: 'notice'; message: string; sessionId?: string }
+  /**
+   * NOT-669: a client-reported profile denial (the client refused an action
+   * its own profile mapping forbids). The run service records it on the run
+   * as a `source: "client"` denial. `denialKind` is never `"mcp_tool"` —
+   * that kind is reserved for Agent Deck's own server-side enforcement.
+   */
+  | { kind: 'denial'; target: string; reason: string; denialKind: RunDenialKind; sessionId?: string };
 
 /**
  * Which tool profiles a client can enforce on a fresh start and on a resume
@@ -162,6 +170,14 @@ export type AdapterStartArgs = {
    * assignment or default changed after that check is not caught.
    */
   headerlessDeckMismatch?: boolean;
+  /**
+   * NOT-669: the run's unguessable worker token (plaintext). Adapters that
+   * can carry a per-run MCP header (Codex, Claude) send it as
+   * `x-agent-deck-run-token` so the MCP server binds the worker session to
+   * this run's effective profile. Never logged and never written to the
+   * run record — only its hash is stored.
+   */
+  runToken?: string;
 };
 
 export type AdapterPreflight = { ok: true } | { ok: false; remedy: string };
@@ -207,6 +223,15 @@ export type ClientAdapter = {
   preflight(): Promise<AdapterPreflight>;
   /** Pure per-start plan (sandbox mapping, trust decision, fail-closed gates). */
   planStart(args: AdapterStartArgs): AdapterStartPlan;
+  /**
+   * NOT-669: whether this adapter can enforce `args.tools` (on a fresh
+   * start and on a resume) per the shared `WORKER_PROFILES` definition.
+   * The run service evaluates it before any spawn; `{ ok: false }` fails
+   * the run with the remedy and no process is spawned. An adapter whose
+   * mapping is unproven must answer `false` until it is implemented and
+   * verified.
+   */
+  profileEnforcement(args: AdapterStartArgs): AdapterPreflight;
   /**
    * Stream normalized events for one session. Rejects (or the iterator
    * throws) when the client process fails, so the shared run code marks the

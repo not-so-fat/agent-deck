@@ -19,6 +19,7 @@ import {
   createCodexAdapter,
   createCursorAdapter,
   createMuseAdapter,
+  createRunAdapter,
   RUN_SUPPORTED_CLIENTS,
   type AdapterStartArgs,
   type ClientAdapter,
@@ -258,15 +259,24 @@ function makeClaudeCase(): ContractCase {
       return { client: 'claude', prompt: params.prompt, options: params.options };
     },
     runArgs: (cwd, extra = []) => ['planner', '--client', 'claude', '--cwd', cwd, ...extra],
-    runDeps: (cwd, homeDir) => ({
-      query: fakeClaudeQuery(),
-      resolveDeck: async () => ({ ...DECK }),
-      resolveLaunchPlan: async () => matchingPlan(cwd),
-      homeDir,
-      // The contract covers the adapter, not the NOT-405 CLI preflight;
-      // stub the probe passing so the test never depends on machine state.
-      claudeProbe: vi.fn(async () => ({ ok: true as const })),
-    }),
+    runDeps: (cwd, homeDir) => {
+      const query = fakeClaudeQuery();
+      return {
+        query,
+        // Real adapter behavior with the NOT-669 gate bypassed: the
+        // contract covers the adapter mapping, not the sibling-ticket one.
+        createAdapter: (client) => ({
+          ...createRunAdapter(client, { claude: { query } }),
+          profileEnforcement: () => ({ ok: true as const }),
+        }),
+        resolveDeck: async () => ({ ...DECK }),
+        resolveLaunchPlan: async () => matchingPlan(cwd),
+        homeDir,
+        // The contract covers the adapter, not the NOT-405 CLI preflight;
+        // stub the probe passing so the test never depends on machine state.
+        claudeProbe: vi.fn(async () => ({ ok: true as const })),
+      };
+    },
     clientRunCalls: (deps) => (deps.query as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
   };
 }
@@ -291,8 +301,13 @@ function makeCodexCase(): ContractCase {
     runArgs: (cwd, extra = []) => ['planner', '--client', 'codex', '--cwd', cwd, ...extra],
     runDeps: (cwd, homeDir) => {
       const { spawn: runSpawn } = fakeCodexSpawn();
+      const codex = { probe: okCodexProbe(), spawn: runSpawn, isGitRepo: () => true };
       return {
-        codex: { probe: okCodexProbe(), spawn: runSpawn, isGitRepo: () => true },
+        codex,
+        createAdapter: (client) => ({
+          ...createRunAdapter(client, { codex }),
+          profileEnforcement: () => ({ ok: true as const }),
+        }),
         resolveDeck: async () => ({ ...DECK }),
         resolveLaunchPlan: async () => matchingPlan(cwd),
         homeDir,
@@ -323,8 +338,13 @@ function makeCursorCase(): ContractCase {
     runArgs: (cwd, extra = []) => ['planner', '--client', 'cursor', '--cwd', cwd, ...extra],
     runDeps: (cwd, homeDir) => {
       const { spawn: runSpawn } = fakeCursorSpawn();
+      const cursor = { probe: okCursorProbe(), spawn: runSpawn };
       return {
-        cursor: { probe: okCursorProbe(), spawn: runSpawn },
+        cursor,
+        createAdapter: (client) => ({
+          ...createRunAdapter(client, { cursor }),
+          profileEnforcement: () => ({ ok: true as const }),
+        }),
         resolveDeck: async () => ({ ...DECK }),
         resolveLaunchPlan: async () => matchingPlan(cwd),
         homeDir,
@@ -355,8 +375,13 @@ function makeMuseCase(): ContractCase {
     runArgs: (cwd, extra = []) => ['planner', '--client', 'muse', '--cwd', cwd, ...extra],
     runDeps: (cwd, homeDir) => {
       const { spawn: runSpawn } = fakeMuseSpawn();
+      const muse = { probe: okMuseProbe(), spawn: runSpawn, readFile: okMuseReadFile() };
       return {
-        muse: { probe: okMuseProbe(), spawn: runSpawn, readFile: okMuseReadFile() },
+        muse,
+        createAdapter: (client) => ({
+          ...createRunAdapter(client, { muse }),
+          profileEnforcement: () => ({ ok: true as const }),
+        }),
         resolveDeck: async () => ({ ...DECK }),
         resolveLaunchPlan: async () => matchingPlan(cwd),
         homeDir,
@@ -394,6 +419,12 @@ function expectWellFormed(event: NormalizedEvent): void {
     case 'notice':
       expect(typeof event.message).toBe('string');
       expect(event.message.length).toBeGreaterThan(0);
+      break;
+    case 'denial':
+      expect(typeof event.target).toBe('string');
+      expect(event.target.length).toBeGreaterThan(0);
+      expect(typeof event.reason).toBe('string');
+      expect(typeof event.denialKind).toBe('string');
       break;
     default:
       expect.unreachable(`unknown normalized kind: ${JSON.stringify(event)}`);

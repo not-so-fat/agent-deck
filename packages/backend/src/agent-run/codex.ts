@@ -62,6 +62,8 @@ export type CodexArgvArgs = {
   workspaceRoot?: string;
   /** Launch deck header for the run's MCP session (see `AdapterStartArgs.launchDeckId`). */
   launchDeckId?: string;
+  /** Worker token header for the run's MCP session (NOT-669; see `AdapterStartArgs.runToken`). */
+  runToken?: string;
 };
 
 /** Escape one TOML basic-string value (the pin is `id=uuid`; belt and suspenders). */
@@ -95,6 +97,8 @@ export const CODEX_PIN_WORKSPACE_HEADER = 'x-agent-deck-workspace';
 export const CODEX_PIN_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
 /** Must match `AGENT_DECK_DECK_ID_HEADER`. */
 export const CODEX_LAUNCH_DECK_HEADER = 'x-agent-deck-deck-id';
+/** Must match `AGENT_DECK_RUN_TOKEN_HEADER`. */
+export const CODEX_RUN_TOKEN_HEADER = 'x-agent-deck-run-token';
 
 /**
  * The `-c` override value carrying the run's playbook pin (NOT-537). A full
@@ -115,12 +119,14 @@ export function buildCodexPinConfigOverride(
 
 /**
  * The run's `mcp_servers.agent-deck` override: the workspace header, plus
- * the playbook pin and/or the launch deck header when the run has them. The
- * launch deck header makes the daemon bind the run's deck directly instead
- * of re-resolving it from the folder assignment or the user default.
+ * the playbook pin, the launch deck header, and/or the worker token header
+ * when the run has them. The launch deck header makes the daemon bind the
+ * run's deck directly instead of re-resolving it from the folder assignment
+ * or the user default; the worker token header binds the MCP session to the
+ * run's effective worker profile (NOT-669).
  */
 export function buildCodexMcpConfigOverride(
-  input: { workspaceRoot: string; playbookPin?: RunPlaybookPin; launchDeckId?: string },
+  input: { workspaceRoot: string; playbookPin?: RunPlaybookPin; launchDeckId?: string; runToken?: string },
   endpoint: { port: string; host: string } = codexPinEndpoint(),
 ): string {
   const headers = [
@@ -130,6 +136,9 @@ export function buildCodexMcpConfigOverride(
       : []),
     ...(input.launchDeckId
       ? [`"${CODEX_LAUNCH_DECK_HEADER}"="${tomlEscape(input.launchDeckId)}"`]
+      : []),
+    ...(input.runToken
+      ? [`"${CODEX_RUN_TOKEN_HEADER}"="${tomlEscape(input.runToken)}"`]
       : []),
   ].join(',');
   return (
@@ -171,6 +180,8 @@ export function assertSafeResumeId(resumeId: string): void {
  * is pure HTTP (NOT-566), so a pinned run must also pass `workspaceRoot` —
  * without the workspace header the daemon cannot resolve the folder
  * assignment and the run would silently read live playbook bodies.
+ * A run carrying a worker token (NOT-669) adds the same override for the
+ * token header; runs with no pin, launch deck, or token pass no `-c`.
  */
 export function buildCodexArgv(args: CodexArgvArgs): string[] {
   const argv = ['exec'];
@@ -179,10 +190,10 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
     assertSafeResumeId(args.resumeId as string);
     argv.push('resume');
   }
-  if (args.playbookPin || args.launchDeckId) {
+  if (args.playbookPin || args.launchDeckId || args.runToken) {
     if (!args.workspaceRoot) {
       throw new Error(
-        'Cannot build a pinned or deck-carrying codex run without workspaceRoot: the pure-MCP override ' +
+        'Cannot build a pinned, deck-carrying, or worker-token codex run without workspaceRoot: the pure-MCP override ' +
           'needs the run directory for the x-agent-deck-workspace header.',
       );
     }
@@ -192,6 +203,7 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
         workspaceRoot: args.workspaceRoot,
         ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
         ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+        ...(args.runToken ? { runToken: args.runToken } : {}),
       }),
     );
   }
@@ -495,6 +507,16 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
       return { ok: true, trustOverride: codexTrustOverride(args.cwd, isGitRepo) };
     },
 
+    profileEnforcement() {
+      // NOT-669: unproven until the Codex mapping sibling lands — every
+      // launch and resume fails here with the remedy and nothing spawns.
+      return {
+        ok: false,
+        remedy:
+          'Worker profile enforcement is not implemented for --client codex yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Codex mapping lands; no process was started.',
+      };
+    },
+
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
       const insideGitRepo = !codexTrustOverride(args.cwd, isGitRepo);
       const argv = buildCodexArgv({
@@ -504,7 +526,8 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
         insideGitRepo,
         ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
         ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
-        ...(args.playbookPin || args.launchDeckId ? { workspaceRoot: args.cwd } : {}),
+        ...(args.runToken ? { runToken: args.runToken } : {}),
+        ...(args.playbookPin || args.launchDeckId || args.runToken ? { workspaceRoot: args.cwd } : {}),
       });
       // planStart rejects a resume without a matching resumedFrom.
       if (args.resumeId !== undefined && args.resumedFrom) {

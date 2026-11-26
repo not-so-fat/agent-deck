@@ -59,6 +59,8 @@ export const CLAUDE_PIN_WORKSPACE_HEADER = 'x-agent-deck-workspace';
 export const CLAUDE_PIN_PLAYBOOK_PIN_HEADER = 'x-agent-deck-playbook-pin';
 /** Must match `AGENT_DECK_DECK_ID_HEADER`. */
 export const CLAUDE_LAUNCH_DECK_HEADER = 'x-agent-deck-deck-id';
+/** Must match `AGENT_DECK_RUN_TOKEN_HEADER`. */
+export const CLAUDE_RUN_TOKEN_HEADER = 'x-agent-deck-run-token';
 
 /**
  * Inline `agent-deck` MCP server carrying the run's playbook pin (NOT-537),
@@ -76,12 +78,14 @@ export function buildClaudePinMcpServer(
 
 /**
  * The run's inline `agent-deck` server: the workspace header, plus the
- * playbook pin and/or the launch deck header when the run has them. The
- * launch deck header makes the daemon bind the run's deck directly instead
- * of re-resolving it from the folder assignment or the user default.
+ * playbook pin, the launch deck header, and/or the worker token header when
+ * the run has them. The launch deck header makes the daemon bind the run's
+ * deck directly instead of re-resolving it from the folder assignment or
+ * the user default; the worker token header binds the MCP session to the
+ * run's effective worker profile (NOT-669).
  */
 export function buildClaudeRunMcpServer(
-  input: { cwd: string; playbookPin?: RunPlaybookPin; launchDeckId?: string },
+  input: { cwd: string; playbookPin?: RunPlaybookPin; launchDeckId?: string; runToken?: string },
   env: NodeJS.ProcessEnv = process.env,
 ): RunPinHttpMcpServer {
   const port = env.AGENT_DECK_MCP_PORT?.trim() || '1110';
@@ -95,6 +99,7 @@ export function buildClaudeRunMcpServer(
         ? { [CLAUDE_PIN_PLAYBOOK_PIN_HEADER]: formatRunPlaybookPin(input.playbookPin) }
         : {}),
       ...(input.launchDeckId ? { [CLAUDE_LAUNCH_DECK_HEADER]: input.launchDeckId } : {}),
+      ...(input.runToken ? { [CLAUDE_RUN_TOKEN_HEADER]: input.runToken } : {}),
     },
   };
 }
@@ -162,6 +167,16 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
       return { ok: true, trustOverride: false };
     },
 
+    profileEnforcement() {
+      // NOT-669: unproven until the Claude mapping sibling lands — every
+      // launch and resume fails here with the remedy and nothing spawns.
+      return {
+        ok: false,
+        remedy:
+          'Worker profile enforcement is not implemented for --client claude yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Claude mapping lands; no process was started.',
+      };
+    },
+
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
       const query = getQuery();
       let abortController: AbortController | undefined;
@@ -181,7 +196,9 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
       // connects — no same-name merge ambiguity with the configured entry.
       // The run allowlist needs no other MCP server
       // (`mcp__agent-deck__*` plus built-ins), so nothing else is lost.
-      // Unpinned runs pass neither key and behave exactly as before.
+      // NOT-669: a run carrying a worker token passes the same inline
+      // server for the token header; runs with no pin, launch deck, or
+      // token pass neither key and behave exactly as before.
       const stream = query({
         prompt: args.prompt,
         options: {
@@ -191,13 +208,14 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
           permissionMode: RUN_PERMISSION_MODE,
           allowedTools: [...allowedToolsForProfile(args.tools)],
           ...(abortController ? { abortController } : {}),
-          ...(args.playbookPin || args.launchDeckId
+          ...(args.playbookPin || args.launchDeckId || args.runToken
             ? {
                 mcpServers: {
                   'agent-deck': buildClaudeRunMcpServer({
                     cwd: args.cwd,
                     ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
                     ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+                    ...(args.runToken ? { runToken: args.runToken } : {}),
                   }),
                 },
                 strictMcpConfig: true,

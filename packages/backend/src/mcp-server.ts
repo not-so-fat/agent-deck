@@ -9,11 +9,13 @@ import {
   AGENT_DECK_HOST_SESSION_ID_HEADER,
   AGENT_DECK_PLAYBOOK_PIN_HEADER,
   AGENT_DECK_RECOVERED_SESSION_HEADER,
+  AGENT_DECK_RUN_TOKEN_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   countDeckCards,
   ensureGitExcluded,
   formatDisplayLine,
   readDefaultDeckState,
+  resolveAgentDeckHome,
 } from '@agent-deck/shared';
 import express, { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
@@ -31,8 +33,19 @@ import {
 import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error';
 import { formatMcpToolError } from './mcp-tools/policy';
 import {
+  appendRunDenial,
+  findRunMetaByTokenHash,
+  hashRunToken,
+  isMcpToolDeniedByProfile,
+  isRunTokenFormat,
+  runPaths,
+  WORKER_PROFILES,
+  type RunToolsProfile,
+} from './agent-run';
+import {
   McpSessionBindingStore,
   resolveDeckBindingSource,
+  type WorkerSessionIdentity,
 } from './mcp-session-binding';
 import { registerMcpTools, type McpToolInputSchema } from './mcp-tools/register';
 import { createSdkElicitationProvider } from './mcp-tools/elicitation';
@@ -145,6 +158,18 @@ function readPlaybookPinHeader(req: Request): string | undefined {
  */
 function readHostSessionIdHeader(req: Request): string | undefined {
   const raw = req.headers[AGENT_DECK_HOST_SESSION_ID_HEADER];
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  return value || undefined;
+}
+
+/**
+ * NOT-669: the run's worker token, when the request carries one. Returned
+ * unvalidated — verification resolves it against the run records, and an
+ * invalid or expired token is rejected (unlike the metadata headers above,
+ * this one participates in authorization). Never logged.
+ */
+function readRunTokenHeader(req: Request): string | undefined {
+  const raw = req.headers[AGENT_DECK_RUN_TOKEN_HEADER];
   const value = typeof raw === 'string' ? raw.trim() : '';
   return value || undefined;
 }
@@ -368,6 +393,8 @@ export class AgentDeckMCPServer {
   /** NOT-638: switch_deck elicitation timers (tests); production uses the defaults. */
   private readonly deckSwitchToolCallWaitMs: number | undefined;
   private readonly deckSwitchFormLifetimeMs: number | undefined;
+  /** NOT-669: run-record home override (tests); production resolves the Agent Deck home lazily. */
+  private readonly runHomeDirOverride: string | undefined;
   /**
    * NOT-191: last real client traffic per session — tool calls, handshakes,
    * stream connects, heartbeat pulses. Server-generated keep-alive touches
@@ -467,12 +494,15 @@ export class AgentDeckMCPServer {
       deckSwitchToolCallWaitMs?: number;
       /** NOT-638: switch_deck form lifetime override (tests). */
       deckSwitchFormLifetimeMs?: number;
+      /** NOT-669: Agent Deck home holding the run records (tests); otherwise resolved from the environment. */
+      homeDir?: string;
     },
   ) {
     this.port = port;
     this.backendUrl = backendUrl;
     this.toolProfile = toolProfile ?? resolveMcpToolProfile();
     this.host = host;
+    this.runHomeDirOverride = options?.homeDir;
     this.grantStoreOverride = options?.grantStore;
     this.auditStoreOverride = options?.auditStore;
     this.initializeLimiter = new RequestLimiter(MCP_INITIALIZE_RATE_WINDOW_MS, options?.now);
@@ -741,6 +771,187 @@ export class AgentDeckMCPServer {
     if (pin) {
       this.sessionBinding.setPlaybookPin(sessionId, pin);
     }
+  }
+
+  /**
+   * NOT-669: the home holding the run records. Resolved lazily so requests
+   * that never carry a worker token never touch the store resolution (which
+   * refuses the real store under a test runner).
+   */
+  private resolveRunHomeDir(): string {
+    return this.runHomeDirOverride ?? resolveAgentDeckHome();
+  }
+
+  /**
+   * NOT-669: resolve a presented worker token against the run records.
+   * `invalid` names no run; `expired` names a run that already reached a
+   * terminal state. The token itself is never logged.
+   */
+  private verifyRunToken(
+    token: string,
+  ): { ok: true; identity: WorkerSessionIdentity } | { ok: false; reason: 'invalid' | 'expired' } {
+    if (!isRunTokenFormat(token)) {
+      return { ok: false, reason: 'invalid' };
+    }
+    let found: ReturnType<typeof findRunMetaByTokenHash>;
+    try {
+      found = findRunMetaByTokenHash(this.resolveRunHomeDir(), hashRunToken(token));
+    } catch {
+      return { ok: false, reason: 'invalid' };
+    }
+    if (!found) {
+      return { ok: false, reason: 'invalid' };
+    }
+    if (found.meta.state !== 'running') {
+      return { ok: false, reason: 'expired' };
+    }
+    return {
+      ok: true,
+      identity: { runId: found.runId, profile: found.meta.tools, client: found.meta.client },
+    };
+  }
+
+  private sendRunTokenInvalid(res: Response, reason: 'invalid' | 'expired'): void {
+    res.status(401).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32001,
+        message:
+          reason === 'expired'
+            ? 'RUN_TOKEN_EXPIRED: the run this worker token belongs to has finished; reconnect without it or start a new run'
+            : 'RUN_TOKEN_INVALID: no live run matches this worker token',
+      },
+      id: null,
+    });
+  }
+
+  /**
+   * NOT-669: bind a verified worker identity to the session (adopt-once in
+   * the store). A session that already has one keeps it whatever the
+   * request carries — the identity can never be dropped by omitting the
+   * header or replaced by another token. An invalid or expired token fails
+   * the request with 401 and the transport is kept, so a correct token on
+   * the next attempt can succeed. Returns whether the request may proceed.
+   * Sessions without a token header — leaders — pass through untouched.
+   */
+  private adoptWorkerSession(sessionId: string, req: Request, res: Response): boolean {
+    if (this.sessionBinding.getWorkerSession(sessionId)) {
+      return true;
+    }
+    const token = readRunTokenHeader(req);
+    if (!token) {
+      return true;
+    }
+    const verified = this.verifyRunToken(token);
+    if (!verified.ok) {
+      console.warn('[agent-deck] Worker token rejected (transport kept).');
+      this.sendRunTokenInvalid(res, verified.reason);
+      return false;
+    }
+    this.sessionBinding.setWorkerSession(sessionId, verified.identity);
+    return true;
+  }
+
+  /**
+   * NOT-669: enforce a worker session's effective profile on one tool call,
+   * before the handler runs — so a denied call never elicits, never opens a
+   * pending approval, and never reaches the backend (except the read-only
+   * annotation lookup below, which performs no mutation). Leaders
+   * (sessions with no worker identity) are not enforced here at all.
+   */
+  private async checkWorkerToolCall(
+    sessionId: string,
+    worker: WorkerSessionIdentity,
+    name: string,
+    args: readonly unknown[],
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const profile: RunToolsProfile = worker.profile;
+    if (isMcpToolDeniedByProfile(profile, name)) {
+      return { ok: false, reason: `Tool "${name}" is not allowed for worker profile "${profile}"` };
+    }
+    if (name === 'call_service_tool' && WORKER_PROFILES[profile].mcpCallServiceTool === 'read-only-annotated') {
+      const input = (args[0] ?? {}) as { serviceId?: unknown; toolName?: unknown };
+      const serviceId = typeof input.serviceId === 'string' ? input.serviceId : '';
+      const toolName = typeof input.toolName === 'string' ? input.toolName : '';
+      if (!serviceId || !toolName) {
+        return { ok: false, reason: `Tool "call_service_tool" needs a serviceId and toolName under worker profile "${profile}"` };
+      }
+      let tools: Array<{ name?: unknown; annotations?: { readOnlyHint?: unknown } | null }>;
+      try {
+        tools = (await this.callBackendAPI(
+          `/api/services/${encodeURIComponent(serviceId)}/tools`,
+          {},
+          sessionId,
+        )) as Array<{ name?: unknown; annotations?: { readOnlyHint?: unknown } | null }>;
+      } catch {
+        return {
+          ok: false,
+          reason: `Tool "call_service_tool" for "${toolName}" is not allowed for worker profile "${profile}": the service tool list is unavailable`,
+        };
+      }
+      const target = (Array.isArray(tools) ? tools : []).find((tool) => tool?.name === toolName);
+      if (target?.annotations?.readOnlyHint !== true) {
+        return {
+          ok: false,
+          reason: `Tool "call_service_tool" for "${toolName}" is not allowed for worker profile "${profile}": the target service tool is not annotated readOnlyHint`,
+        };
+      }
+    }
+    return { ok: true };
+  }
+
+  /**
+   * NOT-669: record a server-side denial on the worker's run. Best effort:
+   * the call was already denied, so a recording failure is logged and never
+   * thrown. The plaintext token never appears here — only the run id the
+   * verified identity carries.
+   */
+  private recordWorkerDenial(worker: WorkerSessionIdentity, tool: string, reason: string): void {
+    try {
+      appendRunDenial(runPaths(this.resolveRunHomeDir(), worker.runId).metaPath, {
+        at: new Date().toISOString(),
+        client: worker.client,
+        profile: worker.profile,
+        source: 'agent-deck',
+        kind: 'mcp_tool',
+        target: tool,
+        reason,
+      });
+    } catch (error) {
+      console.warn('[agent-deck] Failed to record a worker denial:', error instanceof Error ? error.message : error);
+    }
+  }
+
+  /**
+   * NOT-669: the single enforcement choke point every registered tool flows
+   * through. A denied worker call returns immediately with the structured
+   * `PROFILE_DENIED` error and a denial on the run — no elicitation, no
+   * pending approval, no handler run.
+   */
+  private async invokeToolWithWorkerEnforcement(
+    sessionId: string,
+    name: string,
+    handler: (...args: any[]) => Promise<any>,
+    args: any[],
+  ): Promise<any> {
+    const worker = this.sessionBinding.getWorkerSession(sessionId);
+    if (!worker) {
+      return handler(...args);
+    }
+    const verdict = await this.checkWorkerToolCall(sessionId, worker, name, args);
+    if (verdict.ok) {
+      return handler(...args);
+    }
+    this.recordWorkerDenial(worker, name, verdict.reason);
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ code: 'PROFILE_DENIED', profile: worker.profile, tool: name, reason: verdict.reason }),
+        },
+      ],
+      isError: true,
+    };
   }
 
   /**
@@ -1248,11 +1459,16 @@ export class AgentDeckMCPServer {
       config: { title: string; description: string; inputSchema: McpToolInputSchema },
       handler: (...args: any[]) => Promise<any>,
     ): void => {
+      // NOT-669: every tool — runtime, editing, legacy, run, unassigned —
+      // flows through the worker enforcement choke point, so a tool added
+      // on any registration path is still gated on worker sessions.
+      const enforced = (...args: any[]): Promise<any> =>
+        this.invokeToolWithWorkerEnforcement(sessionId, name, handler, args);
       try {
         (elicitingServer as { registerTool: (...args: unknown[]) => unknown }).registerTool(
           name,
           config,
-          handler,
+          enforced,
         );
       } catch (error) {
         if (
@@ -2578,6 +2794,12 @@ export class AgentDeckMCPServer {
     res: Response,
     presentedSessionId?: string,
   ): Promise<void> {
+    // NOT-669: worker identity adopts (and a bad token 401s) before any
+    // grant/launch check, on every follow-up — grant sessions included, so
+    // a worker token can never be laundered through another auth path.
+    if (!this.adoptWorkerSession(sessionId, req, res)) {
+      return;
+    }
     // Grant-bound sessions revalidate the bearer on every request and
     // never take the trust-the-header launch path: a forged deck header
     // is denied by the grant allowlist, not trusted into a new deck.
@@ -2737,6 +2959,22 @@ export class AgentDeckMCPServer {
           id: null,
         });
         return;
+      }
+    }
+
+    // NOT-669: an initialize carrying a worker token verifies it before any
+    // backend call — an invalid or expired token is rejected with 401 and
+    // no runtime session is created. Adoption onto the fresh session id
+    // happens in `establishTransportSession`.
+    if (isInit) {
+      const token = readRunTokenHeader(req);
+      if (token) {
+        const verified = this.verifyRunToken(token);
+        if (!verified.ok) {
+          console.warn('[agent-deck] Worker token rejected before MCP init (no session created).');
+          this.sendRunTokenInvalid(res, verified.reason);
+          return;
+        }
       }
     }
 
@@ -3270,6 +3508,14 @@ export class AgentDeckMCPServer {
    * unassigned) — never before.
    */
   private async establishTransportSession(req: Request, res: Response, sessionId: string): Promise<void> {
+    // NOT-669: bind a verified worker identity before the transport exists,
+    // so the session is a worker session from its first tool call. A bad
+    // token answers 401 with no session, like the deck-auth failures above.
+    if (!this.adoptWorkerSession(sessionId, req, res)) {
+      await this.disconnectTrustedSession(sessionId, req).catch(() => {});
+      this.sessionBinding.clearSession(sessionId);
+      return;
+    }
     const body = req.body;
     const server = await this.createMcpServer(sessionId);
     let sessionEntry: McpSession | undefined;
@@ -3369,6 +3615,12 @@ export class AgentDeckMCPServer {
     const session = sessionId ? this.sessions.get(sessionId) : undefined;
     if (!sessionId || !session) {
       this.sendSessionNotFound(sessionIdHeader, res);
+      return;
+    }
+
+    // NOT-669: stream/close requests adopt (and a bad token 401s) like any
+    // other follow-up.
+    if (!this.adoptWorkerSession(sessionId, req, res)) {
       return;
     }
 
