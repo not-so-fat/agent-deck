@@ -1,5 +1,5 @@
 /**
- * NOT-672: Claude worker policy — isolated settings, dontAsk, explicit
+ * NOT-672: Claude worker policy — isolated settings, canUseTool-gated default mode, explicit
  * tool lists and profile allow/deny rules, and the read-only shell
  * classifier behind `canUseTool`.
  *
@@ -44,9 +44,9 @@ const CTX = (profile: 'readonly' | 'edit'): ClaudePolicyContext => ({
 });
 
 describe('claude worker settings and tool lists (NOT-672)', () => {
-  it('uses isolated setting sources, dontAsk, and no skills', () => {
+  it('uses isolated setting sources, default mode, and no skills', () => {
     expect([...CLAUDE_WORKER_SETTING_SOURCES]).toEqual([]);
-    expect(CLAUDE_WORKER_PERMISSION_MODE).toBe('dontAsk');
+    expect(CLAUDE_WORKER_PERMISSION_MODE).toBe('default');
     expect([...CLAUDE_WORKER_SKILLS]).toEqual([]);
   });
 
@@ -119,7 +119,7 @@ describe('claude worker settings and tool lists (NOT-672)', () => {
     expect(settings.permissions.deny).toEqual(claudeDenyRulesForProfile('readonly'));
     expect(settings.permissions.ask).toEqual(claudeAskRulesForProfile('readonly'));
     expect(settings.permissions.ask).toEqual(['Bash']);
-    expect(settings.permissions.defaultMode).toBe('dontAsk');
+    expect(settings.permissions.defaultMode).toBe('default');
     expect(settings.permissions.additionalDirectories).toEqual(['/home/agent', '/tmp']);
     // The SDK option list and the settings rules are the same source: the
     // two can never drift.

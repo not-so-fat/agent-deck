@@ -2,7 +2,7 @@
  * Claude worker policy for headless Agent Deck runs (NOT-672).
  *
  * Maps the shared `WORKER_PROFILES` definition (`profiles.ts`) onto the
- * Claude Agent SDK surface: isolated worker settings, `dontAsk`, explicit
+ * Claude Agent SDK surface: isolated worker settings, `default` mode gated by `canUseTool`, explicit
  * allow/ask/deny rules, and a host permission gate. Enforcement lives here
  * and in the SDK permission system the generated settings drive — never in
  * prompt instructions.
@@ -23,8 +23,8 @@
  *   route through `ask`, so the read-only shell classifier
  *   (`classifyReadonlyShell`, with its git hardening rewrite) and the
  *   edit file-write scope check decide every call.
- * - `deny` refuses immediately, and under `dontAsk` anything matching no
- *   rule is denied immediately too — no prompt surface, no waits.
+ * - `deny` refuses immediately, and anything matching no rule goes to the
+ *   same `canUseTool` gate, which denies it — no prompt surface, no waits.
  *   `disallowedTools` stays empty on purpose: denied tools stay visible so
  *   an attempt surfaces as a recorded denial instead of the model routing
  *   around a hidden tool.
@@ -44,8 +44,18 @@ import path from 'node:path';
 import { WORKER_PROFILES, type RunToolsProfile } from './profiles';
 import type { RunDenialKind } from './records';
 
-/** Worker runs never prompt: deny anything not pre-approved. */
-export const CLAUDE_WORKER_PERMISSION_MODE = 'dontAsk';
+/**
+ * Worker permission mode (NOT-672): `default`, so every call that no allow
+ * or deny rule settles (the ask-routed Bash/Edit/Write/NotebookEdit and
+ * every unlisted tool) is decided by the `canUseTool` host gate — which
+ * answers synchronously from the profile policy and denies anything
+ * unlisted, so no human is ever asked. NOT `dontAsk`: under `dontAsk` the
+ * SDK denies ask-routed calls without consulting `canUseTool` (operator
+ * probe, claude-agent-sdk 0.3.296: Bash on an ask rule was denied with
+ * "don't ask" mode and canUseTool was never called; under `default` the
+ * same call reached canUseTool and ran). `bypassPermissions` is never used.
+ */
+export const CLAUDE_WORKER_PERMISSION_MODE = 'default';
 
 /**
  * Worker runs load no filesystem settings (SDK isolation mode): neither
@@ -95,7 +105,7 @@ export const CLAUDE_EDIT_ONLY_TOOLS: readonly string[] = [
  * inheritance into subagents is unverified, so readonly runs none),
  * Monitor (profile `monitor: false`), question prompts (a headless worker
  * must never wait on a human), and skill execution (no skills enabled).
- * Everything else unlisted is denied by `dontAsk` by default.
+ * Everything else unlisted is denied by the `canUseTool` gate.
  */
 export const CLAUDE_READONLY_DENY_RULES: readonly string[] = [
   'Edit',
@@ -109,7 +119,7 @@ export const CLAUDE_READONLY_DENY_RULES: readonly string[] = [
 
 /**
  * Explicit deny rules for edit: question prompts and skill execution only.
- * Everything else unlisted is denied by `dontAsk` by default.
+ * Everything else unlisted is denied by the `canUseTool` gate.
  */
 export const CLAUDE_EDIT_DENY_RULES: readonly string[] = ['AskUserQuestion', 'Skill'];
 
@@ -1337,7 +1347,7 @@ export function claudeDenyRulesForProfile(profile: RunToolsProfile): string[] {
 
 /**
  * Flag-layer worker settings for `profile` (the SDK `settings` option):
- * explicit allow/ask/deny, `dontAsk` default, and the working directories
+ * explicit allow/ask/deny, `default` mode (canUseTool-gated), and the working directories
  * file tools may touch (the run workspace is implicit in `cwd`; home and
  * the OS temp dir ride here so edit writes and every profile's temp-file
  * reads have a scope). `ask` routes to the host gate — never to a human —

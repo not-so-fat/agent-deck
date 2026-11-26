@@ -84,7 +84,7 @@ function successMessages(sessionId: string): RunQueryMessage[] {
 }
 
 describe('claude worker options (NOT-672)', () => {
-  it('passes isolation, dontAsk, explicit lists, settings, and the gate on start and resume', async () => {
+  it('passes isolation, default mode, explicit lists, settings, and the gate on start and resume', async () => {
     const seen: RunQueryOptions[] = [];
     const adapter = createClaudeAdapter({
       query: (params) => {
@@ -117,10 +117,10 @@ describe('claude worker options (NOT-672)', () => {
     expect(seen[1].settings?.permissions.ask).toEqual([...claudeAskRulesForProfile('edit')]);
     for (const options of seen) {
       expect(options.settingSources).toEqual([]);
-      expect(options.permissionMode).toBe('dontAsk');
+      expect(options.permissionMode).toBe('default');
       expect(options.disallowedTools).toEqual([]);
       expect(options.skills).toEqual([]);
-      expect(options.settings?.permissions.defaultMode).toBe('dontAsk');
+      expect(options.settings?.permissions.defaultMode).toBe('default');
       expect(options.additionalDirectories).toEqual(['/home/agent', '/tmp']);
       expect(typeof options.canUseTool).toBe('function');
       expect(options.strictMcpConfig).toBe(true);

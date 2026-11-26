@@ -460,7 +460,7 @@ key instead); API-key setup is otherwise out of scope for this path.
   --client claude|codex|cursor|muse
                          Required.
                          claude runs isolated (no project/user settings) under
-                         dontAsk with explicit allow/deny rules; codex maps
+                         canUseTool-gated default mode with explicit rules; codex maps
                          --tools to -s read-only|workspace-write plus
                          approval never; cursor maps --tools edit to --force
                          (readonly passes no write flag) and all log lines

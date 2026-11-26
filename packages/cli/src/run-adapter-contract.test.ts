@@ -532,7 +532,7 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
         ...claudeAllowedToolsForProfile('readonly'),
       ]);
       expect(editRecord.options['allowedTools']).toEqual([...claudeAllowedToolsForProfile('edit')]);
-      expect(readonlyRecord.options['permissionMode']).toBe('dontAsk');
+      expect(readonlyRecord.options['permissionMode']).toBe('default');
       expect(readonlyRecord.options['settingSources']).toEqual([]);
       expect(JSON.stringify({ ...editRecord.options, canUseTool: undefined })).not.toContain(
         'bypassPermissions',

@@ -6,7 +6,7 @@
  *
  * Worker-profile enforcement (NOT-672, policy in `claude-policy.ts`): every
  * start and resume runs isolated (`settingSources: []`, no skills), under
- * `dontAsk` with the profile's explicit allow/ask/deny rules as flag-layer
+ * `default` mode (every unsettled call goes to `canUseTool`) with the profile's explicit allow/ask/deny rules as flag-layer
  * settings. `allow` pre-approves exact tools only; shell (both profiles)
  * and file writes (edit) route through `ask` to the `canUseTool` host gate
  * deciding from the same policy, so no call executes without its per-call
@@ -304,7 +304,7 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
     },
 
     profileEnforcement(args: AdapterStartArgs) {
-      // NOT-672: the mapping is implemented (isolated settings, dontAsk,
+      // NOT-672: the mapping is implemented (isolated settings, canUseTool-gated default mode,
       // explicit lists and rules, canUseTool, worker-only MCP) and the
       // resume gate re-checks provenance behind planStart.
       if (args.resumeId !== undefined) {
@@ -351,7 +351,7 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
       // same inline server carries the worker token header binding the MCP
       // session to the run's effective profile. NOT-672: the inline server
       // rides on every run, and the session is isolated (`settingSources:
-      // []`, no skills), non-interactive (`dontAsk`), explicitly listed
+      // []`, no skills), non-interactive (`default` mode, every unsettled call answered by `canUseTool`), explicitly listed
       // (`allowedTools` plus flag-layer allow/ask/deny rules — `allow`
       // pre-approves exact tools only, shell and edit writes route through
       // `ask`), and host-gated (`canUseTool` from the same policy).

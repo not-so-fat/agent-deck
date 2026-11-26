@@ -146,14 +146,14 @@ describe('run tool profiles (NOT-400, NOT-672)', () => {
   });
 
   it.each(['readonly', 'edit'] as const)(
-    '--tools %s uses permissionMode dontAsk and never bypassPermissions',
+    '--tools %s uses permissionMode default (canUseTool-gated) and never bypassPermissions',
     async (profile) => {
       const { cwd, deps } = setup();
 
       expect(await runRunCommand(argsFor(cwd, ['--tools', profile]), deps)).toBe(0);
 
       const options = queryOptions(deps);
-      expect(options.permissionMode).toBe('dontAsk');
+      expect(options.permissionMode).toBe('default');
       expect(JSON.stringify({ ...options, canUseTool: undefined })).not.toContain('bypassPermissions');
     },
   );
@@ -169,7 +169,7 @@ describe('run tool profiles (NOT-400, NOT-672)', () => {
       expect(options.settings.permissions.allow).toEqual([...claudeAllowedToolsForProfile(profile)]);
       expect(options.settings.permissions.deny).toEqual([...claudeDenyRulesForProfile(profile)]);
       expect(options.settings.permissions.ask).toEqual([...claudeAskRulesForProfile(profile)]);
-      expect(options.settings.permissions.defaultMode).toBe('dontAsk');
+      expect(options.settings.permissions.defaultMode).toBe('default');
       expect(options.settings.permissions.additionalDirectories).toHaveLength(2);
       expect(options.additionalDirectories).toEqual(options.settings.permissions.additionalDirectories);
     }
@@ -230,7 +230,7 @@ describe('run tool profiles (NOT-400, NOT-672)', () => {
     expect(await runRunCommand(argsFor(cwd, ['--resume', 'ses_tools']), deps)).toBe(0);
     expect(queryOptions(deps, 1).allowedTools).toEqual([...claudeAllowedToolsForProfile('readonly')]);
     expect(queryOptions(deps, 1).resume).toBe('ses_tools');
-    expect(queryOptions(deps, 1).permissionMode).toBe('dontAsk');
+    expect(queryOptions(deps, 1).permissionMode).toBe('default');
 
     // Cross-profile and unknown sessions fail closed before any query.
     const before = deps.query.mock.calls.length;

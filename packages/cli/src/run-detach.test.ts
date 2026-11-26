@@ -556,7 +556,7 @@ describe('run --detach against the built CLI (NOT-401)', () => {
       };
       expect(recorded.prompt).toBe('detach brief');
       expect(recorded.options.allowedTools).toEqual([...claudeAllowedToolsForProfile('readonly')]);
-      expect(recorded.options.permissionMode).toBe('dontAsk');
+      expect(recorded.options.permissionMode).toBe('default');
       expect(recorded.options.resume).toBeUndefined();
     },
   );
