@@ -367,10 +367,11 @@ function museMcpServerNames(documentText: string): string[] | null {
  * Any entry here fails the run closed before spawn: in a trusted workspace
  * Muse would load it alongside the run entry, so the worker MCP session
  * cannot be proven isolated to the run entry. A project `agent-deck` entry
- * is NOT covered here — it fails closed separately (see
+ * is NOT covered here — it is allowed (see
  * `findMuseProjectAgentDeckEntries`): same-name project entries shadow the
- * user-settings entry. Unparseable project files fail closed too — an
- * unreadable config cannot be proven isolated.
+ * user-settings entry only in a trusted workspace, and the worker is never
+ * trusted. Unparseable project files fail closed too — an unreadable config
+ * cannot be proven isolated.
  */
 export function findMuseForeignProjectServers(
   cwd: string,
@@ -398,12 +399,12 @@ export function findMuseForeignProjectServers(
 
 /**
  * Project MCP configs for `cwd` that define their own `agent-deck` server
- * (NOT-671 repair round 3). Any entry here fails the run closed before
- * spawn: same-name project entries shadow the user-settings entry
- * (`docs/design/muse-pure-mcp-connection.md`), so in a trusted repository
- * the project entry would replace the worker config's token-bearing run
- * entry — omitting or substituting the worker token and defeating
- * authenticated profile enforcement, on resume as well as start.
+ * (NOT-671). Informational only: same-name project entries shadow the
+ * user-settings entry (`docs/design/muse-pure-mcp-connection.md`) solely in
+ * a trusted workspace, and the worker is never trusted (no
+ * `--trust-workspace`/`--yolo` in argv, per-run config holds only
+ * settings.json and auth.json with no persisted trust), so a project entry
+ * cannot shadow the run's token-bearing entry — start and resume allow it.
  * Unparseable project files are NOT reported here (the foreign finder above
  * already fails closed on those).
  */
