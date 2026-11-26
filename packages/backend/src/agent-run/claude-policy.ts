@@ -1142,6 +1142,39 @@ function denyTool(toolName: string, reason: string): ClaudeToolDecision {
 }
 
 /**
+ * The `get_run` target for a refused tool call: the denied command for
+ * `Bash`, the denied path for the file writers, else the tool name. `input`
+ * is the refused call's input — the `tool_use` block the adapter captured,
+ * or the authoritative `result.permission_denials[].tool_input` — and
+ * anything missing or misshapen falls back to the tool name so the record
+ * always names something.
+ */
+export function claudeDenialTargetForInput(toolName: string, input: unknown): string {
+  const record =
+    typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : null;
+  if (record) {
+    if (toolName === 'Bash') {
+      const command = typeof record.command === 'string' ? record.command.trim() : '';
+      if (command) {
+        return command.slice(0, 500);
+      }
+    } else if (toolName === 'Edit' || toolName === 'Write') {
+      const filePath = typeof record.file_path === 'string' ? record.file_path.trim() : '';
+      if (filePath) {
+        return filePath.slice(0, 500);
+      }
+    } else if (toolName === 'NotebookEdit') {
+      const notebookPath =
+        typeof record.notebook_path === 'string' ? record.notebook_path.trim() : '';
+      if (notebookPath) {
+        return notebookPath.slice(0, 500);
+      }
+    }
+  }
+  return toolName;
+}
+
+/**
  * Decide one tool call against the worker profile (NOT-672): the pure
  * function behind the SDK `canUseTool` handler. Readonly allows reads,
  * web reads, session todos, read-only shell, and the profile's Agent Deck

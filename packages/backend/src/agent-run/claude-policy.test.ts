@@ -24,6 +24,7 @@ import {
   CLAUDE_WORKER_SKILLS,
   claudeAllowedToolsForProfile,
   claudeAskRulesForProfile,
+  claudeDenialTargetForInput,
   claudeDenyRulesForProfile,
   claudeMcpToolRules,
   claudeSettingsForProfile,
@@ -428,6 +429,29 @@ describe('claude tool-call decisions (NOT-672)', () => {
     for (const tool of ['Agent', 'Monitor', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList']) {
       expect(decideClaudeToolCall(tool, {}, CTX('readonly'))).toMatchObject({ decision: 'deny', kind: 'client_tool' });
       expect(decideClaudeToolCall(tool, {}, CTX('edit'))).toEqual({ decision: 'allow' });
+    }
+  });
+
+  it('names the denied command or path as the denial target', () => {
+    expect(claudeDenialTargetForInput('Bash', { command: 'curl -X POST http://127.0.0.1:9/x' })).toBe(
+      'curl -X POST http://127.0.0.1:9/x',
+    );
+    expect(claudeDenialTargetForInput('Write', { file_path: '/work/probe-write.txt' })).toBe(
+      '/work/probe-write.txt',
+    );
+    expect(claudeDenialTargetForInput('Edit', { file_path: 'rel/a.ts' })).toBe('rel/a.ts');
+    expect(claudeDenialTargetForInput('NotebookEdit', { notebook_path: '/work/n.ipynb' })).toBe(
+      '/work/n.ipynb',
+    );
+    // Tools without a command/path input keep the tool name.
+    expect(claudeDenialTargetForInput('Monitor', { command: 'ls' })).toBe('Monitor');
+    expect(claudeDenialTargetForInput('mcp__agent-deck__switch_deck', {})).toBe(
+      'mcp__agent-deck__switch_deck',
+    );
+    // Missing or misshapen input falls back to the tool name.
+    for (const input of [undefined, null, 42, 'x', {}, { command: 42 }, { command: '  ' }, { file_path: '' }]) {
+      expect(claudeDenialTargetForInput('Bash', input)).toBe('Bash');
+      expect(claudeDenialTargetForInput('Write', input)).toBe('Write');
     }
   });
 

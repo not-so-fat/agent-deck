@@ -204,8 +204,19 @@ describe('claude denial mapping (NOT-672)', () => {
     return events;
   }
 
-  it('maps permission_denied frames to denial events with kinds', async () => {
+  it('maps permission_denied frames to denial events with kinds and targets', async () => {
     const events = await drain([
+      {
+        type: 'assistant',
+        session_id: 'ses_1',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'call_1', name: 'Bash', input: { command: 'rm -rf /tmp/x' } },
+            { type: 'tool_use', id: 'call_2', name: 'Edit', input: { file_path: '/work/a.ts' } },
+            { type: 'tool_use', id: 'call_3', name: 'mcp__agent-deck__switch_deck', input: {} },
+          ],
+        },
+      },
       {
         type: 'system',
         subtype: 'permission_denied',
@@ -236,14 +247,14 @@ describe('claude denial mapping (NOT-672)', () => {
     expect(events.filter((event) => event.kind === 'denial')).toEqual([
       {
         kind: 'denial',
-        target: 'Bash',
+        target: 'rm -rf /tmp/x',
         reason: 'rule',
         denialKind: 'shell',
         sessionId: 'ses_1',
       },
       {
         kind: 'denial',
-        target: 'Edit',
+        target: '/work/a.ts',
         reason: 'Edit was denied',
         denialKind: 'file_write',
         sessionId: 'ses_1',
@@ -258,6 +269,99 @@ describe('claude denial mapping (NOT-672)', () => {
     ]);
     // The run still completes: denials are status, not failures.
     expect(events.at(-1)).toMatchObject({ kind: 'result', subtype: 'success' });
+  });
+
+  it('authoritative tool_input enriches a frame seen without input — one record', async () => {
+    const events = await drain([
+      {
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'call_9',
+        message: 'denied by rule',
+        session_id: 'ses_1',
+      } as RunQueryMessage,
+      {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'ses_1',
+        result: 'done',
+        permission_denials: [
+          {
+            tool_name: 'Bash',
+            tool_use_id: 'call_9',
+            tool_input: { command: 'curl -X POST http://127.0.0.1:9/x -d probe=1' },
+          },
+        ],
+      },
+    ]);
+
+    // The advisory frame waits for the authoritative record instead of
+    // emitting first: a single denial with the refused command.
+    expect(events.filter((event) => event.kind === 'denial')).toEqual([
+      {
+        kind: 'denial',
+        target: 'curl -X POST http://127.0.0.1:9/x -d probe=1',
+        reason: 'denied by rule',
+        denialKind: 'shell',
+        sessionId: 'ses_1',
+      },
+    ]);
+    expect(events.at(-1)).toMatchObject({ kind: 'result', subtype: 'success' });
+  });
+
+  it('authoritative-only denials carry tool_input targets without any frame', async () => {
+    const events = await drain([
+      {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'ses_1',
+        result: 'done',
+        permission_denials: [
+          { tool_name: 'Write', tool_use_id: 'call_10', tool_input: { file_path: '/work/new.ts' } },
+        ],
+      },
+    ]);
+
+    expect(events.filter((event) => event.kind === 'denial')).toEqual([
+      {
+        kind: 'denial',
+        target: '/work/new.ts',
+        reason: 'worker profile "readonly" denied Write',
+        denialKind: 'file_write',
+        sessionId: 'ses_1',
+      },
+    ]);
+  });
+
+  it('frames without a result flush at stream end with the best-known target', async () => {
+    const events = await drain([
+      {
+        type: 'assistant',
+        session_id: 'ses_1',
+        message: {
+          content: [{ type: 'tool_use', id: 'call_1', name: 'Bash', input: { command: 'ls; rm -rf /tmp/x' } }],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'call_1',
+        message: 'denied',
+        session_id: 'ses_1',
+      },
+    ]);
+
+    expect(events.filter((event) => event.kind === 'denial')).toEqual([
+      {
+        kind: 'denial',
+        target: 'ls; rm -rf /tmp/x',
+        reason: 'denied',
+        denialKind: 'shell',
+        sessionId: 'ses_1',
+      },
+    ]);
   });
 
   it('maps result.permission_denials and dedupes repeats by tool_use_id', async () => {
@@ -291,6 +395,16 @@ describe('claude denial mapping (NOT-672)', () => {
     const cwd = makeDir('agent-deck-claude-cwd-');
     const homeDir = makeDir('agent-deck-claude-home-');
     const { query } = fakeQuery([
+      {
+        type: 'assistant',
+        session_id: 'ses_deny',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'call_1', name: 'Bash', input: { command: 'curl -X POST http://127.0.0.1:9/x' } },
+            { type: 'tool_use', id: 'call_2', name: 'Edit', input: { file_path: '/work/probe-write.txt' } },
+          ],
+        },
+      },
       {
         type: 'system',
         subtype: 'permission_denied',
@@ -331,14 +445,14 @@ describe('claude denial mapping (NOT-672)', () => {
       profile: 'readonly',
       source: 'client',
       kind: 'shell',
-      target: 'Bash',
+      target: 'curl -X POST http://127.0.0.1:9/x',
     });
     expect(meta.denials?.[1]).toMatchObject({
       client: 'claude',
       profile: 'readonly',
       source: 'client',
       kind: 'file_write',
-      target: 'Edit',
+      target: '/work/probe-write.txt',
     });
     // Denials are status, not events: no log line is written for them.
     const kinds = fs
@@ -346,6 +460,6 @@ describe('claude denial mapping (NOT-672)', () => {
       .trim()
       .split('\n')
       .map((line) => (JSON.parse(line) as { t?: string }).t);
-    expect(kinds).toEqual(['result', 'end']);
+    expect(kinds).toEqual(['tool', 'tool', 'result', 'end']);
   });
 });

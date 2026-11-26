@@ -37,6 +37,7 @@ import {
   CLAUDE_WORKER_SKILLS,
   claudeAllowedToolsForProfile,
   claudeDenialKindForTool,
+  claudeDenialTargetForInput,
   claudeSettingsForProfile,
   decideClaudeToolCall,
 } from './claude-policy';
@@ -53,15 +54,19 @@ export type RunQueryMessage = {
    */
   message?:
     | {
-        content?: Array<{ type?: string; text?: string; name?: string }>;
+        content?: Array<{ type?: string; text?: string; name?: string; id?: string; input?: unknown }>;
       }
     | string;
   /** `system`/`permission_denied` frame fields (NOT-672 denial events). */
   tool_name?: string;
   tool_use_id?: string;
   decision_reason?: string;
-  /** Authoritative per-result denial record (NOT-672 denial events). */
-  permission_denials?: Array<{ tool_name?: string; tool_use_id?: string }>;
+  /**
+   * Authoritative per-result denial records (NOT-672 denial events): the
+   * SDK's `SDKPermissionDenial` shape (`tool_name`, `tool_use_id`,
+   * `tool_input`).
+   */
+  permission_denials?: Array<{ tool_name?: string; tool_use_id?: string; tool_input?: unknown }>;
 };
 
 /**
@@ -380,12 +385,25 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
           strictMcpConfig: true,
         },
       });
-      // `permission_denied` frames stream live; `result.permission_denials`
-      // is the authoritative record and may repeat them — one event per
-      // tool_use_id, whichever arrives first.
+      // Denial evidence arrives from three places, richest wins: the refused
+      // call's `tool_use` input (captured below by tool_use_id), the
+      // authoritative `result.permission_denials[].tool_input`, and — when
+      // neither exists — the bare tool name. Advisory `permission_denied`
+      // frames carry no input, so they wait for the authoritative record
+      // instead of emitting immediately: one denial event per tool_use_id,
+      // always with the best-known target. Frames without an authoritative
+      // twin flush at the result (ahead of it), or at stream end when no
+      // result arrives.
+      const toolInputs = new Map<string, { name: string; input: unknown }>();
       const seenDenials = new Set<string>();
+      const pendingDenials = new Map<
+        string,
+        { toolName: string; toolUseId: string | undefined; reason: string; sessionId?: string }
+      >();
       const denialKey = (toolUseId: string | undefined, toolName: string): string =>
         toolUseId ? `id:${toolUseId}` : `name:${toolName}`;
+      const denialInputFor = (toolUseId: string | undefined): unknown =>
+        toolUseId ? toolInputs.get(toolUseId)?.input : undefined;
       for await (const message of stream) {
         const sessionId =
           typeof message.session_id === 'string' && message.session_id ? message.session_id : undefined;
@@ -395,46 +413,84 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
             if (block.type === 'text' && typeof block.text === 'string') {
               yield { kind: 'text', text: block.text, ...withSession };
             } else if (block.type === 'tool_use' && typeof block.name === 'string') {
+              if (typeof block.id === 'string' && block.id && !toolInputs.has(block.id)) {
+                toolInputs.set(block.id, { name: block.name, input: block.input });
+              }
               yield { kind: 'tool', name: block.name, ...withSession };
             }
           }
         } else if (message.type === 'system' && message.subtype === 'permission_denied') {
           const toolName = typeof message.tool_name === 'string' ? message.tool_name : 'unknown';
-          const key = denialKey(
-            typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined,
-            toolName,
-          );
-          if (!seenDenials.has(key)) {
-            seenDenials.add(key);
+          const toolUseId =
+            typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined;
+          const key = denialKey(toolUseId, toolName);
+          if (!seenDenials.has(key) && !pendingDenials.has(key)) {
             const reason =
               (typeof message.decision_reason === 'string' && message.decision_reason) ||
               (typeof message.message === 'string' && message.message) ||
               `worker profile "${args.tools}" denied ${toolName}`;
-            yield {
-              kind: 'denial',
-              target: toolName,
-              reason: reason.slice(0, 500),
-              denialKind: claudeDenialKindForTool(toolName),
-              ...withSession,
-            };
+            pendingDenials.set(key, {
+              toolName,
+              toolUseId,
+              reason,
+              ...(sessionId ? { sessionId } : {}),
+            });
           }
         } else if (message.type === 'result') {
+          const authoritative = new Map<
+            string,
+            { toolName: string; toolUseId: string | undefined; input: unknown }
+          >();
           for (const denial of message.permission_denials ?? []) {
-            const toolName = typeof denial.tool_name === 'string' ? denial.tool_name : 'unknown';
-            const key = denialKey(
-              typeof denial.tool_use_id === 'string' ? denial.tool_use_id : undefined,
-              toolName,
-            );
-            if (!seenDenials.has(key)) {
-              seenDenials.add(key);
-              yield {
-                kind: 'denial',
-                target: toolName,
-                reason: `worker profile "${args.tools}" denied ${toolName}`,
-                denialKind: claudeDenialKindForTool(toolName),
-                ...withSession,
-              };
+            const entry =
+              typeof denial === 'object' && denial !== null
+                ? (denial as { tool_name?: unknown; tool_use_id?: unknown; tool_input?: unknown })
+                : null;
+            const toolName =
+              entry && typeof entry.tool_name === 'string' ? entry.tool_name : 'unknown';
+            const toolUseId =
+              entry && typeof entry.tool_use_id === 'string' ? entry.tool_use_id : undefined;
+            const key = denialKey(toolUseId, toolName);
+            if (!seenDenials.has(key) && !authoritative.has(key)) {
+              authoritative.set(key, { toolName, toolUseId, input: entry?.tool_input });
             }
+          }
+          // Pending frames first (arrival order), enriched by their
+          // authoritative twins; then authoritative-only records.
+          for (const [key, pending] of pendingDenials) {
+            if (seenDenials.has(key)) {
+              continue;
+            }
+            seenDenials.add(key);
+            const twin = authoritative.get(key);
+            authoritative.delete(key);
+            yield {
+              kind: 'denial',
+              target: claudeDenialTargetForInput(
+                pending.toolName,
+                twin?.input ?? denialInputFor(pending.toolUseId),
+              ),
+              reason: pending.reason.slice(0, 500),
+              denialKind: claudeDenialKindForTool(pending.toolName),
+              ...(pending.sessionId ? { sessionId: pending.sessionId } : {}),
+            };
+          }
+          pendingDenials.clear();
+          for (const [key, record] of authoritative) {
+            if (seenDenials.has(key)) {
+              continue;
+            }
+            seenDenials.add(key);
+            yield {
+              kind: 'denial',
+              target: claudeDenialTargetForInput(
+                record.toolName,
+                record.input ?? denialInputFor(record.toolUseId),
+              ),
+              reason: `worker profile "${args.tools}" denied ${record.toolName}`.slice(0, 500),
+              denialKind: claudeDenialKindForTool(record.toolName),
+              ...(sessionId ? { sessionId } : {}),
+            };
           }
           yield {
             kind: 'result',
@@ -443,6 +499,21 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
             ...withSession,
           };
         }
+      }
+      // No result arrived (the stream was cut short): flush whatever was
+      // observed so the refusals are still recorded.
+      for (const [key, pending] of pendingDenials) {
+        if (seenDenials.has(key)) {
+          continue;
+        }
+        seenDenials.add(key);
+        yield {
+          kind: 'denial',
+          target: claudeDenialTargetForInput(pending.toolName, denialInputFor(pending.toolUseId)),
+          reason: pending.reason.slice(0, 500),
+          denialKind: claudeDenialKindForTool(pending.toolName),
+          ...(pending.sessionId ? { sessionId: pending.sessionId } : {}),
+        };
       }
     },
   };
