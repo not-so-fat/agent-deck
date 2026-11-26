@@ -1075,7 +1075,6 @@ describe('muse worker profile enforcement gate (NOT-671)', () => {
         tools: 'readonly',
         playbookPin: { playbookId: 'pb', versionId: 'v' },
         launchDeckId: 'deck-other',
-        headerlessDeckMismatch: true,
       }),
     ).toEqual({ ok: true, trustOverride: false });
   });

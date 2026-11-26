@@ -733,15 +733,6 @@ function museAuthFilePath(): string {
 }
 
 /**
- * Where `agent-deck use --client muse` writes the agent-deck MCP entry:
- * global Muse settings, then the cwd's project `.mcp.json`. Mirrors
- * resolveConfigPath('muse', 'global' | 'project', cwd) in CLI mcp-config.ts.
- */
-export function museMcpConfigPaths(cwd: string): string[] {
-  return [path.join(museConfigHome(), 'muse', 'settings.json'), path.join(cwd, '.mcp.json')];
-}
-
-/**
  * Non-model signed-in check: META_API_KEY takes priority over the account
  * login (`muse login --help`), otherwise the auth file must record a `meta`
  * provider (token itself lives in the keychain; only the metadata is read).
@@ -756,25 +747,6 @@ export function isMuseSignedIn(readFile: MuseFileReader): boolean {
   }
   const providers = parseJsonObject(auth)?.providers;
   return asRecord(providers)?.meta != null;
-}
-
-/**
- * The agent-deck MCP entry must exist in the global Muse settings or the
- * cwd's project `.mcp.json` (whichever `agent-deck use --client muse` wrote);
- * without it no session receipt can ever appear in the log.
- */
-export function hasMuseMcpEntry(cwd: string, readFile: MuseFileReader): boolean {
-  for (const candidate of museMcpConfigPaths(cwd)) {
-    const text = readFile(candidate);
-    if (!text) {
-      continue;
-    }
-    const servers = parseJsonObject(text)?.mcpServers;
-    if (asRecord(servers)?.['agent-deck'] != null) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export type MuseAdapterDeps = {

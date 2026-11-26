@@ -324,7 +324,6 @@ describe('launch deck carriage for runs started from an MCP session', () => {
         prompt: 'hi',
         tools: 'readonly',
         launchDeckId: DECK_ID,
-        headerlessDeckMismatch: true,
       }),
     ).toEqual({ ok: true, trustOverride: true });
     expect(
@@ -346,7 +345,6 @@ describe('launch deck carriage for runs started from an MCP session', () => {
         prompt: 'hi',
         tools: 'readonly',
         launchDeckId: DECK_ID,
-        headerlessDeckMismatch: true,
       }),
     ).toEqual({ ok: true, trustOverride: false });
     expect(buildMuseWorkerMcpEntry({ workspaceRoot: '/work', launchDeckId: DECK_ID })).toEqual({

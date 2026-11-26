@@ -68,7 +68,7 @@ agent-deck run status <runId> --json
 agent-deck run log <runId> --tail 50
 ```
 
-Pinned playbook runs (`run.ts` `parseRunArgs`, `agent-run/service.ts` validation): `agent-deck run mydeck --client codex --cwd /path/to/repo --prompt "..." --tools readonly --playbook-version pb_my_playbook=<versionId>` runs one session against a stored older version of one playbook, so a baseline-vs-candidate evaluation can test each version with a real agent. The run's MCP session reads that version's title, body and triggers with no open patches (the `get_playbook` result carries `pinnedVersionId`) and cannot file playbook proposals; the live playbook is never modified, the pin dies with the run's session, and a repeated flag, a malformed value, an unknown version, a version from another playbook, or a playbook off the run's deck all fail before any model work starts. Supported with `--client codex` (pin travels as a `-c mcp_servers.agent-deck` override) and `--client claude` (pin travels as an inline SDK MCP server); `--client cursor` and `--client muse` have no per-run MCP env override, so a pinned run there fails closed before any model work. The pin is recorded in the run's `meta.json` as `playbookPin`.
+Pinned playbook runs (`run.ts` `parseRunArgs`, `agent-run/service.ts` validation): `agent-deck run mydeck --client codex --cwd /path/to/repo --prompt "..." --tools readonly --playbook-version pb_my_playbook=<versionId>` runs one session against a stored older version of one playbook, so a baseline-vs-candidate evaluation can test each version with a real agent. The run's MCP session reads that version's title, body and triggers with no open patches (the `get_playbook` result carries `pinnedVersionId`) and cannot file playbook proposals; the live playbook is never modified, the pin dies with the run's session, and a repeated flag, a malformed value, an unknown version, a version from another playbook, or a playbook off the run's deck all fail before any model work starts. Supported on all four clients: `--client codex` (pin travels as a `-c mcp_servers.agent-deck` override), `--client claude` (pin travels as an inline SDK MCP server), `--client cursor` (pin travels as a header in the worker home's per-run MCP entry), and `--client muse` (pin travels as a header in the worker config's per-run entry). The pin is recorded in the run's `meta.json` as `playbookPin`.
 
 ## Clients at a glance
 
@@ -108,8 +108,8 @@ the process exits and status polling shows no intermediate lines
 |------------|--------------------|------------------------------------|
 | `claude` | SDK `allowedTools` = `RUN_READONLY_TOOLS`: `mcp__agent-deck__*`, `Read`, `Glob`, `Grep`, `git log`/`git status`/`ls`-scoped `Bash` | `allowedTools` = `RUN_EDIT_TOOLS`: readonly plus `Edit`, `Write`, `git diff`/`git add`/`git commit`/`git checkout -b`-scoped `Bash`. `permissionMode` is always `acceptEdits`; `settingSources` are `project` and `user`; `bypassPermissions` is never used (`agent-run/adapter.ts`, `agent-run/claude.ts`) |
 | `codex` | `-s read-only` | `-s workspace-write` (`CODEX_SANDBOX_FOR_PROFILE`). `--dangerously-bypass-approvals-and-sandbox` is never passed (`agent-run/codex.ts`) |
-| `cursor` | No write-enabling flag | `--force`. `--yolo` and `--approve-mcps` are never passed (`agent-run/cursor.ts`). Print mode (`-p`) reports access to all tools including write and shell, so whether `readonly` truly cannot write is `<TBD: confirm>` — settled by the operator edit-vs-readonly test, not by the flags (`agent-run/cursor.ts`) |
-| `muse` | `--disable-write --disable-shell` (fails closed unless the installed `muse` lists both in `muse exec --help`; `museReadonlyFlagsSupported`) | No extra flags: default bounded permissions (approval on-request, sandbox on). `--yolo`, `--trust-workspace`, `--disable-approval`, `--disable-sandbox`, and `--permission-profile` are never passed (`MUSE_FORBIDDEN_FLAGS`; `agent-run/muse.ts`) |
+| `cursor` | `--sandbox enabled --plan --approve-mcps` (verified in `cursor-agent --help`; the worker home's per-run MCP entry is the only approved server) | `--sandbox enabled --force --approve-mcps`: `--force` is command preapproval, not a sandbox. `--yolo` is never passed (`CURSOR_FORBIDDEN_FLAGS`; `agent-run/cursor.ts`). Whether the mapping truly holds is settled by the operator edit-vs-readonly test, not by the flags |
+| `muse` | `--approval-mode never --disable-write --sandbox-network restricted` (fails closed unless the installed `muse` lists every flag in `muse exec --help`; `museEnforcementFlagsSupported`; no `--disable-shell`, so shell reads survive) | `--approval-mode never --sandbox-network enabled` (sandbox stays on). `--yolo`, `--trust-workspace`, `--disable-approval`, `--disable-sandbox`, `--permission-profile`, `--disable-shell`, and `--disable-web-tools` are never passed (`MUSE_FORBIDDEN_FLAGS`; `agent-run/muse.ts`) |
 
 ## Worker profiles
 
@@ -139,10 +139,11 @@ How it runs:
   only its SHA-256 hash in `meta.json` (`runTokenHash`), writes a
   token→record pointer under `<home>/runs-by-token/` so custom locations
   resolve server-side, and passes the plaintext to the adapter
-  (`AdapterStartArgs.runToken`). Codex and Claude carry it as the
-  `x-agent-deck-run-token` header in their per-run MCP override
+  (`AdapterStartArgs.runToken`). Every adapter carries it as the
+  `x-agent-deck-run-token` header in its per-run MCP override
   (`agent-run/codex.ts` `buildCodexMcpConfigOverride`,
-  `agent-run/claude.ts` `buildClaudeRunMcpServer`).
+  `agent-run/claude.ts` `buildClaudeRunMcpServer`, the Cursor worker
+  home's per-run entry, and the Muse worker config's per-run entry).
 - An MCP session presenting a valid token is a worker session bound to its
   run's effective profile (adopt-once per session: the identity can never be
   dropped or replaced). Tool calls outside the profile return
