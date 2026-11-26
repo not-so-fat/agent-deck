@@ -36,8 +36,8 @@ import {
   appendRunDenial,
   findRunMetaByTokenHash,
   hashRunToken,
-  isMcpToolDeniedByProfile,
   isRunTokenFormat,
+  mcpToolDenialReason,
   runPaths,
   WORKER_PROFILES,
   type RunToolsProfile,
@@ -866,8 +866,9 @@ export class AgentDeckMCPServer {
     args: readonly unknown[],
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const profile: RunToolsProfile = worker.profile;
-    if (isMcpToolDeniedByProfile(profile, name)) {
-      return { ok: false, reason: `Tool "${name}" is not allowed for worker profile "${profile}"` };
+    const denialReason = mcpToolDenialReason(profile, name);
+    if (denialReason) {
+      return { ok: false, reason: denialReason };
     }
     if (name === 'call_service_tool' && WORKER_PROFILES[profile].mcpCallServiceTool === 'read-only-annotated') {
       const input = (args[0] ?? {}) as { serviceId?: unknown; toolName?: unknown };
