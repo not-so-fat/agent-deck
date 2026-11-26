@@ -526,22 +526,35 @@ describe('codex resume provenance (NOT-484)', () => {
       expect(resumed).toMatchObject({ state: 'ended', sessionId: THREAD });
       expect(resumed.runId).not.toBe(origin.runId);
       // Every run carries its worker token in the per-run MCP override
-      // (NOT-669): `-c` sits right after `exec [resume]`, before `--json`.
+      // (NOT-669) plus the NOT-672 enforcement `-c` pairs: the MCP table,
+      // then approval_policy, then (edit only) the sandbox overrides — all
+      // right after `exec [resume]`, before `--json`.
       expect(calls).toHaveLength(2);
       const [startArgv, resumeArgv] = calls.map((call) => call.argv);
-      expect(startArgv[0]).toBe('exec');
-      expect(startArgv[1]).toBe('-c');
-      expect(startArgv[2]).toMatch(
-        /^mcp_servers\.agent-deck=\{url="http:\/\/[^"]+\/mcp",http_headers=\{"x-agent-deck-workspace"="[^"]+","x-agent-deck-run-token"="[0-9a-f]{64}"\}\}$/,
-      );
-      expect(startArgv.slice(3)).toEqual([
+      const expectEnforcementHead = (argv: string[], resume: boolean): string[] => {
+        const head = resume ? ['exec', 'resume'] : ['exec'];
+        expect(argv.slice(0, head.length)).toEqual(head);
+        const rest = argv.slice(head.length);
+        expect(rest[0]).toBe('-c');
+        expect(rest[1]).toMatch(/^mcp_servers\.agent-deck=\{url="http:\/\/[^"]+\/mcp",http_headers=\{/);
+        expect(rest[1]).toMatch(/"x-agent-deck-run-token"="[0-9a-f]{64}"/);
+        expect(rest[1]).toContain('default_tools_approval_mode="approve"');
+        expect(rest[1]).toContain('enabled_tools=');
+        expect(rest[2]).toBe('-c');
+        expect(rest[3]).toBe('approval_policy="never"');
+        if (tools === 'edit') {
+          expect(rest[4]).toBe('-c');
+          expect(rest[5]).toBe('sandbox_workspace_write.network_access=true');
+          expect(rest[6]).toBe('-c');
+          expect(rest[7]).toMatch(/^sandbox_workspace_write\.writable_roots=\["[^"]+","[^"]+"\]/);
+          return rest.slice(8);
+        }
+        return rest.slice(4);
+      };
+      expect(expectEnforcementHead(startArgv, false)).toEqual([
         '--json', '-s', tools === 'edit' ? 'workspace-write' : 'read-only', '--', 'brief',
       ]);
-      expect(resumeArgv[0]).toBe('exec');
-      expect(resumeArgv[1]).toBe('resume');
-      expect(resumeArgv[2]).toBe('-c');
-      expect(resumeArgv[3]).toMatch(/"x-agent-deck-run-token"="[0-9a-f]{64}"/);
-      expect(resumeArgv.slice(4)).toEqual(['--json', '--', THREAD, 'again']);
+      expect(expectEnforcementHead(resumeArgv, true)).toEqual(['--json', '--', THREAD, 'again']);
       for (const call of calls) {
         expect(call.argv).not.toContain(BYPASS);
       }

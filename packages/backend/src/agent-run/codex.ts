@@ -4,7 +4,9 @@
  * Drives `codex exec --json` (start) and `codex exec resume` (resume) as a
  * child process and maps the JSONL stream onto normalized events. Verified
  * against codex-cli 0.157.1 (`codex exec --help`, `codex exec resume --help`,
- * `codex login status`):
+ * `codex login status`); worker-profile enforcement (NOT-672) verified
+ * against codex-cli 0.169.0 (`-c` config overrides, `mcp get` rendering of
+ * the per-run MCP table, rollout `turn_context` policy records):
  *
  * - Start accepts `-s read-only|workspace-write`; resume accepts NO `-s`
  *   flag (neither does `fork`): the thread keeps the sandbox it started
@@ -17,12 +19,28 @@
  * - `--skip-git-repo-check` exists on both start and resume and is passed
  *   only when --cwd is not inside a git work tree (recorded as
  *   `trustOverride: true` in meta.json).
+ * - Worker-profile enforcement (NOT-672, `WORKER_PROFILES` in
+ *   `profiles.ts`): every start and resume passes
+ *   `-c approval_policy="never"` (headless runs never wait on approvals)
+ *   and a full per-run `mcp_servers.agent-deck` table carrying the worker
+ *   headers, `default_tools_approval_mode="approve"`, and the profile's
+ *   explicit `enabled_tools` allow set (unknown names are tolerated, so a
+ *   tool the server does not advertise cannot break bootstrap). Edit
+ *   additionally passes explicit `-c sandbox_workspace_write.*` overrides
+ *   enabling network access and exactly the workspace-plus-agent-home
+ *   writable roots; readonly relies on the fixed read-only sandbox. A
+ *   resume additionally verifies the thread's recorded effective policy
+ *   from its rollout file before trusting it (see
+ *   `verifyCodexResumePolicy`); anything unverifiable fails closed.
  *
  * `--dangerously-bypass-approvals-and-sandbox` must never be used: there is
  * no flag, env var, or option that selects it, and tests assert no generated
  * argv ever contains it.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import readline from 'node:readline';
 
 import {
@@ -34,6 +52,7 @@ import {
   type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
+import { WORKER_PROFILES } from './profiles';
 
 /** Tool-profile mapping: readonly is `-s read-only`, edit is `-s workspace-write`. */
 export const CODEX_SANDBOX_FOR_PROFILE: Record<RunToolsProfile, 'read-only' | 'workspace-write'> = {
@@ -43,8 +62,22 @@ export const CODEX_SANDBOX_FOR_PROFILE: Record<RunToolsProfile, 'read-only' | 'w
 
 export const CODEX_JSONL_VERSION_NOTE = 'codex-cli 0.157.1';
 
+/** Worker-profile enforcement keys verified against this codex release (NOT-672). */
+export const CODEX_ENFORCEMENT_VERSION_NOTE = 'codex-cli 0.169.0';
+
+/** Minimum codex release whose enforcement surface is verified (NOT-672). */
+export const CODEX_MIN_ENFORCEMENT_VERSION: readonly [number, number, number] = [0, 169, 0];
+
+/** Headless worker runs never prompt: approvals are never requested (NOT-672). */
+export const CODEX_APPROVAL_POLICY = 'never';
+
 export function resolveCodexBin(): string {
   return process.env.CODEX_BIN?.trim() || 'codex';
+}
+
+/** Where codex keeps config, auth, and session rollouts. */
+export function resolveCodexHome(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
 }
 
 export type CodexArgvArgs = {
@@ -55,11 +88,18 @@ export type CodexArgvArgs = {
   /** Pinned playbook version, carried as a `-c` MCP override (NOT-537). */
   playbookPin?: RunPlaybookPin;
   /**
-   * Run working directory. Required with `playbookPin`: the pure-MCP
-   * override (NOT-566) names it in the workspace header so the daemon can
-   * resolve the folder assignment — there is no launcher to read it.
+   * Run working directory. Always required: the per-run MCP override
+   * (NOT-566) names it in the workspace header so the daemon can resolve
+   * the folder assignment — there is no launcher to read it — and the edit
+   * sandbox override names it as a writable root (NOT-672).
    */
-  workspaceRoot?: string;
+  workspaceRoot: string;
+  /**
+   * Agent user's home directory. Required for edit runs: the edit sandbox
+   * override names it as a writable root alongside the workspace
+   * (NOT-672); ignored for readonly runs.
+   */
+  homeDir?: string;
   /** Launch deck header for the run's MCP session (see `AdapterStartArgs.launchDeckId`). */
   launchDeckId?: string;
   /** Worker token header for the run's MCP session (NOT-669; see `AdapterStartArgs.runToken`). */
@@ -69,6 +109,37 @@ export type CodexArgvArgs = {
 /** Escape one TOML basic-string value (the pin is `id=uuid`; belt and suspenders). */
 export function tomlEscape(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+/** One TOML inline string array (`["a","b"]`), values escaped. */
+export function tomlStringArray(values: readonly string[]): string {
+  return `[${values.map((value) => `"${tomlEscape(value)}"`).join(',')}]`;
+}
+
+/**
+ * Parse `codex --version` output (`codex-cli 0.169.0`) into a version tuple.
+ * Null when no triple is found — unparseable means unverifiable, which
+ * fails closed in `profileEnforcement`.
+ */
+export function parseCodexVersion(output: string): readonly [number, number, number] | null {
+  const match = output.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) {
+    return null;
+  }
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** True when `version` is at least `CODEX_MIN_ENFORCEMENT_VERSION`. */
+export function codexVersionSupportsEnforcement(version: readonly [number, number, number]): boolean {
+  const [major, minor, patch] = version;
+  const [wantMajor, wantMinor, wantPatch] = CODEX_MIN_ENFORCEMENT_VERSION;
+  if (major !== wantMajor) {
+    return major > wantMajor;
+  }
+  if (minor !== wantMinor) {
+    return minor > wantMinor;
+  }
+  return patch >= wantPatch;
 }
 
 /**
@@ -107,14 +178,25 @@ export const CODEX_RUN_TOKEN_HEADER = 'x-agent-deck-run-token';
  * header (NOT-562) and reads the pin header for the playbook version — no
  * launcher process is involved. A full definition because partial overrides
  * fail codex bootstrap with "invalid transport" (verified on codex-cli
- * 0.157.1). Unpinned runs pass no `-c` at all and behave exactly as before.
+ * 0.157.1).
  */
 export function buildCodexPinConfigOverride(
   pin: RunPlaybookPin,
   workspaceRoot: string,
   endpoint: { port: string; host: string } = codexPinEndpoint(),
 ): string {
-  return buildCodexMcpConfigOverride({ workspaceRoot, playbookPin: pin }, endpoint);
+  return buildCodexMcpConfigOverride({ workspaceRoot, tools: 'readonly', playbookPin: pin }, endpoint);
+}
+
+/**
+ * Agent Deck MCP tools the worker may call under `profile` (NOT-672): the
+ * shared profile allow set, passed as the per-run table's `enabled_tools`
+ * so the model only sees what the profile permits. The MCP server still
+ * enforces the same set call-by-call (NOT-669) — the table is the
+ * client-side half, the server the authoritative half.
+ */
+export function codexEnabledMcpTools(profile: RunToolsProfile): readonly string[] {
+  return WORKER_PROFILES[profile].mcpAllowTools;
 }
 
 /**
@@ -124,9 +206,23 @@ export function buildCodexPinConfigOverride(
  * run's deck directly instead of re-resolving it from the folder assignment
  * or the user default; the worker token header binds the MCP session to the
  * run's effective worker profile (NOT-669).
+ *
+ * NOT-672: the table also carries `default_tools_approval_mode="approve"`
+ * (worker MCP calls never wait on approvals), the profile's explicit
+ * `enabled_tools` allow set, and a per-tool `approval_mode="approve"` entry
+ * for each allowed tool. Verified against codex-cli 0.169.0
+ * (`codex mcp get` renders the table; unknown `enabled_tools` names are
+ * tolerated, so a tool the server does not advertise cannot break
+ * bootstrap).
  */
 export function buildCodexMcpConfigOverride(
-  input: { workspaceRoot: string; playbookPin?: RunPlaybookPin; launchDeckId?: string; runToken?: string },
+  input: {
+    workspaceRoot: string;
+    tools: RunToolsProfile;
+    playbookPin?: RunPlaybookPin;
+    launchDeckId?: string;
+    runToken?: string;
+  },
   endpoint: { port: string; host: string } = codexPinEndpoint(),
 ): string {
   const headers = [
@@ -141,10 +237,36 @@ export function buildCodexMcpConfigOverride(
       ? [`"${CODEX_RUN_TOKEN_HEADER}"="${tomlEscape(input.runToken)}"`]
       : []),
   ].join(',');
+  const enabled = codexEnabledMcpTools(input.tools);
+  const toolApprovals = enabled.map((tool) => `"${tomlEscape(tool)}"={approval_mode="approve"}`).join(',');
   return (
     `mcp_servers.agent-deck={url="http://${tomlEscape(endpoint.host)}:${tomlEscape(endpoint.port)}/mcp",` +
-    `http_headers={${headers}}}`
+    `http_headers={${headers}},` +
+    `default_tools_approval_mode="approve",` +
+    `enabled_tools=${tomlStringArray(enabled)},` +
+    `tools={${toolApprovals}}}`
   );
+}
+
+/** `-c approval_policy="never"`: headless runs never wait on approvals (NOT-672). */
+export function buildCodexApprovalPolicyOverride(): string {
+  return `approval_policy="${CODEX_APPROVAL_POLICY}"`;
+}
+
+/**
+ * Edit sandbox overrides (NOT-672): explicit network access and exactly the
+ * workspace-plus-agent-home writable roots. Passed as `-c` pairs (flag and
+ * value interleaved) on edit starts and resumes; readonly runs pass none
+ * (the read-only sandbox is fixed — there is no `sandbox_read_only`
+ * override table, and codex ignores one).
+ */
+export function buildCodexEditSandboxOverrides(workspaceRoot: string, homeDir: string): string[] {
+  return [
+    '-c',
+    'sandbox_workspace_write.network_access=true',
+    '-c',
+    `sandbox_workspace_write.writable_roots=${tomlStringArray([workspaceRoot, homeDir])}`,
+  ];
 }
 
 /**
@@ -165,23 +287,27 @@ export function assertSafeResumeId(resumeId: string): void {
 
 /**
  * Pure argv builder (everything after the `codex` binary). Start:
- * `exec --json [--skip-git-repo-check] -s <mode> -- <prompt>`; resume:
- * `exec resume --json [--skip-git-repo-check] -- <thread> <prompt>`
+ * `exec -c <mcp> -c <approval> [-c <sandbox> -c <sandbox>] --json
+ * [--skip-git-repo-check] -s <mode> -- <prompt>`; resume:
+ * `exec resume -c <mcp> -c <approval> [-c <sandbox> -c <sandbox>] --json
+ * [--skip-git-repo-check] -- <thread> <prompt>`
  * (`codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]` takes both positionals
  * after `--`; verified `--help` after `--` is treated as a positional, not
- * the help flag, on codex-cli 0.157.1).
+ * the help flag, on codex-cli 0.157.1; `-c` accepted by both `exec` and
+ * `exec resume` on codex-cli 0.169.0).
  * Resume takes no `-s`: the thread keeps its original sandbox.
  * The `--` terminator keeps dash-leading prompts (markdown bullets, YAML
  * frontmatter, or a literal `--dangerously-...` string) from being parsed
  * as codex options.
- * A pinned run adds `-c <mcp_servers.agent-deck override>` (accepted by both
- * `exec` and `exec resume`) so the run's MCP server sends the pin header;
- * a process env var would never arrive (restricted MCP env). The override
- * is pure HTTP (NOT-566), so a pinned run must also pass `workspaceRoot` —
- * without the workspace header the daemon cannot resolve the folder
- * assignment and the run would silently read live playbook bodies.
- * A run carrying a worker token (NOT-669) adds the same override for the
- * token header; runs with no pin, launch deck, or token pass no `-c`.
+ * Every run passes the full `-c mcp_servers.agent-deck` table (a process
+ * env var would never arrive — restricted MCP env): the workspace header
+ * (pure HTTP, NOT-566 — without it the daemon cannot resolve the folder
+ * assignment), the pin/deck/token headers when the run carries them, and
+ * the NOT-672 enforcement half (`default_tools_approval_mode`,
+ * `enabled_tools`, per-tool approvals). Every run also passes
+ * `-c approval_policy="never"`; edit runs additionally pass the explicit
+ * `-c sandbox_workspace_write.*` overrides. An edit run without `homeDir`
+ * fails closed: the writable-roots override cannot be built.
  */
 export function buildCodexArgv(args: CodexArgvArgs): string[] {
   const argv = ['exec'];
@@ -190,22 +316,32 @@ export function buildCodexArgv(args: CodexArgvArgs): string[] {
     assertSafeResumeId(args.resumeId as string);
     argv.push('resume');
   }
-  if (args.playbookPin || args.launchDeckId || args.runToken) {
-    if (!args.workspaceRoot) {
+  if (!args.workspaceRoot) {
+    throw new Error(
+      'Cannot build a codex run without workspaceRoot: the per-run MCP override ' +
+        'needs the run directory for the x-agent-deck-workspace header.',
+    );
+  }
+  argv.push(
+    '-c',
+    buildCodexMcpConfigOverride({
+      workspaceRoot: args.workspaceRoot,
+      tools: args.tools,
+      ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
+      ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
+      ...(args.runToken ? { runToken: args.runToken } : {}),
+    }),
+    '-c',
+    buildCodexApprovalPolicyOverride(),
+  );
+  if (args.tools === 'edit') {
+    if (!args.homeDir) {
       throw new Error(
-        'Cannot build a pinned, deck-carrying, or worker-token codex run without workspaceRoot: the pure-MCP override ' +
-          'needs the run directory for the x-agent-deck-workspace header.',
+        'Cannot build an edit codex run without homeDir: the writable-roots override ' +
+          'needs the agent home directory alongside the workspace.',
       );
     }
-    argv.push(
-      '-c',
-      buildCodexMcpConfigOverride({
-        workspaceRoot: args.workspaceRoot,
-        ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
-        ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
-        ...(args.runToken ? { runToken: args.runToken } : {}),
-      }),
-    );
+    argv.push(...buildCodexEditSandboxOverrides(args.workspaceRoot, args.homeDir));
   }
   argv.push('--json');
   if (!args.insideGitRepo) {
@@ -438,11 +574,237 @@ export function codexTrustOverride(cwd: string, isGitRepo: (cwd: string) => bool
   }
 }
 
+/**
+ * A thread's recorded effective policy: one `turn_context` payload from its
+ * rollout file (codex-cli 0.169.0). `codex exec resume` accepts no `-s`
+ * flag, so the thread keeps whatever sandbox it started with — the resume
+ * gate verifies the recording instead of trusting the thread.
+ */
+export type CodexRecordedPolicy = {
+  approvalPolicy: unknown;
+  sandboxType: unknown;
+  networkAccess: unknown;
+  writableRoots: unknown;
+};
+
+export type CodexResumePolicyCheck = {
+  /** `$CODEX_HOME` (or `~/.codex`): rollouts live under `<codexHome>/sessions/`. */
+  codexHome: string;
+  /** The thread id being resumed. */
+  threadId: string;
+  /** The requested worker profile, which the recording must satisfy. */
+  tools: RunToolsProfile;
+  /** The resume's working directory: an edit thread must cover it for writes. */
+  cwd: string;
+  /** The agent user's home: an edit thread must cover it for writes. */
+  homeDir: string;
+};
+
+/**
+ * Rollout files that may record `threadId`: `<codexHome>/sessions/**` files
+ * named `rollout-*-<threadId>.jsonl`. Content is verified separately
+ * (`readCodexTurnPolicies` matches the recorded session id); a filename
+ * alone proves nothing. Unreadable directories contribute nothing — a
+ * missing recording fails closed in `verifyCodexResumePolicy`.
+ */
+export function findCodexRollouts(codexHome: string, threadId: string): string[] {
+  const suffix = `-${threadId}.jsonl`;
+  const found: string[] = [];
+  const queue: string[] = [path.join(codexHome, 'sessions')];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const dir = queue.pop() as string;
+    if (seen.has(dir)) {
+      continue;
+    }
+    seen.add(dir);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(full);
+      } else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith(suffix)) {
+        found.push(full);
+      }
+    }
+  }
+  return found.sort();
+}
+
+/**
+ * The recorded effective policies in one rollout file: every `turn_context`
+ * payload. Returns null when the file does not prove it records `threadId`
+ * (no `session_meta` naming it) or cannot be read — the caller treats that
+ * file as no provenance. Unparseable lines are skipped: a corrupt line must
+ * not invalidate the policies the intact lines record.
+ */
+export function readCodexTurnPolicies(
+  rolloutPath: string,
+  threadId: string,
+): CodexRecordedPolicy[] | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(rolloutPath, 'utf8');
+  } catch {
+    return null;
+  }
+  let provesThread = false;
+  const policies: CodexRecordedPolicy[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed) as unknown;
+    } catch {
+      continue;
+    }
+    const record = asRecord(parsed);
+    const payload = record ? asRecord(record.payload) : null;
+    if (!record || !payload) {
+      continue;
+    }
+    if (record.type === 'session_meta') {
+      if (payload.session_id === threadId || payload.id === threadId) {
+        provesThread = true;
+      }
+      continue;
+    }
+    if (record.type === 'turn_context') {
+      const sandbox = asRecord(payload.sandbox_policy);
+      policies.push({
+        approvalPolicy: payload.approval_policy,
+        sandboxType: sandbox?.type,
+        networkAccess: sandbox?.network_access,
+        writableRoots: sandbox?.writable_roots,
+      });
+    }
+  }
+  return provesThread ? policies : null;
+}
+
+/** Realpath when it resolves, else the path as given. */
+function resolveForPolicyCover(dir: string): string {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+/**
+ * True when `roots` covers `dir` for writes: one entry equals it or is a
+ * parent of it (compared after realpath, so a symlinked cwd still matches
+ * the recorded canonical root).
+ */
+export function codexWritableRootsCover(roots: readonly string[], dir: string): boolean {
+  const target = resolveForPolicyCover(dir);
+  return roots.some((root) => {
+    if (typeof root !== 'string' || !root) {
+      return false;
+    }
+    const resolved = resolveForPolicyCover(root);
+    return target === resolved || target.startsWith(`${resolved}${path.sep}`);
+  });
+}
+
+/**
+ * Verify the thread's recorded effective policy satisfies `check.tools`
+ * (NOT-672): readonly needs `approval_policy: "never"` and a `read-only`
+ * sandbox on every recorded turn; edit needs `approval_policy: "never"`,
+ * a `workspace-write` sandbox with network access, and writable roots
+ * covering both the resume cwd and the agent home on every recorded turn.
+ * Missing rollouts, unproven threads, turns without a policy record, and
+ * any incompatible turn all fail closed — the thread is never trusted.
+ */
+export function verifyCodexResumePolicy(
+  check: CodexResumePolicyCheck,
+): { ok: true } | { ok: false; remedy: string } {
+  const missingRemedy =
+    `Cannot resume codex thread ${check.threadId}: its effective sandbox cannot be verified ` +
+    `(no codex rollout under ${path.join(check.codexHome, 'sessions')} proves it started with ` +
+    `--tools ${check.tools}). Resume only a thread this host's codex started through \`agent-deck run\`, or start a new run.`;
+  let rollouts: string[];
+  try {
+    rollouts = findCodexRollouts(check.codexHome, check.threadId);
+  } catch {
+    rollouts = [];
+  }
+  if (rollouts.length === 0) {
+    return { ok: false, remedy: missingRemedy };
+  }
+  const policies: CodexRecordedPolicy[] = [];
+  for (const rollout of rollouts) {
+    const parsed = readCodexTurnPolicies(rollout, check.threadId);
+    if (parsed) {
+      policies.push(...parsed);
+    }
+  }
+  if (policies.length === 0) {
+    return { ok: false, remedy: missingRemedy };
+  }
+  const want =
+    check.tools === 'edit'
+      ? 'approval never, workspace-write sandbox, network access, and writable roots covering the workspace and the agent home'
+      : 'approval never and a read-only sandbox';
+  for (const policy of policies) {
+    const reasons: string[] = [];
+    if (policy.approvalPolicy !== CODEX_APPROVAL_POLICY) {
+      reasons.push(`approval_policy ${JSON.stringify(policy.approvalPolicy)} (want ${JSON.stringify(CODEX_APPROVAL_POLICY)})`);
+    }
+    if (check.tools === 'readonly') {
+      if (policy.sandboxType !== CODEX_SANDBOX_FOR_PROFILE.readonly) {
+        reasons.push(`sandbox ${JSON.stringify(policy.sandboxType)} (want "read-only")`);
+      }
+    } else {
+      if (policy.sandboxType !== CODEX_SANDBOX_FOR_PROFILE.edit) {
+        reasons.push(`sandbox ${JSON.stringify(policy.sandboxType)} (want "workspace-write")`);
+      }
+      if (policy.networkAccess !== true) {
+        reasons.push(`network_access ${JSON.stringify(policy.networkAccess)} (want true)`);
+      }
+      const roots = policy.writableRoots;
+      if (!Array.isArray(roots)) {
+        reasons.push(`writable_roots ${JSON.stringify(roots)} (want workspace and agent-home coverage)`);
+      } else {
+        const strings = roots.filter((entry): entry is string => typeof entry === 'string');
+        if (!codexWritableRootsCover(strings, check.cwd)) {
+          reasons.push(`writable_roots ${JSON.stringify(roots)} (missing the workspace ${check.cwd})`);
+        }
+        if (!codexWritableRootsCover(strings, check.homeDir)) {
+          reasons.push(`writable_roots ${JSON.stringify(roots)} (missing the agent home ${check.homeDir})`);
+        }
+      }
+    }
+    if (reasons.length > 0) {
+      return {
+        ok: false,
+        remedy:
+          `Cannot resume codex thread ${check.threadId} with --tools ${check.tools}: its recorded effective policy ` +
+          `does not satisfy the profile (want ${want}): ${reasons.join('; ')}. ` +
+          `Resume it with the profile it started with, or start a new run with --tools ${check.tools}.`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 export type CodexAdapterDeps = {
   bin?: string;
   probe?: CodexProbe;
   spawn?: CodexSpawn;
   isGitRepo?: (cwd: string) => boolean;
+  /** Codex home for rollout verification; defaults to `resolveCodexHome()`. */
+  codexHome?: string;
+  /** Agent user's home for the edit writable-roots override; defaults to `os.homedir()`. */
+  homeDir?: string;
 };
 
 export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
@@ -450,6 +812,8 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
   const probe = deps.probe ?? defaultCodexProbe;
   const spawnFn = deps.spawn ?? defaultCodexSpawn;
   const isGitRepo = deps.isGitRepo ?? defaultIsGitRepo;
+  const codexHome = deps.codexHome ?? resolveCodexHome();
+  const homeDir = deps.homeDir ?? os.homedir();
 
   return {
     id: 'codex',
@@ -507,14 +871,48 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
       return { ok: true, trustOverride: codexTrustOverride(args.cwd, isGitRepo) };
     },
 
-    profileEnforcement() {
-      // NOT-669: unproven until the Codex mapping sibling lands — every
-      // launch and resume fails here with the remedy and nothing spawns.
-      return {
-        ok: false,
-        remedy:
-          'Worker profile enforcement is not implemented for --client codex yet (the shared WORKER_PROFILES mapping is still being verified). Re-run once the Codex mapping lands; no process was started.',
-      };
+    profileEnforcement(args: AdapterStartArgs) {
+      // NOT-672: the enforcement surface (`-c approval_policy`, the MCP
+      // table's approval/enabled-tools keys, the edit sandbox overrides,
+      // rollout `turn_context` records) is verified against
+      // CODEX_MIN_ENFORCEMENT_VERSION. Older or unparseable versions fail
+      // closed: an ignored `-c` key would silently drop enforcement.
+      const version = probe(bin, ['--version']);
+      const parsed =
+        version.code === 0 ? parseCodexVersion(`${version.stdout}\n${version.stderr}`) : null;
+      if (!parsed || !codexVersionSupportsEnforcement(parsed)) {
+        const [wantMajor, wantMinor, wantPatch] = CODEX_MIN_ENFORCEMENT_VERSION;
+        const found = parsed ? parsed.join('.') : 'unknown';
+        return {
+          ok: false,
+          remedy:
+            `codex ${wantMajor}.${wantMinor}.${wantPatch}+ is required for worker profile enforcement ` +
+            `(found ${found}): upgrade codex (it auto-updates; \`codex --version\` shows the release), then retry. ` +
+            'Refusing to start a run whose sandbox and approval policy cannot be proven.',
+        };
+      }
+      if (args.resumeId === undefined) {
+        return { ok: true };
+      }
+      // Defense in depth behind planStart: no resume without trusted
+      // same-profile provenance, and no trust without the thread's own
+      // recorded effective policy.
+      const origin = args.resumedFrom;
+      if (!origin || origin.sessionId !== args.resumeId || origin.tools !== args.tools) {
+        return {
+          ok: false,
+          remedy:
+            `Cannot resume codex thread ${args.resumeId}: no trusted Agent Deck run is known to have started it with ` +
+            `--tools ${args.tools}. Resume a sessionId printed by \`agent-deck run\`, or start a new run.`,
+        };
+      }
+      return verifyCodexResumePolicy({
+        codexHome,
+        threadId: args.resumeId,
+        tools: args.tools,
+        cwd: args.cwd,
+        homeDir,
+      });
     },
 
     async *start(args: AdapterStartArgs): AsyncGenerator<NormalizedEvent> {
@@ -524,10 +922,11 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
         tools: args.tools,
         ...(args.resumeId !== undefined ? { resumeId: args.resumeId } : {}),
         insideGitRepo,
+        workspaceRoot: args.cwd,
+        ...(args.tools === 'edit' ? { homeDir } : {}),
         ...(args.playbookPin ? { playbookPin: args.playbookPin } : {}),
         ...(args.launchDeckId ? { launchDeckId: args.launchDeckId } : {}),
         ...(args.runToken ? { runToken: args.runToken } : {}),
-        ...(args.playbookPin || args.launchDeckId || args.runToken ? { workspaceRoot: args.cwd } : {}),
       });
       // planStart rejects a resume without a matching resumedFrom.
       if (args.resumeId !== undefined && args.resumedFrom) {

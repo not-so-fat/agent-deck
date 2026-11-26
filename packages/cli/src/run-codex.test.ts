@@ -16,10 +16,20 @@ import type { McpLaunchPlan } from './mcp-launcher';
 import type { RunToolsProfile } from '@agent-deck/backend/agent-run';
 import {
   CODEX_NO_FINAL_MESSAGE,
+  WORKER_EDIT_ALLOW_MCP_TOOLS,
+  WORKER_EDIT_DENY_MCP_TOOLS,
+  WORKER_READONLY_ALLOW_MCP_TOOLS,
+  WORKER_READONLY_DENY_MCP_TOOLS,
   buildCodexArgv,
+  buildCodexMcpConfigOverride,
+  codexEnabledMcpTools,
   codexEventsFromLine,
+  codexVersionSupportsEnforcement,
   createCodexAdapter,
   createRunAdapter,
+  parseCodexVersion,
+  tomlStringArray,
+  verifyCodexResumePolicy,
   type CodexLineContext,
   type CodexProbe,
   type CodexSpawn,
@@ -147,18 +157,33 @@ function codexArgs(cwd: string, extra: string[] = []): string[] {
 }
 
 /**
- * Real runs carry the worker token in a `-c` per-run MCP override (NOT-669);
- * assert the argv around it (the endpoint comes from env, the token is random).
+ * Real runs carry the worker token in a `-c` per-run MCP override (NOT-669)
+ * plus the NOT-672 enforcement `-c` pairs; assert the argv around them (the
+ * endpoint comes from env, the token is random).
  */
-function expectRunArgv(argv: string[], resume: boolean, tail: string[]): void {
+function expectRunArgv(argv: string[], resume: boolean, tools: RunToolsProfile, tail: string[]): void {
   const head = resume ? ['exec', 'resume'] : ['exec'];
   expect(argv.slice(0, head.length)).toEqual(head);
   const rest = argv.slice(head.length);
   expect(rest[0]).toBe('-c');
-  expect(rest[1]).toMatch(
-    /^mcp_servers\.agent-deck=\{url="http:\/\/[^"]+\/mcp",http_headers=\{"x-agent-deck-workspace"="[^"]+","x-agent-deck-run-token"="[0-9a-f]{64}"\}\}$/,
-  );
-  expect(rest.slice(2)).toEqual(tail);
+  expect(rest[1]).toMatch(/^mcp_servers\.agent-deck=\{url="http:\/\/[^"]+\/mcp",http_headers=\{/);
+  expect(rest[1]).toContain('"x-agent-deck-run-token"');
+  expect(rest[1]).toMatch(/"x-agent-deck-run-token"="[0-9a-f]{64}"/);
+  expect(rest[1]).toContain('default_tools_approval_mode="approve"');
+  expect(rest[1]).toContain('enabled_tools=');
+  expect(rest[2]).toBe('-c');
+  expect(rest[3]).toBe('approval_policy="never"');
+  let tailStart = 4;
+  if (tools === 'edit') {
+    expect(rest[4]).toBe('-c');
+    expect(rest[5]).toBe('sandbox_workspace_write.network_access=true');
+    expect(rest[6]).toBe('-c');
+    expect(rest[7]).toMatch(/^sandbox_workspace_write\.writable_roots=\["[^"]+","[^"]+"\]/);
+    tailStart = 8;
+  } else {
+    expect(rest.slice(4).join(' ')).not.toContain('sandbox_workspace_write');
+  }
+  expect(rest.slice(tailStart)).toEqual(tail);
 }
 
 function readJsonLines(logPath: string): Array<Record<string, unknown>> {
@@ -423,18 +448,43 @@ describe('codex argv and tool profiles (NOT-404)', () => {
   const PROMPT = 'remember kiwi';
 
   it.each([
-    ['readonly', true, ['exec', '--json', '-s', 'read-only', '--', PROMPT]],
-    ['edit', true, ['exec', '--json', '-s', 'workspace-write', '--', PROMPT]],
-    ['readonly', false, ['exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '--', PROMPT]],
-    ['edit', false, ['exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', '--', PROMPT]],
-  ])('start argv for --tools %s (git repo: %s)', (tools, insideGitRepo, expected) => {
-    expect(
-      buildCodexArgv({
-        prompt: PROMPT,
-        tools: tools as RunToolsProfile,
-        insideGitRepo: insideGitRepo as boolean,
-      }),
-    ).toEqual(expected);
+    ['readonly', true],
+    ['edit', true],
+    ['readonly', false],
+    ['edit', false],
+  ])('start argv for --tools %s (git repo: %s)', (tools, insideGitRepo) => {
+    const profile = tools as RunToolsProfile;
+    const argv = buildCodexArgv({
+      prompt: PROMPT,
+      tools: profile,
+      insideGitRepo: insideGitRepo as boolean,
+      workspaceRoot: '/work/repo',
+      ...(profile === 'edit' ? { homeDir: '/home/agent' } : {}),
+    });
+    // -c pairs first (MCP table, approval policy, edit-only sandbox
+    // overrides), then the fixed flags, then the `--` terminator + prompt.
+    expect(argv[0]).toBe('exec');
+    expect(argv[1]).toBe('-c');
+    expect(argv[2]).toMatch(/^mcp_servers\.agent-deck=\{/);
+    expect(argv[3]).toBe('-c');
+    expect(argv[4]).toBe('approval_policy="never"');
+    const afterPolicy = profile === 'edit' ? argv.slice(9) : argv.slice(5);
+    if (profile === 'edit') {
+      expect(argv.slice(5, 9)).toEqual([
+        '-c',
+        'sandbox_workspace_write.network_access=true',
+        '-c',
+        'sandbox_workspace_write.writable_roots=["/work/repo","/home/agent"]',
+      ]);
+    }
+    expect(afterPolicy).toEqual([
+      '--json',
+      ...((insideGitRepo as boolean) ? [] : ['--skip-git-repo-check']),
+      '-s',
+      profile === 'edit' ? 'workspace-write' : 'read-only',
+      '--',
+      PROMPT,
+    ]);
   });
 
   it('readonly produces -s read-only on a real run', async () => {
@@ -445,7 +495,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     expect(await runRunCommand(codexArgs(cwd, ['--tools', 'readonly']), deps)).toBe(0);
 
     expect(deps.calls).toHaveLength(1);
-    expectRunArgv(deps.calls[0].argv, false, ['--json', '-s', 'read-only', '--', 'remember kiwi']);
+    expectRunArgv(deps.calls[0].argv, false, 'readonly', ['--json', '-s', 'read-only', '--', 'remember kiwi']);
     expect(deps.calls[0].cwd).toBe(cwd);
     expect(readMeta(logPathFromStdout())).toMatchObject({ tools: 'readonly' });
   });
@@ -457,7 +507,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
 
     expect(await runRunCommand(codexArgs(cwd, ['--tools', 'edit']), deps)).toBe(0);
 
-    expectRunArgv(deps.calls[0].argv, false, ['--json', '-s', 'workspace-write', '--', 'remember kiwi']);
+    expectRunArgv(deps.calls[0].argv, false, 'edit', ['--json', '-s', 'workspace-write', '--', 'remember kiwi']);
     expect(readMeta(logPathFromStdout())).toMatchObject({ tools: 'edit' });
   });
 
@@ -466,7 +516,14 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     for (const tools of profiles) {
       for (const insideGitRepo of [true, false]) {
         for (const resumeId of [undefined, 'thread_abc']) {
-          const argv = buildCodexArgv({ prompt: 'p', tools, insideGitRepo, ...(resumeId ? { resumeId } : {}) });
+          const argv = buildCodexArgv({
+            prompt: 'p',
+            tools,
+            insideGitRepo,
+            workspaceRoot: '/work/repo',
+            ...(tools === 'edit' ? { homeDir: '/home/agent' } : {}),
+            ...(resumeId ? { resumeId } : {}),
+          });
           expect(argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
           expect(argv.join('\n')).not.toMatch(/danger/i);
         }
@@ -483,7 +540,13 @@ describe('codex argv and tool profiles (NOT-404)', () => {
   ])('a dash-leading resume id %j is rejected before any argv is generated', (resumeId) => {
     // The builder throws, so no argv carrying the id-as-option can exist ...
     expect(() =>
-      buildCodexArgv({ prompt: 'p', tools: 'readonly', insideGitRepo: true, resumeId }),
+      buildCodexArgv({
+        prompt: 'p',
+        tools: 'readonly',
+        insideGitRepo: true,
+        resumeId,
+        workspaceRoot: '/work/repo',
+      }),
     ).toThrow(/never start with '-'/);
     // ... and planStart fails closed with the same remedy.
     const adapter = createCodexAdapter({
@@ -528,6 +591,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
         prompt,
         tools: 'readonly',
         insideGitRepo: true,
+        workspaceRoot: '/work/repo',
         ...(resumeId ? { resumeId } : {}),
       });
       // The prompt is the last argv element and every user-controlled token
@@ -541,7 +605,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
       // A prompt that spells a codex flag must never become a parsed option:
       // everything before `--` that looks like a flag is a known fixed flag.
       expect(argv.slice(0, sep).filter((arg) => arg.startsWith('-'))).toEqual(
-        resumeId ? ['--json'] : ['--json', '-s'],
+        resumeId ? ['-c', '-c', '--json'] : ['-c', '-c', '--json', '-s'],
       );
     }
   });
@@ -576,7 +640,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     const code = await runRunCommand(codexArgs(cwd, ['--resume', CODEX_THREAD_ID]), deps);
 
     expect(code).toBe(0);
-    expectRunArgv(deps.calls[0].argv, true, ['--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
+    expectRunArgv(deps.calls[0].argv, true, 'readonly', ['--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
     const lines = readJsonLines(logPathFromStdout());
     expect(lines.map((line) => line.t)).toEqual(['notice', 'text', 'result', 'end']);
     expect(String(lines[0]['message'])).toContain('keeps its original sandbox');
@@ -599,7 +663,7 @@ describe('codex argv and tool profiles (NOT-404)', () => {
     const deps = makeDeps(cwd, homeDir);
     expect(await runRunCommand(codexArgs(cwd, ['--resume', CODEX_THREAD_ID, '--tools', 'edit']), deps)).toBe(0);
 
-    expectRunArgv(deps.calls[0].argv, true, ['--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
+    expectRunArgv(deps.calls[0].argv, true, 'edit', ['--json', '--', CODEX_THREAD_ID, 'remember kiwi']);
     for (const call of [...first.calls, ...deps.calls]) {
       expect(call.argv).not.toContain('--dangerously-bypass-approvals-and-sandbox');
     }
@@ -849,5 +913,268 @@ describe('codex line parser edges (NOT-404)', () => {
       ok: true,
       trustOverride: false,
     });
+  });
+});
+
+describe('codex worker profile enforcement (NOT-672)', () => {
+  const VERSION_169: CodexProbe = (bin: string, argv: string[]) =>
+    argv[0] === '--version'
+      ? { code: 0, stdout: 'codex-cli 0.169.0\n', stderr: '' }
+      : { code: 0, stdout: '', stderr: 'Logged in using ChatGPT\n' };
+
+  function versionProbe(stdout: string, code = 0): CodexProbe {
+    return () => ({ code, stdout, stderr: '' });
+  }
+
+  function writeRollout(
+    codexHome: string,
+    threadId: string,
+    lines: unknown[],
+    stamp = '2026-11-25T00-00-00',
+  ): string {
+    const dir = path.join(codexHome, 'sessions', '2026', '11', '25');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `rollout-${stamp}-${threadId}.jsonl`);
+    fs.writeFileSync(file, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf8');
+    return file;
+  }
+
+  function rolloutLines(
+    threadId: string,
+    policies: Array<{ approval: unknown; sandbox: unknown }>,
+  ): unknown[] {
+    return [
+      { type: 'session_meta', payload: { session_id: threadId, id: threadId, cwd: '/work' } },
+      ...policies.map((policy, index) => ({
+        type: 'turn_context',
+        payload: {
+          turn_id: `turn-${index}`,
+          cwd: '/work',
+          approval_policy: policy.approval,
+          sandbox_policy: policy.sandbox,
+        },
+      })),
+    ];
+  }
+
+  it('parses codex versions and gates enforcement at 0.169.0', () => {
+    expect(parseCodexVersion('codex-cli 0.169.0\n')).toEqual([0, 169, 0]);
+    expect(parseCodexVersion('codex-cli 0.157.1\n')).toEqual([0, 157, 1]);
+    expect(parseCodexVersion('no version here')).toBeNull();
+    expect(codexVersionSupportsEnforcement([0, 169, 0])).toBe(true);
+    expect(codexVersionSupportsEnforcement([0, 170, 0])).toBe(true);
+    expect(codexVersionSupportsEnforcement([1, 0, 0])).toBe(true);
+    expect(codexVersionSupportsEnforcement([0, 168, 9])).toBe(false);
+    expect(codexVersionSupportsEnforcement([0, 157, 1])).toBe(false);
+  });
+
+  it('builds TOML string arrays with escaping', () => {
+    expect(tomlStringArray(['a', 'b'])).toBe('["a","b"]');
+    expect(tomlStringArray([])).toBe('[]');
+    expect(tomlStringArray(['/w"o\\rk'])).toBe('["/w\\"o\\\\rk"]');
+  });
+
+  it.each(['readonly', 'edit'] as const)(
+    'the per-run MCP table carries the %s allow set and approve-everything approvals',
+    (profile) => {
+      const table = buildCodexMcpConfigOverride(
+        { workspaceRoot: '/work/repo', tools: profile, runToken: 't'.repeat(64) },
+        { port: '1110', host: '127.0.0.1' },
+      );
+      const allow = profile === 'edit' ? WORKER_EDIT_ALLOW_MCP_TOOLS : WORKER_READONLY_ALLOW_MCP_TOOLS;
+      const deny = profile === 'edit' ? WORKER_EDIT_DENY_MCP_TOOLS : WORKER_READONLY_DENY_MCP_TOOLS;
+      expect(codexEnabledMcpTools(profile)).toEqual([...allow]);
+      expect(table).toContain(`enabled_tools=${tomlStringArray(allow)}`);
+      expect(table).toContain('default_tools_approval_mode="approve"');
+      for (const tool of allow) {
+        expect(table).toContain(`"${tool}"={approval_mode="approve"}`);
+      }
+      // No denied tool is enabled or approved: switch_deck/start_run never
+      // reach the worker, in either profile.
+      for (const tool of deny) {
+        expect(table).not.toContain(`"${tool}"`);
+      }
+      expect(table).toContain('"x-agent-deck-run-token"="');
+    },
+  );
+
+  it('an edit run without a home directory fails closed in the builder', () => {
+    expect(() =>
+      buildCodexArgv({ prompt: 'p', tools: 'edit', insideGitRepo: true, workspaceRoot: '/work' }),
+    ).toThrow(/without homeDir/);
+    // Readonly needs no home: no writable-roots override is built.
+    const argv = buildCodexArgv({
+      prompt: 'p',
+      tools: 'readonly',
+      insideGitRepo: true,
+      workspaceRoot: '/work',
+    });
+    expect(argv.join(' ')).not.toContain('writable_roots');
+  });
+
+  it('start passes enforcement on a verified codex and fails closed below it', () => {
+    const args = { cwd: '/work', prompt: 'p', tools: 'readonly' as const };
+    expect(
+      createCodexAdapter({ probe: VERSION_169, isGitRepo: () => true }).profileEnforcement(args),
+    ).toEqual({ ok: true });
+
+    for (const [label, stdout, code] of [
+      ['older release', 'codex-cli 0.157.1\n', 0],
+      ['unparseable', 'codex\n', 0],
+      ['failed probe', '', 1],
+    ] as const) {
+      const verdict = createCodexAdapter({
+        probe: versionProbe(stdout, code),
+        isGitRepo: () => true,
+      }).profileEnforcement(args);
+      expect(verdict.ok, label).toBe(false);
+      if (!verdict.ok) {
+        expect(verdict.remedy).toMatch(/0\.169\.0\+ is required for worker profile enforcement/);
+      }
+    }
+  });
+
+  it('resume verifies the recorded effective policy for both profiles', () => {
+    const codexHome = makeDir('agent-deck-codex-home-');
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const home = makeDir('agent-deck-agent-home-');
+    const readonlyThread = '019a0000-0000-7000-8000-00000000c0de';
+    const editThread = '019a0000-0000-7000-8000-00000000c0df';
+    writeRollout(codexHome, readonlyThread, rolloutLines(readonlyThread, [{ approval: 'never', sandbox: { type: 'read-only' } }]));
+    writeRollout(
+      codexHome,
+      editThread,
+      rolloutLines(editThread, [
+        {
+          approval: 'never',
+          sandbox: { type: 'workspace-write', writable_roots: [cwd, home], network_access: true },
+        },
+      ]),
+    );
+
+    const adapter = createCodexAdapter({ probe: VERSION_169, isGitRepo: () => true, codexHome, homeDir: home });
+    expect(
+      adapter.profileEnforcement({
+        cwd,
+        prompt: 'again',
+        tools: 'readonly',
+        resumeId: readonlyThread,
+        resumedFrom: { runId: 'run-1', sessionId: readonlyThread, tools: 'readonly' },
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      adapter.profileEnforcement({
+        cwd,
+        prompt: 'again',
+        tools: 'edit',
+        resumeId: editThread,
+        resumedFrom: { runId: 'run-2', sessionId: editThread, tools: 'edit' },
+      }),
+    ).toEqual({ ok: true });
+    // A parent root covers a nested workspace.
+    expect(
+      verifyCodexResumePolicy({ codexHome, threadId: editThread, tools: 'edit', cwd: path.join(cwd, 'sub'), homeDir: home }),
+    ).toEqual({ ok: true });
+  });
+
+  it('resume fails closed on a missing, unproven, or incompatible recording', () => {
+    const codexHome = makeDir('agent-deck-codex-home-');
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const home = makeDir('agent-deck-agent-home-');
+    const adapter = createCodexAdapter({ probe: VERSION_169, isGitRepo: () => true, codexHome, homeDir: home });
+    const resume = (threadId: string, tools: 'readonly' | 'edit', resumedFrom?: { runId: string; sessionId: string; tools: 'readonly' | 'edit' }) =>
+      adapter.profileEnforcement({
+        cwd,
+        prompt: 'again',
+        tools,
+        resumeId: threadId,
+        ...(resumedFrom ? { resumedFrom } : {}),
+      });
+
+    // No rollout at all: the sandbox cannot be verified.
+    const missing = resume('019a0000-0000-7000-8000-00000000c1de', 'readonly', {
+      runId: 'run-1',
+      sessionId: '019a0000-0000-7000-8000-00000000c1de',
+      tools: 'readonly',
+    });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.remedy).toMatch(/effective sandbox cannot be verified/);
+    }
+
+    // A filename match alone proves nothing: the content names another thread.
+    const spoofed = '019a0000-0000-7000-8000-00000000c2de';
+    writeRollout(codexHome, spoofed, rolloutLines('019a0000-0000-7000-8000-00000000ffff', [{ approval: 'never', sandbox: { type: 'read-only' } }]));
+    const unproven = resume(spoofed, 'readonly', { runId: 'run-1', sessionId: spoofed, tools: 'readonly' });
+    expect(unproven.ok).toBe(false);
+    if (!unproven.ok) {
+      expect(unproven.remedy).toMatch(/effective sandbox cannot be verified/);
+    }
+
+    // Sandbox mismatch both directions.
+    const writableThread = '019a0000-0000-7000-8000-00000000c3de';
+    writeRollout(
+      codexHome,
+      writableThread,
+      rolloutLines(writableThread, [
+        { approval: 'never', sandbox: { type: 'workspace-write', writable_roots: [cwd, home], network_access: true } },
+      ]),
+    );
+    const mislabeled = resume(writableThread, 'readonly', { runId: 'run-1', sessionId: writableThread, tools: 'readonly' });
+    expect(mislabeled.ok).toBe(false);
+    if (!mislabeled.ok) {
+      expect(mislabeled.remedy).toMatch(/does not satisfy the profile/);
+      expect(mislabeled.remedy).toMatch(/sandbox "workspace-write" \(want "read-only"\)/);
+    }
+
+    const readOnlyThread = '019a0000-0000-7000-8000-00000000c4de';
+    writeRollout(codexHome, readOnlyThread, rolloutLines(readOnlyThread, [{ approval: 'never', sandbox: { type: 'read-only' } }]));
+    const escalated = resume(readOnlyThread, 'edit', { runId: 'run-1', sessionId: readOnlyThread, tools: 'edit' });
+    expect(escalated.ok).toBe(false);
+    if (!escalated.ok) {
+      expect(escalated.remedy).toMatch(/does not satisfy the profile/);
+      expect(escalated.remedy).toMatch(/sandbox "read-only" \(want "workspace-write"\)/);
+    }
+
+    // Edit without network access or without home coverage: incompatible.
+    const noNetwork = '019a0000-0000-7000-8000-00000000c5de';
+    writeRollout(
+      codexHome,
+      noNetwork,
+      rolloutLines(noNetwork, [{ approval: 'never', sandbox: { type: 'workspace-write', writable_roots: [cwd, home] } }]),
+    );
+    const networkVerdict = resume(noNetwork, 'edit', { runId: 'run-1', sessionId: noNetwork, tools: 'edit' });
+    expect(networkVerdict.ok).toBe(false);
+    if (!networkVerdict.ok) {
+      expect(networkVerdict.remedy).toMatch(/network_access .* \(want true\)/);
+    }
+
+    const noHome = '019a0000-0000-7000-8000-00000000c6de';
+    writeRollout(
+      codexHome,
+      noHome,
+      rolloutLines(noHome, [{ approval: 'never', sandbox: { type: 'workspace-write', writable_roots: [cwd], network_access: true } }]),
+    );
+    const homeVerdict = resume(noHome, 'edit', { runId: 'run-1', sessionId: noHome, tools: 'edit' });
+    expect(homeVerdict.ok).toBe(false);
+    if (!homeVerdict.ok) {
+      expect(homeVerdict.remedy).toMatch(/missing the agent home/);
+    }
+
+    // An approval-taking thread is never resumed headless.
+    const asking = '019a0000-0000-7000-8000-00000000c7de';
+    writeRollout(codexHome, asking, rolloutLines(asking, [{ approval: 'on-request', sandbox: { type: 'read-only' } }]));
+    const askingVerdict = resume(asking, 'readonly', { runId: 'run-1', sessionId: asking, tools: 'readonly' });
+    expect(askingVerdict.ok).toBe(false);
+    if (!askingVerdict.ok) {
+      expect(askingVerdict.remedy).toMatch(/approval_policy "on-request" \(want "never"\)/);
+    }
+
+    // Defense in depth behind planStart: no provenance, no resume.
+    const unproven2 = resume(readOnlyThread, 'readonly');
+    expect(unproven2.ok).toBe(false);
+    if (!unproven2.ok) {
+      expect(unproven2.remedy).toMatch(/no trusted Agent Deck run is known to have started it/);
+    }
   });
 });
