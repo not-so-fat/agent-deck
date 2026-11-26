@@ -293,13 +293,26 @@ function mcpServerNames(documentText: string): string[] | null {
  * isolated to the run entry. A project `agent-deck` entry is allowed (the
  * worker home's user entry wins by precedence). Unparseable project files
  * fail closed too — an unreadable config cannot be proven isolated.
+ *
+ * `realHome` (when given) excludes that home's own `.cursor/mcp.json` from
+ * the walk: it is the user config, shadowed by the worker home, so its
+ * servers can never load. Without the exclusion every user with a foreign
+ * global MCP server would fail the gate. Edge case: a run whose cwd IS the
+ * home directory would still load that file as the project entry — such
+ * runs should use a workspace directory below the home.
  */
 export function findCursorForeignProjectServers(
   cwd: string,
   readFile: CursorFileReader,
+  realHome?: string,
 ): Array<{ configPath: string; server: string }> {
   const foreign: Array<{ configPath: string; server: string }> = [];
+  const excluded =
+    realHome === undefined ? null : path.join(path.resolve(realHome), '.cursor', 'mcp.json');
   for (const configPath of cursorProjectMcpPaths(cwd)) {
+    if (excluded !== null && configPath === excluded) {
+      continue;
+    }
     const text = readFile(configPath);
     if (text === null) {
       continue;
@@ -910,8 +923,9 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
         };
       }
       // 2. MCP preapproval must isolate to the run entry: a project config
-      // contributing any foreign server would be approved too.
-      const foreign = findCursorForeignProjectServers(args.cwd, readFile);
+      // contributing any foreign server would be approved too. The real
+      // home's own config is excluded — the worker home shadows it.
+      const foreign = findCursorForeignProjectServers(args.cwd, readFile, homedir());
       if (foreign.length > 0) {
         const first = foreign[0];
         return {

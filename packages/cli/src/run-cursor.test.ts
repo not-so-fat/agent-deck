@@ -909,6 +909,24 @@ describe('cursor worker profile enforcement gate (NOT-671)', () => {
     ]);
   });
 
+  it('the real home user config is excluded: the worker home shadows it', () => {
+    const home = makeDir('agent-deck-cursor-realhome-');
+    const cwd = path.join(home, 'work', 'repo');
+    fs.mkdirSync(cwd, { recursive: true });
+    const readFile: CursorFileReader = (filePath) => {
+      if (filePath === path.join(home, '.cursor', 'mcp.json')) {
+        return JSON.stringify({ mcpServers: { other: {}, 'agent-deck': {} } });
+      }
+      return null;
+    };
+    // Without the home exclusion the global server would fail the gate;
+    // with it the walk finds nothing — the worker home shadows that file.
+    expect(findCursorForeignProjectServers(cwd, readFile)).toEqual([
+      { configPath: path.join(home, '.cursor', 'mcp.json'), server: 'other' },
+    ]);
+    expect(findCursorForeignProjectServers(cwd, readFile, home)).toEqual([]);
+  });
+
   it('an agent-deck-only project entry still runs (user entry wins)', async () => {
     const cwd = makeDir('agent-deck-cursor-cwd-');
     const homeDir = makeDir('agent-deck-cursor-home-');
