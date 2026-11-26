@@ -6,9 +6,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   appendRunDenial,
+  findLiveWorkerRunsForWorkspace,
+  findRunMetaByTokenHash,
+  hashRunToken,
+  mintRunToken,
   readRunMeta,
+  runPaths,
+  runTokenPointerPath,
   withRunMetaLock,
   writeRunMeta,
+  writeRunTokenPointer,
   type RunDenial,
   type RunMeta,
 } from './index';
@@ -160,4 +167,95 @@ describe('run record lock (NOT-669 repair)', () => {
     expect(fs.existsSync(`${metaPath}.lock`)).toBe(false);
     expect(fs.readdirSync(dir).filter((name) => name.includes('.tmp-'))).toEqual([]);
   }, 120_000);
+});
+
+describe('worker workspace hold (NOT-669 repair)', () => {
+  function writeLiveRun(
+    home: string,
+    runId: string,
+    cwd: string,
+    overrides: Partial<RunMeta> = {},
+  ): { metaPath: string; token: string } {
+    const token = mintRunToken();
+    const { metaPath } = runPaths(home, runId);
+    fs.mkdirSync(path.dirname(metaPath), { recursive: true });
+    const meta: RunMeta = {
+      runId,
+      deck: 'deck-1',
+      client: 'codex',
+      tools: 'edit',
+      cwd,
+      canonicalCwd: fs.realpathSync(cwd),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      state: 'running',
+      runTokenHash: hashRunToken(token),
+      ...overrides,
+    };
+    writeRunMeta(metaPath, meta);
+    writeRunTokenPointer(home, hashRunToken(token), runId, metaPath);
+    return { metaPath, token };
+  }
+
+  it('finds the live run holding a workspace, by pointer and by scan', () => {
+    const home = makeDir('ad-hold-home-');
+    const held = makeDir('ad-hold-wt-');
+    const other = makeDir('ad-hold-other-');
+    const { metaPath, token } = writeLiveRun(home, 'run-hold-1', held);
+
+    const found = findLiveWorkerRunsForWorkspace(home, held);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ runId: 'run-hold-1', metaPath, client: 'codex', profile: 'edit' });
+    expect(findLiveWorkerRunsForWorkspace(home, other)).toEqual([]);
+
+    // The token resolves to the same record.
+    const resolved = findRunMetaByTokenHash(home, hashRunToken(token));
+    expect(resolved?.metaPath).toBe(metaPath);
+  });
+
+  it('covers custom-log runs through the pointer', () => {
+    const home = makeDir('ad-hold-home-');
+    const held = makeDir('ad-hold-wt-');
+    const customDir = makeDir('ad-hold-custom-');
+    const token = mintRunToken();
+    const metaPath = path.join(customDir, 'meta.json');
+    writeRunMeta(metaPath, {
+      runId: 'run-custom-1',
+      deck: 'deck-1',
+      client: 'claude',
+      tools: 'readonly',
+      cwd: held,
+      canonicalCwd: fs.realpathSync(held),
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      state: 'running',
+      runTokenHash: hashRunToken(token),
+    });
+    writeRunTokenPointer(home, hashRunToken(token), 'run-custom-1', metaPath);
+
+    const found = findLiveWorkerRunsForWorkspace(home, held);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ runId: 'run-custom-1', profile: 'readonly' });
+    expect(findRunMetaByTokenHash(home, hashRunToken(token))?.metaPath).toBe(metaPath);
+    expect(fs.readFileSync(runTokenPointerPath(home, hashRunToken(token)), 'utf8')).not.toContain(token);
+  });
+
+  it('ignores terminal runs, dead owners, and tokenless records', () => {
+    const home = makeDir('ad-hold-home-');
+    const held = makeDir('ad-hold-wt-');
+    writeLiveRun(home, 'run-ended', held, { state: 'ended' });
+    writeLiveRun(home, 'run-dead', held, { pid: 2147483647 });
+    const tokenless = writeLiveRun(home, 'run-untokened', held);
+    const read = readRunMeta(tokenless.metaPath);
+    if (!read.ok) throw new Error(read.reason);
+    delete read.meta.runTokenHash;
+    writeRunMeta(tokenless.metaPath, read.meta);
+
+    expect(findLiveWorkerRunsForWorkspace(home, held)).toEqual([]);
+  });
+
+  it('never throws on a missing or corrupt store', () => {
+    expect(findLiveWorkerRunsForWorkspace(makeDir('ad-hold-empty-'), makeDir('ad-hold-wt-'))).toEqual([]);
+    expect(findLiveWorkerRunsForWorkspace('/nonexistent-home-xyz', '/tmp')).toEqual([]);
+  });
 });

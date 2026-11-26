@@ -16,7 +16,11 @@ import {
 import { validateAssignmentWorkspace } from '../deck-assignment-validation';
 import type { StubBindSyncResult } from '../playbooks/stub-sync';
 import { readUseManifest } from '../playbooks/stub-sync';
-import { resolveBindingActiveSource, resolveDeckBindingSource } from '../mcp-session-binding';
+import {
+  resolveBindingActiveSource,
+  resolveDeckBindingSource,
+  type WorkerSessionIdentity,
+} from '../mcp-session-binding';
 import { executeListCollection, executeManageDeckCard } from './deck-card-ops';
 import { McpToolProfile, profileIncludes } from './profile';
 import { SWITCH_BEFORE_BIND_MESSAGE, mcpPolicyError, mcpPolicyErrorWithMessage, requireMcpAdmin, requireMcpDashboard } from './policy';
@@ -89,7 +93,15 @@ export type McpToolHost = {
     getUnassignedMissingDeckName?(sessionId: string): string | undefined;
     /** NOT-606: why the user default deck did not apply, if this unassigned session holds one. */
     getUnassignedDefaultDeckIssue?(sessionId: string): UnassignedDefaultDeckIssue | undefined;
+    /** NOT-669 repair: worker identity of this session, if it is a worker session. */
+    getWorkerSession?(sessionId: string): WorkerSessionIdentity | undefined;
   };
+  /**
+   * NOT-669 repair: live worker runs holding a workspace (empty when none).
+   * Absent in unit-test hosts that predate worker enforcement — those fail
+   * open and bind as before.
+   */
+  findHoldingWorkerRuns?(workspaceRoot: string): Array<{ runId: string }>;
   /**
    * NOT-597: best-effort promotion of an unassigned session whose
    * assignment was approved elsewhere (dashboard/menubar). Returns true
@@ -677,6 +689,28 @@ function registerRuntimeTools(host: McpToolHost): void {
       // folder assignment. Deck changes go through switch_deck + human approval.
       if (current.deckId && current.deckId !== deck.id) {
         return mcpPolicyError('SWITCH_APPROVAL_REQUIRED');
+      }
+      // NOT-669 repair: a non-worker session cannot bind into a workspace
+      // holding a live worker run — that is the stale-recovery/default-deck
+      // way around the initialize-time hold. A session already bound to the
+      // same workspace and deck re-binds as before (its bind predates the
+      // run), and worker sessions are unaffected (their token bound them).
+      if (!host.sessionBinding.getWorkerSession?.(sessionId)) {
+        const holding = host.findHoldingWorkerRuns?.(workspaceRoot) ?? [];
+        if (holding.length > 0) {
+          const alreadyHere =
+            current.workspaceRoot !== undefined &&
+            path.resolve(current.workspaceRoot) === path.resolve(workspaceRoot) &&
+            current.deckId === deck.id;
+          if (!alreadyHere) {
+            return host.toolError(
+              new Error(
+                `WORKER_RUN_ACTIVE: worker run ${holding.map((run) => run.runId).join(', ')} is live in ${workspaceRoot}; ` +
+                  'new sessions bind after it ends. Connect with its x-agent-deck-run-token header instead.',
+              ),
+            );
+          }
+        }
       }
       let bindResult: Record<string, unknown> | undefined;
 

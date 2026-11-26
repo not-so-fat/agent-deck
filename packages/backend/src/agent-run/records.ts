@@ -351,6 +351,14 @@ export function recordRunDenial(meta: RunMeta, denial: RunDenial): void {
 }
 
 /**
+ * NOT-669: root of the token→record pointer index. A sibling of the runs
+ * root (never inside it) so raw `runs/` scans keep seeing run dirs only.
+ */
+export function runTokenPointerRoot(homeDir: string): string {
+  return path.join(homeDir, 'runs-by-token');
+}
+
+/**
  * NOT-669: where the token→record pointer for `tokenHash` lives. Every
  * launch/resume writes one — including runs with a custom `--log` path,
  * whose records live outside the runs root and are otherwise undiscoverable
@@ -358,7 +366,7 @@ export function recordRunDenial(meta: RunMeta, denial: RunDenial): void {
  * The pointer names the meta path; the token itself never appears.
  */
 export function runTokenPointerPath(homeDir: string, tokenHash: string): string {
-  return path.join(runsRoot(homeDir), 'by-token', `${tokenHash}.json`);
+  return path.join(runTokenPointerRoot(homeDir), `${tokenHash}.json`);
 }
 
 /**
@@ -411,9 +419,6 @@ export function findRunMetaByTokenHash(
     return null;
   }
   for (const runId of entries) {
-    if (runId === 'by-token') {
-      continue;
-    }
     const metaPath = runPaths(homeDir, runId).metaPath;
     const read = readRunMeta(metaPath);
     if (read.ok && read.meta.runTokenHash === tokenHash) {
@@ -421,6 +426,104 @@ export function findRunMetaByTokenHash(
     }
   }
   return null;
+}
+
+/**
+ * NOT-669 repair: a live worker run holding a workspace — what the MCP
+ * server refuses new tokenless binds against, so a worker cannot reconnect
+ * without its token and become a leader session.
+ */
+export type LiveWorkerRunRef = {
+  runId: string;
+  metaPath: string;
+  client: RunClient;
+  profile: RunToolsProfile;
+};
+
+/** Best-effort canonical form for workspace comparison (symlinks resolved). */
+function canonicalWorkspace(candidate: string): string | null {
+  try {
+    return fs.realpathSync(candidate);
+  } catch {
+    try {
+      return path.resolve(candidate);
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * NOT-669 repair: live worker runs whose working directory is
+ * `workspaceRoot`. Live means a `running` record with a worker token whose
+ * owner process is still alive (a crashed run holds nothing). Token
+ * pointers are scanned first so custom-`--log` runs are covered too; the
+ * default-records scan covers records written before pointers existed.
+ * Never throws: store failures read as "no live runs" (fail open for
+ * leaders; workers still authenticate through their token).
+ */
+export function findLiveWorkerRunsForWorkspace(
+  homeDir: string,
+  workspaceRoot: string,
+): LiveWorkerRunRef[] {
+  const held = canonicalWorkspace(workspaceRoot);
+  if (!held) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const live: LiveWorkerRunRef[] = [];
+  const consider = (metaPath: string): void => {
+    let read: MetaRead;
+    try {
+      read = readRunMeta(metaPath);
+    } catch {
+      return;
+    }
+    if (!read.ok) {
+      return;
+    }
+    const meta = read.meta;
+    if (meta.state !== 'running' || !meta.runTokenHash) {
+      return;
+    }
+    if (!isRunPidAlive(meta.pid, meta.startedAt)) {
+      return;
+    }
+    const cwd = meta.canonicalCwd ?? canonicalWorkspace(meta.cwd);
+    if (cwd !== held || seen.has(meta.runId)) {
+      return;
+    }
+    seen.add(meta.runId);
+    live.push({ runId: meta.runId, metaPath, client: meta.client, profile: meta.tools });
+  };
+  try {
+    const pointerDir = runTokenPointerRoot(homeDir);
+    for (const name of fs.readdirSync(pointerDir)) {
+      if (!name.endsWith('.json')) {
+        continue;
+      }
+      try {
+        const pointer = JSON.parse(fs.readFileSync(path.join(pointerDir, name), 'utf8')) as {
+          metaPath?: unknown;
+        };
+        if (typeof pointer.metaPath === 'string' && pointer.metaPath) {
+          consider(pointer.metaPath);
+        }
+      } catch {
+        // Corrupt pointer: the default-records scan below still covers it.
+      }
+    }
+  } catch {
+    // No pointers yet.
+  }
+  try {
+    for (const runId of fs.readdirSync(runsRoot(homeDir))) {
+      consider(runPaths(homeDir, runId).metaPath);
+    }
+  } catch {
+    // No runs yet.
+  }
+  return live;
 }
 
 const RUN_META_STATES: readonly RunMetaState[] = ['running', 'ended', 'error', 'canceled', 'died'];
