@@ -236,14 +236,14 @@ function sleepSyncMs(ms: number): void {
   }
 }
 
-export function withRunMetaLock<T>(metaPath: string, fn: () => T): T {
+export function withRunMetaLock<T>(metaPath: string, fn: () => T, waitMs: number = RUN_META_LOCK_WAIT_MS): T {
   const lockDir = `${metaPath}.lock`;
   if (RUN_META_LOCKS_HELD.has(lockDir)) {
     return fn();
   }
-  const deadline = Date.now() + RUN_META_LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   let acquired = false;
-  while (Date.now() < deadline) {
+  for (let first = true; first || Date.now() < deadline; first = false) {
     try {
       fs.mkdirSync(lockDir);
       acquired = true;
@@ -261,6 +261,9 @@ export function withRunMetaLock<T>(metaPath: string, fn: () => T): T {
         }
       } catch {
         // The lock vanished between mkdir and stat; retry.
+      }
+      if (Date.now() + RUN_META_LOCK_POLL_MS >= deadline) {
+        break;
       }
       sleepSyncMs(RUN_META_LOCK_POLL_MS);
     }
@@ -306,8 +309,22 @@ export function writeRunMeta(metaPath: string, meta: RunMeta): void {
     try {
       const disk = readRunMeta(metaPath);
       if (disk.ok && disk.meta.denials?.length) {
-        const known = new Set((meta.denials ?? []).map((denial) => JSON.stringify(denial)));
-        const missing = disk.meta.denials.filter((denial) => !known.has(JSON.stringify(denial)));
+        // Multiset merge: equal-valued denials are distinct calls, so keep
+        // as many copies of each as either side holds (never collapse them).
+        const memoryCounts = new Map<string, number>();
+        for (const denial of meta.denials ?? []) {
+          const key = JSON.stringify(denial);
+          memoryCounts.set(key, (memoryCounts.get(key) ?? 0) + 1);
+        }
+        const missing = disk.meta.denials.filter((denial) => {
+          const key = JSON.stringify(denial);
+          const left = memoryCounts.get(key) ?? 0;
+          if (left > 0) {
+            memoryCounts.set(key, left - 1);
+            return false;
+          }
+          return true;
+        });
         if (missing.length > 0) {
           merged = [...(meta.denials ?? []), ...missing].sort((a, b) => {
             const left = typeof a.at === 'string' ? a.at : '';
@@ -340,42 +357,59 @@ export function appendRunLogLine(logPath: string, line: RunLogLine): void {
  *
  * The read, the append, and the write all run under the record lock, so a
  * concurrent service write in another process cannot land between them and
- * lose the entry — the post-write read verifies the entry landed durably,
- * and re-recording the same denial is a no-op. One retry: a waiter that
- * starts right after a holder crashes can time out while the abandoned lock
- * is still too fresh to break as stale; the second attempt then breaks it
- * and lands the denial. The fingerprint check makes the retry idempotent.
+ * lose the entry. One retry after a lock timeout (the critical section never
+ * ran, so nothing can double-append). The MCP server does not use this
+ * blocking form on the response path — see {@link tryAppendRunDenial}.
  */
 export function appendRunDenial(metaPath: string, denial: RunDenial): boolean {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return withRunMetaLock(metaPath, () => {
-        const read = readRunMeta(metaPath);
-        if (!read.ok) {
-          return false;
-        }
-        const fingerprint = JSON.stringify(denial);
-        if ((read.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)) {
-          return true;
-        }
-        read.meta.denials = [...(read.meta.denials ?? []), denial];
-        writeRunMeta(metaPath, read.meta);
-        const verify = readRunMeta(metaPath);
-        return (
-          verify.ok && (verify.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)
-        );
-      });
-    } catch (error) {
-      if (error instanceof RunMetaLockTimeoutError && attempt === 0) {
-        continue;
-      }
-      if (error instanceof RunMetaLockTimeoutError) {
-        return false;
-      }
-      throw error;
+    const outcome = tryAppendRunDenial(metaPath, denial, RUN_META_LOCK_WAIT_MS);
+    if (outcome !== 'busy') {
+      return outcome === 'recorded';
     }
   }
   return false;
+}
+
+/**
+ * NOT-669 repair round 4: one append attempt with a caller-chosen lock wait
+ * (`0` = a single non-blocking try). Under the lock the denial is appended
+ * exactly once — no fingerprint de-duplication, because equal-valued
+ * denials are distinct denied calls — at its chronological position, so
+ * `denials` stays oldest first even when a deferred append lands late.
+ * `busy` means the critical section never ran (nothing was written), so a
+ * retry cannot double-append.
+ */
+export function tryAppendRunDenial(
+  metaPath: string,
+  denial: RunDenial,
+  waitMs: number,
+): 'recorded' | 'missing' | 'busy' {
+  try {
+    return withRunMetaLock(
+      metaPath,
+      () => {
+        const read = readRunMeta(metaPath);
+        if (!read.ok) {
+          return 'missing' as const;
+        }
+        const existing = read.meta.denials ?? [];
+        let index = existing.length;
+        while (index > 0 && String(existing[index - 1].at ?? '') > String(denial.at ?? '')) {
+          index -= 1;
+        }
+        read.meta.denials = [...existing.slice(0, index), denial, ...existing.slice(index)];
+        writeRunMeta(metaPath, read.meta);
+        return 'recorded' as const;
+      },
+      waitMs,
+    );
+  } catch (error) {
+    if (error instanceof RunMetaLockTimeoutError) {
+      return 'busy';
+    }
+    throw error;
+  }
 }
 
 /**

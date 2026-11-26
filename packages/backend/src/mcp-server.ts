@@ -33,7 +33,8 @@ import {
 import { BackendApiError, parseBackendErrorBody } from './lib/backend-api-error';
 import { formatMcpToolError } from './mcp-tools/policy';
 import {
-  appendRunDenial,
+  tryAppendRunDenial,
+  type RunDenial,
   findRunMetaByTokenHash,
   hashRunToken,
   isRunTokenFormat,
@@ -160,6 +161,10 @@ function readHostSessionIdHeader(req: Request): string | undefined {
   const value = typeof raw === 'string' ? raw.trim() : '';
   return value || undefined;
 }
+
+/** NOT-669: deferred denial recording — retry cadence and budget (~15 s, past the 10 s stale-lock window). */
+const WORKER_DENIAL_RECORD_RETRY_MS = 50;
+const WORKER_DENIAL_RECORD_MAX_ATTEMPTS = 300;
 
 /**
  * NOT-669: the run's worker token, when the request carries one. Returned
@@ -916,23 +921,44 @@ export class AgentDeckMCPServer {
    * identity carries.
    */
   private recordWorkerDenial(worker: WorkerSessionIdentity, tool: string, reason: string): void {
+    const denial = {
+      at: new Date().toISOString(),
+      client: worker.client,
+      profile: worker.profile,
+      source: 'agent-deck' as const,
+      kind: 'mcp_tool' as const,
+      target: tool,
+      reason,
+    };
+    this.tryRecordWorkerDenial(worker, denial, 0);
+  }
+
+  /**
+   * NOT-669 repair round 4: record off the response-critical path. Each
+   * attempt is a single non-blocking lock try; while another writer holds
+   * the record lock, retries run on timers (the event loop and the denied
+   * response are never blocked) until the stale-lock window has passed.
+   */
+  private tryRecordWorkerDenial(worker: WorkerSessionIdentity, denial: RunDenial, attempt: number): void {
+    let outcome: 'recorded' | 'missing' | 'busy';
     try {
-      const recorded = appendRunDenial(worker.metaPath, {
-        at: new Date().toISOString(),
-        client: worker.client,
-        profile: worker.profile,
-        source: 'agent-deck',
-        kind: 'mcp_tool',
-        target: tool,
-        reason,
-      });
-      if (!recorded) {
-        console.warn(
-          `[agent-deck] Worker denial for tool "${tool}" on run "${worker.runId}" was enforced but not recorded: the run record is missing or stayed locked.`,
-        );
-      }
+      outcome = tryAppendRunDenial(worker.metaPath, denial, 0);
     } catch (error) {
       console.warn('[agent-deck] Failed to record a worker denial:', error instanceof Error ? error.message : error);
+      return;
+    }
+    if (outcome === 'busy' && attempt < WORKER_DENIAL_RECORD_MAX_ATTEMPTS) {
+      const timer = setTimeout(
+        () => this.tryRecordWorkerDenial(worker, denial, attempt + 1),
+        WORKER_DENIAL_RECORD_RETRY_MS,
+      );
+      timer.unref?.();
+      return;
+    }
+    if (outcome !== 'recorded') {
+      console.warn(
+        `[agent-deck] Worker denial for tool "${denial.target}" on run "${worker.runId}" was enforced but not recorded: the run record is ${outcome === 'missing' ? 'missing' : 'still locked'}.`,
+      );
     }
   }
 

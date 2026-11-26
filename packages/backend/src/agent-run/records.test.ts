@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   appendRunDenial,
+  tryAppendRunDenial,
   readRunMeta,
   RunMetaLockTimeoutError,
   withRunMetaLock,
@@ -232,4 +233,54 @@ describe('run record lock (NOT-669 repair)', () => {
     expect(fs.existsSync(`${metaPath}.lock`)).toBe(false);
     expect(fs.readdirSync(dir).filter((name) => name.includes('.tmp-'))).toEqual([]);
   }, 120_000);
+});
+
+describe('denial recording (NOT-669 repair round 4)', () => {
+  it('records equal-valued denials once per call, never collapsing them', () => {
+    const metaPath = path.join(makeDir('ad-dup-'), 'meta.json');
+    writeRunMeta(metaPath, testMeta('run-dup'));
+    const same = denial('switch_deck', '2026-11-26T00:00:00.000Z');
+    expect(appendRunDenial(metaPath, { ...same })).toBe(true);
+    expect(appendRunDenial(metaPath, { ...same })).toBe(true);
+    const read = readRunMeta(metaPath);
+    expect(read.ok && read.meta.denials).toEqual([same, same]);
+  });
+
+  it('a service write keeps every disk copy of equal-valued denials (multiset merge)', () => {
+    const metaPath = path.join(makeDir('ad-multi-'), 'meta.json');
+    const meta = testMeta('run-multi');
+    const same = denial('start_run', '2026-11-26T00:00:01.000Z');
+    meta.denials = [same];
+    writeRunMeta(metaPath, meta);
+    expect(appendRunDenial(metaPath, { ...same })).toBe(true);
+    // The service still holds its single in-memory copy and writes again.
+    meta.state = 'ended';
+    writeRunMeta(metaPath, meta);
+    const read = readRunMeta(metaPath);
+    expect(read.ok && read.meta.denials).toEqual([same, same]);
+  });
+
+  it('a late append lands at its chronological position', () => {
+    const metaPath = path.join(makeDir('ad-order-'), 'meta.json');
+    writeRunMeta(metaPath, testMeta('run-order'));
+    expect(appendRunDenial(metaPath, denial('later', '2026-11-26T00:00:02.000Z'))).toBe(true);
+    expect(appendRunDenial(metaPath, denial('earlier', '2026-11-26T00:00:01.000Z'))).toBe(true);
+    const read = readRunMeta(metaPath);
+    expect(read.ok && read.meta.denials?.map((entry) => entry.target)).toEqual(['earlier', 'later']);
+  });
+
+  it('a non-blocking attempt on a held lock returns busy at once and writes nothing', () => {
+    const metaPath = path.join(makeDir('ad-busy-'), 'meta.json');
+    writeRunMeta(metaPath, testMeta('run-busy'));
+    fs.mkdirSync(`${metaPath}.lock`);
+    const started = Date.now();
+    expect(tryAppendRunDenial(metaPath, denial('busy'), 0)).toBe('busy');
+    expect(Date.now() - started).toBeLessThan(200);
+    const before = readRunMeta(metaPath);
+    expect(before.ok && (before.meta.denials ?? [])).toEqual([]);
+    fs.rmdirSync(`${metaPath}.lock`);
+    expect(tryAppendRunDenial(metaPath, denial('busy'), 0)).toBe('recorded');
+    const after = readRunMeta(metaPath);
+    expect(after.ok && after.meta.denials?.map((entry) => entry.target)).toEqual(['busy']);
+  });
 });
