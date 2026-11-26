@@ -55,6 +55,7 @@ import {
   runPaths,
   runsRoot,
   writeRunMeta,
+  writeRunTokenPointer,
   type CollectedStatus,
   type LogRead,
   type RunLogLine,
@@ -572,17 +573,14 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
 
     const canonical = canonicalCwd(request.cwd);
-    // NOT-669: a fresh unguessable worker token for this launch/resume — but
-    // only when the record lives at its default path. A custom `--log` path
-    // is not discoverable (as with resume provenance), so a token minted for
-    // it could never resolve server-side and would only fail the worker's
-    // MCP session; those runs carry no token and keep their existing session
-    // behavior. The record keeps only the hash; the plaintext travels to the
-    // adapter only.
-    const runToken = launch.logPath === undefined ? mintRunToken() : undefined;
-    if (runToken) {
-      startArgs.runToken = runToken;
-    }
+    // NOT-669: a fresh unguessable worker token for this launch/resume —
+    // always, including custom-`--log` runs (unlike resume provenance, which
+    // cannot discover those records, worker enforcement must reach every
+    // headless run, so the token pointer below makes custom locations
+    // resolvable). The record keeps only the hash; the plaintext travels to
+    // the adapter only.
+    const runToken = mintRunToken();
+    startArgs.runToken = runToken;
     const meta: RunMeta = {
       runId,
       deck: deck.id,
@@ -598,9 +596,13 @@ export function createAgentRunService(deps: AgentRunServiceDeps): AgentRunServic
       ...(resumedFrom ? { resumedFrom } : {}),
       ...(request.playbookPin ? { playbookPin: request.playbookPin } : {}),
       ...(request.startedBySessionId ? { startedBySessionId: request.startedBySessionId } : {}),
-      ...(runToken ? { runTokenHash: hashRunToken(runToken) } : {}),
+      runTokenHash: hashRunToken(runToken),
     };
     writeRunMeta(metaPath, meta);
+    // NOT-669: the token pointer makes this run resolvable from its worker
+    // token whatever the record location — without it a custom-`--log` run
+    // would reach the MCP server as an unenforced leader session.
+    writeRunTokenPointer(deps.homeDir, hashRunToken(runToken), runId, metaPath);
 
     const live: LiveRun = {
       meta,

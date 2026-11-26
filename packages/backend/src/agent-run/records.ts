@@ -268,15 +268,59 @@ export function recordRunDenial(meta: RunMeta, denial: RunDenial): void {
 }
 
 /**
- * NOT-669: resolve a worker token hash to its run record. Scans the default
- * run records under `homeDir` (runs written to a custom `--log` path are
- * not discoverable, as with resume provenance). Returns null when no record
- * carries the hash.
+ * NOT-669: where the token→record pointer for `tokenHash` lives. Every
+ * launch/resume writes one — including runs with a custom `--log` path,
+ * whose records live outside the runs root and are otherwise undiscoverable
+ * (unlike resume provenance, worker enforcement must reach those runs).
+ * The pointer names the meta path; the token itself never appears.
+ */
+export function runTokenPointerPath(homeDir: string, tokenHash: string): string {
+  return path.join(runsRoot(homeDir), 'by-token', `${tokenHash}.json`);
+}
+
+/**
+ * NOT-669: record where the run carrying `tokenHash` keeps its meta. Atomic
+ * (sibling temp file + rename), idempotent, and safe to call from any
+ * process — concurrent launches mint distinct hashes, so pointers never
+ * collide. Failure to write the pointer must fail the launch (the caller
+ * decides): without it a custom-`--log` run's worker session could never
+ * resolve server-side.
+ */
+export function writeRunTokenPointer(
+  homeDir: string,
+  tokenHash: string,
+  runId: string,
+  metaPath: string,
+): void {
+  const pointerPath = runTokenPointerPath(homeDir, tokenHash);
+  fs.mkdirSync(path.dirname(pointerPath), { recursive: true });
+  const tmpPath = `${pointerPath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify({ runId, metaPath })}\n`, 'utf8');
+  fs.renameSync(tmpPath, pointerPath);
+}
+
+/**
+ * NOT-669: resolve a worker token hash to its run record. The token pointer
+ * (written at every launch/resume, including custom-`--log` runs) is read
+ * first; the default-records scan stays as a fallback for records written
+ * before pointers existed. Returns null when no record carries the hash.
  */
 export function findRunMetaByTokenHash(
   homeDir: string,
   tokenHash: string,
 ): { runId: string; metaPath: string; meta: RunMeta } | null {
+  try {
+    const raw = fs.readFileSync(runTokenPointerPath(homeDir, tokenHash), 'utf8');
+    const pointer = JSON.parse(raw) as { runId?: unknown; metaPath?: unknown };
+    if (typeof pointer.metaPath === 'string' && pointer.metaPath) {
+      const read = readRunMeta(pointer.metaPath);
+      if (read.ok && read.meta.runTokenHash === tokenHash) {
+        return { runId: read.meta.runId, metaPath: pointer.metaPath, meta: read.meta };
+      }
+    }
+  } catch {
+    // No pointer (or a stale one): fall through to the scan.
+  }
   let entries: string[];
   try {
     entries = fs.readdirSync(runsRoot(homeDir));
@@ -284,6 +328,9 @@ export function findRunMetaByTokenHash(
     return null;
   }
   for (const runId of entries) {
+    if (runId === 'by-token') {
+      continue;
+    }
     const metaPath = runPaths(homeDir, runId).metaPath;
     const read = readRunMeta(metaPath);
     if (read.ok && read.meta.runTokenHash === tokenHash) {

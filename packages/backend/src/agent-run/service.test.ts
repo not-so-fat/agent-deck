@@ -10,10 +10,12 @@ import {
   createCodexAdapter,
   createCursorAdapter,
   createRunAdapter,
+  findRunMetaByTokenHash,
   hashRunToken,
   metaPathForLog,
   readRunMeta,
   runPaths,
+  runTokenPointerPath,
   RUN_SUPPORTED_CLIENTS,
   writeRunMeta,
   type AdapterStartArgs,
@@ -970,7 +972,7 @@ describe('worker profile enforcement gate and run token (NOT-669)', () => {
     expect(status.found && status.info.denials).toHaveLength(1);
   });
 
-  it('mints no token for a custom log path, which the server could never resolve', async () => {
+  it('mints a token for a custom log path and resolves it through the token pointer', async () => {
     const home = makeDir('ad-svc-home-');
     const cwd = makeDir('ad-svc-cwd-');
     const customLog = path.join(makeDir('ad-svc-log-'), 'custom.jsonl');
@@ -980,10 +982,19 @@ describe('worker profile enforcement gate and run token (NOT-669)', () => {
     const outcome = await service.start(request(cwd), { logPath: customLog });
     if (outcome.kind !== 'finished') throw new Error(JSON.stringify(outcome));
     expect(outcome.state).toBe('ended');
-    expect(adapter.starts[0]).not.toHaveProperty('runToken');
-    const meta = readRunMeta(metaPathForLog(customLog));
+    const token = adapter.starts[0].runToken;
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    const metaPath = metaPathForLog(customLog);
+    const meta = readRunMeta(metaPath);
     if (!meta.ok) throw new Error(meta.reason);
-    expect(meta.meta).not.toHaveProperty('runTokenHash');
+    expect(meta.meta.runTokenHash).toBe(hashRunToken(token as string));
+    // The pointer makes the custom location discoverable server-side.
+    const found = findRunMetaByTokenHash(home, hashRunToken(token as string));
+    expect(found?.metaPath).toBe(metaPath);
+    expect(found?.meta.runId).toBe(outcome.runId);
+    expect(fs.readFileSync(runTokenPointerPath(home, hashRunToken(token as string)), 'utf8')).not.toContain(
+      token as string,
+    );
   });
 
   it('records a yielded denial event on the run with source client', async () => {
