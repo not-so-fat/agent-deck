@@ -1,6 +1,6 @@
 {
   "name": "@agent-deck/shared",
-  "version": "2.6.2",
+  "version": "2.6.3",
   "description": "Shared types, schemas, and utilities for Agent Deck",
   "repository": {
     "type": "git",
