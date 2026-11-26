@@ -1107,7 +1107,7 @@ describe('muse worker profile enforcement gate (NOT-671)', () => {
     ]);
   });
 
-  it('a project agent-deck entry fails closed before spawn on start and resume (project shadows the run entry)', async () => {
+  it('a project agent-deck entry does not block start or resume: the untrusted worker never loads it', async () => {
     for (const extra of [[], ['--resume', MUSE_SESSION_ID]] as string[][]) {
       const cwd = makeDir('agent-deck-muse-cwd-');
       const homeDir = makeDir('agent-deck-muse-home-');
@@ -1116,16 +1116,25 @@ describe('muse worker profile enforcement gate (NOT-671)', () => {
         readFile: fakeMuseReadFile(cwd, { projectSettings: SETTINGS_WITH_ENTRY }),
       });
 
-      expect(await runRunCommand(museArgs(cwd, extra), deps)).not.toBe(0);
-      expect(deps.calls).toHaveLength(0);
-      expect(errors.join('\n')).toMatch(/MCP isolation unavailable/);
-      expect(errors.join('\n')).toMatch(/project-over-user shadowing/);
-      expect(errors.join('\n')).toMatch(/without its run token/);
-      expect(errors.join('\n')).toMatch(/no process was started/i);
-      expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+      expect(await runRunCommand(museArgs(cwd, extra), deps)).toBe(0);
+      expect(deps.calls).toHaveLength(1);
+      // The worker is never trusted, so project .mcp.json entries never load.
+      expect(deps.calls[0].argv).not.toContain('--trust-workspace');
+      expect(deps.calls[0].argv).not.toContain('--yolo');
       logs = [];
       errors = [];
     }
+  });
+
+  it('the per-run worker config carries no persisted trust (settings.json and auth.json only)', () => {
+    const configHome = makeDir('agent-deck-muse-worker-config-');
+    setupMuseWorkerConfig({
+      configHome,
+      settingsDocument: buildMuseWorkerSettingsDocument(buildMuseWorkerMcpEntry({ workspaceRoot: '/w' })),
+    });
+    const entries = fs.readdirSync(path.join(configHome, 'muse')).sort();
+    expect(entries.filter((name) => name !== 'auth.json')).toEqual(['settings.json']);
+    expect(entries).not.toContain('trust.json');
   });
 
   it('project agent-deck entries are found up the tree and unparseable files stay foreign', () => {

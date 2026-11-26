@@ -213,88 +213,76 @@ export function cursorEnforcementFlagsSupported(
   return cursorHelpTextSupportsEnforcement(`${help.stdout}\n${help.stderr}`);
 }
 
-/**
- * Kernel knobs that block cursor-agent's `--sandbox enabled` runtime on
- * Linux (NOT-671 repair round 2): the operator probe proved the target box
- * lists the enforcement flags yet cannot start the sandbox under its
- * AppArmor configuration, exiting before running anything.
- */
-export const CURSOR_SANDBOX_APPARMOR_USERNS_SYSCTL =
-  '/proc/sys/kernel/apparmor_restrict_unprivileged_userns';
-export const CURSOR_SANDBOX_USERNS_CLONE_SYSCTL = '/proc/sys/kernel/unprivileged_userns_clone';
-
 export type CursorSandboxHostSupport = { supported: boolean; reason?: string };
 
 /**
- * Authoritative startability probe for cursor-agent's `--sandbox enabled`
- * runtime (NOT-671 repair round 3): the sandbox needs an unprivileged user
- * namespace, so the probe creates one. Returns true only when the probe
- * proves creation works right now on this host.
+ * Authoritative, model-free startability probe for cursor-agent's
+ * `--sandbox enabled` runtime (NOT-671): `cursor-agent sandbox run true`
+ * runs Cursor's own sandbox policy generation and runtime preflight. Exit 0
+ * means the sandbox starts on this host; any non-zero exit, timeout, or
+ * spawn error means it cannot. `detail` carries the probe's first error line.
  */
-export type CursorSandboxProbe = () => boolean;
+export type CursorSandboxProbeResult = { ok: boolean; detail?: string };
+export type CursorSandboxProbe = (bin: string) => CursorSandboxProbeResult;
 
-export function defaultCursorSandboxProbe(): boolean {
+export const CURSOR_SANDBOX_PROBE_ARGS: readonly string[] = ['sandbox', 'run', 'true'];
+const CURSOR_SANDBOX_PROBE_TIMEOUT_MS = 20_000;
+
+/** First line that names an error, else the first non-empty line. */
+export function firstCursorProbeErrorLine(output: string): string | undefined {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.find((line) => /error|unsupported|failed/i.test(line)) ?? lines[0];
+}
+
+export function defaultCursorSandboxProbe(bin: string): CursorSandboxProbeResult {
   try {
-    const probed = spawnSync('unshare', ['-Ur', 'true'], { encoding: 'utf8', timeout: 15000 });
-    return probed.status === 0;
-  } catch {
-    return false;
+    const probed = spawnSync(bin, [...CURSOR_SANDBOX_PROBE_ARGS], {
+      encoding: 'utf8',
+      timeout: CURSOR_SANDBOX_PROBE_TIMEOUT_MS,
+      cwd: os.tmpdir(),
+    });
+    if (probed.error) {
+      return { ok: false, detail: probed.error.message };
+    }
+    if (probed.status === 0) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      detail:
+        firstCursorProbeErrorLine(`${probed.stderr ?? ''}\n${probed.stdout ?? ''}`) ??
+        (probed.signal ? `terminated by ${probed.signal}` : `exit ${String(probed.status)}`),
+    };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }
 
 /**
  * Whether this host can start cursor-agent's `--sandbox enabled` runtime
  * (NOT-671): readonly-only — edit passes `--sandbox disabled` and never
- * needs the sandbox. Fail-closed: non-Linux hosts are unsupported (the
- * sandbox enforcement is verified on Linux only), Linux hosts whose kernel
- * knobs affirmatively forbid unprivileged user namespaces are unsupported,
- * and Linux hosts where the startability probe cannot prove user-namespace
- * creation are unsupported too (indeterminate, e.g. `unshare` missing or
- * the probe failing). Only a Linux host with no knob forbidding user
- * namespaces AND a passing probe reports supported, so the profile gate
- * rejects readonly before spawn with a remedy instead of spawning into an
- * opaque client failure. Pure except for the injected reads and probe.
+ * needs the sandbox. Decided solely by Cursor's own preflight probe
+ * (`cursor-agent sandbox run true`), on every platform: fail-closed on any
+ * non-zero exit, timeout, or error.
  */
 export function cursorSandboxHostSupport(input: {
-  platform: NodeJS.Platform;
-  readFile: CursorFileReader;
+  bin: string;
   sandboxProbe: CursorSandboxProbe;
 }): CursorSandboxHostSupport {
-  if (input.platform !== 'linux') {
-    return {
-      supported: false,
-      reason:
-        `the cursor-agent sandbox is verified on Linux only (this host is ${input.platform}), ` +
-        'so cursor-agent --sandbox enabled cannot be proven startable here',
-    };
+  const result = input.sandboxProbe(input.bin);
+  if (result.ok) {
+    return { supported: true };
   }
-  const apparmor = input.readFile(CURSOR_SANDBOX_APPARMOR_USERNS_SYSCTL);
-  if (apparmor !== null && apparmor.trim() === '1') {
-    return {
-      supported: false,
-      reason:
-        `AppArmor blocks unprivileged user namespaces (${CURSOR_SANDBOX_APPARMOR_USERNS_SYSCTL} is 1), ` +
-        'so cursor-agent --sandbox enabled cannot start',
-    };
-  }
-  const clone = input.readFile(CURSOR_SANDBOX_USERNS_CLONE_SYSCTL);
-  if (clone !== null && clone.trim() === '0') {
-    return {
-      supported: false,
-      reason:
-        `unprivileged user namespaces are disabled (${CURSOR_SANDBOX_USERNS_CLONE_SYSCTL} is 0), ` +
-        'so cursor-agent --sandbox enabled cannot start',
-    };
-  }
-  if (!input.sandboxProbe()) {
-    return {
-      supported: false,
-      reason:
-        'unprivileged user namespace creation could not be verified (the `unshare -Ur true` probe failed), ' +
-        'so cursor-agent --sandbox enabled cannot be proven startable',
-    };
-  }
-  return { supported: true };
+  return {
+    supported: false,
+    reason:
+      `\`${input.bin} ${CURSOR_SANDBOX_PROBE_ARGS.join(' ')}\` failed` +
+      (result.detail ? ` (${result.detail})` : '') +
+      ', so cursor-agent --sandbox enabled cannot start here',
+  };
 }
 
 /**
@@ -563,58 +551,70 @@ export function cleanupCursorWorkerHome(workerHome: string): void {
 }
 
 /**
- * Mirror run-created agent-home writes back to the real home (NOT-671
- * repair round 3). The worker home is a symlink overlay: writes through
- * symlinked entries already landed in the real home, but new paths the
- * agent created (e.g. `$HOME/profile-proof.txt`) are real files inside the
- * temporary worker home, and cleanup would delete them — silently dropping
- * the edit contract's persistent home side effects. This copies every
- * non-symlink file and directory back, EXCEPT the worker's own
- * `.cursor/mcp.json`: the per-run authenticated entry must never leak into
- * the user's config. New files elsewhere under `.cursor` (client state from
- * this run) DO copy back, so a later resume sees them. Non-regular files
- * (sockets, fifos, devices) are skipped. Throws the first error after
- * attempting every entry; the caller reports it without failing the run.
+ * Move run-created agent-home entries back to the real home (NOT-671). The
+ * worker home is a symlink overlay: writes through symlinked entries (every
+ * entry the real home had at setup) already landed in the real home, but a
+ * new top-level path the agent created (e.g. `$HOME/profile-proof.txt` or
+ * `$HOME/new-dir/`) is a real entry inside the temporary worker home, and
+ * cleanup would delete it. Every such top-level entry is moved into the real
+ * home, except:
+ * - `.cursor` — the overlay's own config dir (it holds the per-run
+ *   authenticated `mcp.json`, which must never leak into the user config);
+ * - symlinks — the overlay links themselves;
+ * - conflicts — when the real home already has that name (created
+ *   concurrently), the real entry is kept untouched and the name is
+ *   returned in `conflicts` for the caller to report.
+ * Throws the first move error after attempting every entry; the caller
+ * reports it without failing the run.
  */
-export function syncCursorWorkerHomeWrites(input: {
-  workerHome: string;
-  realHome: string;
-}): void {
+export function syncCursorWorkerHomeWrites(input: { workerHome: string; realHome: string }): {
+  moved: string[];
+  conflicts: string[];
+} {
   const { workerHome, realHome } = input;
-  const skipRel = path.join('.cursor', 'mcp.json');
+  const moved: string[] = [];
+  const conflicts: string[] = [];
   let firstError: unknown = null;
-  const copyBack = (from: string): void => {
+  for (const entry of fs.readdirSync(workerHome)) {
+    if (entry === '.cursor') {
+      continue;
+    }
+    const from = path.join(workerHome, entry);
     let stat: fs.Stats;
     try {
       stat = fs.lstatSync(from);
     } catch {
-      // Vanished mid-run; nothing to preserve.
-      return;
+      continue; // Vanished mid-run; nothing to preserve.
     }
     if (stat.isSymbolicLink()) {
-      // Writes through the link already persisted in the real home.
-      return;
+      continue;
     }
-    if (path.relative(workerHome, from) === skipRel) {
-      return;
-    }
-    const to = path.join(realHome, path.relative(workerHome, from));
+    const to = path.join(realHome, entry);
+    let exists = true;
     try {
-      if (stat.isDirectory()) {
-        fs.mkdirSync(to, { recursive: true });
-        for (const entry of fs.readdirSync(from)) {
-          copyBack(path.join(from, entry));
+      fs.lstatSync(to);
+    } catch {
+      exists = false;
+    }
+    if (exists) {
+      conflicts.push(entry);
+      continue;
+    }
+    try {
+      try {
+        fs.renameSync(from, to);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EXDEV') {
+          throw error;
         }
-      } else if (stat.isFile()) {
-        fs.mkdirSync(path.dirname(to), { recursive: true });
-        fs.copyFileSync(from, to);
+        // Different filesystems (tmp vs home): copy, then drop the source.
+        fs.cpSync(from, to, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });
+        fs.rmSync(from, { recursive: true, force: true });
       }
+      moved.push(entry);
     } catch (error) {
       firstError ??= error;
     }
-  };
-  for (const entry of fs.readdirSync(workerHome)) {
-    copyBack(path.join(workerHome, entry));
   }
   if (firstError !== null && firstError !== undefined) {
     throw new Error(
@@ -622,6 +622,7 @@ export function syncCursorWorkerHomeWrites(input: {
         `${firstError instanceof Error ? firstError.message : String(firstError)}`,
     );
   }
+  return { moved, conflicts };
 }
 
 export type CursorProbeResult = { code: number; stdout: string; stderr: string };
@@ -1083,9 +1084,7 @@ export type CursorAdapterDeps = {
   homedir?: () => string;
   /** Allocate a fresh worker-home directory; defaults to a tmpdir mkdtemp. */
   makeWorkerHome?: () => string;
-  /** Host platform for the sandbox startability check; defaults to `process.platform`. */
-  platform?: NodeJS.Platform;
-  /** User-namespace startability probe; defaults to `unshare -Ur true`. */
+  /** Sandbox startability probe; defaults to `cursor-agent sandbox run true`. */
   sandboxProbe?: CursorSandboxProbe;
 };
 
@@ -1100,7 +1099,6 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
   const readFile = deps.readFile ?? defaultCursorFileReader;
   const homedir = deps.homedir ?? os.homedir;
   const makeWorkerHome = deps.makeWorkerHome ?? defaultCursorMakeWorkerHome;
-  const platform = deps.platform ?? process.platform;
   const sandboxProbe = deps.sandboxProbe ?? defaultCursorSandboxProbe;
 
   return {
@@ -1182,27 +1180,20 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
             'then retry; no process was started.',
         };
       }
-      // 4. Readonly needs a startable sandbox: flag presence alone is not
-      // enough — the target Linux host lists --sandbox yet cannot start it
-      // under its AppArmor configuration. Non-Linux and unverifiable hosts
-      // fail closed too. Edit passes --sandbox disabled and skips this
-      // check.
+      // 4. Readonly needs a startable sandbox, proven by Cursor's own
+      // preflight (`cursor-agent sandbox run true`): flag presence alone is
+      // not enough — the target Linux host lists --sandbox yet cannot start
+      // it. Edit passes --sandbox disabled and skips this check.
       if (args.tools === 'readonly') {
-        const host = cursorSandboxHostSupport({ platform, readFile, sandboxProbe });
+        const host = cursorSandboxHostSupport({ bin, sandboxProbe });
         if (!host.supported) {
-          const advice =
-            platform !== 'linux'
-              ? 'Run --tools readonly on a Linux host where cursor-agent --sandbox enabled starts. '
-              : 'To run --tools readonly here, allow the Cursor sandbox to start (AppArmor hosts: boot with ' +
-                'apparmor_restrict_unprivileged_userns=0 or add an AppArmor exception for cursor-agent; Debian-family ' +
-                'hosts: set kernel.unprivileged_userns_clone=1; containers: allow unprivileged user namespace creation; ' +
-                'all hosts: ensure `unshare` (util-linux) is installed so the startability probe can run), ' +
-                'or run on a host where the sandbox starts. ';
           return {
             ok: false,
             remedy:
-              `cursor-agent readonly is unsupported on this host (tried "${bin}"): ${host.reason}. ` +
-              advice +
+              `cursor-agent readonly is unsupported on this host: ${host.reason}. ` +
+              'To run --tools readonly here, make the Cursor sandbox start (see https://cursor.com/docs/agent/terminal; ' +
+              'Linux hosts typically need unprivileged user namespaces allowed for cursor-agent), or run on a host where ' +
+              `\`${bin} ${CURSOR_SANDBOX_PROBE_ARGS.join(' ')}\` exits 0. ` +
               '--tools edit (--sandbox disabled) is unaffected on this host. ' +
               'Refusing to run --tools readonly without an enforceable sandbox; no process was started.',
           };
@@ -1284,6 +1275,7 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
         childEnv.USERPROFILE = workerHome;
       }
       let homeSyncError: string | null = null;
+      let homeSyncConflicts: string[] = [];
       try {
         let child: CursorChild;
         try {
@@ -1327,11 +1319,20 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
         // write-back failure is reported as a notice below, never a run
         // failure — the agent already ran.
         try {
-          syncCursorWorkerHomeWrites({ workerHome, realHome: homedir() });
+          homeSyncConflicts = syncCursorWorkerHomeWrites({ workerHome, realHome: homedir() }).conflicts;
         } catch (error) {
           homeSyncError = error instanceof Error ? error.message : String(error);
         }
         cleanupCursorWorkerHome(workerHome);
+      }
+      if (homeSyncConflicts.length > 0) {
+        yield {
+          kind: 'notice',
+          message:
+            `cursor worker home write-back kept the existing real-home entries for: ${homeSyncConflicts.join(', ').slice(0, 300)} ` +
+            '(the run created the same names; its copies were discarded).',
+          ...(args.resumeId !== undefined ? { sessionId: args.resumeId } : {}),
+        };
       }
       if (homeSyncError !== null) {
         yield {

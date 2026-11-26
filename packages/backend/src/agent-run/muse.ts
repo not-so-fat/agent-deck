@@ -48,11 +48,11 @@
  *   `muse/auth.json` copied in so sign-in survives the isolation. Sessions
  *   live outside the config home, so resume is unaffected. A project
  *   `.mcp.json` (cwd up to the filesystem root) defining any non-`agent-deck`
- *   server fails closed before spawn, and a project `agent-deck` entry
- *   fails closed too: same-name project entries shadow the user-settings
- *   entry (`docs/design/muse-pure-mcp-connection.md`), so the project
- *   entry would replace the run's token-bearing entry in a trusted
- *   repository.
+ *   server fails closed before spawn. A project `agent-deck` entry is
+ *   allowed: same-name project entries shadow the user entry only in a
+ *   trusted workspace, and a worker is never trusted (no `--trust-workspace`
+ *   in argv, no persisted trust in the per-run config, which holds only
+ *   settings.json and auth.json).
  * - Signed-in preflight is `providers.meta` in the Muse auth file (or
  *   META_API_KEY), which makes no model call; there is no `login status`
  *   subcommand.
@@ -898,21 +898,11 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
             '(or run in a folder without one), then retry; no process was started.',
         };
       }
-      // 3. A project agent-deck entry would shadow the run's authenticated
-      // entry (same-name project-over-user shadowing), so the worker would
-      // connect without its run token and effective profile — on resume as
-      // well as start. Reject before spawn.
-      const shadowed = findMuseProjectAgentDeckEntries(args.cwd, readFile);
-      if (shadowed.length > 0) {
-        return {
-          ok: false,
-          remedy:
-            `muse MCP isolation unavailable: ${shadowed[0]} defines its own MCP server "agent-deck", ` +
-            'which Muse prefers over the run entry (same-name project-over-user shadowing), so the worker would connect ' +
-            'without its run token and effective profile. Remove the project agent-deck entry (or run in a folder without one), ' +
-            'then retry; no process was started.',
-        };
-      }
+      // 3. A project `agent-deck` entry is NOT rejected: Muse loads project
+      // `.mcp.json` servers only in a trusted workspace, worker argv never
+      // carries `--trust-workspace`/`--yolo` (MUSE_FORBIDDEN_FLAGS), and the
+      // per-run worker config holds only settings.json and auth.json — no
+      // persisted trust — so the project entry cannot shadow the run entry.
       // 4. The worker config must be writable on this host (a dry run with a
       // tokenless entry — the token is minted after the gate).
       let dryRunHome: string | null = null;
