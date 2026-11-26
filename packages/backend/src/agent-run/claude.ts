@@ -30,6 +30,7 @@ import {
   type RunPlaybookPin,
   type RunToolsProfile,
 } from './adapter';
+import { workerEnv } from './worker-env';
 import {
   CLAUDE_WORKER_MCP_SERVER,
   CLAUDE_WORKER_PERMISSION_MODE,
@@ -127,6 +128,8 @@ export type RunQueryOptions = {
   additionalDirectories?: readonly string[];
   /** Host permission handler deciding from the worker policy (NOT-672). */
   canUseTool?: RunCanUseTool;
+  /** Full child env; the SDK REPLACES (not merges) the subprocess env with it. */
+  env?: Record<string, string>;
 };
 
 /**
@@ -359,6 +362,9 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
         prompt: args.prompt,
         options: {
           cwd: args.cwd,
+          // Replaces (not merges) the subprocess env: a full copy minus the
+          // daemon-only secrets.
+          env: workerEnv(),
           ...(args.resumeId ? { resume: args.resumeId } : {}),
           settingSources: [...CLAUDE_WORKER_SETTING_SOURCES],
           permissionMode: CLAUDE_WORKER_PERMISSION_MODE,

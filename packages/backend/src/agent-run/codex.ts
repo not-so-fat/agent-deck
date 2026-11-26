@@ -52,6 +52,7 @@ import {
   type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
+import { workerEnv } from './worker-env';
 import { WORKER_PROFILES } from './profiles';
 
 /** Tool-profile mapping: readonly is `-s read-only`, edit is `-s workspace-write`. */
@@ -375,7 +376,7 @@ export type CodexProbe = (bin: string, argv: string[]) => CodexProbeResult;
 
 export function defaultCodexProbe(bin: string, argv: string[]): CodexProbeResult {
   try {
-    const probed = spawnSync(bin, argv, { encoding: 'utf8', timeout: 15000 });
+    const probed = spawnSync(bin, argv, { encoding: 'utf8', timeout: 15000, env: workerEnv() });
     return { code: probed.status ?? 1, stdout: probed.stdout ?? '', stderr: probed.stderr ?? '' };
   } catch {
     return { code: 127, stdout: '', stderr: '' };
@@ -1166,6 +1167,7 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
         // carrier (Codex MCP servers never see inherited env).
         child = spawnFn(bin, argv, {
           cwd: args.cwd,
+          env: workerEnv(),
           ...(args.control ? { control: args.control } : {}),
         });
       } catch (error) {

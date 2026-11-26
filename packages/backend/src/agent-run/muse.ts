@@ -81,6 +81,7 @@ import {
   type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
+import { workerEnv } from './worker-env';
 
 /** Enforcement flags re-verified against this build (`muse exec --help`). */
 export const MUSE_ENFORCEMENT_VERSION_NOTE = 'Muse Code 1.4.25';
@@ -433,7 +434,7 @@ export type MuseProbe = (bin: string, argv: string[]) => MuseProbeResult;
 
 export function defaultMuseProbe(bin: string, argv: string[]): MuseProbeResult {
   try {
-    const probed = spawnSync(bin, argv, { encoding: 'utf8', timeout: 15000 });
+    const probed = spawnSync(bin, argv, { encoding: 'utf8', timeout: 15000, env: workerEnv() });
     return { code: probed.status ?? 1, stdout: probed.stdout ?? '', stderr: probed.stderr ?? '' };
   } catch {
     return { code: 127, stdout: '', stderr: '' };
@@ -974,7 +975,7 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
           child = spawnFn(bin, argv, {
             cwd: args.cwd,
             ...(args.control ? { control: args.control } : {}),
-            env: { ...process.env, XDG_CONFIG_HOME: workerConfig },
+            env: { ...workerEnv(), XDG_CONFIG_HOME: workerConfig },
           });
         } catch (error) {
           throw wrapSpawnError(error);

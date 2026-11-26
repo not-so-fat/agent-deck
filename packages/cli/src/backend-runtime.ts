@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 
+import { workerEnv } from '@agent-deck/backend/agent-run';
+
 import { getCliPackageRoot } from './paths';
 
 export function createCredentialManager(): unknown {
@@ -185,7 +187,7 @@ export function runCommand(
 ): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      env: { ...process.env, ...env },
+      env: { ...workerEnv(), ...env },
       stdio: 'inherit',
       shell: process.platform === 'win32',
     });
