@@ -20,6 +20,7 @@
 import os from 'node:os';
 
 import {
+  defaultWorkerHomeDir,
   formatRunPlaybookPin,
   type AdapterStartArgs,
   type ClientAdapter,
@@ -34,7 +35,6 @@ import {
   CLAUDE_WORKER_SKILLS,
   claudeAllowedToolsForProfile,
   claudeDenialKindForTool,
-  claudeDenyRulesForProfile,
   claudeSettingsForProfile,
   decideClaudeToolCall,
 } from './claude-policy';
@@ -253,7 +253,7 @@ export function createClaudeAdapter(deps: ClaudeAdapterDeps = {}): ClientAdapter
     }
     return cachedQuery;
   };
-  const homeDir = deps.homeDir ?? os.homedir();
+  const homeDir = deps.homeDir ?? defaultWorkerHomeDir();
   const tmpDir = deps.tmpDir ?? os.tmpdir();
 
   return {

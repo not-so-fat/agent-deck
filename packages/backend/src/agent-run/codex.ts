@@ -39,11 +39,11 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
 import {
+  defaultWorkerHomeDir,
   formatRunPlaybookPin,
   type AdapterStartArgs,
   type ClientAdapter,
@@ -77,7 +77,7 @@ export function resolveCodexBin(): string {
 
 /** Where codex keeps config, auth, and session rollouts. */
 export function resolveCodexHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
+  return env.CODEX_HOME?.trim() || path.join(defaultWorkerHomeDir(), '.codex');
 }
 
 export type CodexArgvArgs = {
@@ -813,7 +813,7 @@ export function createCodexAdapter(deps: CodexAdapterDeps = {}): ClientAdapter {
   const spawnFn = deps.spawn ?? defaultCodexSpawn;
   const isGitRepo = deps.isGitRepo ?? defaultIsGitRepo;
   const codexHome = deps.codexHome ?? resolveCodexHome();
-  const homeDir = deps.homeDir ?? os.homedir();
+  const homeDir = deps.homeDir ?? defaultWorkerHomeDir();
 
   return {
     id: 'codex',

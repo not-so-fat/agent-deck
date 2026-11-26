@@ -13,7 +13,22 @@ import type { RunDenialKind, RunResumeOrigin } from './records';
 
 /** Tool profiles live in the shared definition (NOT-669); re-exported here. */
 export { RUN_TOOL_PROFILES, type RunToolsProfile } from './profiles';
+import os from 'node:os';
+
 import { RUN_TOOL_PROFILES, type RunToolsProfile } from './profiles';
+
+/**
+ * Agent user's home for worker file-write scopes. Never throws: an
+ * unresolvable home is the empty string, which every scope check fails
+ * closed on (no writable root or scope dir ever covers it).
+ */
+export function defaultWorkerHomeDir(): string {
+  try {
+    return os.homedir();
+  } catch {
+    return '';
+  }
+}
 
 /** Clients with a working adapter. */
 export const RUN_SUPPORTED_CLIENTS = ['claude', 'codex', 'cursor', 'muse'] as const;

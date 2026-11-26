@@ -834,7 +834,7 @@ function isReadonlyNpmArgs(args: string[]): boolean {
   if (args.length === 0) {
     return true;
   }
-  const [sub, ...rest] = args;
+  const [sub] = args;
   if (args.length === 1 && (sub === '--version' || sub === '-v' || sub === '--help' || sub === '-h')) {
     return true;
   }
