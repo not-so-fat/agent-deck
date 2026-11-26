@@ -5,6 +5,7 @@
  */
 export * from './adapter';
 export * from './claude';
+export * from './claude-policy';
 export * from './claude-probe';
 export * from './codex';
 export * from './cursor';
