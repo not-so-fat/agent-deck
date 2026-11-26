@@ -187,6 +187,88 @@ export function metaPathForLog(logPath: string): string {
 }
 
 /**
+ * NOT-669 repair: cross-process mutual exclusion for one run record.
+ * `meta.json` is written from several processes at once — the run service
+ * (state, session, client-reported denials), the MCP server (server-side
+ * denials), the CLI, reconciliation — and every write is read-modify-write,
+ * so two processes interleaving read/write lose each other's update (in
+ * particular a recorded denial). The lock serializes the whole critical
+ * section; the atomic rename below then only keeps readers on complete
+ * documents.
+ *
+ * The lock is a sibling directory (`meta.json.lock`): `mkdir` is atomic on
+ * POSIX and Windows, and an empty directory needs no cleanup protocol. A
+ * lock older than `RUN_META_LOCK_STALE_MS` belongs to a crashed holder and
+ * is broken. Reentrant within one process (nested `withRunMetaLock` for the
+ * same record runs straight through — `appendRunDenial` calls
+ * `writeRunMeta` under its own lock); across processes the directory still
+ * serializes. When the lock cannot be acquired in time the write proceeds
+ * anyway (liveness first — the denial-union below stays as a second net).
+ */
+const RUN_META_LOCK_STALE_MS = 10_000;
+const RUN_META_LOCK_WAIT_MS = 5_000;
+const RUN_META_LOCK_POLL_MS = 20;
+
+const RUN_META_LOCKS_HELD = new Set<string>();
+
+function sleepSyncMs(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // No shared memory in this runtime: busy-spin briefly instead.
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      // Intentional spin: lock polling only.
+    }
+  }
+}
+
+export function withRunMetaLock<T>(metaPath: string, fn: () => T): T {
+  const lockDir = `${metaPath}.lock`;
+  if (RUN_META_LOCKS_HELD.has(lockDir)) {
+    return fn();
+  }
+  const deadline = Date.now() + RUN_META_LOCK_WAIT_MS;
+  let acquired = false;
+  while (Date.now() < deadline) {
+    try {
+      fs.mkdirSync(lockDir);
+      acquired = true;
+      break;
+    } catch {
+      try {
+        const ageMs = Date.now() - fs.statSync(lockDir).mtimeMs;
+        if (ageMs > RUN_META_LOCK_STALE_MS) {
+          try {
+            fs.rmdirSync(lockDir);
+          } catch {
+            // Another process broke or released it first; retry.
+          }
+          continue;
+        }
+      } catch {
+        // The lock vanished between mkdir and stat; retry.
+      }
+      sleepSyncMs(RUN_META_LOCK_POLL_MS);
+    }
+  }
+  if (!acquired) {
+    return fn();
+  }
+  RUN_META_LOCKS_HELD.add(lockDir);
+  try {
+    return fn();
+  } finally {
+    RUN_META_LOCKS_HELD.delete(lockDir);
+    try {
+      fs.rmdirSync(lockDir);
+    } catch {
+      // Broken as stale by a waiter, or removed with the run dir.
+    }
+  }
+}
+
+/**
  * Atomic run-record write: readers (`run status`, detach tests, orchestrators)
  * poll meta.json while the run child rewrites it, and a plain writeFileSync
  * truncates before writing — a concurrent read lands on empty/partial bytes
@@ -198,27 +280,30 @@ export function metaPathForLog(logPath: string): string {
  * NOT-669: denials are append-only across processes — the MCP server records
  * server-side denials while the run service holds its own in-memory meta —
  * so a write never drops denials recorded since the caller's meta was read:
- * entries on disk that the caller's meta lacks are unioned in (by value;
+ * the disk read, the union, and the rename all run under the record lock,
+ * and entries on disk that the caller's meta lacks are unioned in (by value;
  * entries are immutable once written, so this cannot duplicate or resurrect
  * anything). No caller clears denials.
  */
 export function writeRunMeta(metaPath: string, meta: RunMeta): void {
-  let merged = meta.denials;
-  try {
-    const disk = readRunMeta(metaPath);
-    if (disk.ok && disk.meta.denials?.length) {
-      const known = new Set((meta.denials ?? []).map((denial) => JSON.stringify(denial)));
-      const missing = disk.meta.denials.filter((denial) => !known.has(JSON.stringify(denial)));
-      if (missing.length > 0) {
-        merged = [...(meta.denials ?? []), ...missing];
+  withRunMetaLock(metaPath, () => {
+    let merged = meta.denials;
+    try {
+      const disk = readRunMeta(metaPath);
+      if (disk.ok && disk.meta.denials?.length) {
+        const known = new Set((meta.denials ?? []).map((denial) => JSON.stringify(denial)));
+        const missing = disk.meta.denials.filter((denial) => !known.has(JSON.stringify(denial)));
+        if (missing.length > 0) {
+          merged = [...(meta.denials ?? []), ...missing];
+        }
       }
+    } catch {
+      // Best effort: the state write below still lands.
     }
-  } catch {
-    // Best effort: the state write below still lands.
-  }
-  const tmpPath = `${metaPath}.tmp-${process.pid}`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify({ ...meta, ...(merged ? { denials: merged } : {}) }, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmpPath, metaPath);
+    const tmpPath = `${metaPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpPath, `${JSON.stringify({ ...meta, ...(merged ? { denials: merged } : {}) }, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmpPath, metaPath);
+  });
 }
 
 export function appendRunLogLine(logPath: string, line: RunLogLine): void {
@@ -232,30 +317,28 @@ export function appendRunLogLine(logPath: string, line: RunLogLine): void {
  * record is missing or corrupt instead of throwing, so a denial can never
  * fail an unrelated request — the denial itself was still enforced.
  *
- * A concurrent service write that read before this append can still land
- * after it; the write is verified and retried (bounded) so the entry lands
- * durably — service writes are finite (the terminal write is the last one),
- * so the retry converges instead of racing forever.
+ * The read, the append, and the write all run under the record lock, so a
+ * concurrent service write in another process cannot land between them and
+ * lose the entry — one attempt suffices, and the post-write read verifies
+ * the entry landed durably. Re-recording the same denial is a no-op.
  */
 export function appendRunDenial(metaPath: string, denial: RunDenial): boolean {
-  const fingerprint = JSON.stringify(denial);
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  return withRunMetaLock(metaPath, () => {
     const read = readRunMeta(metaPath);
     if (!read.ok) {
       return false;
     }
-    const meta = read.meta;
-    if ((meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)) {
+    const fingerprint = JSON.stringify(denial);
+    if ((read.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)) {
       return true;
     }
-    meta.denials = [...(meta.denials ?? []), denial];
-    writeRunMeta(metaPath, meta);
+    read.meta.denials = [...(read.meta.denials ?? []), denial];
+    writeRunMeta(metaPath, read.meta);
     const verify = readRunMeta(metaPath);
-    if (verify.ok && (verify.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)) {
-      return true;
-    }
-  }
-  return false;
+    return (
+      verify.ok && (verify.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)
+    );
+  });
 }
 
 /**
