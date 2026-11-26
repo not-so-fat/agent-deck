@@ -474,15 +474,216 @@ function nonEmptyString(value: unknown): string | null {
 }
 
 /**
+ * Normalize an `item.completed` item type for comparison: the `exec --json`
+ * stream uses snake_case (`command_execution`, verified on codex-cli
+ * 0.157.1) while the on-disk rollout store uses PascalCase
+ * (`CommandExecution`, codex-cli 0.169.0) — denial detection accepts both
+ * so a refusal is recorded however the client spells it.
+ */
+function codexItemTypeKey(item: Record<string, unknown>): string {
+  return (nonEmptyString(item.type) ?? '').toLowerCase().replaceAll('_', '');
+}
+
+/**
+ * Explicit denial statuses (normalized: case-insensitive, punctuation
+ * ignored). A plain `failed` is deliberately NOT a denial — ordinary
+ * commands fail with exit codes (`cd` to a missing dir, `grep` with no
+ * match) — only explicit policy/sandbox/approval markers and the grounded
+ * denial text below count.
+ */
+const CODEX_DENIAL_STATUS_KEYS = new Set([
+  'denied',
+  'rejected',
+  'blocked',
+  'sandboxdenied',
+  'approvaldenied',
+  'policydenied',
+  'guardiandenied',
+  'permissiondenied',
+]);
+
+function codexStatusKey(item: Record<string, unknown>): string {
+  return (nonEmptyString(item.status) ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** The command text of a command item: a string, or the `["/bin/bash","-lc",script]` argv form. */
+function codexItemCommandText(item: Record<string, unknown>): string | null {
+  const direct = nonEmptyString(item.command);
+  if (direct) {
+    return direct;
+  }
+  if (Array.isArray(item.command)) {
+    const parts = item.command.filter((part): part is string => typeof part === 'string' && !!part);
+    // Argv form: the last element is the `-lc` script the model wrote.
+    const script = parts.at(-1) ?? null;
+    if (script) {
+      return script;
+    }
+    if (parts.length > 0) {
+      return parts.join(' ');
+    }
+  }
+  return null;
+}
+
+/** Client-attributed failure text: `error` as a string or `{ message }`. */
+function codexItemErrorText(item: Record<string, unknown>): string | null {
+  const direct = nonEmptyString(item.error);
+  if (direct) {
+    return direct;
+  }
+  const nested = asRecord(item.error);
+  return nested ? nonEmptyString(nested.message) : null;
+}
+
+/** Command/tool output text: `aggregated_output` or `output` as a string. */
+function codexItemOutputText(item: Record<string, unknown>): string | null {
+  return nonEmptyString(item.aggregated_output) ?? nonEmptyString(item.output);
+}
+
+/**
+ * Text of a failed MCP result (`result.content[].text`, `result.error`,
+ * `structuredContent.error`): server-side failures surface here with
+ * `isError: true` instead of an `error` field (e.g. a validation error or
+ * the Agent Deck server's `PROFILE_DENIED`).
+ */
+function codexItemResultErrorText(item: Record<string, unknown>): string | null {
+  const result = asRecord(item.result);
+  if (!result) {
+    return null;
+  }
+  const direct = nonEmptyString(result.error) ?? nonEmptyString(result.message);
+  if (direct) {
+    return direct;
+  }
+  const structured = asRecord(result.structuredContent);
+  const structuredError = structured ? nonEmptyString(structured.error) : null;
+  if (structuredError) {
+    return structuredError;
+  }
+  if (Array.isArray(result.content)) {
+    const texts = result.content
+      .map((block) => (typeof block === 'string' ? block : nonEmptyString(asRecord(block)?.text)))
+      .filter((text): text is string => !!text);
+    if (texts.length > 0) {
+      return texts.join('\n');
+    }
+  }
+  return null;
+}
+
+/**
+ * Grounded codex denial signals (codex-cli 0.169.0). Each pattern is quoted
+ * from the shipped binary's strings or from on-host rollout evidence:
+ * - `denied by sandbox` / `sandbox denied`: `Command denied by sandbox: `,
+ *   `Snapshot command was denied by sandbox with status `, and
+ *   `sandbox denied exec error, exit code: ` in the binary.
+ * - `requires approval`: `MCP tool call requires approval, but approval
+ *   policy is never` (rollout `McpToolCall` failures) — matched in
+ *   client-attributed error text only, never in command output, where the
+ *   same words can be ordinary prose.
+ * - `blocked by (method )policy`, `MITM (blocked|required)`,
+ *   `sandbox violation`: the binary's network/policy-block vocabulary
+ *   (`request blocked by method policy`, `MITM blocked by hook policy`,
+ *   `was blocked by policy`, `recorded sandbox violation`).
+ * Bare `permission denied` / `operation not permitted` are deliberately NOT
+ * signals: under landlock those are bare syscall errors the sandbox does
+ * not attribute, indistinguishable from ordinary file-permission failures.
+ */
+const CODEX_SANDBOX_DENIAL_TEXT = /denied by sandbox|sandbox denied|sandbox violation/i;
+const CODEX_POLICY_BLOCK_TEXT = /blocked by (method )?policy|mitm (blocked|required)/i;
+const CODEX_REQUIRES_APPROVAL_TEXT = /requires approval/i;
+
+/** Network-block signals map a denied command to kind `network` instead of `shell`. */
+const CODEX_NETWORK_BLOCK_TEXT = /mitm|method policy/i;
+
+/**
+ * Map one completed non-message item onto a profile denial, or null when
+ * the item is not a refusal. Emitted as a `denial` normalized event
+ * alongside the item's usual `tool` event, so the run service records the
+ * refusal on the run with the effective profile (NOT-669) while the log
+ * keeps its tool line. `PROFILE_DENIED` MCP failures are skipped: the Agent
+ * Deck server records those itself (`source: "agent-deck"`), and a second
+ * client-side record would double-count one denied call.
+ */
+export function codexItemDenial(item: Record<string, unknown>): {
+  kind: 'shell' | 'file_write' | 'network' | 'client_tool';
+  target: string;
+  reason: string;
+} | null {
+  const typeKey = codexItemTypeKey(item);
+  const errorText = codexItemErrorText(item);
+  const outputText = codexItemOutputText(item);
+  const resultText = codexItemResultErrorText(item);
+  const combinedText = [errorText, outputText, resultText].filter((text): text is string => !!text);
+  if (combinedText.some((text) => text.includes('PROFILE_DENIED'))) {
+    return null;
+  }
+  const statusDenied = CODEX_DENIAL_STATUS_KEYS.has(codexStatusKey(item));
+  const errorDenial =
+    !!errorText &&
+    (CODEX_SANDBOX_DENIAL_TEXT.test(errorText) ||
+      CODEX_POLICY_BLOCK_TEXT.test(errorText) ||
+      CODEX_REQUIRES_APPROVAL_TEXT.test(errorText));
+  const outputDenial = [outputText, resultText].some(
+    (text) => !!text && (CODEX_SANDBOX_DENIAL_TEXT.test(text) || CODEX_POLICY_BLOCK_TEXT.test(text)),
+  );
+  const deniedFlag =
+    item.denied === true ||
+    item.sandbox_denied === true ||
+    item.approval_denied === true ||
+    item.policy_denied === true;
+  if (!statusDenied && !errorDenial && !outputDenial && !deniedFlag) {
+    return null;
+  }
+  const signalText = [errorText, outputText, resultText].find(
+    (text): text is string =>
+      !!text &&
+      (CODEX_SANDBOX_DENIAL_TEXT.test(text) ||
+        CODEX_POLICY_BLOCK_TEXT.test(text) ||
+        CODEX_REQUIRES_APPROVAL_TEXT.test(text)),
+  );
+  const reason =
+    signalText?.slice(0, 500) ??
+    (statusDenied
+      ? `codex ${nonEmptyString(item.type) ?? 'item'} reported status "${nonEmptyString(item.status) ?? ''}"`
+      : `codex denied ${nonEmptyString(item.type) ?? 'item'}`);
+  const commandText = codexItemCommandText(item);
+  const mcpServer = nonEmptyString(item.server);
+  const mcpTool = nonEmptyString(item.tool);
+  const filePath =
+    nonEmptyString(item.path) ?? nonEmptyString(item.file) ?? nonEmptyString(item.file_path);
+  let kind: 'shell' | 'file_write' | 'network' | 'client_tool' = 'client_tool';
+  let target = nonEmptyString(item.name) ?? commandText ?? mcpTool ?? filePath ?? typeKey;
+  if (typeKey === 'commandexecution') {
+    const networkBlocked = combinedText.some((text) => CODEX_NETWORK_BLOCK_TEXT.test(text));
+    kind = networkBlocked ? 'network' : 'shell';
+    target = commandText ?? target;
+  } else if (typeKey === 'mcptoolcall') {
+    kind = 'client_tool';
+    target = mcpServer && mcpTool ? `${mcpServer}/${mcpTool}` : (mcpTool ?? target);
+  } else if (typeKey === 'filechange' || typeKey === 'applypatch' || typeKey === 'patchapply') {
+    kind = 'file_write';
+    target = filePath ?? target;
+  } else if (typeKey === 'websearch') {
+    kind = 'network';
+  }
+  return { kind, target: target.slice(0, 500), reason };
+}
+
+/**
  * Map one `codex exec --json` stdout line onto normalized events:
  * `thread.started.thread_id` becomes the session id (no log line);
  * `agent_message` items become `text`; command/tool items become `tool`;
- * `turn.completed` becomes `result` (subtype `success`) whose `result` is the
- * last `agent_message` text of the turn and whose `usage` is the codex usage
- * object. A turn that completes with no agent message becomes a `failed`
- * result, never an empty success. Provider `error`
- * events become `notice` (non-fatal). Unknown kinds are ignored so a newer
- * CLI cannot break the log. Never throws: unparseable lines become `notice`.
+ * a completed item carrying a sandbox/policy/approval refusal additionally
+ * becomes a `denial` event (`codexItemDenial`) the run service records with
+ * the effective profile. `turn.completed` becomes `result` (subtype
+ * `success`) whose `result` is the last `agent_message` text of the turn and
+ * whose `usage` is the codex usage object. A turn that completes with no
+ * agent message becomes a `failed` result, never an empty success. Provider
+ * `error` events become `notice` (non-fatal). Unknown kinds are ignored so a
+ * newer CLI cannot break the log. Never throws: unparseable lines become
+ * `notice`.
  */
 export function codexEventsFromLine(line: string, ctx: CodexLineContext): NormalizedEvent[] {
   const trimmed = line.trim();
@@ -534,7 +735,24 @@ export function codexEventsFromLine(line: string, ctx: CodexLineContext): Normal
         (nonEmptyString(item.command) ? `command:${item.command as string}`.slice(0, 200) : null) ??
         nonEmptyString(item.type) ??
         'item';
-      return [withSession({ kind: 'tool', name }, ctx)];
+      // Sandbox/policy refusals become `denial` events alongside the tool
+      // line, so the run service records them with the effective profile.
+      const denial = codexItemDenial(item);
+      if (!denial) {
+        return [withSession({ kind: 'tool', name }, ctx)];
+      }
+      return [
+        withSession({ kind: 'tool', name }, ctx),
+        withSession(
+          {
+            kind: 'denial',
+            target: denial.target,
+            reason: denial.reason,
+            denialKind: denial.kind,
+          },
+          ctx,
+        ),
+      ];
     }
     case 'turn.started': {
       ctx.lastAgentMessage = null;

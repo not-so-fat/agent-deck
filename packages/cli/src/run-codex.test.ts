@@ -916,6 +916,230 @@ describe('codex line parser edges (NOT-404)', () => {
   });
 });
 
+describe('codex denial mapping (NOT-672)', () => {
+  function parse(lines: string[]): ReturnType<typeof codexEventsFromLine> {
+    const ctx: CodexLineContext = { threadId: null };
+    return lines.flatMap((line) => codexEventsFromLine(line, ctx));
+  }
+
+  it('maps a sandbox-denied command to a shell denial alongside the tool line', () => {
+    const events = parse([
+      codexLine({ type: 'thread.started', thread_id: 't1' }),
+      codexLine({
+        type: 'item.completed',
+        item: {
+          id: 'i1',
+          type: 'command_execution',
+          command: 'echo hi > probe-write.txt',
+          status: 'failed',
+          error: { message: 'Command denied by sandbox: echo hi > probe-write.txt' },
+          exit_code: 1,
+        },
+      }),
+    ]);
+    expect(events).toEqual([
+      { kind: 'tool', name: 'command:echo hi > probe-write.txt', sessionId: 't1' },
+      {
+        kind: 'denial',
+        target: 'echo hi > probe-write.txt',
+        reason: 'Command denied by sandbox: echo hi > probe-write.txt',
+        denialKind: 'shell',
+        sessionId: 't1',
+      },
+    ]);
+  });
+
+  it('detects output-carried denials and PascalCase items with argv commands', () => {
+    const events = parse([
+      codexLine({ type: 'thread.started', thread_id: 't1' }),
+      codexLine({
+        type: 'item.completed',
+        item: {
+          id: 'i1',
+          type: 'command_execution',
+          command: 'curl -X POST http://127.0.0.1:18080/write -d probe=1',
+          status: 'failed',
+          aggregated_output: 'sandbox denied exec error, exit code: 126',
+          exit_code: 126,
+        },
+      }),
+      codexLine({
+        type: 'item.completed',
+        item: {
+          id: 'i2',
+          type: 'CommandExecution',
+          command: ['/bin/bash', '-lc', 'touch probe-write.txt'],
+          status: 'failed',
+          error: 'Command denied by sandbox: touch probe-write.txt',
+        },
+      }),
+    ]);
+    const denials = events.filter((event) => event.kind === 'denial');
+    expect(denials).toEqual([
+      {
+        kind: 'denial',
+        target: 'curl -X POST http://127.0.0.1:18080/write -d probe=1',
+        reason: 'sandbox denied exec error, exit code: 126',
+        denialKind: 'shell',
+        sessionId: 't1',
+      },
+      {
+        kind: 'denial',
+        target: 'touch probe-write.txt',
+        reason: 'Command denied by sandbox: touch probe-write.txt',
+        denialKind: 'shell',
+        sessionId: 't1',
+      },
+    ]);
+    // The log keeps both tool lines.
+    expect(events.filter((event) => event.kind === 'tool')).toHaveLength(2);
+  });
+
+  it('maps MCP approval failures to client_tool denials naming server and tool', () => {
+    const events = parse([
+      codexLine({ type: 'thread.started', thread_id: 't1' }),
+      codexLine({
+        type: 'item.completed',
+        item: {
+          id: 'i1',
+          type: 'mcp_tool_call',
+          server: 'agent-deck',
+          tool: 'switch_deck',
+          status: 'failed',
+          error: { message: 'MCP tool call requires approval, but approval policy is never' },
+        },
+      }),
+    ]);
+    expect(events).toEqual([
+      { kind: 'tool', name: 'mcp_tool_call', sessionId: 't1' },
+      {
+        kind: 'denial',
+        target: 'agent-deck/switch_deck',
+        reason: 'MCP tool call requires approval, but approval policy is never',
+        denialKind: 'client_tool',
+        sessionId: 't1',
+      },
+    ]);
+  });
+
+  it('maps network policy blocks to network denials', () => {
+    const events = parse([
+      codexLine({
+        type: 'item.completed',
+        item: {
+          id: 'i1',
+          type: 'command_execution',
+          command: 'curl -X POST http://127.0.0.1:18080/write -d probe=1',
+          status: 'failed',
+          aggregated_output: 'request blocked by method policy (client=exec)',
+        },
+      }),
+    ]);
+    expect(events.filter((event) => event.kind === 'denial')).toEqual([
+      {
+        kind: 'denial',
+        target: 'curl -X POST http://127.0.0.1:18080/write -d probe=1',
+        reason: 'request blocked by method policy (client=exec)',
+        denialKind: 'network',
+      },
+    ]);
+  });
+
+  it('treats explicit denial statuses as refusals even without denial text', () => {
+    const events = parse([
+      codexLine({
+        type: 'item.completed',
+        item: { id: 'i1', type: 'command_execution', command: 'rm -rf /tmp/x', status: 'denied' },
+      }),
+    ]);
+    expect(events.filter((event) => event.kind === 'denial')).toEqual([
+      {
+        kind: 'denial',
+        target: 'rm -rf /tmp/x',
+        reason: 'codex command_execution reported status "denied"',
+        denialKind: 'shell',
+      },
+    ]);
+  });
+
+  it('ignores ordinary failures, approval prose in output, and server-recorded PROFILE_DENIED', () => {
+    const events = parse([
+      codexLine({
+        type: 'item.completed',
+        item: {
+          id: 'i1',
+          type: 'command_execution',
+          command: 'cd /nope && ls',
+          status: 'failed',
+          aggregated_output: '/bin/bash: line 1: cd: /nope: No such file or directory\n',
+          exit_code: 1,
+        },
+      }),
+      codexLine({
+        type: 'item.completed',
+        item: {
+          id: 'i2',
+          type: 'command_execution',
+          command: 'gh pr view 12',
+          status: 'failed',
+          aggregated_output: 'this PR requires approval from a maintainer before merge\n',
+          exit_code: 1,
+        },
+      }),
+      codexLine({
+        type: 'item.completed',
+        item: {
+          id: 'i3',
+          type: 'mcp_tool_call',
+          server: 'agent-deck',
+          tool: 'switch_deck',
+          status: 'failed',
+          result: { content: [{ type: 'text', text: 'PROFILE_DENIED: switch_deck is not allowed' }], isError: true },
+        },
+      }),
+    ]);
+    expect(events.filter((event) => event.kind === 'denial')).toEqual([]);
+    expect(events.filter((event) => event.kind === 'tool')).toHaveLength(3);
+  });
+
+  it('records codex denials on the run with the effective profile end to end', async () => {
+    const cwd = makeDir('agent-deck-codex-cwd-');
+    const homeDir = makeDir('agent-deck-codex-home-');
+    const deps = makeDeps(cwd, homeDir, {
+      lines: successStream('thread_deny', [
+        {
+          id: 'item_1',
+          type: 'command_execution',
+          command: 'echo hi > probe-write.txt',
+          status: 'failed',
+          error: { message: 'Command denied by sandbox: echo hi > probe-write.txt' },
+          exit_code: 1,
+        },
+      ]),
+    });
+
+    expect(await runRunCommand(codexArgs(cwd, ['--tools', 'readonly']), deps)).toBe(0);
+
+    const meta = readMeta(logPathFromStdout());
+    expect(meta.denials).toHaveLength(1);
+    expect(meta.denials?.[0]).toMatchObject({
+      client: 'codex',
+      profile: 'readonly',
+      source: 'client',
+      kind: 'shell',
+      target: 'echo hi > probe-write.txt',
+      reason: 'Command denied by sandbox: echo hi > probe-write.txt',
+    });
+    // Denials are status, not events: the log keeps the tool line only.
+    expect(readJsonLines(logPathFromStdout()).map((line) => line.t)).toEqual([
+      'tool',
+      'text',
+      'result',
+      'end',
+    ]);
+  });
+});
+
 describe('codex worker profile enforcement (NOT-672)', () => {
   const VERSION_169: CodexProbe = (bin: string, argv: string[]) =>
     argv[0] === '--version'
