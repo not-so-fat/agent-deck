@@ -193,13 +193,13 @@ function fakeMuseSpawn(
 function okMuseProbe(): MuseProbe {
   return (bin: string, argv: string[]) => {
     if (argv[0] === '--version') {
-      return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+      return { code: 0, stdout: 'Muse Code 1.4.25 (1.4.25-R9361.1)\n', stderr: '' };
     }
     if (argv[0] === 'exec' && argv[1] === '--help') {
       return {
         code: 0,
         stdout:
-          'Usage: muse exec [options]\n  --disable-write  Disable non-shell workspace file writes\n  --disable-shell  Disable workspace shell execution\n',
+          'Usage: muse exec [options]\n  --approval-mode <MODE>  Tool approval mode\n  --sandbox-network <MODE>  Sandbox network mode\n  --disable-write  Disable non-shell workspace file writes\n',
         stderr: '',
       };
     }
@@ -369,7 +369,12 @@ function makeCursorCase(): ContractCase {
 function makeMuseCase(): ContractCase {
   const { spawn, calls } = fakeMuseSpawn();
   const adapter = createMuseAdapter({ probe: okMuseProbe(), spawn, readFile: okMuseReadFile() });
-  const baseArgs: AdapterStartArgs = { cwd: '/tmp/contract', prompt: 'brief', tools: 'readonly' };
+  const baseArgs: AdapterStartArgs = {
+    cwd: '/tmp/contract',
+    prompt: 'brief',
+    tools: 'readonly',
+    runToken: 'm'.repeat(64),
+  };
   return {
     id: 'muse',
     adapter,
@@ -570,10 +575,15 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
         expect(record.argv).not.toContain('--yolo');
       }
     } else if (readonlyRecord.client === 'muse' && editRecord.client === 'muse') {
+      expect(readonlyRecord.argv).toContain('--approval-mode');
+      expect(readonlyRecord.argv).toContain('never');
       expect(readonlyRecord.argv).toContain('--disable-write');
-      expect(readonlyRecord.argv).toContain('--disable-shell');
+      expect(readonlyRecord.argv).toContain('--sandbox-network');
+      expect(readonlyRecord.argv).toContain('restricted');
+      expect(editRecord.argv).toContain('--approval-mode');
+      expect(editRecord.argv).toContain('--sandbox-network');
+      expect(editRecord.argv).toContain('enabled');
       expect(editRecord.argv).not.toContain('--disable-write');
-      expect(editRecord.argv).not.toContain('--disable-shell');
       for (const record of [readonlyRecord, editRecord]) {
         for (const forbidden of [
           '--yolo',
@@ -581,6 +591,8 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
           '--disable-approval',
           '--disable-sandbox',
           '--permission-profile',
+          '--disable-shell',
+          '--disable-web-tools',
         ]) {
           expect(record.argv).not.toContain(forbidden);
         }

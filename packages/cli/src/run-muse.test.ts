@@ -15,19 +15,23 @@
  * labeled inline. Permission finding (a): 1.4.4 ships with NO named
  * permission profiles — `--permission-profile` only selects enterprise-plane
  * profiles and every candidate id errors "profile does not exist" — so tool
- * profiles map to Muse's own enforcement flags (readonly:
- * `--disable-write --disable-shell`; edit: default bounded flags) instead
- * of profile ids, and `--permission-profile` is never emitted. Readonly
- * fails closed at planStart unless `muse exec --help` lists both flags.
+ * profiles map to Muse's own enforcement flags instead of profile ids, and
+ * `--permission-profile` is never emitted. Enforcement (NOT-671): both
+ * profiles pass `--approval-mode never`; readonly adds `--disable-write`
+ * plus `--sandbox-network restricted`; edit adds `--sandbox-network
+ * enabled`. `--disable-shell` is never passed (it would block readonly
+ * shell reads). The gate fails closed unless `muse exec --help` lists every
+ * flag the requested profile needs.
  *
- * Mapping evidence (Muse Code 1.4.4, 1.4.4-R5419.1): `muse --version`, `muse
- * --help` (approval on-request default, `--permission-profile` selects a
- * named profile), `muse exec --help` (`--disable-write` blocks non-shell
- * workspace writes, `--disable-shell` blocks workspace shell execution,
- * approval and sandbox ON by default), `muse mcp --help` / `muse mcp login
- * --help` (`muse mcp login <server>` is the OAuth login command; the
- * agent-deck entry is named `agent-deck`), `muse config --help` (profiles
- * live in enterprise plane documents, not user settings).
+ * Mapping evidence (Muse Code 1.4.4, 1.4.4-R5419.1, enforcement re-verified
+ * on 1.4.25): `muse --version`, `muse --help` (approval on-request default,
+ * `--permission-profile` selects a named profile), `muse exec --help`
+ * (`--approval-mode` never, `--sandbox-network` restricted|enabled, and
+ * `--disable-write` blocks non-shell workspace writes; approval and sandbox
+ * ON by default), `muse mcp --help` / `muse mcp login --help` (`muse mcp
+ * login <server>` is the OAuth login command; the agent-deck entry is named
+ * `agent-deck`), `muse config --help` (profiles live in enterprise plane
+ * documents, not user settings).
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -40,14 +44,22 @@ import type { RunToolsProfile } from '@agent-deck/backend/agent-run';
 import {
   assertSafeMuseResumeId,
   buildMuseArgv,
+  buildMuseWorkerMcpEntry,
+  buildMuseWorkerSettingsDocument,
+  cleanupMuseWorkerConfig,
   createMuseAdapter,
   createRunAdapter,
+  findMuseForeignProjectServers,
+  MUSE_APPROVAL_FLAGS,
   MUSE_FLAGS_FOR_PROFILE,
   MUSE_FORBIDDEN_FLAGS,
   mergeMuseLines,
+  museDenialFromPayload,
+  museEnforcementFlagsSupported,
   museEventsFromLine,
+  museHelpTextSupportsEnforcement,
   museNoticeFromStderr,
-  museReadonlyFlagsSupported,
+  setupMuseWorkerConfig,
   type MuseFileReader,
   type MuseLineContext,
   type MuseProbe,
@@ -113,33 +125,41 @@ function matchingPlan(cwd: string): McpLaunchPlan {
   };
 }
 
+type MuseSpawnCall = { bin: string; argv: string[]; cwd: string; env?: NodeJS.ProcessEnv };
+
 function fakeMuseSpawn(
   lines: string[] = MUSE_FIXTURE_LINES,
   opts: { stderrLines?: string[]; code?: number; stderrTail?: string } = {},
-): { spawn: MuseSpawn; calls: Array<{ bin: string; argv: string[]; cwd: string }> } {
-  const calls: Array<{ bin: string; argv: string[]; cwd: string }> = [];
-  const spawn = vi.fn((bin: string, argv: string[], spawnOpts: { cwd: string }) => {
-    calls.push({ bin, argv, cwd: spawnOpts.cwd });
-    return {
-      stdout: (async function* (): AsyncGenerator<string> {
-        yield* lines;
-      })(),
-      stderr: (async function* (): AsyncGenerator<string> {
-        yield* (opts.stderrLines ?? []);
-      })(),
-      wait: async () => ({ code: opts.code ?? 0, stderrTail: opts.stderrTail ?? '' }),
-    };
-  });
+): { spawn: MuseSpawn; calls: MuseSpawnCall[] } {
+  const calls: MuseSpawnCall[] = [];
+  const spawn = vi.fn(
+    (bin: string, argv: string[], spawnOpts: { cwd: string; env?: NodeJS.ProcessEnv }) => {
+      calls.push({ bin, argv, cwd: spawnOpts.cwd, ...(spawnOpts.env ? { env: spawnOpts.env } : {}) });
+      return {
+        stdout: (async function* (): AsyncGenerator<string> {
+          yield* lines;
+        })(),
+        stderr: (async function* (): AsyncGenerator<string> {
+          yield* (opts.stderrLines ?? []);
+        })(),
+        wait: async () => ({ code: opts.code ?? 0, stderrTail: opts.stderrTail ?? '' }),
+      };
+    },
+  );
   return { spawn: spawn as unknown as MuseSpawn, calls };
 }
 
-const MUSE_EXEC_HELP_FIXTURE =
-  'Usage: muse exec [options]\n  --disable-write  Disable non-shell workspace file writes\n  --disable-shell  Disable workspace shell execution\n';
+export const MUSE_EXEC_HELP_FIXTURE =
+  'Usage: muse exec [options]\n' +
+  '  --approval-mode <MODE>  Tool approval mode: untrusted|on-request|never\n' +
+  '  --sandbox-network <MODE>  Sandbox network mode\n' +
+  '  --disable-write  Disable non-shell workspace filesystem writes\n' +
+  '  --disable-shell  Disable workspace shell execution\n';
 
 function okMuseProbe(): MuseProbe {
   return (bin: string, argv: string[]) => {
     if (argv[0] === '--version') {
-      return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+      return { code: 0, stdout: 'Muse Code 1.4.25 (1.4.25-R9361.1)\n', stderr: '' };
     }
     if (argv[0] === 'exec' && argv[1] === '--help') {
       return { code: 0, stdout: MUSE_EXEC_HELP_FIXTURE, stderr: '' };
@@ -194,8 +214,10 @@ function makeDeps(
     probe?: MuseProbe;
     readFile?: MuseFileReader;
     plan?: McpLaunchPlan | null;
+    /** When true the real NOT-671 profile gate runs instead of the bypass. */
+    enforceProfile?: boolean;
   } = {},
-): RunDeps & { calls: Array<{ bin: string; argv: string[]; cwd: string }> } {
+): RunDeps & { calls: MuseSpawnCall[] } {
   const { spawn, calls } = fakeMuseSpawn(overrides.lines, {
     ...(overrides.stderrLines !== undefined ? { stderrLines: overrides.stderrLines } : {}),
     ...(overrides.code !== undefined ? { code: overrides.code } : {}),
@@ -209,12 +231,16 @@ function makeDeps(
   return {
     calls,
     muse,
-    // Real adapter behavior with the NOT-669 gate bypassed: these tests
-    // exercise argv/event mapping, not the sibling-ticket mapping.
-    createAdapter: (client) => ({
-      ...createRunAdapter(client, { muse }),
-      profileEnforcement: () => ({ ok: true as const }),
-    }),
+    // Real adapter behavior with the NOT-669 gate bypassed (unless the test
+    // asks for enforcement): these tests exercise argv/event mapping.
+    ...(overrides.enforceProfile
+      ? {}
+      : {
+          createAdapter: (client: 'claude' | 'codex' | 'cursor' | 'muse') => ({
+            ...createRunAdapter(client, { muse }),
+            profileEnforcement: () => ({ ok: true as const }),
+          }),
+        }),
     resolveDeck: async (ref: string) => (ref === DECK.name || ref === DECK.id ? { ...DECK } : null),
     resolveLaunchPlan: (async () => overrides.plan ?? matchingPlan(cwd)) as RunDeps['resolveLaunchPlan'],
     homeDir,
@@ -419,20 +445,34 @@ describe('muse fixture mapping (NOT-407)', () => {
   });
 });
 
-describe('muse argv and tool profiles (NOT-407)', () => {
+describe('muse argv and tool profiles (NOT-407, enforcement NOT-671)', () => {
   const PROMPT = 'remember kiwi';
 
   it.each([
-    ['readonly', ['exec', '--json', '--disable-write', '--disable-shell', '--', PROMPT]],
-    ['edit', ['exec', '--json', '--', PROMPT]],
+    [
+      'readonly',
+      [
+        'exec',
+        '--json',
+        '--approval-mode',
+        'never',
+        '--disable-write',
+        '--sandbox-network',
+        'restricted',
+        '--',
+        PROMPT,
+      ],
+    ],
+    ['edit', ['exec', '--json', '--approval-mode', 'never', '--sandbox-network', 'enabled', '--', PROMPT]],
   ])('start argv for --tools %s', (tools, expected) => {
     expect(buildMuseArgv({ prompt: PROMPT, tools: tools as RunToolsProfile })).toEqual(expected);
   });
 
   it('each tool profile produces its recorded permission flags (no --permission-profile id exists in 1.4.4)', async () => {
+    expect(MUSE_APPROVAL_FLAGS).toEqual(['--approval-mode', 'never']);
     expect(MUSE_FLAGS_FOR_PROFILE).toEqual({
-      readonly: ['--disable-write', '--disable-shell'],
-      edit: [],
+      readonly: ['--disable-write', '--sandbox-network', 'restricted'],
+      edit: ['--sandbox-network', 'enabled'],
     });
     for (const tools of ['readonly', 'edit'] as const) {
       const cwd = makeDir('agent-deck-muse-cwd-');
@@ -443,8 +483,8 @@ describe('muse argv and tool profiles (NOT-407)', () => {
 
       expect(deps.calls).toHaveLength(1);
       const argv = deps.calls[0].argv;
-      expect(argv.slice(0, 2)).toEqual(['exec', '--json']);
-      expect(argv.slice(2, 2 + MUSE_FLAGS_FOR_PROFILE[tools].length)).toEqual([
+      expect(argv.slice(0, 4)).toEqual(['exec', '--json', '--approval-mode', 'never']);
+      expect(argv.slice(4, 4 + MUSE_FLAGS_FOR_PROFILE[tools].length)).toEqual([
         ...MUSE_FLAGS_FOR_PROFILE[tools],
       ]);
       expect(argv.at(-2)).toBe('--');
@@ -454,29 +494,39 @@ describe('muse argv and tool profiles (NOT-407)', () => {
     }
   });
 
-  it('readonly fails closed rather than running under default permissions: enforcement flags are unconditional', () => {
+  it('enforcement flags are unconditional on start and resume; shell reads stay available', () => {
     // There is no read-only --permission-profile id to go missing (1.4.4
-    // ships none and user settings accept none), so readonly enforcement is
-    // structural: every readonly argv carries both flags, on start and resume.
+    // ships none and user settings accept none), so enforcement is
+    // structural: every argv carries --approval-mode never plus its profile
+    // flags, on start and resume. --disable-shell is never passed: it would
+    // block readonly shell reads too.
     for (const resumeId of [undefined, '01a13012-b2c8-7da0-8d3d-1397cfaf5952']) {
       const argv = buildMuseArgv({
         prompt: 'p',
         tools: 'readonly',
         ...(resumeId ? { resumeId } : {}),
       });
+      expect(argv).toContain('--approval-mode');
+      expect(argv).toContain('never');
       expect(argv).toContain('--disable-write');
-      expect(argv).toContain('--disable-shell');
+      expect(argv).toContain('--sandbox-network');
+      expect(argv).toContain('restricted');
+      expect(argv).not.toContain('--disable-shell');
     }
     const editArgv = buildMuseArgv({ prompt: 'p', tools: 'edit' });
+    expect(editArgv).toContain('--approval-mode');
+    expect(editArgv).toContain('--sandbox-network');
+    expect(editArgv).toContain('enabled');
     expect(editArgv).not.toContain('--disable-write');
+    expect(editArgv).not.toContain('restricted');
     expect(editArgv).not.toContain('--disable-shell');
   });
 
-  it('a missing read-only enforcement makes readonly exit non-zero before any model call', async () => {
+  it('a build without the enforcement flags fails closed for both profiles before any model call', async () => {
     // The installed muse does not list the enforcement flags (older/newer
-    // build without --disable-write/--disable-shell): planStart fails
-    // closed with a remedy and the run never spawns. Edit is unaffected
-    // (it uses the default bounded permissions by design).
+    // build): the profile gate fails closed with a remedy and the run never
+    // spawns — for readonly and edit alike, since both need --approval-mode
+    // and --sandbox-network.
     const noFlagsProbe: MuseProbe = (bin, argv) => {
       if (argv[0] === '--version') {
         return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
@@ -486,30 +536,30 @@ describe('muse argv and tool profiles (NOT-407)', () => {
       }
       return { code: 1, stdout: '', stderr: '' };
     };
-    expect(museReadonlyFlagsSupported(okMuseProbe(), 'muse')).toBe(true);
-    expect(museReadonlyFlagsSupported(noFlagsProbe, 'muse')).toBe(false);
+    expect(museEnforcementFlagsSupported(okMuseProbe(), 'muse', 'readonly')).toBe(true);
+    expect(museEnforcementFlagsSupported(okMuseProbe(), 'muse', 'edit')).toBe(true);
+    expect(museEnforcementFlagsSupported(noFlagsProbe, 'muse', 'readonly')).toBe(false);
+    expect(museEnforcementFlagsSupported(noFlagsProbe, 'muse', 'edit')).toBe(false);
 
-    const cwd = makeDir('agent-deck-muse-cwd-');
-    const homeDir = makeDir('agent-deck-muse-home-');
-    const deps = makeDeps(cwd, homeDir, { probe: noFlagsProbe });
+    for (const tools of ['readonly', 'edit'] as const) {
+      const cwd = makeDir('agent-deck-muse-cwd-');
+      const homeDir = makeDir('agent-deck-muse-home-');
+      const deps = makeDeps(cwd, homeDir, { probe: noFlagsProbe, enforceProfile: true });
 
-    const code = await runRunCommand(museArgs(cwd, ['--tools', 'readonly']), deps);
+      const code = await runRunCommand(museArgs(cwd, ['--tools', tools]), deps);
 
-    expect(code).not.toBe(0);
-    expect(deps.calls).toHaveLength(0);
-    expect(errors.join('\n')).toMatch(/readonly enforcement unavailable/);
-    expect(errors.join('\n')).toMatch(/Upgrade to Muse Code/);
-    expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
-
-    // Same build, edit still starts (no enforcement flags to verify).
-    const editCwd = makeDir('agent-deck-muse-cwd-');
-    const editHome = makeDir('agent-deck-muse-home-');
-    const editDeps = makeDeps(editCwd, editHome, { probe: noFlagsProbe });
-    expect(await runRunCommand(museArgs(editCwd, ['--tools', 'edit']), editDeps)).toBe(0);
-    expect(editDeps.calls).toHaveLength(1);
+      expect(code).not.toBe(0);
+      expect(deps.calls).toHaveLength(0);
+      expect(errors.join('\n')).toMatch(/enforcement unavailable/);
+      expect(errors.join('\n')).toMatch(/Upgrade Muse Code/);
+      expect(errors.join('\n')).toMatch(/no process was started/i);
+      expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+      logs = [];
+      errors = [];
+    }
   });
 
-  it('no generated argv ever contains a permission bypass or --permission-profile', () => {
+  it('no generated argv ever contains a permission bypass, --permission-profile, or a read blocker', () => {
     const profiles: RunToolsProfile[] = ['readonly', 'edit'];
     expect(MUSE_FORBIDDEN_FLAGS).toEqual([
       '--yolo',
@@ -517,6 +567,8 @@ describe('muse argv and tool profiles (NOT-407)', () => {
       '--disable-approval',
       '--disable-sandbox',
       '--permission-profile',
+      '--disable-shell',
+      '--disable-web-tools',
     ]);
     for (const tools of profiles) {
       for (const resumeId of [undefined, 'ses_abc']) {
@@ -578,8 +630,8 @@ describe('muse argv and tool profiles (NOT-407)', () => {
         expect(argv.slice(sep + 1)).toEqual([prompt]);
         expect(argv.slice(0, sep).filter((arg) => arg.startsWith('-'))).toEqual(
           resumeId
-            ? ['--json', '--session-id', '--disable-write', '--disable-shell']
-            : ['--json', '--disable-write', '--disable-shell'],
+            ? ['--json', '--approval-mode', '--disable-write', '--sandbox-network', '--session-id']
+            : ['--json', '--approval-mode', '--disable-write', '--sandbox-network'],
         );
       }
     },
@@ -614,10 +666,13 @@ describe('muse argv and tool profiles (NOT-407)', () => {
     expect(deps.calls[0].argv).toEqual([
       'exec',
       '--json',
+      '--approval-mode',
+      'never',
+      '--disable-write',
+      '--sandbox-network',
+      'restricted',
       '--session-id',
       MUSE_SESSION_ID,
-      '--disable-write',
-      '--disable-shell',
       '--',
       'remember kiwi',
     ]);
@@ -668,31 +723,21 @@ describe('muse preflight and trust (NOT-407)', () => {
     expect(deps.calls).toHaveLength(1);
   });
 
-  it('a missing agent-deck MCP entry fails closed with the setup + mcp login remedy before spawning', async () => {
+  it('no pre-registered MCP entry is needed: the worker config carries the run entry (NOT-671)', async () => {
     const cwd = makeDir('agent-deck-muse-cwd-');
     const homeDir = makeDir('agent-deck-muse-home-');
-    const readFile = fakeMuseReadFile(cwd, {
-      globalSettings: JSON.stringify({ schema_version: 1, mcpServers: {} }),
-      projectSettings: null,
+    const deps = makeDeps(cwd, homeDir, {
+      readFile: fakeMuseReadFile(cwd, {
+        globalSettings: JSON.stringify({ schema_version: 1, mcpServers: {} }),
+        projectSettings: null,
+      }),
     });
-    const deps = makeDeps(cwd, homeDir, { readFile });
 
-    const code = await runRunCommand(museArgs(cwd), deps);
-
-    expect(code).not.toBe(0);
-    expect(deps.calls).toHaveLength(0);
-    expect(errors.join('\n')).toContain('agent-deck setup --client muse');
-    expect(errors.join('\n')).toContain('muse mcp login agent-deck');
-    expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
-    // Both scopes were consulted before failing: global settings and the
-    // cwd project .mcp.json.
-    expect(readFile.paths).toContain(path.join(cwd, '.mcp.json'));
-    expect(readFile.paths.some((p) => p.endsWith(`${path.sep}muse${path.sep}settings.json`))).toBe(
-      true,
-    );
+    expect(await runRunCommand(museArgs(cwd), deps)).toBe(0);
+    expect(deps.calls).toHaveLength(1);
   });
 
-  it('a project .mcp.json entry satisfies the MCP check without a global entry', async () => {
+  it('a project .mcp.json agent-deck entry does not break runs (NOT-671)', async () => {
     const cwd = makeDir('agent-deck-muse-cwd-');
     const homeDir = makeDir('agent-deck-muse-home-');
     const deps = makeDeps(cwd, homeDir, {
@@ -881,5 +926,356 @@ describe('muse line parser edges (NOT-407)', () => {
       ok: true,
       trustOverride: false,
     });
+  });
+});
+
+describe('muse worker profile enforcement gate (NOT-671)', () => {
+  it('help text must list --approval-mode and --sandbox-network, plus --disable-write for readonly', () => {
+    expect(museHelpTextSupportsEnforcement(MUSE_EXEC_HELP_FIXTURE, 'readonly')).toBe(true);
+    expect(museHelpTextSupportsEnforcement(MUSE_EXEC_HELP_FIXTURE, 'edit')).toBe(true);
+    expect(museHelpTextSupportsEnforcement('Usage: muse exec [options]\n', 'edit')).toBe(false);
+    const noWrite = MUSE_EXEC_HELP_FIXTURE.replace('--disable-write', '--disable-something');
+    expect(museHelpTextSupportsEnforcement(noWrite, 'readonly')).toBe(false);
+    expect(museHelpTextSupportsEnforcement(noWrite, 'edit')).toBe(true);
+    for (const marker of ['--approval-mode', '--sandbox-network']) {
+      const missing = MUSE_EXEC_HELP_FIXTURE.replace(marker, '--something-else');
+      expect(museHelpTextSupportsEnforcement(missing, 'readonly')).toBe(false);
+      expect(museHelpTextSupportsEnforcement(missing, 'edit')).toBe(false);
+    }
+  });
+
+  it('a failing exec --help probe means enforcement is unsupported', () => {
+    const failing: MuseProbe = () => ({ code: 127, stdout: '', stderr: '' });
+    expect(museEnforcementFlagsSupported(failing, 'muse', 'readonly')).toBe(false);
+    expect(museEnforcementFlagsSupported(failing, 'muse', 'edit')).toBe(false);
+  });
+
+  it('the gate passes with enforcing flags, isolated projects, and a writable worker config', () => {
+    const cwd = makeDir('agent-deck-muse-cwd-');
+    const adapter = createMuseAdapter({
+      probe: okMuseProbe(),
+      spawn: fakeMuseSpawn().spawn,
+      readFile: fakeMuseReadFile(cwd),
+    });
+
+    for (const tools of ['readonly', 'edit'] as const) {
+      expect(adapter.profileEnforcement({ cwd, prompt: 'p', tools })).toEqual({ ok: true });
+    }
+  });
+
+  it('resume goes through the same gate as start', async () => {
+    const noFlagsProbe: MuseProbe = (bin, argv) => {
+      if (argv[0] === '--version') {
+        return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+      }
+      if (argv[0] === 'exec' && argv[1] === '--help') {
+        return { code: 0, stdout: 'Usage: muse exec [options]\n  --json  Output JSONL\n', stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    };
+    const cwd = makeDir('agent-deck-muse-cwd-');
+    const homeDir = makeDir('agent-deck-muse-home-');
+    const deps = makeDeps(cwd, homeDir, {
+      probe: noFlagsProbe,
+      enforceProfile: true,
+      lines: successStream(MUSE_SESSION_ID, [deltaLine(MUSE_SESSION_ID, 'kiwi')]),
+    });
+
+    expect(await runRunCommand(museArgs(cwd, ['--resume', MUSE_SESSION_ID]), deps)).not.toBe(0);
+    expect(deps.calls).toHaveLength(0);
+    expect(errors.join('\n')).toMatch(/enforcement unavailable/);
+    expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+  });
+
+  it('a project config with a foreign MCP server fails closed before spawn', async () => {
+    const cwd = makeDir('agent-deck-muse-cwd-');
+    const homeDir = makeDir('agent-deck-muse-home-');
+    const deps = makeDeps(cwd, homeDir, {
+      enforceProfile: true,
+      readFile: fakeMuseReadFile(cwd, {
+        projectSettings: JSON.stringify({
+          mcpServers: { 'agent-deck': { type: 'http', url: 'http://127.0.0.1:1110/mcp' }, other: {} },
+        }),
+      }),
+    });
+
+    expect(await runRunCommand(museArgs(cwd), deps)).not.toBe(0);
+    expect(deps.calls).toHaveLength(0);
+    expect(errors.join('\n')).toMatch(/MCP isolation unavailable/);
+    expect(errors.join('\n')).toContain('"other"');
+    expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+  });
+
+  it('foreign servers are found up the tree, agent-deck-only projects pass', () => {
+    const cwd = path.join(makeDir('agent-deck-muse-tree-'), 'a', 'b');
+    fs.mkdirSync(cwd, { recursive: true });
+    const root = path.resolve(cwd, '..', '..');
+    const readFile: MuseFileReader = (filePath) => {
+      if (filePath === path.join(root, '.mcp.json')) {
+        return JSON.stringify({ mcpServers: { stranger: { type: 'http' } } });
+      }
+      return null;
+    };
+    expect(findMuseForeignProjectServers(cwd, readFile)).toEqual([
+      { configPath: path.join(root, '.mcp.json'), server: 'stranger' },
+    ]);
+    const agentDeckOnly: MuseFileReader = (filePath) =>
+      filePath === path.join(cwd, '.mcp.json')
+        ? JSON.stringify({ mcpServers: { 'agent-deck': { type: 'http' } } })
+        : null;
+    expect(findMuseForeignProjectServers(cwd, agentDeckOnly)).toEqual([]);
+    const garbage: MuseFileReader = (filePath) =>
+      filePath === path.join(cwd, '.mcp.json') ? 'not json {' : null;
+    expect(findMuseForeignProjectServers(cwd, garbage)).toEqual([
+      { configPath: path.join(cwd, '.mcp.json'), server: '<unparseable .mcp.json>' },
+    ]);
+  });
+
+  it('an agent-deck-only project entry still runs', async () => {
+    const cwd = makeDir('agent-deck-muse-cwd-');
+    const homeDir = makeDir('agent-deck-muse-home-');
+    const deps = makeDeps(cwd, homeDir, {
+      enforceProfile: true,
+      readFile: fakeMuseReadFile(cwd, { projectSettings: SETTINGS_WITH_ENTRY }),
+    });
+
+    expect(await runRunCommand(museArgs(cwd), deps)).toBe(0);
+    expect(deps.calls).toHaveLength(1);
+  });
+
+  it('an unwritable worker config fails the gate with a remedy', () => {
+    const cwd = makeDir('agent-deck-muse-cwd-');
+    const adapter = createMuseAdapter({
+      probe: okMuseProbe(),
+      spawn: fakeMuseSpawn().spawn,
+      readFile: fakeMuseReadFile(cwd),
+      makeWorkerConfig: () => {
+        throw new Error('tmp full');
+      },
+    });
+
+    const gate = adapter.profileEnforcement({ cwd, prompt: 'p', tools: 'readonly' });
+    expect(gate.ok).toBe(false);
+    if (!gate.ok) {
+      expect(gate.remedy).toMatch(/worker config isolation unavailable/);
+      expect(gate.remedy).toMatch(/No process was started/);
+    }
+  });
+
+  it('planStart carries the pin and launch deck instead of rejecting them', () => {
+    const adapter = createMuseAdapter({
+      probe: okMuseProbe(),
+      spawn: fakeMuseSpawn().spawn,
+      readFile: fakeMuseReadFile('/tmp/x'),
+    });
+    expect(
+      adapter.planStart({
+        cwd: '/tmp/x',
+        prompt: 'p',
+        tools: 'readonly',
+        playbookPin: { playbookId: 'pb', versionId: 'v' },
+        launchDeckId: 'deck-other',
+        headerlessDeckMismatch: true,
+      }),
+    ).toEqual({ ok: true, trustOverride: false });
+  });
+});
+
+describe('muse worker MCP identity (NOT-671)', () => {
+  it('the worker entry carries the daemon URL and the workspace, pin, deck, and token headers', () => {
+    expect(buildMuseWorkerMcpEntry({ workspaceRoot: '/work' })).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: { 'x-agent-deck-workspace': '/work' },
+    });
+    expect(
+      buildMuseWorkerMcpEntry(
+        {
+          workspaceRoot: '/work',
+          playbookPin: { playbookId: 'pb', versionId: 'v1' },
+          launchDeckId: 'deck-1',
+          runToken: 't'.repeat(64),
+        },
+        { host: '127.0.0.1', port: '2222' },
+      ),
+    ).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:2222/mcp',
+      headers: {
+        'x-agent-deck-workspace': '/work',
+        'x-agent-deck-playbook-pin': 'pb=v1',
+        'x-agent-deck-deck-id': 'deck-1',
+        'x-agent-deck-run-token': 't'.repeat(64),
+      },
+    });
+    expect(
+      buildMuseWorkerSettingsDocument(buildMuseWorkerMcpEntry({ workspaceRoot: '/work' })),
+    ).toEqual({
+      schema_version: 1,
+      mcpServers: {
+        'agent-deck': {
+          type: 'http',
+          url: 'http://127.0.0.1:1110/mcp',
+          headers: { 'x-agent-deck-workspace': '/work' },
+        },
+      },
+    });
+  });
+
+  it('the worker config holds only the run entry and carries auth through', () => {
+    const configHome = makeDir('agent-deck-muse-worker-');
+    const document = buildMuseWorkerSettingsDocument(
+      buildMuseWorkerMcpEntry({ workspaceRoot: '/w' }),
+    );
+
+    expect(setupMuseWorkerConfig({ configHome, settingsDocument: document, authText: AUTH_JSON })).toBe(
+      configHome,
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(configHome, 'muse', 'settings.json'), 'utf8'))).toEqual(
+      document,
+    );
+    expect(fs.readFileSync(path.join(configHome, 'muse', 'auth.json'), 'utf8')).toBe(AUTH_JSON);
+    cleanupMuseWorkerConfig(configHome);
+    expect(fs.existsSync(configHome)).toBe(false);
+  });
+
+  it('start spawns with XDG_CONFIG_HOME pointed at a cleaned-up worker config', async () => {
+    const cwd = makeDir('agent-deck-muse-cwd-');
+    const homeDir = makeDir('agent-deck-muse-home-');
+    const deps = makeDeps(cwd, homeDir);
+
+    expect(await runRunCommand(museArgs(cwd), deps)).toBe(0);
+    expect(deps.calls).toHaveLength(1);
+    const childConfigHome = deps.calls[0].env?.XDG_CONFIG_HOME;
+    expect(childConfigHome).toBeTruthy();
+    expect(childConfigHome).not.toBe(process.env.XDG_CONFIG_HOME);
+    // Per-run: removed after the stream ends.
+    expect(fs.existsSync(childConfigHome as string)).toBe(false);
+  });
+
+  it('start without a worker token fails closed before spawn', async () => {
+    const { spawn, calls } = fakeMuseSpawn();
+    const adapter = createMuseAdapter({
+      probe: okMuseProbe(),
+      spawn,
+      readFile: fakeMuseReadFile('/tmp/x'),
+    });
+    await expect(async () => {
+      for await (const _event of adapter.start({ cwd: '/tmp/x', prompt: 'p', tools: 'readonly' })) {
+        // Drain.
+      }
+    }).rejects.toThrow(/without a worker token/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('muse client denials (NOT-671)', () => {
+  it('denied flags, policy decisions, and refusal reasons become denials', () => {
+    expect(
+      museDenialFromPayload('tool_batch.effect.started', {
+        denied: true,
+        reason: 'sandbox blocked file write to /work/a.txt',
+        record: { tool_name: 'write_file', call_id: 'call_1' },
+      }),
+    ).toEqual({
+      target: 'write_file',
+      reason: 'sandbox blocked file write to /work/a.txt',
+      denialKind: 'file_write',
+    });
+    expect(
+      museDenialFromPayload('task.lifecycle.side_effect_intent', {
+        operation: 'shell.exec',
+        policy_decision: 'denied',
+      }),
+    ).toEqual(expect.objectContaining({ denialKind: 'shell', target: 'shell.exec' }));
+    expect(
+      museDenialFromPayload('run.terminal.failed', { reason: 'network request blocked' }),
+    ).toEqual(expect.objectContaining({ denialKind: 'network' }));
+  });
+
+  it('answer text, prompts, and ordinary payloads never become denials', () => {
+    expect(
+      museDenialFromPayload('run.output.delta', { text: 'writes are denied in readonly mode' }),
+    ).toBeNull();
+    expect(museDenialFromPayload('turn.input.user', { reason: 'denied' })).toBeNull();
+    expect(museDenialFromPayload('task.lifecycle.started', { kind: 'task_lifecycle' })).toBeNull();
+    expect(
+      museDenialFromPayload('task.lifecycle.side_effect_intent', {
+        operation: 'model.unknown.response',
+        policy_decision: 'not_applicable',
+      }),
+    ).toBeNull();
+    expect(
+      museDenialFromPayload('run.terminal.cancelled', { reason: 'user quit' }),
+    ).toBeNull();
+  });
+
+  it('denials surface ahead of the line events without replacing them', () => {
+    const ctx: MuseLineContext = { sessionId: null };
+    const toolEvents = museEventsFromLine(
+      envelope('s7', 'tool_batch.effect.started', {
+        denied: true,
+        reason: 'command execution denied by policy',
+        record: { tool_name: 'shell', call_id: 'call_2' },
+      }),
+      ctx,
+    );
+    expect(toolEvents.map((event) => event.kind)).toEqual(['denial', 'tool']);
+    expect(toolEvents[0]).toMatchObject({
+      kind: 'denial',
+      denialKind: 'shell',
+      target: 'shell',
+      sessionId: 's7',
+    });
+    const terminalEvents = museEventsFromLine(
+      envelope('s7', 'run.terminal.failed', {
+        kind: 'run_terminal',
+        terminal: 'failed',
+        reason: 'file write blocked by sandbox',
+      }),
+      ctx,
+    );
+    expect(terminalEvents.map((event) => event.kind)).toEqual(['denial', 'result']);
+    // A completed answer mentioning a refusal stays a plain result.
+    expect(
+      museEventsFromLine(
+        envelope('s7', 'run.terminal.completed', {
+          kind: 'run_terminal',
+          terminal: 'completed',
+          text: 'the write was denied, so I read instead',
+        }),
+        ctx,
+      ).map((event) => event.kind),
+    ).toEqual(['result']);
+  });
+
+  it('a run records client denials with the effective profile', async () => {
+    for (const tools of ['readonly', 'edit'] as const) {
+      const cwd = makeDir('agent-deck-muse-cwd-');
+      const homeDir = makeDir('agent-deck-muse-home-');
+      const sessionId = `ses_denied_${tools}`;
+      const deps = makeDeps(cwd, homeDir, {
+        lines: successStream(sessionId, [
+          envelope(sessionId, 'tool_batch.effect.started', {
+            denied: true,
+            reason: 'sandbox blocked file write to /work/a.txt',
+            record: { tool_name: 'write_file', call_id: 'call_3' },
+          }),
+          deltaLine(sessionId, 'done despite refusal'),
+        ]),
+      });
+
+      expect(await runRunCommand(museArgs(cwd, ['--tools', tools]), deps)).toBe(0);
+      const meta = readMeta(logPathFromStdout());
+      expect(meta.state).toBe('ended');
+      expect(meta.denials).toHaveLength(1);
+      expect(meta.denials?.[0]).toMatchObject({
+        client: 'muse',
+        profile: tools,
+        source: 'client',
+        kind: 'file_write',
+      });
+      logs = [];
+    }
   });
 });
