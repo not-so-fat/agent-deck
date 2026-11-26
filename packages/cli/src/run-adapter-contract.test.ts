@@ -193,13 +193,13 @@ function fakeMuseSpawn(
 function okMuseProbe(): MuseProbe {
   return (bin: string, argv: string[]) => {
     if (argv[0] === '--version') {
-      return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+      return { code: 0, stdout: 'Muse Code 1.4.25 (1.4.25-R9361.1)\n', stderr: '' };
     }
     if (argv[0] === 'exec' && argv[1] === '--help') {
       return {
         code: 0,
         stdout:
-          'Usage: muse exec [options]\n  --disable-write  Disable non-shell workspace file writes\n  --disable-shell  Disable workspace shell execution\n',
+          'Usage: muse exec [options]\n  --approval-mode <MODE>  Tool approval mode\n  --sandbox-network <MODE>  Sandbox network mode\n  --disable-write  Disable non-shell workspace file writes\n  --disable-sandbox  Disable the filesystem sandbox\n',
         stderr: '',
       };
     }
@@ -320,8 +320,19 @@ function makeCodexCase(): ContractCase {
 
 function makeCursorCase(): ContractCase {
   const { spawn, calls } = fakeCursorSpawn();
-  const adapter = createCursorAdapter({ probe: okCursorProbe(), spawn });
-  const baseArgs: AdapterStartArgs = { cwd: '/tmp/contract', prompt: 'brief', tools: 'readonly' };
+  const osHome = makeDir('agent-deck-contract-oshome-');
+  const adapter = createCursorAdapter({
+    probe: okCursorProbe(),
+    spawn,
+    readFile: () => null,
+    homedir: () => osHome,
+  });
+  const baseArgs: AdapterStartArgs = {
+    cwd: '/tmp/contract',
+    prompt: 'brief',
+    tools: 'readonly',
+    runToken: 'c'.repeat(64),
+  };
   return {
     id: 'cursor',
     adapter,
@@ -358,7 +369,12 @@ function makeCursorCase(): ContractCase {
 function makeMuseCase(): ContractCase {
   const { spawn, calls } = fakeMuseSpawn();
   const adapter = createMuseAdapter({ probe: okMuseProbe(), spawn, readFile: okMuseReadFile() });
-  const baseArgs: AdapterStartArgs = { cwd: '/tmp/contract', prompt: 'brief', tools: 'readonly' };
+  const baseArgs: AdapterStartArgs = {
+    cwd: '/tmp/contract',
+    prompt: 'brief',
+    tools: 'readonly',
+    runToken: 'm'.repeat(64),
+  };
   return {
     id: 'muse',
     adapter,
@@ -456,6 +472,8 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       cwd: '/tmp/contract',
       prompt: 'brief',
       tools: 'readonly',
+      // Adapters with per-run worker MCP identity (NOT-671) require it.
+      runToken: 'contract-run-token',
     })) {
       events.push(event);
     }
@@ -474,6 +492,8 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       cwd: '/tmp/contract',
       prompt: 'brief',
       tools: 'readonly',
+      // Adapters with per-run worker MCP identity (NOT-671) require it.
+      runToken: 'contract-run-token',
     })) {
       events.push(event);
     }
@@ -543,25 +563,39 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       }
     } else if (readonlyRecord.client === 'cursor' && editRecord.client === 'cursor') {
       expect(readonlyRecord.argv).toContain('--trust');
+      expect(readonlyRecord.argv).toContain('--plan');
       expect(readonlyRecord.argv).not.toContain('--force');
+      expect(readonlyRecord.argv).toContain('enabled');
+      expect(readonlyRecord.argv).not.toContain('disabled');
       expect(editRecord.argv).toContain('--trust');
       expect(editRecord.argv).toContain('--force');
+      expect(editRecord.argv).not.toContain('--plan');
+      expect(editRecord.argv).toContain('disabled');
+      expect(editRecord.argv).not.toContain('enabled');
       for (const record of [readonlyRecord, editRecord]) {
+        expect(record.argv).toContain('--sandbox');
+        expect(record.argv).toContain('--approve-mcps');
         expect(record.argv).not.toContain('--yolo');
-        expect(record.argv).not.toContain('--approve-mcps');
       }
     } else if (readonlyRecord.client === 'muse' && editRecord.client === 'muse') {
+      expect(readonlyRecord.argv).toContain('--approval-mode');
+      expect(readonlyRecord.argv).toContain('never');
       expect(readonlyRecord.argv).toContain('--disable-write');
-      expect(readonlyRecord.argv).toContain('--disable-shell');
+      expect(readonlyRecord.argv).toContain('--sandbox-network');
+      expect(readonlyRecord.argv).toContain('restricted');
+      expect(readonlyRecord.argv).not.toContain('--disable-sandbox');
+      expect(editRecord.argv).toContain('--approval-mode');
+      expect(editRecord.argv).toContain('--disable-sandbox');
+      expect(editRecord.argv).not.toContain('--sandbox-network');
       expect(editRecord.argv).not.toContain('--disable-write');
-      expect(editRecord.argv).not.toContain('--disable-shell');
       for (const record of [readonlyRecord, editRecord]) {
         for (const forbidden of [
           '--yolo',
           '--trust-workspace',
           '--disable-approval',
-          '--disable-sandbox',
           '--permission-profile',
+          '--disable-shell',
+          '--disable-web-tools',
         ]) {
           expect(record.argv).not.toContain(forbidden);
         }

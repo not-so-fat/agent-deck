@@ -3,10 +3,11 @@
  * each client's explicit per-run override — never through inherited process
  * env, which MCP servers started with a restricted env never see. Codex
  * carries the pin as a `-c mcp_servers.agent-deck` argv override; Claude
- * passes an inline `mcpServers` entry to the SDK; Cursor and Muse have no
- * per-run override and fail closed in `planStart` instead of silently
- * reading live bodies. NOT-566: both overrides are pure HTTP (workspace +
- * pin headers), with no launcher process involved.
+ * passes an inline `mcpServers` entry to the SDK; Cursor carries it as a
+ * header in the worker home's per-run MCP entry and Muse as a header in the
+ * worker config's per-run entry (NOT-671). NOT-566: the codex/claude
+ * overrides are pure HTTP (workspace + pin headers), with no launcher
+ * process involved.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -28,8 +29,20 @@ import {
   CODEX_PIN_WORKSPACE_HEADER,
   createCodexAdapter,
 } from './codex';
-import { createCursorAdapter } from './cursor';
-import { createMuseAdapter } from './muse';
+import {
+  buildCursorWorkerMcpEntry,
+  createCursorAdapter,
+  CURSOR_WORKER_LAUNCH_DECK_HEADER,
+  CURSOR_WORKER_PLAYBOOK_PIN_HEADER,
+  CURSOR_WORKER_WORKSPACE_HEADER,
+} from './cursor';
+import {
+  buildMuseWorkerMcpEntry,
+  createMuseAdapter,
+  MUSE_WORKER_LAUNCH_DECK_HEADER,
+  MUSE_WORKER_PLAYBOOK_PIN_HEADER,
+  MUSE_WORKER_WORKSPACE_HEADER,
+} from './muse';
 
 const PIN = { playbookId: 'pb_baseline', versionId: '123e4567-e89b-42d3-a456-426614174000' };
 const PIN_VALUE = 'pb_baseline=123e4567-e89b-42d3-a456-426614174000';
@@ -193,32 +206,37 @@ describe('playbook pin carriage (NOT-537)', () => {
     }
   });
 
-  it('cursor fails closed on a pin before any model work', () => {
+  it('cursor accepts a pin and carries it in the worker MCP entry (NOT-671)', () => {
     const adapter = createCursorAdapter();
-    const plan = adapter.planStart({ cwd: '/tmp', prompt: 'hi', tools: 'readonly', playbookPin: PIN });
-    expect(plan.ok).toBe(false);
-    if (!plan.ok) {
-      expect(plan.remedy).toContain('--playbook-version is not supported with --client cursor');
-    }
+    expect(
+      adapter.planStart({ cwd: '/tmp', prompt: 'hi', tools: 'readonly', playbookPin: PIN }),
+    ).toEqual({ ok: true, trustOverride: true });
     expect(
       adapter.planStart({ cwd: '/tmp', prompt: 'hi', tools: 'readonly' }),
     ).toEqual({ ok: true, trustOverride: true });
+    expect(buildCursorWorkerMcpEntry({ workspaceRoot: '/tmp', playbookPin: PIN })).toEqual({
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: {
+        [CURSOR_WORKER_WORKSPACE_HEADER]: '/tmp',
+        [CURSOR_WORKER_PLAYBOOK_PIN_HEADER]: PIN_VALUE,
+      },
+    });
   });
 
-  it('muse fails closed on a pin before any model work', () => {
-    const adapter = createMuseAdapter({
-      readFile: (candidate) =>
-        candidate.endsWith('settings.json')
-          ? JSON.stringify({ mcpServers: { 'agent-deck': { command: 'agent-deck' } } })
-          : null,
-      probe: () => ({ code: 0, stdout: '--disable-write --disable-shell', stderr: '' }),
-    });
-    const plan = adapter.planStart({ cwd: '/tmp', prompt: 'hi', tools: 'readonly', playbookPin: PIN });
-    expect(plan.ok).toBe(false);
-    if (!plan.ok) {
-      expect(plan.remedy).toContain('--playbook-version is not supported with --client muse');
-    }
+  it('muse accepts a pin and carries it in the worker MCP entry (NOT-671)', () => {
+    const adapter = createMuseAdapter({ readFile: () => null });
+    expect(
+      adapter.planStart({ cwd: '/tmp', prompt: 'hi', tools: 'readonly', playbookPin: PIN }),
+    ).toEqual({ ok: true, trustOverride: false });
     expect(adapter.planStart({ cwd: '/tmp', prompt: 'hi', tools: 'readonly' }).ok).toBe(true);
+    expect(buildMuseWorkerMcpEntry({ workspaceRoot: '/tmp', playbookPin: PIN })).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: {
+        [MUSE_WORKER_WORKSPACE_HEADER]: '/tmp',
+        [MUSE_WORKER_PLAYBOOK_PIN_HEADER]: PIN_VALUE,
+      },
+    });
   });
 });
 
@@ -228,6 +246,12 @@ describe('launch deck carriage for runs started from an MCP session', () => {
   it('header names match the shared contract', () => {
     expect(CODEX_LAUNCH_DECK_HEADER).toBe('x-agent-deck-deck-id');
     expect(CLAUDE_LAUNCH_DECK_HEADER).toBe('x-agent-deck-deck-id');
+    expect(CURSOR_WORKER_LAUNCH_DECK_HEADER).toBe('x-agent-deck-deck-id');
+    expect(CURSOR_WORKER_WORKSPACE_HEADER).toBe('x-agent-deck-workspace');
+    expect(CURSOR_WORKER_PLAYBOOK_PIN_HEADER).toBe('x-agent-deck-playbook-pin');
+    expect(MUSE_WORKER_LAUNCH_DECK_HEADER).toBe('x-agent-deck-deck-id');
+    expect(MUSE_WORKER_WORKSPACE_HEADER).toBe('x-agent-deck-workspace');
+    expect(MUSE_WORKER_PLAYBOOK_PIN_HEADER).toBe('x-agent-deck-playbook-pin');
   });
 
   it('codex adds the -c override with the deck header, with or without a pin', () => {
@@ -292,26 +316,44 @@ describe('launch deck carriage for runs started from an MCP session', () => {
     expect(resume.indexOf('-c')).toBeLessThan(resume.indexOf('--'));
   });
 
-  it('cursor and muse fail closed only on a headerless deck mismatch', () => {
-    const muse = createMuseAdapter({
-      readFile: (candidate) =>
-        candidate.endsWith('settings.json')
-          ? JSON.stringify({ mcpServers: { 'agent-deck': { command: 'agent-deck' } } })
-          : null,
-      probe: () => ({ code: 0, stdout: '--disable-write --disable-shell', stderr: '' }),
-    });
-    for (const adapter of [createCursorAdapter(), muse]) {
-      const plan = adapter.planStart({
+  it('cursor carries the launch deck in the worker MCP entry (NOT-671)', () => {
+    const adapter = createCursorAdapter();
+    expect(
+      adapter.planStart({
         cwd: '/work',
         prompt: 'hi',
         tools: 'readonly',
         launchDeckId: DECK_ID,
-        headerlessDeckMismatch: true,
-      });
-      expect(plan.ok).toBe(false);
-      expect(
-        adapter.planStart({ cwd: '/work', prompt: 'hi', tools: 'readonly', launchDeckId: DECK_ID }).ok,
-      ).toBe(true);
-    }
+      }),
+    ).toEqual({ ok: true, trustOverride: true });
+    expect(
+      buildCursorWorkerMcpEntry({ workspaceRoot: '/work', launchDeckId: DECK_ID }),
+    ).toEqual({
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: {
+        [CURSOR_WORKER_WORKSPACE_HEADER]: '/work',
+        [CURSOR_WORKER_LAUNCH_DECK_HEADER]: DECK_ID,
+      },
+    });
+  });
+
+  it('muse carries the launch deck in the worker MCP entry (NOT-671)', () => {
+    const muse = createMuseAdapter({ readFile: () => null });
+    expect(
+      muse.planStart({
+        cwd: '/work',
+        prompt: 'hi',
+        tools: 'readonly',
+        launchDeckId: DECK_ID,
+      }),
+    ).toEqual({ ok: true, trustOverride: false });
+    expect(buildMuseWorkerMcpEntry({ workspaceRoot: '/work', launchDeckId: DECK_ID })).toEqual({
+      type: 'http',
+      url: 'http://127.0.0.1:1110/mcp',
+      headers: {
+        [MUSE_WORKER_WORKSPACE_HEADER]: '/work',
+        [MUSE_WORKER_LAUNCH_DECK_HEADER]: DECK_ID,
+      },
+    });
   });
 });

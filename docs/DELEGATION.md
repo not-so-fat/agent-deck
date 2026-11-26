@@ -68,7 +68,7 @@ agent-deck run status <runId> --json
 agent-deck run log <runId> --tail 50
 ```
 
-Pinned playbook runs (`run.ts` `parseRunArgs`, `agent-run/service.ts` validation): `agent-deck run mydeck --client codex --cwd /path/to/repo --prompt "..." --tools readonly --playbook-version pb_my_playbook=<versionId>` runs one session against a stored older version of one playbook, so a baseline-vs-candidate evaluation can test each version with a real agent. The run's MCP session reads that version's title, body and triggers with no open patches (the `get_playbook` result carries `pinnedVersionId`) and cannot file playbook proposals; the live playbook is never modified, the pin dies with the run's session, and a repeated flag, a malformed value, an unknown version, a version from another playbook, or a playbook off the run's deck all fail before any model work starts. Supported with `--client codex` (pin travels as a `-c mcp_servers.agent-deck` override) and `--client claude` (pin travels as an inline SDK MCP server); `--client cursor` and `--client muse` have no per-run MCP env override, so a pinned run there fails closed before any model work. The pin is recorded in the run's `meta.json` as `playbookPin`.
+Pinned playbook runs (`run.ts` `parseRunArgs`, `agent-run/service.ts` validation): `agent-deck run mydeck --client codex --cwd /path/to/repo --prompt "..." --tools readonly --playbook-version pb_my_playbook=<versionId>` runs one session against a stored older version of one playbook, so a baseline-vs-candidate evaluation can test each version with a real agent. The run's MCP session reads that version's title, body and triggers with no open patches (the `get_playbook` result carries `pinnedVersionId`) and cannot file playbook proposals; the live playbook is never modified, the pin dies with the run's session, and a repeated flag, a malformed value, an unknown version, a version from another playbook, or a playbook off the run's deck all fail before any model work starts. Supported on all four clients: `--client codex` (pin travels as a `-c mcp_servers.agent-deck` override), `--client claude` (pin travels as an inline SDK MCP server), `--client cursor` (pin travels as a header in the worker home's per-run MCP entry), and `--client muse` (pin travels as a header in the worker config's per-run entry). The pin is recorded in the run's `meta.json` as `playbookPin`.
 
 ## Clients at a glance
 
@@ -77,7 +77,7 @@ Pinned playbook runs (`run.ts` `parseRunArgs`, `agent-run/service.ts` validation
 | `claude` | Claude Agent SDK `query()` in-process (`@anthropic-ai/claude-agent-sdk`, lazily required; `agent-run/claude.ts`) | `claude` CLI on PATH, plus `claude auth status` reporting a login — or `ANTHROPIC_API_KEY` set, which skips the login check once the CLI is found (`agent-run/claude-probe.ts` `defaultClaudeClientProbe`); fix: `claude auth login` | No trust gate; `trustOverride` is always false (`agent-run/claude.ts` `planStart`) |
 | `codex` | `codex` binary (`CODEX_BIN` override; verified against codex-cli 0.157.1; `agent-run/codex.ts`) | `codex login status` exits 0 and reports `Logged in`; fix: `codex login` | `trustOverride` is true only when `--cwd` is outside a git work tree, in which case `--skip-git-repo-check` is passed (`agent-run/codex.ts` `codexTrustOverride`) |
 | `cursor` | `cursor-agent` binary (`CURSOR_BIN` override; verified against cursor-agent 2026.10.01; `agent-run/cursor.ts`) | `cursor-agent status --format json` parses as authenticated (exit code alone is not enough); fix: `cursor-agent login` | `--trust` is passed on every launch, so `trustOverride` is always true (`agent-run/cursor.ts` `planStart`) |
-| `muse` | `muse` binary (`MUSE_BIN` override; verified against Muse Code 1.4.4; `agent-run/muse.ts`) | `META_API_KEY` set, or the Muse auth file's `providers` object containing a `meta` entry (`agent-run/muse.ts` `isMuseSignedIn`); fix: `muse login`. The `agent-deck` MCP entry must also exist in the Muse global or project config (`agent-run/muse.ts` `hasMuseMcpEntry`); fix: `agent-deck setup --client muse` | Never trusted from `run`: `--trust-workspace` is never passed, so `trustOverride` is always false; an untrusted-workspace warning surfaces as a log notice instead (`agent-run/muse.ts` `planStart`) |
+| `muse` | `muse` binary (`MUSE_BIN` override; verified against Muse Code 1.4.4; `agent-run/muse.ts`) | `META_API_KEY` set, or the Muse auth file's `providers` object containing a `meta` entry (`agent-run/muse.ts` `isMuseSignedIn`); fix: `muse login`. No pre-registered `agent-deck` MCP entry is needed: the run writes its own entry into a per-run worker config | Never trusted from `run`: `--trust-workspace` is never passed, so `trustOverride` is always false; an untrusted-workspace warning surfaces as a log notice instead (`agent-run/muse.ts` `planStart`) |
 
 ## Resume: where the session id comes from
 
@@ -108,8 +108,8 @@ the process exits and status polling shows no intermediate lines
 |------------|--------------------|------------------------------------|
 | `claude` | SDK `allowedTools` = `RUN_READONLY_TOOLS`: `mcp__agent-deck__*`, `Read`, `Glob`, `Grep`, `git log`/`git status`/`ls`-scoped `Bash` | `allowedTools` = `RUN_EDIT_TOOLS`: readonly plus `Edit`, `Write`, `git diff`/`git add`/`git commit`/`git checkout -b`-scoped `Bash`. `permissionMode` is always `acceptEdits`; `settingSources` are `project` and `user`; `bypassPermissions` is never used (`agent-run/adapter.ts`, `agent-run/claude.ts`) |
 | `codex` | `-s read-only` | `-s workspace-write` (`CODEX_SANDBOX_FOR_PROFILE`). `--dangerously-bypass-approvals-and-sandbox` is never passed (`agent-run/codex.ts`) |
-| `cursor` | No write-enabling flag | `--force`. `--yolo` and `--approve-mcps` are never passed (`agent-run/cursor.ts`). Print mode (`-p`) reports access to all tools including write and shell, so whether `readonly` truly cannot write is `<TBD: confirm>` — settled by the operator edit-vs-readonly test, not by the flags (`agent-run/cursor.ts`) |
-| `muse` | `--disable-write --disable-shell` (fails closed unless the installed `muse` lists both in `muse exec --help`; `museReadonlyFlagsSupported`) | No extra flags: default bounded permissions (approval on-request, sandbox on). `--yolo`, `--trust-workspace`, `--disable-approval`, `--disable-sandbox`, and `--permission-profile` are never passed (`MUSE_FORBIDDEN_FLAGS`; `agent-run/muse.ts`) |
+| `cursor` | `--sandbox enabled --plan --approve-mcps` (verified in `cursor-agent --help`; the worker home's per-run MCP entry is the only approved server; the gate also requires Cursor's own model-free preflight `cursor-agent sandbox run true` to exit 0 — `cursorSandboxHostSupport` — and otherwise rejects readonly before spawn with the probe's first error line, because flag presence alone passed on a box whose sandbox cannot start; a project `.cursor/mcp.json` `agent-deck` entry is rejected because Cursor prefers it over the run entry)  | `--sandbox disabled --force --approve-mcps`: `--force` is command preapproval, not a sandbox, and edit selects the sandbox off explicitly (the target host cannot start it at all). The run uses a per-run `HOME` overlay for MCP isolation; at run end, new top-level home entries move to the real home (`.cursor` excluded; an entry the real home already has is kept and reported as a notice). `--yolo` is never passed (`CURSOR_FORBIDDEN_FLAGS`; `agent-run/cursor.ts`). Whether the mapping truly holds is settled by the operator edit-vs-readonly test, not by the flags |
+| `muse` | `--approval-mode never --disable-write --sandbox-network restricted` (fails closed unless the installed `muse` lists every flag in `muse exec --help`; `museEnforcementFlagsSupported`; no `--disable-shell`, so shell reads survive). A project `.mcp.json` `agent-deck` entry is allowed: the worker is never trusted (no `--trust-workspace`, no persisted trust in the per-run config), so Muse never loads project MCP servers | `--approval-mode never --disable-sandbox` (sandbox off, so workspace and agent-home writes work; `--sandbox-network` has no meaning without a sandbox). `--yolo`, `--trust-workspace`, `--disable-approval`, `--permission-profile`, `--disable-shell`, and `--disable-web-tools` are never passed (`MUSE_FORBIDDEN_FLAGS`; `agent-run/muse.ts`); `--disable-sandbox` is edit-only (`MUSE_EDIT_ONLY_FLAGS`) |
 
 ## Worker profiles
 
@@ -139,10 +139,11 @@ How it runs:
   only its SHA-256 hash in `meta.json` (`runTokenHash`), writes a
   token→record pointer under `<home>/runs-by-token/` so custom locations
   resolve server-side, and passes the plaintext to the adapter
-  (`AdapterStartArgs.runToken`). Codex and Claude carry it as the
-  `x-agent-deck-run-token` header in their per-run MCP override
+  (`AdapterStartArgs.runToken`). Every adapter carries it as the
+  `x-agent-deck-run-token` header in its per-run MCP override
   (`agent-run/codex.ts` `buildCodexMcpConfigOverride`,
-  `agent-run/claude.ts` `buildClaudeRunMcpServer`).
+  `agent-run/claude.ts` `buildClaudeRunMcpServer`, the Cursor worker
+  home's per-run entry, and the Muse worker config's per-run entry).
 - An MCP session presenting a valid token is a worker session bound to its
   run's effective profile (adopt-once per session: the identity can never be
   dropped or replaced). Tool calls outside the profile return
@@ -235,7 +236,7 @@ folder's assignment must already name the deck; `run` never rewrites it:
 - claude (`agent-run/claude-probe.ts`): ``Claude Code is not installed (no `claude` on PATH). Install Claude Code, then run `claude auth login` to sign in, then retry.`` or ``Claude Code is not signed in. Run `claude auth login` to sign in with your own account, then retry.`` A missing SDK adds (`agent-run/claude.ts`): ``The Claude Agent SDK is not installed. Reinstall the CLI (`agent-deck upgrade` or `npm install -g @agent-deck/cli@latest`) so @anthropic-ai/claude-agent-sdk is present, then retry.``
 - codex (`agent-run/codex.ts`): ``codex CLI not found (tried "<bin>"): install codex-cli 0.157+ and ensure 'codex' is on PATH (or set CODEX_BIN=/path/to/codex), then retry.`` or ``codex is not signed in: run `codex login`, then retry.``
 - cursor (`agent-run/cursor.ts`): ``cursor-agent CLI not found (tried "<bin>"): install cursor-agent 2026.10+ and ensure 'cursor-agent' is on PATH (or set CURSOR_BIN=/path/to/cursor-agent), then retry.`` or ``cursor-agent is not signed in: run `cursor-agent login`, then retry.``
-- muse (`agent-run/muse.ts`): ``muse CLI not found (tried "<bin>"): install Muse Code 1.4+ and ensure 'muse' is on PATH (or set MUSE_BIN=/path/to/muse), then retry.`` or ``muse is not signed in: run `muse login`, then retry.`` A missing MCP entry adds: ``agent-deck MCP server is not registered with Muse: run `agent-deck setup --client muse` to register it, then retry. If Muse reports the server needs authorization, run `muse mcp login agent-deck` (see `muse mcp --help`).``
+- muse (`agent-run/muse.ts`): ``muse CLI not found (tried "<bin>"): install Muse Code 1.4+ and ensure 'muse' is on PATH (or set MUSE_BIN=/path/to/muse), then retry.`` or ``muse is not signed in: run `muse login`, then retry.`` No pre-registered MCP entry is needed: the run writes its own `agent-deck` entry into a per-run worker config.
 
 **Untrusted workspace** (per client):
 
@@ -247,9 +248,10 @@ folder's assignment must already name the deck; `run` never rewrites it:
 - muse: never trusted from `run` (`trustOverride: false`); stderr lines
   matching `warning|untrusted|delegation|error|fail`
   (`MUSE_STDERR_NOTICE_PATTERN`) surface as log notices and never fail the run
-  (`agent-run/muse.ts`). Which capabilities an untrusted workspace actually loses is
-  `<TBD: confirm>` on the installed Muse build — `run` only surfaces the
-  warning and continues.
+  (`agent-run/muse.ts`). An untrusted workspace does not load project
+  `.mcp.json` servers (Muse prints "project MCP servers from .mcp.json … are
+  not loaded because the workspace is untrusted"; operator-verified on Muse
+  Code 1.4.25), so worker runs only see their per-run `agent-deck` entry.
 - claude: no workspace-trust gate in the adapter (`trustOverride` always
   false; `agent-run/claude.ts`).
 

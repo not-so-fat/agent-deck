@@ -148,34 +148,27 @@ export type AdapterStartArgs = {
    * Pinned playbook version for this run (NOT-537). Each adapter carries it
    * to its MCP connection through that client's explicit per-run override —
    * a `-c` server definition for Codex, an inline `mcpServers` entry for
-   * Claude — because inherited process env never reaches an MCP server
-   * started with a restricted env. Clients with no per-run override fail
-   * closed in `planStart`. The pin lives only as long as the run's MCP
-   * session.
+   * Claude, the worker home/config's per-run `agent-deck` entry for Cursor
+   * and Muse (NOT-671) — because inherited process env never reaches an MCP
+   * server started with a restricted env. The pin lives only as long as the
+   * run's MCP session.
    */
   playbookPin?: RunPlaybookPin;
   /**
    * Deck the run's MCP session must bind, sent as the launch deck header
    * (`x-agent-deck-deck-id`). Set for every run whose deck came from a
-   * trusted caller (an MCP session's live deck). Codex and Claude always
-   * carry it through the same per-run MCP override as `playbookPin`, so the
-   * worker binds that deck whatever the folder assignment or user default
-   * says at connect time.
+   * trusted caller (an MCP session's live deck). Every adapter carries it
+   * through the same per-run MCP override as `playbookPin`, so the worker
+   * binds that deck whatever the folder assignment or user default says at
+   * connect time.
    */
   launchDeckId?: string;
   /**
-   * For clients with no per-run MCP override (Cursor, Muse): a headerless
-   * connection from `cwd` resolved to another deck when the run was
-   * prepared, so `planStart` fails closed. Point-in-time: a folder
-   * assignment or default changed after that check is not caught.
-   */
-  headerlessDeckMismatch?: boolean;
-  /**
-   * NOT-669: the run's unguessable worker token (plaintext). Adapters that
-   * can carry a per-run MCP header (Codex, Claude) send it as
-   * `x-agent-deck-run-token` so the MCP server binds the worker session to
-   * this run's effective profile. Never logged and never written to the
-   * run record — only its hash is stored.
+   * NOT-669: the run's unguessable worker token (plaintext). Every adapter
+   * sends it as `x-agent-deck-run-token` in its per-run MCP override so the
+   * MCP server binds the worker session to this run's effective profile.
+   * Never logged and never written to the run record — only its hash is
+   * stored.
    */
   runToken?: string;
 };
