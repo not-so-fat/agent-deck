@@ -533,6 +533,44 @@ describe('MCP worker profiles (NOT-669)', () => {
     expect(secondFinished.denials).toEqual([]);
   });
 
+  it('worker identity is preserved on reconnect: a fresh session with the same token keeps enforcing the same run (NOT-672)', async () => {
+    const hold = deferred();
+    const release = hold.release;
+    const ctx = await setup({
+      steps: () => [{ event: { kind: 'text', text: 'working', sessionId: 'ses_1' }, gate: hold.promise }, ...successSteps().slice(1)],
+    });
+    const wt = worktree();
+    const leader = await open(ctx, dealerHeaders(ctx.deckA.id, wt));
+    const { runId, token } = await startRun(ctx, leader, { tools: 'readonly' });
+
+    const first = await open(ctx, dealerHeaders(ctx.deckA.id, wt, { [AGENT_DECK_RUN_TOKEN_HEADER]: token }));
+    const denied = await call(ctx, first, 'switch_deck', { target: ctx.deckB.name });
+    expect(denied.isError).toBe(true);
+    expect(denied.data).toMatchObject({ code: 'PROFILE_DENIED', profile: 'readonly', tool: 'switch_deck' });
+
+    // The transport drops; the client initializes fresh with the same
+    // static headers (worker token included). The new session adopts the
+    // same run's identity and keeps enforcing its profile.
+    const reconnected = await open(ctx, dealerHeaders(ctx.deckA.id, wt, { [AGENT_DECK_RUN_TOKEN_HEADER]: token }));
+    expect(reconnected.id).not.toBe(first.id);
+    const again = await call(ctx, reconnected, 'cancel_run', { runId });
+    expect(again.isError).toBe(true);
+    expect(again.data).toMatchObject({ code: 'PROFILE_DENIED', profile: 'readonly', tool: 'cancel_run' });
+
+    // Reads keep working on the reconnected session.
+    const read = await call(ctx, reconnected, 'get_run', { runId, limit: 10 });
+    expect(read.isError, JSON.stringify(read.data)).toBe(false);
+
+    // Both denials — before and after the reconnect — landed on the run.
+    release();
+    const finished = await untilTerminal(ctx, leader, runId);
+    expect(finished.effectiveProfile).toBe('readonly');
+    expect((finished.denials as Array<Record<string, unknown>>).map((denial) => denial.target)).toEqual([
+      'switch_deck',
+      'cancel_run',
+    ]);
+  });
+
   it('a worker session bound through the folder fallback is still enforced', async () => {
     const hold = deferred();
     const release = hold.release;

@@ -67,8 +67,9 @@ launcher must provide the workspace when it starts the session.
 ```
 
 `client` and `prompt` are required; `tools` defaults to `readonly`.
-`resumeSessionId` continues an earlier run's `sessionId` (Codex resumes only a
-session an Agent Deck run started on the same deck, workspace, and tools).
+`resumeSessionId` continues an earlier run's `sessionId` (Codex and Claude
+resume only a session an Agent Deck run started on the same deck,
+workspace, and tools).
 `prepareFinalization` needs `tools: "edit"` and a clean Git worktree.
 `playbookVersion` must name a version of a playbook on the session's deck.
 Returns `{ runId, state }`.
