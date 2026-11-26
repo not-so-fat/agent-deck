@@ -591,8 +591,19 @@ describe('MCP worker profiles (NOT-669)', () => {
     const { runId, token } = await startRun(ctx, leader, { tools: 'edit' });
 
     // No deck or workspace header: the session lands unassigned, but the
-    // worker identity still applies.
-    const worker = await open(ctx, { [AGENT_DECK_RUN_TOKEN_HEADER]: token });
+    // worker identity still applies. Initialize directly without the
+    // trusted-session wait: unassigned sessions register no get_bound_deck
+    // (only the bootstrap reads), so the wait's poll would fail — the same
+    // reason the core suite opens unassigned sessions via postInitialize.
+    // Worker identity adopts synchronously at initialize, so no wait is
+    // needed before the first tool call.
+    rpcId += 1;
+    const workerInit = await postInitialize(ctx.port, rpcId, 'vitest', { [AGENT_DECK_RUN_TOKEN_HEADER]: token });
+    expect(workerInit.status).toBe(200);
+    const workerId = workerInit.headers.get('mcp-session-id');
+    expect(workerId).toBeTruthy();
+    await workerInit.arrayBuffer();
+    const worker = { id: workerId as string, headers: { [AGENT_DECK_RUN_TOKEN_HEADER]: token } };
     const requested = await call(ctx, worker, 'request_deck_assignment', { workspace: wt });
     expect(requested.isError).toBe(true);
     expect(requested.data).toMatchObject({ code: 'PROFILE_DENIED', profile: 'edit', tool: 'request_deck_assignment' });
