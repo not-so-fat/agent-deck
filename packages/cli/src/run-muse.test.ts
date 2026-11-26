@@ -18,17 +18,19 @@
  * profiles map to Muse's own enforcement flags instead of profile ids, and
  * `--permission-profile` is never emitted. Enforcement (NOT-671): both
  * profiles pass `--approval-mode never`; readonly adds `--disable-write`
- * plus `--sandbox-network restricted`; edit adds `--sandbox-network
- * enabled`. `--disable-shell` is never passed (it would block readonly
- * shell reads). The gate fails closed unless `muse exec --help` lists every
- * flag the requested profile needs.
+ * plus `--sandbox-network restricted` (sandbox on); edit adds
+ * `--disable-sandbox` (sandbox off, so agent-home writes work).
+ * `--disable-shell` is never passed (it would block readonly shell reads).
+ * The gate fails closed unless `muse exec --help` lists every flag the
+ * requested profile needs.
  *
  * Mapping evidence (Muse Code 1.4.4, 1.4.4-R5419.1, enforcement re-verified
  * on 1.4.25): `muse --version`, `muse --help` (approval on-request default,
  * `--permission-profile` selects a named profile), `muse exec --help`
- * (`--approval-mode` never, `--sandbox-network` restricted|enabled, and
- * `--disable-write` blocks non-shell workspace writes; approval and sandbox
- * ON by default), `muse mcp --help` / `muse mcp login --help` (`muse mcp
+ * (`--approval-mode` never, `--sandbox-network` restricted,
+ * `--disable-write` blocks non-shell workspace writes, `--disable-sandbox`
+ * lifts the filesystem sandbox; approval and sandbox ON by default),
+ * `muse mcp --help` / `muse mcp login --help` (`muse mcp
  * login <server>` is the OAuth login command; the agent-deck entry is named
  * `agent-deck`), `muse config --help` (profiles live in enterprise plane
  * documents, not user settings).
@@ -51,6 +53,7 @@ import {
   createRunAdapter,
   findMuseForeignProjectServers,
   MUSE_APPROVAL_FLAGS,
+  MUSE_EDIT_ONLY_FLAGS,
   MUSE_FLAGS_FOR_PROFILE,
   MUSE_FORBIDDEN_FLAGS,
   mergeMuseLines,
@@ -154,6 +157,7 @@ export const MUSE_EXEC_HELP_FIXTURE =
   '  --approval-mode <MODE>  Tool approval mode: untrusted|on-request|never\n' +
   '  --sandbox-network <MODE>  Sandbox network mode\n' +
   '  --disable-write  Disable non-shell workspace filesystem writes\n' +
+  '  --disable-sandbox  Disable the filesystem sandbox\n' +
   '  --disable-shell  Disable workspace shell execution\n';
 
 function okMuseProbe(): MuseProbe {
@@ -463,7 +467,7 @@ describe('muse argv and tool profiles (NOT-407, enforcement NOT-671)', () => {
         PROMPT,
       ],
     ],
-    ['edit', ['exec', '--json', '--approval-mode', 'never', '--sandbox-network', 'enabled', '--', PROMPT]],
+    ['edit', ['exec', '--json', '--approval-mode', 'never', '--disable-sandbox', '--', PROMPT]],
   ])('start argv for --tools %s', (tools, expected) => {
     expect(buildMuseArgv({ prompt: PROMPT, tools: tools as RunToolsProfile })).toEqual(expected);
   });
@@ -472,7 +476,7 @@ describe('muse argv and tool profiles (NOT-407, enforcement NOT-671)', () => {
     expect(MUSE_APPROVAL_FLAGS).toEqual(['--approval-mode', 'never']);
     expect(MUSE_FLAGS_FOR_PROFILE).toEqual({
       readonly: ['--disable-write', '--sandbox-network', 'restricted'],
-      edit: ['--sandbox-network', 'enabled'],
+      edit: ['--disable-sandbox'],
     });
     for (const tools of ['readonly', 'edit'] as const) {
       const cwd = makeDir('agent-deck-muse-cwd-');
@@ -515,8 +519,8 @@ describe('muse argv and tool profiles (NOT-407, enforcement NOT-671)', () => {
     }
     const editArgv = buildMuseArgv({ prompt: 'p', tools: 'edit' });
     expect(editArgv).toContain('--approval-mode');
-    expect(editArgv).toContain('--sandbox-network');
-    expect(editArgv).toContain('enabled');
+    expect(editArgv).toContain('--disable-sandbox');
+    expect(editArgv).not.toContain('--sandbox-network');
     expect(editArgv).not.toContain('--disable-write');
     expect(editArgv).not.toContain('restricted');
     expect(editArgv).not.toContain('--disable-shell');
@@ -526,7 +530,7 @@ describe('muse argv and tool profiles (NOT-407, enforcement NOT-671)', () => {
     // The installed muse does not list the enforcement flags (older/newer
     // build): the profile gate fails closed with a remedy and the run never
     // spawns — for readonly and edit alike, since both need --approval-mode
-    // and --sandbox-network.
+    // and their own profile flags.
     const noFlagsProbe: MuseProbe = (bin, argv) => {
       if (argv[0] === '--version') {
         return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
@@ -565,11 +569,13 @@ describe('muse argv and tool profiles (NOT-407, enforcement NOT-671)', () => {
       '--yolo',
       '--trust-workspace',
       '--disable-approval',
-      '--disable-sandbox',
       '--permission-profile',
       '--disable-shell',
       '--disable-web-tools',
     ]);
+    // --disable-sandbox is the one flag edit alone may pass (agent-home
+    // writes need the sandbox off); readonly must never contain it.
+    expect(MUSE_EDIT_ONLY_FLAGS).toEqual(['--disable-sandbox']);
     for (const tools of profiles) {
       for (const resumeId of [undefined, 'ses_abc']) {
         const argv = buildMuseArgv({ prompt: 'p', tools, ...(resumeId ? { resumeId } : {}) });
@@ -577,6 +583,15 @@ describe('muse argv and tool profiles (NOT-407, enforcement NOT-671)', () => {
           expect(argv).not.toContain(forbidden);
         }
         expect(argv.join('\n')).not.toMatch(/yolo|bypass|trust-workspace/i);
+        if (tools === 'edit') {
+          for (const flag of MUSE_EDIT_ONLY_FLAGS) {
+            expect(argv).toContain(flag);
+          }
+        } else {
+          for (const flag of MUSE_EDIT_ONLY_FLAGS) {
+            expect(argv).not.toContain(flag);
+          }
+        }
       }
     }
   });
@@ -930,18 +945,72 @@ describe('muse line parser edges (NOT-407)', () => {
 });
 
 describe('muse worker profile enforcement gate (NOT-671)', () => {
-  it('help text must list --approval-mode and --sandbox-network, plus --disable-write for readonly', () => {
+  it('help text must list --approval-mode plus the flags the profile passes', () => {
     expect(museHelpTextSupportsEnforcement(MUSE_EXEC_HELP_FIXTURE, 'readonly')).toBe(true);
     expect(museHelpTextSupportsEnforcement(MUSE_EXEC_HELP_FIXTURE, 'edit')).toBe(true);
     expect(museHelpTextSupportsEnforcement('Usage: muse exec [options]\n', 'edit')).toBe(false);
-    const noWrite = MUSE_EXEC_HELP_FIXTURE.replace('--disable-write', '--disable-something');
-    expect(museHelpTextSupportsEnforcement(noWrite, 'readonly')).toBe(false);
-    expect(museHelpTextSupportsEnforcement(noWrite, 'edit')).toBe(true);
-    for (const marker of ['--approval-mode', '--sandbox-network']) {
+    expect(museHelpTextSupportsEnforcement('Usage: muse exec [options]\n', 'readonly')).toBe(false);
+    // Readonly needs --disable-write and --sandbox-network; edit needs
+    // neither (it lifts the sandbox instead).
+    for (const marker of ['--disable-write', '--sandbox-network']) {
       const missing = MUSE_EXEC_HELP_FIXTURE.replace(marker, '--something-else');
       expect(museHelpTextSupportsEnforcement(missing, 'readonly')).toBe(false);
-      expect(museHelpTextSupportsEnforcement(missing, 'edit')).toBe(false);
+      expect(museHelpTextSupportsEnforcement(missing, 'edit')).toBe(true);
     }
+    // Edit needs --disable-sandbox; readonly must not depend on it.
+    const noDisableSandbox = MUSE_EXEC_HELP_FIXTURE.replace('--disable-sandbox', '--something-else');
+    expect(museHelpTextSupportsEnforcement(noDisableSandbox, 'edit')).toBe(false);
+    expect(museHelpTextSupportsEnforcement(noDisableSandbox, 'readonly')).toBe(true);
+    // Both need --approval-mode.
+    const noApproval = MUSE_EXEC_HELP_FIXTURE.replace('--approval-mode', '--something-else');
+    expect(museHelpTextSupportsEnforcement(noApproval, 'readonly')).toBe(false);
+    expect(museHelpTextSupportsEnforcement(noApproval, 'edit')).toBe(false);
+  });
+
+  it('edit fails closed when the build lacks --disable-sandbox while readonly still runs', async () => {
+    // A build new enough for readonly (approval, write block, sandbox
+    // network) but without --disable-sandbox: edit cannot lift the sandbox
+    // for agent-home writes, so it rejects before spawn; readonly is
+    // unaffected by the missing flag.
+    const noDisableSandboxProbe: MuseProbe = (bin, argv) => {
+      if (argv[0] === '--version') {
+        return { code: 0, stdout: 'Muse Code 1.4.4 (1.4.4-R5419.1)\n', stderr: '' };
+      }
+      if (argv[0] === 'exec' && argv[1] === '--help') {
+        return {
+          code: 0,
+          stdout: MUSE_EXEC_HELP_FIXTURE.replace('--disable-sandbox', '--something-else'),
+          stderr: '',
+        };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    };
+    expect(museEnforcementFlagsSupported(noDisableSandboxProbe, 'muse', 'readonly')).toBe(true);
+    expect(museEnforcementFlagsSupported(noDisableSandboxProbe, 'muse', 'edit')).toBe(false);
+
+    const editCwd = makeDir('agent-deck-muse-cwd-');
+    const editHome = makeDir('agent-deck-muse-home-');
+    const editDeps = makeDeps(editCwd, editHome, {
+      probe: noDisableSandboxProbe,
+      enforceProfile: true,
+    });
+    expect(await runRunCommand(museArgs(editCwd, ['--tools', 'edit']), editDeps)).not.toBe(0);
+    expect(editDeps.calls).toHaveLength(0);
+    expect(errors.join('\n')).toMatch(/enforcement unavailable/);
+    expect(errors.join('\n')).toMatch(/--disable-sandbox/);
+    expect(errors.join('\n')).toMatch(/no process was started/i);
+    expect(fs.existsSync(path.join(editHome, 'runs'))).toBe(false);
+    logs = [];
+    errors = [];
+
+    const roCwd = makeDir('agent-deck-muse-cwd-');
+    const roHome = makeDir('agent-deck-muse-home-');
+    const roDeps = makeDeps(roCwd, roHome, {
+      probe: noDisableSandboxProbe,
+      enforceProfile: true,
+    });
+    expect(await runRunCommand(museArgs(roCwd, ['--tools', 'readonly']), roDeps)).toBe(0);
+    expect(roDeps.calls).toHaveLength(1);
   });
 
   it('a failing exec --help probe means enforcement is unsupported', () => {
@@ -973,18 +1042,24 @@ describe('muse worker profile enforcement gate (NOT-671)', () => {
       }
       return { code: 1, stdout: '', stderr: '' };
     };
-    const cwd = makeDir('agent-deck-muse-cwd-');
-    const homeDir = makeDir('agent-deck-muse-home-');
-    const deps = makeDeps(cwd, homeDir, {
-      probe: noFlagsProbe,
-      enforceProfile: true,
-      lines: successStream(MUSE_SESSION_ID, [deltaLine(MUSE_SESSION_ID, 'kiwi')]),
-    });
+    for (const tools of ['readonly', 'edit'] as const) {
+      const cwd = makeDir('agent-deck-muse-cwd-');
+      const homeDir = makeDir('agent-deck-muse-home-');
+      const deps = makeDeps(cwd, homeDir, {
+        probe: noFlagsProbe,
+        enforceProfile: true,
+        lines: successStream(MUSE_SESSION_ID, [deltaLine(MUSE_SESSION_ID, 'kiwi')]),
+      });
 
-    expect(await runRunCommand(museArgs(cwd, ['--resume', MUSE_SESSION_ID]), deps)).not.toBe(0);
-    expect(deps.calls).toHaveLength(0);
-    expect(errors.join('\n')).toMatch(/enforcement unavailable/);
-    expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+      expect(
+        await runRunCommand(museArgs(cwd, ['--tools', tools, '--resume', MUSE_SESSION_ID]), deps),
+      ).not.toBe(0);
+      expect(deps.calls).toHaveLength(0);
+      expect(errors.join('\n')).toMatch(/enforcement unavailable/);
+      expect(fs.existsSync(path.join(homeDir, 'runs'))).toBe(false);
+      logs = [];
+      errors = [];
+    }
   });
 
   it('a project config with a foreign MCP server fails closed before spawn', async () => {

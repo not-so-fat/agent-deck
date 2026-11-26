@@ -15,17 +15,24 @@
  * - The answer text is yielded as one `text` event (so the shared session
  *   receipt check sees it) followed by `result`; the full result object is
  *   the `result` payload.
- * - Tool mapping (NOT-671): both profiles pass `--sandbox enabled`
- *   (explicitly selected — the Linux box defaults to a disabled Cursor
- *   sandbox) and `--approve-mcps` (preapproved MCP, isolated to the run's
- *   own entry, so no prompt can occur); `readonly` adds `--plan`
- *   (read-only/planning mode, no edits) and `edit` adds `--force`.
- *   `--force` is command preapproval ("allow commands unless explicitly
- *   denied"), not a sandbox — the sandbox is `--sandbox enabled` on both
- *   profiles. `--yolo` (an alias for `--force`) is never passed and no
- *   option can select it. Every enforcement flag is verified in
- *   `cursor-agent --help` before spawn; a build without any of them fails
- *   closed with an upgrade remedy and nothing spawns.
+ * - Tool mapping (NOT-671): the sandbox value is explicit per profile —
+ *   `readonly` passes `--sandbox enabled --plan` (read-only/planning mode,
+ *   no edits) and `edit` passes `--sandbox disabled --force` (`--force` is
+ *   command preapproval, "allow commands unless explicitly denied", not a
+ *   sandbox; the Linux box defaults to a disabled Cursor sandbox and its
+ *   AppArmor configuration cannot start the sandbox at all, which the
+ *   operator probe proved by exiting before running anything — so edit
+ *   selects disabled explicitly instead of inheriting the default). Both
+ *   profiles pass `--approve-mcps` (preapproved MCP, isolated to the run's
+ *   own entry, so no prompt can occur). `--yolo` (an alias for `--force`)
+ *   is never passed and no option can select it. Every enforcement flag
+ *   is verified in `cursor-agent --help` before spawn; a build without
+ *   any of them fails closed with an upgrade remedy and nothing spawns.
+ *   Readonly additionally requires the sandbox to be startable on this
+ *   host (see `cursorSandboxHostSupport`): flag presence alone is not
+ *   enough, because the target host lists the flags yet cannot start the
+ *   sandbox — such a host rejects readonly before spawn as
+ *   `profile_unsupported` instead of failing opaquely mid-run.
  * - Per-run MCP identity (NOT-671): the child spawns with `HOME` pointed at
  *   a per-run worker home whose `.cursor/mcp.json` holds ONLY the run's
  *   `agent-deck` entry (daemon URL plus the workspace, launch-deck,
@@ -108,10 +115,23 @@ export function assertSafeCursorResumeId(resumeId: string): void {
 }
 
 /**
+ * Sandbox value per profile (NOT-671): `readonly` needs the sandbox on
+ * (plan mode alone does not confine shell filesystem access); `edit`
+ * selects it off explicitly — the operator probe proved the target Linux
+ * host cannot start the Cursor sandbox at all (AppArmor), so edit must
+ * not inherit `--sandbox enabled` and exit before running anything.
+ * `--force` stays command preapproval, not a sandbox.
+ */
+export const CURSOR_SANDBOX_FOR_PROFILE: Record<RunToolsProfile, 'enabled' | 'disabled'> = {
+  readonly: 'enabled',
+  edit: 'disabled',
+};
+
+/**
  * Profile flags (NOT-671): `readonly` runs plan mode (no edits) without
  * command preapproval; `edit` runs the default mode with `--force` command
- * preapproval. `--force` is NOT a sandbox — both profiles also pass
- * `--sandbox enabled` (see {@link buildCursorArgv}).
+ * preapproval. `--force` is NOT a sandbox — the sandbox value comes from
+ * {@link CURSOR_SANDBOX_FOR_PROFILE} (see {@link buildCursorArgv}).
  */
 export const CURSOR_FLAGS_FOR_PROFILE: Record<RunToolsProfile, readonly string[]> = {
   readonly: ['--plan'],
@@ -123,17 +143,25 @@ export const CURSOR_FORBIDDEN_FLAGS: readonly string[] = ['--yolo'];
 
 /**
  * Pure argv builder (everything after the `cursor-agent` binary):
- * `-p --trust --output-format json --sandbox enabled [--plan | --force]
- * --approve-mcps [--resume <id>] -- <prompt>`.
- * `--sandbox enabled` is explicit on both profiles (the Linux box defaults
- * to a disabled sandbox); `--approve-mcps` preapproves the run's own MCP
+ * `-p --trust --output-format json --sandbox <enabled|disabled>
+ * [--plan | --force] --approve-mcps [--resume <id>] -- <prompt>`.
+ * The sandbox value is explicit per profile (`--sandbox enabled` for
+ * readonly, `--sandbox disabled` for edit — edit must not inherit an
+ * unstartable sandbox); `--approve-mcps` preapproves the run's own MCP
  * entry (isolated via the worker home, so no prompt can occur);
  * `--plan` only for readonly, `--force` only for edit; `--yolo` is never
  * emitted. The `--` terminator keeps dash-leading prompts from being parsed
  * as cursor-agent options.
  */
 export function buildCursorArgv(args: CursorArgvArgs): string[] {
-  const argv = ['-p', '--trust', '--output-format', CURSOR_OUTPUT_FORMAT, '--sandbox', 'enabled'];
+  const argv = [
+    '-p',
+    '--trust',
+    '--output-format',
+    CURSOR_OUTPUT_FORMAT,
+    '--sandbox',
+    CURSOR_SANDBOX_FOR_PROFILE[args.tools],
+  ];
   argv.push(...CURSOR_FLAGS_FOR_PROFILE[args.tools]);
   argv.push('--approve-mcps');
   if (args.resumeId !== undefined) {
@@ -176,6 +204,58 @@ export function cursorEnforcementFlagsSupported(
     return false;
   }
   return cursorHelpTextSupportsEnforcement(`${help.stdout}\n${help.stderr}`);
+}
+
+/**
+ * Kernel knobs that block cursor-agent's `--sandbox enabled` runtime on
+ * Linux (NOT-671 repair round 2): the operator probe proved the target box
+ * lists the enforcement flags yet cannot start the sandbox under its
+ * AppArmor configuration, exiting before running anything.
+ */
+export const CURSOR_SANDBOX_APPARMOR_USERNS_SYSCTL =
+  '/proc/sys/kernel/apparmor_restrict_unprivileged_userns';
+export const CURSOR_SANDBOX_USERNS_CLONE_SYSCTL = '/proc/sys/kernel/unprivileged_userns_clone';
+
+export type CursorSandboxHostSupport = { supported: boolean; reason?: string };
+
+/**
+ * Whether this host can start cursor-agent's `--sandbox enabled` runtime
+ * (NOT-671): readonly-only — edit passes `--sandbox disabled` and never
+ * needs the sandbox. On Linux a `1` in the AppArmor userns restriction (or
+ * a `0` in the Debian-family userns clone knob) means the sandbox cannot
+ * start, so the profile gate rejects readonly before spawn with a remedy
+ * instead of spawning into an opaque client failure. Non-Linux hosts and
+ * hosts where the knobs are absent or unreadable report supported: the
+ * known-bad configuration is Linux-only, and an unknown host keeps the
+ * previous behavior (attempt the run; the client error surfaces if the
+ * sandbox truly cannot start). Pure except for the injected file reads.
+ */
+export function cursorSandboxHostSupport(input: {
+  platform: NodeJS.Platform;
+  readFile: CursorFileReader;
+}): CursorSandboxHostSupport {
+  if (input.platform !== 'linux') {
+    return { supported: true };
+  }
+  const apparmor = input.readFile(CURSOR_SANDBOX_APPARMOR_USERNS_SYSCTL);
+  if (apparmor !== null && apparmor.trim() === '1') {
+    return {
+      supported: false,
+      reason:
+        `AppArmor blocks unprivileged user namespaces (${CURSOR_SANDBOX_APPARMOR_USERNS_SYSCTL} is 1), ` +
+        'so cursor-agent --sandbox enabled cannot start',
+    };
+  }
+  const clone = input.readFile(CURSOR_SANDBOX_USERNS_CLONE_SYSCTL);
+  if (clone !== null && clone.trim() === '0') {
+    return {
+      supported: false,
+      reason:
+        `unprivileged user namespaces are disabled (${CURSOR_SANDBOX_USERNS_CLONE_SYSCTL} is 0), ` +
+        'so cursor-agent --sandbox enabled cannot start',
+    };
+  }
+  return { supported: true };
 }
 
 /**
@@ -858,6 +938,8 @@ export type CursorAdapterDeps = {
   homedir?: () => string;
   /** Allocate a fresh worker-home directory; defaults to a tmpdir mkdtemp. */
   makeWorkerHome?: () => string;
+  /** Host platform for the sandbox startability check; defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
 };
 
 export function defaultCursorMakeWorkerHome(): string {
@@ -871,6 +953,7 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
   const readFile = deps.readFile ?? defaultCursorFileReader;
   const homedir = deps.homedir ?? os.homedir;
   const makeWorkerHome = deps.makeWorkerHome ?? defaultCursorMakeWorkerHome;
+  const platform = deps.platform ?? process.platform;
 
   return {
     id: 'cursor',
@@ -936,7 +1019,26 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
             'then retry; no process was started.',
         };
       }
-      // 3. The worker-home overlay must build on this host (a dry run with a
+      // 3. Readonly needs a startable sandbox: flag presence alone is not
+      // enough — the target Linux host lists --sandbox yet cannot start it
+      // under its AppArmor configuration. Edit passes --sandbox disabled
+      // and skips this check.
+      if (args.tools === 'readonly') {
+        const host = cursorSandboxHostSupport({ platform, readFile });
+        if (!host.supported) {
+          return {
+            ok: false,
+            remedy:
+              `cursor-agent readonly is unsupported on this host (tried "${bin}"): ${host.reason}. ` +
+              'To run --tools readonly here, allow the Cursor sandbox to start (AppArmor hosts: boot with ' +
+              'apparmor_restrict_unprivileged_userns=0 or add an AppArmor exception for cursor-agent; Debian-family ' +
+              'hosts: set kernel.unprivileged_userns_clone=1), or run on a host where the sandbox starts. ' +
+              '--tools edit (--sandbox disabled) is unaffected on this host. ' +
+              'Refusing to run --tools readonly without an enforceable sandbox; no process was started.',
+          };
+        }
+      }
+      // 4. The worker-home overlay must build on this host (a dry run with a
       // tokenless entry — the token is minted after the gate). Symlink
       // creation fails on hosts without the privilege (Windows without
       // developer mode), which rejects here instead of spawning unenforced.

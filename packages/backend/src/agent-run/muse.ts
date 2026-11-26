@@ -9,8 +9,11 @@
  * /tmp/smoke, with the enforcement flags re-verified on 1.4.25. Tool mapping
  * (NOT-671): both profiles pass `--approval-mode never` (no prompt can
  * occur, on start and resume); `readonly` adds `--disable-write` plus
- * `--sandbox-network restricted`; `edit` adds `--sandbox-network enabled`.
- * The sandbox stays ON (default) on both profiles:
+ * `--sandbox-network restricted` (sandbox stays ON); `edit` adds
+ * `--disable-sandbox` (the sandbox stays OFF so workspace AND agent-home
+ * writes work — the operator probe proved the client sandbox lets
+ * workspace writes through but fails `$HOME` writes with `Read-only file
+ * system`, violating the shared edit contract):
  *
  * - Every stdout record carries `stream: {kind: "session", id}`; that id is
  *   the session id. Assistant text streams as `run.output.delta`
@@ -34,7 +37,10 @@
  * - Readonly keeps shell reads and web reads: `--disable-shell` would block
  *   all shell execution and `--disable-web-tools` all web tools, so neither
  *   is passed — filesystem writes are blocked by `--disable-write` plus the
- *   sandbox, outbound mutations by `--sandbox-network restricted`.
+ *   sandbox, outbound mutations by `--sandbox-network restricted`. Edit
+ *   lifts the sandbox entirely (`--disable-sandbox`), so shell, network,
+ *   and web run unrestricted there; mutating Agent Deck operations stay
+ *   gated server-side per the shared profile (NOT-669).
  * - Per-run MCP identity (NOT-671): the child spawns with `XDG_CONFIG_HOME`
  *   pointed at a per-run worker config whose `muse/settings.json` holds
  *   ONLY the run's `agent-deck` entry (daemon URL plus the workspace,
@@ -48,12 +54,14 @@
  *   subcommand.
  *
  * Never selected, with no flag, env var, or option that selects them:
- * `--yolo`, `--trust-workspace`, `--disable-approval`, `--disable-sandbox`
- * (all disable checks or mark the workspace trusted),
- * `--permission-profile` (no valid id exists; any value aborts the run),
- * `--disable-shell` (would block readonly shell reads), and
- * `--disable-web-tools` (would block readonly web reads). Tests assert no
- * generated argv ever contains the forbidden flags.
+ * `--yolo`, `--trust-workspace`, `--disable-approval` (all disable checks
+ * or mark the workspace trusted), `--permission-profile` (no valid id
+ * exists; any value aborts the run), `--disable-shell` (would block
+ * readonly shell reads), and `--disable-web-tools` (would block readonly
+ * web reads). Tests assert no generated argv ever contains the forbidden
+ * flags. `--disable-sandbox` is the one exception: edit alone passes it
+ * (`MUSE_EDIT_ONLY_FLAGS`) so agent-home writes work; readonly must never
+ * contain it.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -76,8 +84,8 @@ export const MUSE_ENFORCEMENT_VERSION_NOTE = 'Muse Code 1.4.25';
 
 /**
  * Both profiles: no approval prompt can occur, on start and resume alike.
- * Enforcement comes from the profile flags below plus the sandbox (ON by
- * default), never from interactive approval.
+ * Enforcement comes from the profile flags below (readonly keeps the
+ * sandbox ON; edit lifts it), never from interactive approval.
  */
 export const MUSE_APPROVAL_FLAGS: readonly string[] = ['--approval-mode', 'never'];
 
@@ -95,10 +103,14 @@ export const MUSE_READONLY_FLAGS: readonly string[] = [
 ];
 
 /**
- * edit: full network access with the sandbox still ON. No `--disable-write`:
- * the profile allows workspace and agent-home writes.
+ * edit: the filesystem sandbox stays OFF so workspace AND agent-home
+ * writes work (the client sandbox fails `$HOME` writes with `Read-only
+ * file system`, violating the shared edit contract). No
+ * `--sandbox-network`: with the sandbox off there is no sandbox network
+ * mode to select — shell, network, and web run unrestricted, while
+ * mutating Agent Deck operations stay gated server-side (NOT-669).
  */
-export const MUSE_EDIT_FLAGS: readonly string[] = ['--sandbox-network', 'enabled'];
+export const MUSE_EDIT_FLAGS: readonly string[] = ['--disable-sandbox'];
 
 export const MUSE_FLAGS_FOR_PROFILE: Record<RunToolsProfile, readonly string[]> = {
   readonly: MUSE_READONLY_FLAGS,
@@ -110,11 +122,17 @@ export const MUSE_FORBIDDEN_FLAGS: readonly string[] = [
   '--yolo',
   '--trust-workspace',
   '--disable-approval',
-  '--disable-sandbox',
   '--permission-profile',
   '--disable-shell',
   '--disable-web-tools',
 ];
+
+/**
+ * Flags only the edit profile may pass: `--disable-sandbox` lifts the
+ * client filesystem sandbox so agent-home writes work. Readonly argv must
+ * never contain them (tests assert both sides).
+ */
+export const MUSE_EDIT_ONLY_FLAGS: readonly string[] = ['--disable-sandbox'];
 
 export function resolveMuseBin(): string {
   return process.env.MUSE_BIN?.trim() || 'muse';
@@ -122,14 +140,18 @@ export function resolveMuseBin(): string {
 
 /**
  * Help-text markers the installed `muse` must list for the requested profile
- * (NOT-671): `--approval-mode` and `--sandbox-network` always, plus
- * `--disable-write` for readonly.
+ * (NOT-671): `--approval-mode` always, plus `--disable-write` and
+ * `--sandbox-network` for readonly (sandbox ON, writes blocked, network
+ * restricted) or `--disable-sandbox` for edit (sandbox OFF so home writes
+ * work). Each profile verifies exactly the flags it passes.
  */
 export function museHelpTextSupportsEnforcement(helpText: string, tools: RunToolsProfile): boolean {
-  if (!helpText.includes('--approval-mode') || !helpText.includes('--sandbox-network')) {
+  if (!helpText.includes('--approval-mode')) {
     return false;
   }
-  return tools === 'edit' || helpText.includes('--disable-write');
+  return tools === 'edit'
+    ? helpText.includes('--disable-sandbox')
+    : helpText.includes('--disable-write') && helpText.includes('--sandbox-network');
 }
 
 /**
@@ -812,11 +834,14 @@ export function createMuseAdapter(deps: MuseAdapterDeps = {}): ClientAdapter {
     profileEnforcement(args: AdapterStartArgs) {
       // 1. The installed build must list every flag the profile needs.
       if (!museEnforcementFlagsSupported(probe, bin, args.tools)) {
+        const needed =
+          args.tools === 'readonly'
+            ? '--approval-mode, --disable-write, and --sandbox-network'
+            : '--approval-mode and --disable-sandbox';
         return {
           ok: false,
           remedy:
-            `muse enforcement unavailable (tried "${bin}"): this build does not list --approval-mode, --sandbox-network` +
-            `${args.tools === 'readonly' ? ', and --disable-write' : ''} ` +
+            `muse enforcement unavailable (tried "${bin}"): this build does not list ${needed} ` +
             `in \`muse exec --help\` (verified on ${MUSE_ENFORCEMENT_VERSION_NOTE}). Upgrade Muse Code, then retry. ` +
             `Refusing to run --tools ${args.tools} without enforceable approval, sandbox, and network boundaries; no process was started.`,
         };

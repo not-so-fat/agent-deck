@@ -465,12 +465,12 @@ key instead); API-key setup is otherwise out of scope for this path.
   --client claude|codex|cursor|muse
                          Required.
                          codex maps --tools to -s read-only|workspace-write;
-                         cursor maps --tools to --plan (readonly) or --force
-                         (edit) with --sandbox enabled and --approve-mcps; all
-                         log lines land when the run ends; muse maps --tools
-                         to --approval-mode never plus --disable-write and
-                         --sandbox-network restricted (readonly) or enabled
-                         (edit).
+                         cursor maps --tools to --sandbox enabled --plan
+                         (readonly) or --sandbox disabled --force (edit),
+                         both with --approve-mcps; all log lines land when
+                         the run ends; muse maps --tools to --approval-mode
+                         never plus --disable-write and --sandbox-network
+                         restricted (readonly) or --disable-sandbox (edit).
   --cwd <dir>            Required. Session working directory.
   --prompt <text>        Brief text (exactly one of --prompt/--prompt-file).
   --prompt-file <path>   Brief read from a file.

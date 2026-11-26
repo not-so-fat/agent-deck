@@ -199,7 +199,7 @@ function okMuseProbe(): MuseProbe {
       return {
         code: 0,
         stdout:
-          'Usage: muse exec [options]\n  --approval-mode <MODE>  Tool approval mode\n  --sandbox-network <MODE>  Sandbox network mode\n  --disable-write  Disable non-shell workspace file writes\n',
+          'Usage: muse exec [options]\n  --approval-mode <MODE>  Tool approval mode\n  --sandbox-network <MODE>  Sandbox network mode\n  --disable-write  Disable non-shell workspace file writes\n  --disable-sandbox  Disable the filesystem sandbox\n',
         stderr: '',
       };
     }
@@ -565,12 +565,15 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       expect(readonlyRecord.argv).toContain('--trust');
       expect(readonlyRecord.argv).toContain('--plan');
       expect(readonlyRecord.argv).not.toContain('--force');
+      expect(readonlyRecord.argv).toContain('enabled');
+      expect(readonlyRecord.argv).not.toContain('disabled');
       expect(editRecord.argv).toContain('--trust');
       expect(editRecord.argv).toContain('--force');
       expect(editRecord.argv).not.toContain('--plan');
+      expect(editRecord.argv).toContain('disabled');
+      expect(editRecord.argv).not.toContain('enabled');
       for (const record of [readonlyRecord, editRecord]) {
         expect(record.argv).toContain('--sandbox');
-        expect(record.argv).toContain('enabled');
         expect(record.argv).toContain('--approve-mcps');
         expect(record.argv).not.toContain('--yolo');
       }
@@ -580,16 +583,16 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       expect(readonlyRecord.argv).toContain('--disable-write');
       expect(readonlyRecord.argv).toContain('--sandbox-network');
       expect(readonlyRecord.argv).toContain('restricted');
+      expect(readonlyRecord.argv).not.toContain('--disable-sandbox');
       expect(editRecord.argv).toContain('--approval-mode');
-      expect(editRecord.argv).toContain('--sandbox-network');
-      expect(editRecord.argv).toContain('enabled');
+      expect(editRecord.argv).toContain('--disable-sandbox');
+      expect(editRecord.argv).not.toContain('--sandbox-network');
       expect(editRecord.argv).not.toContain('--disable-write');
       for (const record of [readonlyRecord, editRecord]) {
         for (const forbidden of [
           '--yolo',
           '--trust-workspace',
           '--disable-approval',
-          '--disable-sandbox',
           '--permission-profile',
           '--disable-shell',
           '--disable-web-tools',
