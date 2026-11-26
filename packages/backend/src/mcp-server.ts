@@ -38,7 +38,6 @@ import {
   hashRunToken,
   isRunTokenFormat,
   mcpToolDenialReason,
-  runPaths,
   WORKER_PROFILES,
   type RunToolsProfile,
 } from './agent-run';
@@ -813,7 +812,7 @@ export class AgentDeckMCPServer {
     }
     return {
       ok: true,
-      identity: { runId: found.runId, profile: found.meta.tools, client: found.meta.client },
+      identity: { runId: found.runId, profile: found.meta.tools, client: found.meta.client, metaPath: found.metaPath },
     };
   }
 
@@ -910,12 +909,15 @@ export class AgentDeckMCPServer {
   /**
    * NOT-669: record a server-side denial on the worker's run. Best effort:
    * the call was already denied, so a recording failure is logged and never
-   * thrown. The plaintext token never appears here — only the run id the
-   * verified identity carries.
+   * thrown. The denial goes to the record path the token lookup resolved
+   * (custom-`--log` runs live outside the runs root), and a `false` return
+   * is logged loudly — the tool stayed denied, but the record missed it.
+   * The plaintext token never appears here — only the run id the verified
+   * identity carries.
    */
   private recordWorkerDenial(worker: WorkerSessionIdentity, tool: string, reason: string): void {
     try {
-      appendRunDenial(runPaths(this.resolveRunHomeDir(), worker.runId).metaPath, {
+      const recorded = appendRunDenial(worker.metaPath, {
         at: new Date().toISOString(),
         client: worker.client,
         profile: worker.profile,
@@ -924,6 +926,11 @@ export class AgentDeckMCPServer {
         target: tool,
         reason,
       });
+      if (!recorded) {
+        console.warn(
+          `[agent-deck] Worker denial for tool "${tool}" on run "${worker.runId}" was enforced but not recorded: the run record is missing or stayed locked.`,
+        );
+      }
     } catch (error) {
       console.warn('[agent-deck] Failed to record a worker denial:', error instanceof Error ? error.message : error);
     }

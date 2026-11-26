@@ -342,6 +342,59 @@ describe('MCP worker profiles (NOT-669)', () => {
     }
   });
 
+  it('custom-log worker: the denial lands in the run record beside the custom log', async () => {
+    const hold = deferred();
+    const release = hold.release;
+    const ctx = await setup({
+      steps: () => [{ event: { kind: 'text', text: 'working', sessionId: 'ses_1' }, gate: hold.promise }, ...successSteps().slice(1)],
+    });
+    const wt = worktree();
+    const customLog = path.join(makeDir('ad-mcp-worker-customlog-'), 'custom.jsonl');
+    const before = ctx.starts.length;
+    const launched = await ctx.service.launch(
+      {
+        deckRef: ctx.deckA.id,
+        client: 'codex',
+        cwd: wt,
+        prompt: 'do the thing',
+        tools: 'edit',
+        trustedBinding: { deckId: ctx.deckA.id, deckName: ctx.deckA.name },
+      },
+      { logPath: customLog },
+    );
+    if (launched.kind !== 'launched') throw new Error(JSON.stringify(launched));
+    expect(launched.metaPath).toBe(path.join(path.dirname(customLog), 'meta.json'));
+    await vi.waitFor(() => {
+      expect(ctx.starts.length).toBe(before + 1);
+    });
+    const token = ctx.starts[before].runToken as string;
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+
+    const worker = await open(ctx, dealerHeaders(ctx.deckA.id, wt, { [AGENT_DECK_RUN_TOKEN_HEADER]: token }));
+    const denied = await call(ctx, worker, 'switch_deck', { target: ctx.deckB.name });
+    expect(denied.isError).toBe(true);
+    expect(denied.data).toMatchObject({ code: 'PROFILE_DENIED', profile: 'edit', tool: 'switch_deck' });
+    expect(ctx.store.listPendingDeckSwitchRequests()).toEqual([]);
+
+    // The denial reached the run's real record — and no ghost record
+    // appeared at the default location.
+    const meta = JSON.parse(fs.readFileSync(launched.metaPath, 'utf8')) as {
+      denials?: Array<Record<string, unknown>>;
+    };
+    expect(meta.denials?.map((denial) => denial.target)).toEqual(['switch_deck']);
+    expect(meta.denials?.[0]).toMatchObject({
+      source: 'agent-deck',
+      kind: 'mcp_tool',
+      profile: 'edit',
+      client: 'codex',
+    });
+    expect(fs.existsSync(path.join(ctx.home, 'runs', launched.runId))).toBe(false);
+
+    release();
+    const finished = await launched.completion;
+    expect(finished.state).toBe('ended');
+  });
+
   it('readonly worker: propose_playbook_patch and non-readOnlyHint call_service_tool denied; readOnlyHint call allowed', async () => {
     const hold = deferred();
     const release = hold.release;

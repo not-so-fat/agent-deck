@@ -202,12 +202,25 @@ export function metaPathForLog(logPath: string): string {
  * is broken. Reentrant within one process (nested `withRunMetaLock` for the
  * same record runs straight through — `appendRunDenial` calls
  * `writeRunMeta` under its own lock); across processes the directory still
- * serializes. When the lock cannot be acquired in time the write proceeds
- * anyway (liveness first — the denial-union below stays as a second net).
+ * serializes. When the lock cannot be acquired in time the critical section
+ * NEVER runs unlocked — that would reintroduce the lost-update race the
+ * lock exists to prevent — and {@link RunMetaLockTimeoutError} is thrown
+ * instead. Callers fail loudly (`writeRunMeta`) or degrade safely
+ * (`appendRunDenial` retries once, then reports `false`).
  */
 const RUN_META_LOCK_STALE_MS = 10_000;
 const RUN_META_LOCK_WAIT_MS = 5_000;
 const RUN_META_LOCK_POLL_MS = 20;
+
+/** NOT-669 repair round 3: the record lock stayed held past the wait budget. Never bypassed. */
+export class RunMetaLockTimeoutError extends Error {
+  readonly metaPath: string;
+  constructor(metaPath: string) {
+    super(`Timed out acquiring the run record lock for ${metaPath}`);
+    this.name = 'RunMetaLockTimeoutError';
+    this.metaPath = metaPath;
+  }
+}
 
 const RUN_META_LOCKS_HELD = new Set<string>();
 
@@ -253,7 +266,7 @@ export function withRunMetaLock<T>(metaPath: string, fn: () => T): T {
     }
   }
   if (!acquired) {
-    return fn();
+    throw new RunMetaLockTimeoutError(metaPath);
   }
   RUN_META_LOCKS_HELD.add(lockDir);
   try {
@@ -283,7 +296,9 @@ export function withRunMetaLock<T>(metaPath: string, fn: () => T): T {
  * the disk read, the union, and the rename all run under the record lock,
  * and entries on disk that the caller's meta lacks are unioned in (by value;
  * entries are immutable once written, so this cannot duplicate or resurrect
- * anything). No caller clears denials.
+ * anything). The union is merged chronologically by `at` (stable for ties)
+ * so the record keeps its oldest-first contract no matter which side wrote
+ * first. No caller clears denials.
  */
 export function writeRunMeta(metaPath: string, meta: RunMeta): void {
   withRunMetaLock(metaPath, () => {
@@ -294,7 +309,11 @@ export function writeRunMeta(metaPath: string, meta: RunMeta): void {
         const known = new Set((meta.denials ?? []).map((denial) => JSON.stringify(denial)));
         const missing = disk.meta.denials.filter((denial) => !known.has(JSON.stringify(denial)));
         if (missing.length > 0) {
-          merged = [...(meta.denials ?? []), ...missing];
+          merged = [...(meta.denials ?? []), ...missing].sort((a, b) => {
+            const left = typeof a.at === 'string' ? a.at : '';
+            const right = typeof b.at === 'string' ? b.at : '';
+            return left < right ? -1 : left > right ? 1 : 0;
+          });
         }
       }
     } catch {
@@ -314,31 +333,49 @@ export function appendRunLogLine(logPath: string, line: RunLogLine): void {
  * NOT-669: append one denial to a run record, oldest first. Read-modify-write
  * through the atomic meta write, for recorders that hold no live meta (the
  * MCP server process recording a server-side denial). Returns false when the
- * record is missing or corrupt instead of throwing, so a denial can never
- * fail an unrelated request — the denial itself was still enforced.
+ * record is missing or corrupt, or when the record stays locked through a
+ * bounded retry, instead of throwing — so a denial can never fail an
+ * unrelated request (the denial itself was still enforced). The caller logs
+ * a `false` loudly.
  *
  * The read, the append, and the write all run under the record lock, so a
  * concurrent service write in another process cannot land between them and
- * lose the entry — one attempt suffices, and the post-write read verifies
- * the entry landed durably. Re-recording the same denial is a no-op.
+ * lose the entry — the post-write read verifies the entry landed durably,
+ * and re-recording the same denial is a no-op. One retry: a waiter that
+ * starts right after a holder crashes can time out while the abandoned lock
+ * is still too fresh to break as stale; the second attempt then breaks it
+ * and lands the denial. The fingerprint check makes the retry idempotent.
  */
 export function appendRunDenial(metaPath: string, denial: RunDenial): boolean {
-  return withRunMetaLock(metaPath, () => {
-    const read = readRunMeta(metaPath);
-    if (!read.ok) {
-      return false;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return withRunMetaLock(metaPath, () => {
+        const read = readRunMeta(metaPath);
+        if (!read.ok) {
+          return false;
+        }
+        const fingerprint = JSON.stringify(denial);
+        if ((read.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)) {
+          return true;
+        }
+        read.meta.denials = [...(read.meta.denials ?? []), denial];
+        writeRunMeta(metaPath, read.meta);
+        const verify = readRunMeta(metaPath);
+        return (
+          verify.ok && (verify.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)
+        );
+      });
+    } catch (error) {
+      if (error instanceof RunMetaLockTimeoutError && attempt === 0) {
+        continue;
+      }
+      if (error instanceof RunMetaLockTimeoutError) {
+        return false;
+      }
+      throw error;
     }
-    const fingerprint = JSON.stringify(denial);
-    if ((read.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)) {
-      return true;
-    }
-    read.meta.denials = [...(read.meta.denials ?? []), denial];
-    writeRunMeta(metaPath, read.meta);
-    const verify = readRunMeta(metaPath);
-    return (
-      verify.ok && (verify.meta.denials ?? []).some((entry) => JSON.stringify(entry) === fingerprint)
-    );
-  });
+  }
+  return false;
 }
 
 /**

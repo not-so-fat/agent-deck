@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendRunDenial,
   readRunMeta,
+  RunMetaLockTimeoutError,
   withRunMetaLock,
   writeRunMeta,
   type RunDenial,
@@ -40,9 +41,9 @@ function testMeta(runId: string): RunMeta {
   };
 }
 
-function denial(target: string): RunDenial {
+function denial(target: string, at = new Date().toISOString()): RunDenial {
   return {
-    at: new Date().toISOString(),
+    at,
     client: 'codex',
     profile: 'edit',
     source: 'agent-deck',
@@ -81,6 +82,77 @@ describe('run record lock (NOT-669 repair)', () => {
     expect(read.meta.denials?.map((entry) => entry.target)).toEqual(['stale-break']);
     expect(fs.existsSync(lockDir)).toBe(false);
   });
+
+  it('writeRunMeta unions disk denials chronologically, oldest first', () => {
+    // The finding's interleave: an older server-side denial is already on
+    // disk when the run service writes its in-memory meta holding a newer
+    // client denial. The union must stay oldest-first, not in-memory-first.
+    const dir = makeDir('ad-lock-');
+    const metaPath = path.join(dir, 'meta.json');
+    writeRunMeta(metaPath, testMeta('run-order'));
+    const stale = readRunMeta(metaPath);
+    if (!stale.ok) throw new Error(stale.reason);
+    expect(appendRunDenial(metaPath, denial('server-tool', '2026-11-20T00:00:00.000Z'))).toBe(true);
+    stale.meta.denials = [denial('client-tool', '2026-11-21T00:00:00.000Z')];
+    writeRunMeta(metaPath, stale.meta);
+
+    const final = readRunMeta(metaPath);
+    if (!final.ok) throw new Error(final.reason);
+    expect(final.meta.denials?.map((entry) => entry.target)).toEqual(['server-tool', 'client-tool']);
+    expect(final.meta.denials?.map((entry) => entry.at)).toEqual([
+      '2026-11-20T00:00:00.000Z',
+      '2026-11-21T00:00:00.000Z',
+    ]);
+  });
+
+  it('a record that stays locked: nothing runs unlocked, append reports false, write throws', () => {
+    // A live holder in a child process keeps touching the lock so it never
+    // goes stale — every wait below must time out rather than proceed.
+    const dir = makeDir('ad-lock-');
+    const metaPath = path.join(dir, 'meta.json');
+    writeRunMeta(metaPath, testMeta('run-held'));
+    const lockDir = `${metaPath}.lock`;
+    fs.mkdirSync(lockDir);
+    const holder = spawn(
+      process.execPath,
+      [
+        '-e',
+        'const fs = require("node:fs"); const lock = process.argv[1];' +
+          ' const touch = () => { try { const now = new Date(); fs.utimesSync(lock, now, now); } catch {} };' +
+          ' touch(); setInterval(touch, 500); setTimeout(() => {}, 120000);',
+        lockDir,
+      ],
+      { stdio: 'ignore' },
+    );
+    holder.unref();
+    try {
+      let ran = false;
+      expect(() =>
+        withRunMetaLock(metaPath, () => {
+          ran = true;
+        }),
+      ).toThrow(RunMetaLockTimeoutError);
+      expect(ran).toBe(false);
+
+      expect(appendRunDenial(metaPath, denial('held'))).toBe(false);
+
+      const meta = testMeta('run-held');
+      meta.sessionId = 'ses-held';
+      meta.denials = [denial('held-write')];
+      expect(() => writeRunMeta(metaPath, meta)).toThrow(RunMetaLockTimeoutError);
+    } finally {
+      holder.kill();
+    }
+
+    // Nothing landed while the lock was held, and the holder's lock is
+    // untouched (never broken, never adopted).
+    expect(fs.existsSync(lockDir)).toBe(true);
+    fs.rmdirSync(lockDir);
+    const final = readRunMeta(metaPath);
+    if (!final.ok) throw new Error(final.reason);
+    expect(final.meta.denials ?? []).toEqual([]);
+    expect(final.meta.sessionId).toBeUndefined();
+  }, 120_000);
 
   it('concurrent processes appending denials lose none', async () => {
     // The children run the real records module: transpile it to plain JS

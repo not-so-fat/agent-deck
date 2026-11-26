@@ -57,6 +57,13 @@ export type WorkerSessionIdentity = {
   runId: string;
   profile: RunToolsProfile;
   client: RunClient;
+  /**
+   * NOT-669 repair round 3: the run record's resolved meta.json path, as the
+   * token lookup found it. Server-side denials are recorded here — never
+   * reconstructed from the run id, which would miss custom-`--log` runs
+   * whose records live outside the runs root.
+   */
+  metaPath: string;
 };
 
 /** Per-MCP-session workspace + trusted runtime session. */
