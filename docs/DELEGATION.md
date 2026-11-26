@@ -129,29 +129,34 @@ table below.
 | Git | No commit or push | Commit and push |
 | Host CLIs | No mutations | `gh`, `npm`, `curl` (including `curl` to Agent Dealer at `127.0.0.1:2222`) |
 | Claude `Monitor` | No | Yes |
-| Agent Deck MCP tools | Read-only tools; `call_service_tool` only when the target service tool is annotated `readOnlyHint: true` | All non-admin tools, including `call_service_tool` and `propose_playbook_patch` |
-| Always denied | `switch_deck` (and the retired `switch_bound_deck` alias), `request_admin_elevation` and every admin-only tool (`exit_admin_mode`, `manage_deck_card`, `list_collection`, `create_deck`), `start_run` (workers must not re-delegate), plus every mutating Agent Deck tool (`propose_playbook_patch`, deck/card/service writes) | `switch_deck` (and `switch_bound_deck`), `request_admin_elevation` and every admin-only tool, `start_run` |
+| Agent Deck MCP tools | Read-only tools, explicitly allowed (`get_run`, `get_playbook`, `list_service_tools`, …); `call_service_tool` only when the target service tool is annotated `readOnlyHint: true`. Anything not in the allow set is denied. | Every tool outside the shared deny set, explicitly allowed — including `call_service_tool`, `propose_playbook_patch`, `bind_workspace`, and `cancel_run`. Anything not in the allow set is denied. |
+| Always denied | `switch_deck` (and the retired `switch_bound_deck` alias), `request_deck_assignment` (the unassigned-session counterpart — it opens a pending human approval), `request_admin_elevation` and every admin-only tool (`exit_admin_mode`, `manage_deck_card`, `list_collection`, `create_deck`), the deprecated deck-card mutators, `start_run` (workers must not re-delegate), plus every mutating Agent Deck tool (`propose_playbook_patch`, `cancel_run`, `bind_workspace`, deck/card/service writes) | `switch_deck` (and `switch_bound_deck`), `request_deck_assignment`, `request_admin_elevation` and every admin-only tool, the deprecated deck-card mutators, `start_run` |
 
 How it runs:
 
-- The run service mints an unguessable per-run worker token at
-  launch/resume, stores only its SHA-256 hash in `meta.json`
-  (`runTokenHash`), and passes the plaintext to the adapter
+- The run service mints an unguessable per-run worker token at every
+  launch/resume — including runs written to a custom `--log` path — stores
+  only its SHA-256 hash in `meta.json` (`runTokenHash`), writes a
+  token→record pointer under `<home>/runs-by-token/` so custom locations
+  resolve server-side, and passes the plaintext to the adapter
   (`AdapterStartArgs.runToken`). Codex and Claude carry it as the
   `x-agent-deck-run-token` header in their per-run MCP override
   (`agent-run/codex.ts` `buildCodexMcpConfigOverride`,
-  `agent-run/claude.ts` `buildClaudeRunMcpServer`). Runs written to a
-  custom `--log` path carry no token — like resume provenance, the lookup
-  only scans the default run records, so a token there could never resolve
-  and would only fail the worker's MCP session.
+  `agent-run/claude.ts` `buildClaudeRunMcpServer`).
 - An MCP session presenting a valid token is a worker session bound to its
   run's effective profile (adopt-once per session: the identity can never be
-  dropped, replaced, or bypassed). Tool calls outside the profile return
+  dropped or replaced). Tool calls outside the profile return
   immediately — no elicitation, no pending approval — with the structured
   error `{ code: "PROFILE_DENIED", profile, tool, reason }`. An invalid or
   expired token (no live run matches) is rejected with 401. Leader/owner
   sessions without a token are unchanged, including the `switch_deck`
-  human approval.
+  human approval — except that a new tokenless bind into a workspace with a
+  live worker run is refused with `WORKER_RUN_ACTIVE` (a worker reconnecting
+  without its token must never land as a leader beside its own run):
+  present the run's token, or bind after it ends. Existing sessions are
+  unaffected; a session already bound to the workspace re-binds as before.
+  Worker sessions also never learn their backend runtime session id, so the
+  id cannot be reused for direct backend calls past the MCP layer.
 - Every adapter answers `profileEnforcement(args)` before any spawn; a
   `false` answer fails the run with its remedy and no process starts. Each
   adapter whose mapping is unproven rejects launch and resume until its own
@@ -161,9 +166,11 @@ How it runs:
   "mcp_tool" | "shell" | "file_write" | "network" | "client_tool", target,
   reason }`: `agent-deck` denials come from the MCP enforcement above,
   `client` denials from the `denial` normalized event adapters yield for
-  client-reported refusals. `get_run` and `agent-deck run status` return
+  client-reported refusals. Record writes serialize across processes on a
+  per-record lock, so concurrent service and MCP-server writers lose no
+  entry. `get_run` and `agent-deck run status` return
   `effectiveProfile` and `denials`. The plaintext token never appears in
-  run records, logs, or `get_run`.
+  run records, logs, pointers, or `get_run`.
 
 ## Log and status fields (shared by all clients)
 
