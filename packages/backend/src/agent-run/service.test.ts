@@ -776,7 +776,7 @@ describe('codex resume provenance (NOT-484)', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('fails a pinned cursor run closed in the plan with no model work (NOT-537)', async () => {
+  it('a pinned cursor run carries the pin in its worker MCP entry (NOT-671)', async () => {
     const home = makeDir('ad-svc-home-');
     const cwd = makeDir('ad-svc-cwd-');
     // Real cursor plan gate, stubbed preflight/stream so the test is hermetic.
@@ -797,13 +797,21 @@ describe('codex resume provenance (NOT-484)', () => {
       }),
     );
 
-    expect(outcome).toEqual({
-      kind: 'rejected',
-      code: 'profile_unsupported',
-      message:
-        '--playbook-version is not supported with --client cursor: cursor-agent has no per-run MCP env override, so the pin would never reach the session. Re-run with --client codex or --client claude.',
+    // NOT-671: the pin travels as a header in the worker home's per-run MCP
+    // entry, so cursor runs pin like codex/claude instead of rejecting.
+    if (outcome.kind !== 'finished') throw new Error(JSON.stringify(outcome));
+    expect(outcome.state).toBe('ended');
+    expect(adapter.starts).toHaveLength(1);
+    expect(adapter.starts[0].playbookPin).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
     });
-    expect(adapter.starts).toEqual([]);
+    const meta = readRunMeta(runPaths(home, outcome.runId).metaPath);
+    if (!meta.ok) throw new Error(meta.reason);
+    expect(meta.meta.playbookPin).toEqual({
+      playbookId: 'pb_baseline',
+      versionId: '123e4567-e89b-42d3-a456-426614174000',
+    });
   });
 
   it('records the pin in meta.json on a pinned run (NOT-537)', async () => {

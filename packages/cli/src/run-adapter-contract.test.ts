@@ -320,8 +320,19 @@ function makeCodexCase(): ContractCase {
 
 function makeCursorCase(): ContractCase {
   const { spawn, calls } = fakeCursorSpawn();
-  const adapter = createCursorAdapter({ probe: okCursorProbe(), spawn });
-  const baseArgs: AdapterStartArgs = { cwd: '/tmp/contract', prompt: 'brief', tools: 'readonly' };
+  const osHome = makeDir('agent-deck-contract-oshome-');
+  const adapter = createCursorAdapter({
+    probe: okCursorProbe(),
+    spawn,
+    readFile: () => null,
+    homedir: () => osHome,
+  });
+  const baseArgs: AdapterStartArgs = {
+    cwd: '/tmp/contract',
+    prompt: 'brief',
+    tools: 'readonly',
+    runToken: 'c'.repeat(64),
+  };
   return {
     id: 'cursor',
     adapter,
@@ -456,6 +467,8 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       cwd: '/tmp/contract',
       prompt: 'brief',
       tools: 'readonly',
+      // Adapters with per-run worker MCP identity (NOT-671) require it.
+      runToken: 'contract-run-token',
     })) {
       events.push(event);
     }
@@ -474,6 +487,8 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       cwd: '/tmp/contract',
       prompt: 'brief',
       tools: 'readonly',
+      // Adapters with per-run worker MCP identity (NOT-671) require it.
+      runToken: 'contract-run-token',
     })) {
       events.push(event);
     }
@@ -543,12 +558,16 @@ describe.each(CASES)('adapter contract: $id', ({ make }) => {
       }
     } else if (readonlyRecord.client === 'cursor' && editRecord.client === 'cursor') {
       expect(readonlyRecord.argv).toContain('--trust');
+      expect(readonlyRecord.argv).toContain('--plan');
       expect(readonlyRecord.argv).not.toContain('--force');
       expect(editRecord.argv).toContain('--trust');
       expect(editRecord.argv).toContain('--force');
+      expect(editRecord.argv).not.toContain('--plan');
       for (const record of [readonlyRecord, editRecord]) {
+        expect(record.argv).toContain('--sandbox');
+        expect(record.argv).toContain('enabled');
+        expect(record.argv).toContain('--approve-mcps');
         expect(record.argv).not.toContain('--yolo');
-        expect(record.argv).not.toContain('--approve-mcps');
       }
     } else if (readonlyRecord.client === 'muse' && editRecord.client === 'muse') {
       expect(readonlyRecord.argv).toContain('--disable-write');
