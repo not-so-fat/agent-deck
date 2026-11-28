@@ -13,7 +13,11 @@ import path from 'node:path';
 
 import { CREDENTIAL_RUN_OUTPUT_MAX_BYTES } from '@agent-deck/shared';
 
-import { buildCredentialRunRedactor, maxCredentialRunNeedleLength } from './redact';
+import {
+  buildCredentialRunRedactor,
+  buildCredentialRunTailGuard,
+  maxCredentialRunNeedleLength,
+} from './redact';
 
 /**
  * The only daemon env vars a credential-run child ever sees. Everything
@@ -113,6 +117,7 @@ export async function executeCredentialRun(input: {
 }): Promise<CredentialRunResult> {
   const secretValues = Object.values(input.secrets);
   const redact = buildCredentialRunRedactor(secretValues);
+  const guardTail = buildCredentialRunTailGuard(secretValues);
   // Redact before the final cap: buffer the cap plus one max-needle overlap
   // so a secret crossing the boundary is fully present for redaction. Any
   // secret starting before the cap ends inside the buffer by construction.
@@ -174,12 +179,18 @@ export async function executeCredentialRun(input: {
       child.on('error', reject);
       child.on('close', (code) => resolve(code));
     });
-    // Redact the overlap buffer first, then apply the final cap. The cut can
-    // only split the [REDACTED] marker itself — never a secret — because every
-    // needle crossing the cap was fully present for redaction. The cut lands
-    // on a character boundary, so no partial code point survives either.
+    // Redact the overlap buffer first, then apply the final byte cap. Every
+    // needle starting before the cap was fully present for redaction, but a
+    // needle split by the *buffer* cut leaves a raw prefix at the tail — and
+    // earlier redactions shorten the text, pulling that prefix back inside
+    // the cap. So when the stream was cut, strip any trailing partial needle
+    // from the redacted text before capping. The final cut lands on a
+    // character boundary, so no partial code point survives either.
     const finalize = (buffered: string, total: number): { text: string; truncated: boolean } => {
-      const redacted = redact(buffered);
+      let redacted = redact(buffered);
+      if (total > Buffer.byteLength(buffered, 'utf8')) {
+        redacted = guardTail(redacted);
+      }
       if (
         total > CREDENTIAL_RUN_OUTPUT_MAX_BYTES ||
         Buffer.byteLength(redacted, 'utf8') > CREDENTIAL_RUN_OUTPUT_MAX_BYTES

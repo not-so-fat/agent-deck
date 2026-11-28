@@ -207,6 +207,50 @@ describe('credential-run executor', () => {
     }
   });
 
+  it('leaks no secret prefix when repeated secrets shrink under redaction past the cap', async () => {
+    // Each earlier redaction shortens the text, so the partial secret left at
+    // the buffer tail by the cut slides back inside the 64 KiB cap. Sweep
+    // secret lengths and offsets so the cut lands mid-secret in every form.
+    const workspace = makeWorkspace();
+    const secrets = [
+      'sk_repeat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+      'hf_QQQQQzyxwvutsrqponmlkjihgf',
+      'p@ss/w0rd+with=url&chars?KKKKKKKKKKKKKKKKK',
+    ];
+    const encoders = [
+      { name: 'raw', expr: 'process.env.HF_TOKEN', encode: (s: string) => s },
+      {
+        name: 'base64',
+        expr: `Buffer.from(process.env.HF_TOKEN, 'utf8').toString('base64')`,
+        encode: (s: string) => Buffer.from(s, 'utf8').toString('base64'),
+      },
+      { name: 'url', expr: 'encodeURIComponent(process.env.HF_TOKEN)', encode: encodeURIComponent },
+    ];
+    for (const secret of secrets) {
+      for (const { name, expr, encode } of encoders) {
+        const form = encode(secret);
+        const repeats = Math.ceil((CREDENTIAL_RUN_OUTPUT_MAX_BYTES * 2) / (form.length + 7));
+        for (let pad = 0; pad < 8; pad++) {
+          const label = `${name} len=${secret.length} pad=${pad}`;
+          const script = `process.stdout.write('.'.repeat(${pad}) + ('token=' + (${expr}) + '\\n').repeat(${repeats}))`;
+          const result = await executeCredentialRun({
+            argv: [NODE, '-e', script],
+            cwd: resolveCredentialRunCwd(undefined, workspace),
+            timeoutSec: 30,
+            secrets: { HF_TOKEN: secret },
+          });
+          expect(result.stdoutTruncated, label).toBe(true);
+          expect(Buffer.byteLength(result.stdout, 'utf8'), label).toBeLessThanOrEqual(
+            CREDENTIAL_RUN_OUTPUT_MAX_BYTES,
+          );
+          for (const needle of encoders.map((e) => e.encode(secret))) {
+            expect(result.stdout.includes(needle.slice(0, 4)), label).toBe(false);
+          }
+        }
+      }
+    }
+  }, 120_000);
+
   it('caps multibyte output at 64 KiB bytes, not characters', async () => {
     const workspace = makeWorkspace();
     // 70,000 emoji are 280,000 bytes: a character count would return ~4x the cap.

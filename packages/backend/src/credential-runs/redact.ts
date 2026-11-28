@@ -48,6 +48,31 @@ export function maxCredentialRunNeedleLength(secrets: string[]): number {
   return max;
 }
 
+/**
+ * Build a tail guard for a buffer that was cut mid-stream. The cut can split
+ * a needle, leaving a prefix of it at the very end that no full-needle match
+ * redacts. Earlier redactions shorten the text, so that tail can later fall
+ * back inside the output cap. The guard strips the longest suffix of `text`
+ * that is a proper prefix of any needle form (raw, base64, URL-encoded).
+ * Apply it to the *redacted* text, and only when the stream was cut.
+ */
+export function buildCredentialRunTailGuard(secrets: string[]): (text: string) => string {
+  const needles = [...collectCredentialRunNeedles(secrets)];
+  return (text: string) => {
+    let strip = 0;
+    for (const needle of needles) {
+      const max = Math.min(needle.length - 1, text.length);
+      for (let len = max; len > strip; len--) {
+        if (text.endsWith(needle.slice(0, len))) {
+          strip = len;
+          break;
+        }
+      }
+    }
+    return strip > 0 ? text.slice(0, text.length - strip) : text;
+  };
+}
+
 /** Build one redactor over the resolved secret values. */
 export function buildCredentialRunRedactor(secrets: string[]): (text: string) => string {
   const ordered = [...collectCredentialRunNeedles(secrets)].sort((a, b) => b.length - a.length);
