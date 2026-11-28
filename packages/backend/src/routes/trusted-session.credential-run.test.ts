@@ -153,6 +153,27 @@ describe('trusted-session credential-run routes', () => {
     expect(app.fakeSecrets.getCalls).toEqual([]);
   });
 
+  it('denies a worker retry on an already-approved request before secret resolution', async () => {
+    const app = await buildApp();
+    const body = { argv: [NODE, ...checkArgv], credentials: ['cred_huggingface'] };
+    const pending = await app.postRun(body);
+    const requestId = pending.json().data.requestId as string;
+    await app.resolve(requestId, 'approve');
+
+    // The MCP server marks worker sessions via getAgentHeaders; the route
+    // must deny before consuming the approval or resolving any secret.
+    for (const profile of ['readonly', 'edit']) {
+      const denied = await app.postRun(body, { [AGENT_DECK_WORKER_PROFILE_HEADER]: profile });
+      expect(denied.statusCode).toBe(403);
+      expect(denied.json().error_code).toBe('PROFILE_DENIED');
+    }
+    expect(app.fakeSecrets.getCalls).toEqual([]);
+    // The approval is untouched: a leader retry still executes it.
+    expect(app.store.getCredentialRunRequest(requestId)?.status).toBe('approved');
+    const executed = await app.postRun(body);
+    expect(executed.json().data).toMatchObject({ status: 'executed', requestId });
+  });
+
   it('denies a credential not on the session deck before secret resolution', async () => {
     const app = await buildApp();
     const response = await app.postRun({
