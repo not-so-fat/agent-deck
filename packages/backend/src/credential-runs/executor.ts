@@ -3,9 +3,9 @@
  *
  * Spawns the approved `argv` directly (`shell: false`) with a minimal
  * allowlist env plus the resolved credentials, kills the child at the
- * timeout, caps both output streams, and redacts every secret value (raw,
- * base64, and URL-encoded) from the outputs before they leave this module.
- * Nothing here logs: callers audit metadata only, never secret values.
+ * timeout, redacts every secret value (raw, base64, and URL-encoded) from
+ * the outputs, then caps both streams. Nothing here logs: callers audit
+ * metadata only, never secret values.
  */
 
 import { spawn } from 'node:child_process';
@@ -13,7 +13,7 @@ import path from 'node:path';
 
 import { CREDENTIAL_RUN_OUTPUT_MAX_BYTES } from '@agent-deck/shared';
 
-import { buildCredentialRunRedactor } from './redact';
+import { buildCredentialRunRedactor, maxCredentialRunNeedleLength } from './redact';
 
 /**
  * The only daemon env vars a credential-run child ever sees. Everything
@@ -94,7 +94,12 @@ export async function executeCredentialRun(input: {
   /** Target env name → resolved secret value. */
   secrets: Record<string, string>;
 }): Promise<CredentialRunResult> {
-  const redact = buildCredentialRunRedactor(Object.values(input.secrets));
+  const secretValues = Object.values(input.secrets);
+  const redact = buildCredentialRunRedactor(secretValues);
+  // Redact before the final cap: buffer the cap plus one max-needle overlap
+  // so a secret crossing the boundary is fully present for redaction. Any
+  // secret starting before the cap ends inside the buffer by construction.
+  const bufferLimit = CREDENTIAL_RUN_OUTPUT_MAX_BYTES + maxCredentialRunNeedleLength(secretValues);
   const child = spawn(input.argv[0], input.argv.slice(1), {
     cwd: input.cwd,
     env: buildCredentialRunEnv(input.secrets),
@@ -104,27 +109,25 @@ export async function executeCredentialRun(input: {
 
   let stdout = '';
   let stderr = '';
-  let stdoutTruncated = false;
-  let stderrTruncated = false;
+  let stdoutTotal = 0;
+  let stderrTotal = 0;
   const append = (which: 'out' | 'err', chunk: string): void => {
     if (which === 'out') {
-      if (stdoutTruncated) {
-        return;
-      }
-      stdout += chunk;
-      if (stdout.length > CREDENTIAL_RUN_OUTPUT_MAX_BYTES) {
-        stdout = stdout.slice(0, CREDENTIAL_RUN_OUTPUT_MAX_BYTES);
-        stdoutTruncated = true;
+      stdoutTotal += chunk.length;
+      if (stdout.length < bufferLimit) {
+        stdout += chunk;
+        if (stdout.length > bufferLimit) {
+          stdout = stdout.slice(0, bufferLimit);
+        }
       }
       return;
     }
-    if (stderrTruncated) {
-      return;
-    }
-    stderr += chunk;
-    if (stderr.length > CREDENTIAL_RUN_OUTPUT_MAX_BYTES) {
-      stderr = stderr.slice(0, CREDENTIAL_RUN_OUTPUT_MAX_BYTES);
-      stderrTruncated = true;
+    stderrTotal += chunk.length;
+    if (stderr.length < bufferLimit) {
+      stderr += chunk;
+      if (stderr.length > bufferLimit) {
+        stderr = stderr.slice(0, bufferLimit);
+      }
     }
   };
   child.stdout?.setEncoding('utf8');
@@ -144,13 +147,25 @@ export async function executeCredentialRun(input: {
       child.on('error', reject);
       child.on('close', (code) => resolve(code));
     });
+    // Redact the overlap buffer first, then apply the final cap. The cut can
+    // only split the [REDACTED] marker itself — never a secret — because every
+    // needle crossing the cap was fully present for redaction.
+    const finalize = (buffered: string, total: number): { text: string; truncated: boolean } => {
+      const redacted = redact(buffered);
+      if (total > CREDENTIAL_RUN_OUTPUT_MAX_BYTES || redacted.length > CREDENTIAL_RUN_OUTPUT_MAX_BYTES) {
+        return { text: redacted.slice(0, CREDENTIAL_RUN_OUTPUT_MAX_BYTES), truncated: true };
+      }
+      return { text: redacted, truncated: false };
+    };
+    const out = finalize(stdout, stdoutTotal);
+    const err = finalize(stderr, stderrTotal);
     return {
       exitCode: timedOut ? null : exitCode,
       timedOut,
-      stdout: redact(stdout),
-      stdoutTruncated,
-      stderr: redact(stderr),
-      stderrTruncated,
+      stdout: out.text,
+      stdoutTruncated: out.truncated,
+      stderr: err.text,
+      stderrTruncated: err.truncated,
     };
   } catch (error) {
     throw new Error(

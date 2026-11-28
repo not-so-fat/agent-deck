@@ -169,6 +169,43 @@ describe('credential-run executor', () => {
     expect(result.stderr.length).toBe(CREDENTIAL_RUN_OUTPUT_MAX_BYTES);
   });
 
+  it('redacts a secret crossing the 64 KiB cap boundary (no prefix leak)', async () => {
+    const workspace = makeWorkspace();
+    const secret = 'boundary s3cret/with?chars&more!';
+    const b64 = Buffer.from(secret, 'utf8').toString('base64');
+    const url = encodeURIComponent(secret);
+    const cases = [
+      { name: 'raw', expr: 'process.env.HF_TOKEN' },
+      { name: 'base64', expr: `Buffer.from(process.env.HF_TOKEN, 'utf8').toString('base64')` },
+      { name: 'url', expr: 'encodeURIComponent(process.env.HF_TOKEN)' },
+    ];
+    for (const { name, expr } of cases) {
+      // The secret starts 5 chars before the cap: the old slice-before-redact
+      // kept only its prefix, which no full needle could match.
+      const fillerLen = CREDENTIAL_RUN_OUTPUT_MAX_BYTES - 5;
+      const script = `process.stdout.write('x'.repeat(${fillerLen}) + (${expr}) + 'y'.repeat(5000))`;
+      const result = await executeCredentialRun({
+        argv: [NODE, '-e', script],
+        cwd: resolveCredentialRunCwd(undefined, workspace),
+        timeoutSec: 30,
+        secrets: { HF_TOKEN: secret },
+      });
+      expect(result.exitCode, name).toBe(0);
+      expect(result.stdoutTruncated, name).toBe(true);
+      expect(result.stdout.length, name).toBe(CREDENTIAL_RUN_OUTPUT_MAX_BYTES);
+      expect(result.stdout, name).not.toContain(secret);
+      expect(result.stdout, name).not.toContain(b64);
+      expect(result.stdout, name).not.toContain(url);
+      // No partial needle survives: neither the raw prefix nor the encoded
+      // prefixes that crossed the boundary.
+      expect(result.stdout, name).not.toContain(secret.slice(0, 10));
+      expect(result.stdout, name).not.toContain(b64.slice(0, 10));
+      expect(result.stdout, name).not.toContain(url.slice(0, 10));
+      // Redaction ran before the cap: the cut splits the marker, not a secret.
+      expect(result.stdout.endsWith('[REDA'), name).toBe(true);
+    }
+  });
+
   it('passes the exit code through', async () => {
     const workspace = makeWorkspace();
     const result = await executeCredentialRun({
