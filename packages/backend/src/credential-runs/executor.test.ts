@@ -10,6 +10,7 @@ import {
   buildCredentialRunEnv,
   executeCredentialRun,
   resolveCredentialRunCwd,
+  truncateUtf8ToBytes,
 } from './executor';
 import { CREDENTIAL_RUN_REDACTED } from './redact';
 
@@ -204,6 +205,83 @@ describe('credential-run executor', () => {
       // Redaction ran before the cap: the cut splits the marker, not a secret.
       expect(result.stdout.endsWith('[REDA'), name).toBe(true);
     }
+  });
+
+  it('caps multibyte output at 64 KiB bytes, not characters', async () => {
+    const workspace = makeWorkspace();
+    // 70,000 emoji are 280,000 bytes: a character count would return ~4x the cap.
+    const result = await executeCredentialRun({
+      argv: [NODE, '-e', `process.stdout.write('😀'.repeat(70000)); process.stderr.write('🎉'.repeat(70000))`],
+      cwd: resolveCredentialRunCwd(undefined, workspace),
+      timeoutSec: 30,
+      secrets: {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdoutTruncated).toBe(true);
+    expect(result.stderrTruncated).toBe(true);
+    expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(
+      CREDENTIAL_RUN_OUTPUT_MAX_BYTES,
+    );
+    expect(Buffer.byteLength(result.stderr, 'utf8')).toBeLessThanOrEqual(
+      CREDENTIAL_RUN_OUTPUT_MAX_BYTES,
+    );
+    // 65,536 bytes hold exactly 16,384 emoji — the cut lands on a boundary.
+    expect(result.stdout).toBe('😀'.repeat(CREDENTIAL_RUN_OUTPUT_MAX_BYTES / 4));
+    expect(result.stdout).not.toContain('�');
+    expect(result.stderr).not.toContain('�');
+  });
+
+  it('backs the byte cap up to a character boundary (no partial code point)', async () => {
+    const workspace = makeWorkspace();
+    // The cap falls on the first byte of the emoji: the cut must exclude the
+    // whole character rather than emit a replacement character.
+    const script =
+      `process.stdout.write('a'.repeat(${CREDENTIAL_RUN_OUTPUT_MAX_BYTES - 1}) + '😀' + 'b'.repeat(100))`;
+    const result = await executeCredentialRun({
+      argv: [NODE, '-e', script],
+      cwd: resolveCredentialRunCwd(undefined, workspace),
+      timeoutSec: 30,
+      secrets: {},
+    });
+    expect(result.stdoutTruncated).toBe(true);
+    expect(result.stdout).toBe('a'.repeat(CREDENTIAL_RUN_OUTPUT_MAX_BYTES - 1));
+    expect(Buffer.byteLength(result.stdout, 'utf8')).toBe(CREDENTIAL_RUN_OUTPUT_MAX_BYTES - 1);
+    expect(result.stdout).not.toContain('�');
+  });
+
+  it('redacts a multibyte secret crossing the byte-cap boundary', async () => {
+    const workspace = makeWorkspace();
+    const secret = '🔑s3cret🔑';
+    const b64 = Buffer.from(secret, 'utf8').toString('base64');
+    const url = encodeURIComponent(secret);
+    // The secret starts 5 bytes before the cap: the overlap buffer must hold
+    // its full byte length for redaction before the cut.
+    const fillerLen = CREDENTIAL_RUN_OUTPUT_MAX_BYTES - 5;
+    const script = `process.stdout.write('a'.repeat(${fillerLen}) + process.env.HF_TOKEN + 'y'.repeat(5000))`;
+    const result = await executeCredentialRun({
+      argv: [NODE, '-e', script],
+      cwd: resolveCredentialRunCwd(undefined, workspace),
+      timeoutSec: 30,
+      secrets: { HF_TOKEN: secret },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdoutTruncated).toBe(true);
+    expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(
+      CREDENTIAL_RUN_OUTPUT_MAX_BYTES,
+    );
+    expect(result.stdout).not.toContain(secret);
+    expect(result.stdout).not.toContain(b64);
+    expect(result.stdout).not.toContain(url);
+    expect(result.stdout).not.toContain('🔑');
+    expect(result.stdout.endsWith('[REDA')).toBe(true);
+  });
+
+  it('truncateUtf8ToBytes keeps ASCII exact and backs up over split characters', () => {
+    expect(truncateUtf8ToBytes('abcdef', 4)).toBe('abcd');
+    expect(truncateUtf8ToBytes('abc', 10)).toBe('abc');
+    expect(truncateUtf8ToBytes('a😀b', 2)).toBe('a');
+    expect(truncateUtf8ToBytes('a😀b', 5)).toBe('a😀');
+    expect(truncateUtf8ToBytes('😀', 3)).toBe('');
   });
 
   it('passes the exit code through', async () => {

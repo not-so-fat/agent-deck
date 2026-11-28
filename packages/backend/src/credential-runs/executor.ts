@@ -87,6 +87,23 @@ export type CredentialRunResult = {
   stderrTruncated: boolean;
 };
 
+/**
+ * Truncate to at most `maxBytes` UTF-8 bytes, backing up to a character
+ * boundary so the cut never splits a multi-byte sequence (no replacement
+ * characters, no partial code points). Pure ASCII truncates exactly.
+ */
+export function truncateUtf8ToBytes(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= maxBytes) {
+    return text;
+  }
+  let end = maxBytes;
+  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) {
+    end -= 1;
+  }
+  return bytes.subarray(0, end).toString('utf8');
+}
+
 export async function executeCredentialRun(input: {
   argv: string[];
   cwd: string;
@@ -99,7 +116,10 @@ export async function executeCredentialRun(input: {
   // Redact before the final cap: buffer the cap plus one max-needle overlap
   // so a secret crossing the boundary is fully present for redaction. Any
   // secret starting before the cap ends inside the buffer by construction.
-  const bufferLimit = CREDENTIAL_RUN_OUTPUT_MAX_BYTES + maxCredentialRunNeedleLength(secretValues);
+  // All accounting is UTF-8 bytes (the contract's unit); the +4 slack keeps
+  // the overlap intact when the buffer cut backs up to a char boundary.
+  const bufferLimit =
+    CREDENTIAL_RUN_OUTPUT_MAX_BYTES + maxCredentialRunNeedleLength(secretValues) + 4;
   const child = spawn(input.argv[0], input.argv.slice(1), {
     cwd: input.cwd,
     env: buildCredentialRunEnv(input.secrets),
@@ -109,24 +129,31 @@ export async function executeCredentialRun(input: {
 
   let stdout = '';
   let stderr = '';
+  let stdoutBufferedBytes = 0;
+  let stderrBufferedBytes = 0;
   let stdoutTotal = 0;
   let stderrTotal = 0;
   const append = (which: 'out' | 'err', chunk: string): void => {
+    const chunkBytes = Buffer.byteLength(chunk, 'utf8');
     if (which === 'out') {
-      stdoutTotal += chunk.length;
-      if (stdout.length < bufferLimit) {
+      stdoutTotal += chunkBytes;
+      if (stdoutBufferedBytes < bufferLimit) {
         stdout += chunk;
-        if (stdout.length > bufferLimit) {
-          stdout = stdout.slice(0, bufferLimit);
+        stdoutBufferedBytes += chunkBytes;
+        if (stdoutBufferedBytes > bufferLimit) {
+          stdout = truncateUtf8ToBytes(stdout, bufferLimit);
+          stdoutBufferedBytes = Buffer.byteLength(stdout, 'utf8');
         }
       }
       return;
     }
-    stderrTotal += chunk.length;
-    if (stderr.length < bufferLimit) {
+    stderrTotal += chunkBytes;
+    if (stderrBufferedBytes < bufferLimit) {
       stderr += chunk;
-      if (stderr.length > bufferLimit) {
-        stderr = stderr.slice(0, bufferLimit);
+      stderrBufferedBytes += chunkBytes;
+      if (stderrBufferedBytes > bufferLimit) {
+        stderr = truncateUtf8ToBytes(stderr, bufferLimit);
+        stderrBufferedBytes = Buffer.byteLength(stderr, 'utf8');
       }
     }
   };
@@ -149,11 +176,18 @@ export async function executeCredentialRun(input: {
     });
     // Redact the overlap buffer first, then apply the final cap. The cut can
     // only split the [REDACTED] marker itself — never a secret — because every
-    // needle crossing the cap was fully present for redaction.
+    // needle crossing the cap was fully present for redaction. The cut lands
+    // on a character boundary, so no partial code point survives either.
     const finalize = (buffered: string, total: number): { text: string; truncated: boolean } => {
       const redacted = redact(buffered);
-      if (total > CREDENTIAL_RUN_OUTPUT_MAX_BYTES || redacted.length > CREDENTIAL_RUN_OUTPUT_MAX_BYTES) {
-        return { text: redacted.slice(0, CREDENTIAL_RUN_OUTPUT_MAX_BYTES), truncated: true };
+      if (
+        total > CREDENTIAL_RUN_OUTPUT_MAX_BYTES ||
+        Buffer.byteLength(redacted, 'utf8') > CREDENTIAL_RUN_OUTPUT_MAX_BYTES
+      ) {
+        return {
+          text: truncateUtf8ToBytes(redacted, CREDENTIAL_RUN_OUTPUT_MAX_BYTES),
+          truncated: true,
+        };
       }
       return { text: redacted, truncated: false };
     };

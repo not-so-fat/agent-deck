@@ -334,9 +334,12 @@ export type CredentialRunResolutionOutcome =
   | { outcome: 'approved'; request: CredentialRunRequest };
 
 /**
- * Canonical binding form: credential ids sorted, env alias keys sorted, so
- * two calls approve/execute against each other regardless of key order while
- * any value change (argv, ids, alias, cwd) is a different binding.
+ * Canonical binding form: env alias keys sorted so two calls
+ * approve/execute against each other regardless of key order, while any
+ * value change (argv, ids, alias, cwd) is a different binding. Credential
+ * ids stay in listed order: default env assignment follows that order, so
+ * sorting them would let a reordered retry execute under the same approval
+ * with a different secret behind a colliding envName.
  */
 export function canonicalCredentialRunBinding(input: {
   argv: string[];
@@ -349,7 +352,7 @@ export function canonicalCredentialRunBinding(input: {
     : null;
   return {
     argv: [...input.argv],
-    credentials: [...input.credentials].sort(),
+    credentials: [...input.credentials],
     env,
     cwd: input.cwd ?? null,
   };

@@ -32,15 +32,17 @@ function collectCredentialRunNeedles(secrets: string[]): Set<string> {
 }
 
 /**
- * Longest needle length across the resolved secrets. The executor buffers
- * the output cap plus this overlap so a secret crossing the cap boundary
- * is fully present before redaction — no partial needle survives the cut.
+ * Longest needle length in UTF-8 bytes across the resolved secrets. The
+ * executor buffers the output cap plus this overlap so a secret crossing
+ * the cap boundary is fully present before redaction — no partial needle
+ * survives the cut.
  */
 export function maxCredentialRunNeedleLength(secrets: string[]): number {
   let max = 0;
   for (const needle of collectCredentialRunNeedles(secrets)) {
-    if (needle.length > max) {
-      max = needle.length;
+    const bytes = Buffer.byteLength(needle, 'utf8');
+    if (bytes > max) {
+      max = bytes;
     }
   }
   return max;

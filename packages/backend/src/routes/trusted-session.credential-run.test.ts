@@ -76,12 +76,36 @@ describe('trusted-session credential-run routes', () => {
       tags: [],
       hasSecret: true,
     });
+    // Two different credentials sharing one envName: default mapping for both
+    // is ambiguous and must be rejected (distinct aliases still work).
+    await db.createCredential({
+      id: 'cred_dup_a',
+      label: 'Dup A',
+      scheme: 'bearer',
+      envName: 'SHARED_KEY',
+      keychainAccount: 'cred_dup_a',
+      tags: [],
+      hasSecret: true,
+    });
+    await db.createCredential({
+      id: 'cred_dup_b',
+      label: 'Dup B',
+      scheme: 'bearer',
+      envName: 'SHARED_KEY',
+      keychainAccount: 'cred_dup_b',
+      tags: [],
+      hasSecret: true,
+    });
     await db.addCredentialToDeck({ deckId: deck.id, credentialId: 'cred_huggingface' });
+    await db.addCredentialToDeck({ deckId: deck.id, credentialId: 'cred_dup_a' });
+    await db.addCredentialToDeck({ deckId: deck.id, credentialId: 'cred_dup_b' });
     const store = new TrustedSessionStore(db.getSqliteDatabase());
     const session = store.createRuntimeSession({ deckId: deck.id, mcpSessionId: 'mcp-test-1' });
     const fakeSecrets = new FakeSecretStore();
     await fakeSecrets.set('cred_huggingface', SECRET);
     await fakeSecrets.set('cred_other', 'fake-other-secret');
+    await fakeSecrets.set('cred_dup_a', 'fake-dup-secret-a');
+    await fakeSecrets.set('cred_dup_b', 'fake-dup-secret-b');
     const credentialManager = new CredentialManager(db, fakeSecrets);
     const auditStore = new AuditStore(db.getSqliteDatabase());
 
@@ -360,6 +384,112 @@ describe('trusted-session credential-run routes', () => {
       expect(response.statusCode, JSON.stringify(body)).toBe(400);
     }
     expect(app.fakeSecrets.getCalls).toEqual([]);
+  });
+
+  it('rejects duplicate target env names before secret resolution', async () => {
+    const app = await buildApp();
+    // Same envName defaults in either order: ambiguous, never approved.
+    for (const credentials of [
+      ['cred_dup_a', 'cred_dup_b'],
+      ['cred_dup_b', 'cred_dup_a'],
+    ]) {
+      const response = await app.postRun({ argv: [NODE, ...checkArgv], credentials });
+      expect(response.statusCode, JSON.stringify(credentials)).toBe(400);
+      expect(response.json().error).toContain('SHARED_KEY');
+    }
+    // An alias shadowing another credential's default envName is the same
+    // ambiguity: the default secret would be silently dropped.
+    const shadowed = await app.postRun({
+      argv: [NODE, ...checkArgv],
+      credentials: ['cred_huggingface', 'cred_dup_a'],
+      env: { HUGGINGFACE_API_KEY: 'cred_dup_a' },
+    });
+    expect(shadowed.statusCode).toBe(400);
+    expect(shadowed.json().error).toContain('HUGGINGFACE_API_KEY');
+    expect(app.fakeSecrets.getCalls).toEqual([]);
+
+    // Distinct aliases for colliding envNames are unambiguous and execute.
+    // (The child checks the values internally: echoing them would redact.)
+    const aliasedBody = {
+      argv: [
+        NODE,
+        '-e',
+        `console.log(JSON.stringify({ aOk: process.env.KEY_A === 'fake-dup-secret-a', bOk: process.env.KEY_B === 'fake-dup-secret-b', sharedUnset: process.env.SHARED_KEY === undefined }))`,
+      ],
+      credentials: ['cred_dup_a', 'cred_dup_b'],
+      env: { KEY_A: 'cred_dup_a', KEY_B: 'cred_dup_b' },
+    };
+    const pending = await app.postRun(aliasedBody);
+    expect(pending.json().data.status).toBe('pending');
+    await app.resolve(pending.json().data.requestId, 'approve');
+    const executed = await app.postRun(aliasedBody);
+    expect(executed.json().data.status).toBe('executed');
+    const printed = JSON.parse(executed.json().data.stdout) as Record<string, boolean>;
+    expect(printed).toEqual({ aOk: true, bOk: true, sharedUnset: true });
+  });
+
+  it('requires fresh approval when credential order changes', async () => {
+    const app = await buildApp();
+    await app.db.addCredentialToDeck({ deckId: app.deck.id, credentialId: 'cred_other' });
+    const body = { argv: [NODE, ...checkArgv], credentials: ['cred_huggingface', 'cred_other'] };
+    const pending = await app.postRun(body);
+    const requestId = pending.json().data.requestId as string;
+    await app.resolve(requestId, 'approve');
+
+    // Same ids, different order: a different binding needing its own approval.
+    const reordered = await app.postRun({
+      argv: [NODE, ...checkArgv],
+      credentials: ['cred_other', 'cred_huggingface'],
+    });
+    expect(reordered.json().data.status).toBe('pending');
+    expect(reordered.json().data.requestId).not.toBe(requestId);
+    expect(app.fakeSecrets.getCalls).toEqual([]);
+
+    // Each order executes under its own approval with both secrets delivered.
+    const executed = await app.postRun(body);
+    expect(executed.json().data).toMatchObject({ status: 'executed', requestId });
+    await app.resolve(reordered.json().data.requestId, 'approve');
+    const reorderedExecuted = await app.postRun({
+      argv: [NODE, ...checkArgv],
+      credentials: ['cred_other', 'cred_huggingface'],
+    });
+    expect(reorderedExecuted.json().data.status).toBe('executed');
+  });
+
+  it('records a terminal outcome when secret resolution fails after approval', async () => {
+    const app = await buildApp();
+    // Secret-free argv (unlike checkArgv, which embeds the fake value for
+    // child-side comparison) so the persisted row can assert no secret leak.
+    const body = { argv: [NODE, '-e', 'process.exit(0)'], credentials: ['cred_huggingface'] };
+    const pending = await app.postRun(body);
+    const requestId = pending.json().data.requestId as string;
+    await app.resolve(requestId, 'approve');
+
+    // The vault entry vanishes after approval but before the execute retry.
+    await app.fakeSecrets.delete('cred_huggingface');
+    const failed = await app.postRun(body);
+    expect(failed.statusCode).toBe(500);
+    expect(failed.json().error).toContain('Secret not found in vault');
+    expect(JSON.stringify(failed.json())).not.toContain(SECRET);
+
+    const row = app.store.getCredentialRunRequest(requestId)!;
+    expect(row.status).toBe('consumed');
+    expect(row.exitCode).toBeNull();
+    expect(row.timedOut).toBe(false);
+    expect(typeof row.finishedAt).toBe('string');
+    expect(JSON.stringify(row)).not.toContain(SECRET);
+
+    const auditJson = JSON.stringify(app.auditStore.list({ limit: 20 }));
+    expect(auditJson).toContain('credential_run.finished');
+    expect(auditJson).toContain(requestId);
+    expect(auditJson).not.toContain(SECRET);
+
+    // The consumed approval is spent: restoring the secret still needs a
+    // fresh request, which then executes normally.
+    await app.fakeSecrets.set('cred_huggingface', SECRET);
+    const retry = await app.postRun(body);
+    expect(retry.json().data.status).toBe('pending');
+    expect(retry.json().data.requestId).not.toBe(requestId);
   });
 
   it('redacts echoed secrets (raw, base64, URL-encoded) from the tool response', async () => {

@@ -130,6 +130,47 @@ function requireGrantDeckScope(
   }
 }
 
+/**
+ * Duplicate target-env detection for one credential-run call. Every listed
+ * credential lands under exactly one child env name (its explicit alias
+ * targets, else its own envName); when two *different* ids map to the same
+ * name the request is ambiguous — default assignment would resolve
+ * first-wins and silently drop a secret — so it must be rejected before any
+ * approval is opened or consumed. The same id listed twice is harmless (one
+ * resolution) and ignored. Reads credential metadata only, never secrets.
+ */
+async function findDuplicateCredentialRunTarget(
+  getCredential: (id: string) => Promise<{ envName: string } | null>,
+  credentialIds: string[],
+  env?: Record<string, string>,
+): Promise<string | null> {
+  const seen = new Map<string, string>();
+  for (const [target, id] of Object.entries(env ?? {})) {
+    seen.set(target, id);
+  }
+  const aliased = new Set(Object.values(env ?? {}));
+  const processed = new Set<string>();
+  for (const id of credentialIds) {
+    if (processed.has(id)) {
+      continue;
+    }
+    processed.add(id);
+    if (aliased.has(id)) {
+      continue;
+    }
+    const credential = await getCredential(id);
+    if (!credential) {
+      continue;
+    }
+    const prior = seen.get(credential.envName);
+    if (prior !== undefined && prior !== id) {
+      return credential.envName;
+    }
+    seen.set(credential.envName, id);
+  }
+  return null;
+}
+
 export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
   const store = fastify.trustedSessionStore;
 
@@ -1029,6 +1070,20 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
       };
       await assertOnDeck();
 
+      const duplicateTarget = await findDuplicateCredentialRunTarget(
+        (id) => fastify.db.getCredential(id),
+        input.credentials,
+        input.env,
+      );
+      if (duplicateTarget) {
+        return reply.status(400).send({
+          success: false,
+          error:
+            `credentials map to the same child env name "${duplicateTarget}"; ` +
+            `give each a distinct env alias`,
+        });
+      }
+
       const binding = canonicalCredentialRunBinding({
         argv: input.argv,
         credentials: input.credentials,
@@ -1046,20 +1101,53 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
         const consumed = store.consumeCredentialRunRequest(approved.requestId);
         if (consumed) {
           // Binding matched by construction; re-check deck membership
-          // immediately before resolving secrets.
-          await assertOnDeck();
-          const resolved = await fastify.credentialManager.resolveSecrets(input.credentials);
-          // Explicit aliases win; listed credentials without an alias keep
-          // their own envName.
-          const secrets: Record<string, string> = {};
-          for (const [target, id] of Object.entries(input.env ?? {})) {
-            secrets[target] = resolved.get(id)!.secret;
-          }
-          const aliased = new Set(Object.values(input.env ?? {}));
-          for (const [id, { envName, secret }] of resolved) {
-            if (!aliased.has(id) && !(envName in secrets)) {
-              secrets[envName] = secret;
+          // immediately before resolving secrets. Every step after the
+          // single-use consume lands a terminal outcome on the row plus a
+          // finished audit event — a vault miss or a deck move after
+          // approval must never leave a consumed row unfinished.
+          let secrets: Record<string, string>;
+          try {
+            await assertOnDeck();
+            const resolved = await fastify.credentialManager.resolveSecrets(input.credentials);
+            // Explicit aliases win; listed credentials without an alias keep
+            // their own envName. Duplicate targets were rejected above, so
+            // each name is written exactly once.
+            secrets = {};
+            for (const [target, id] of Object.entries(input.env ?? {})) {
+              secrets[target] = resolved.get(id)!.secret;
             }
+            const aliased = new Set(Object.values(input.env ?? {}));
+            for (const [id, { envName, secret }] of resolved) {
+              if (!aliased.has(id) && !(envName in secrets)) {
+                secrets[envName] = secret;
+              }
+            }
+          } catch (error) {
+            store.recordCredentialRunOutcome(consumed.requestId, {
+              exitCode: null,
+              timedOut: false,
+            });
+            if (error instanceof TrustedAuthError) {
+              fastify.auditStore?.append({
+                actor,
+                event: 'credential_run.finished',
+                targetId: consumed.requestId,
+                outcome: 'denied',
+                reasonCode: 'resource_out_of_scope',
+              });
+              throw error;
+            }
+            fastify.auditStore?.append({
+              actor,
+              event: 'credential_run.finished',
+              targetId: consumed.requestId,
+              outcome: 'failed',
+              reasonCode: 'run_error',
+            });
+            return reply.status(500).send({
+              success: false,
+              error: error instanceof Error ? error.message : 'credential run failed',
+            });
           }
           let result;
           try {
