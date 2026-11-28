@@ -10,9 +10,14 @@ import {
 import {
   AGENT_DECK_DASHBOARD_COOKIE,
   AGENT_DECK_SESSION_HEADER,
+  AGENT_DECK_WORKER_PROFILE_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
+  CREDENTIAL_RUN_TIMEOUT_SEC_DEFAULT,
+  CredentialRunResolveBodySchema,
   DASHBOARD_NONCE_TTL_MS,
   DASHBOARD_COOKIE_MAX_AGE_MS,
+  RunWithCredentialsRequestSchema,
+  validateCredentialRunEnvAlias,
 } from '@agent-deck/shared';
 
 import { resolveDeckRef } from '../lib/deck-resolve';
@@ -21,17 +26,21 @@ import { refreshLiveDisplayAfterDeckSwitch } from '../scope/display';
 import type { LiveDisplayRegistry } from '../scope/live-display-registry';
 import { parseBearerToken } from '../lib/http-auth';
 import {
+  credentialRunApprovalPath,
+  credentialRunApprovalUrl,
+  credentialRunPendingMessage,
   deckSwitchApprovalPath,
   deckSwitchApprovalUrl,
   deckSwitchPendingMessage,
 } from '../lib/deck-switch-approval-url';
+import { executeCredentialRun, resolveCredentialRunCwd } from '../credential-runs/executor';
 import {
   requireTrustedWriterBearer,
   sendTrustedAuthError,
   TrustedAuthError,
 } from '../trusted-session/auth';
 import { isDashboardAuthenticated, parseDashboardCookie } from '../lib/dashboard-auth';
-import type { TrustedSessionStore } from '../trusted-session/store';
+import { canonicalCredentialRunBinding, type TrustedSessionStore } from '../trusted-session/store';
 import { readAdminSecretFromEnvOrFile, verifyAdminSecret } from '../trusted-session/admin-secret';
 import type { OwnerAuthProvider } from '../auth/owner-auth';
 import { auditDeckTarget, type AuditActor } from '../audit/store';
@@ -926,6 +935,437 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
                 deckId: result.request.requestedDeckId,
                 ...(deck ? { deckName: deck.name } : {}),
                 ...(result.workspaceRoot ? { workspaceRoot: result.workspaceRoot } : {}),
+                ...(approvedVia === 'client' ? { approvedVia } : {}),
+              },
+            });
+          }
+        }
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Owner-approved credential runs (`run_with_credentials` MCP tool).
+  // Request-only creation plus execute-on-identical-retry: the deck comes
+  // from the runtime session (never the body), and secrets resolve only
+  // after a live approval for the exact binding is single-use consumed.
+  // Worker-profile callers are denied before anything else. Mirrors the
+  // deck-switch approval shape: pending request → dashboard resolve (or
+  // host elicitation / client approval driven by the MCP tool) → an
+  // identical retry executes.
+  fastify.post('/credential-run', async (request, reply) => {
+    try {
+      const workerHeader = request.headers[AGENT_DECK_WORKER_PROFILE_HEADER];
+      const workerValue = (Array.isArray(workerHeader) ? workerHeader[0] : workerHeader)?.trim();
+      if (workerValue) {
+        fastify.auditStore?.append({
+          actor: 'local-launch',
+          event: 'credential_run.denied',
+          targetId: 'worker-profile-call',
+          outcome: 'denied',
+          reasonCode: 'profile_denied',
+        });
+        return reply.status(403).send({
+          success: false,
+          error: `run_with_credentials is not allowed for worker profile "${workerValue}"`,
+          error_code: 'PROFILE_DENIED',
+        });
+      }
+
+      const parsed = RunWithCredentialsRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          success: false,
+          error: parsed.error.issues.map((issue) => issue.message).join('; '),
+        });
+      }
+      const input = parsed.data;
+      const aliasError = validateCredentialRunEnvAlias(input);
+      if (aliasError) {
+        return reply.status(400).send({ success: false, error: aliasError });
+      }
+      const session = resolveRuntimeSessionFromHeader(request, store);
+      const row = store.getRuntimeSessionRow(session.sessionId);
+      const actor = (row?.grant_id ?? 'local-launch') as AuditActor;
+
+      const workspaceHeader = request.headers[AGENT_DECK_WORKSPACE_HEADER];
+      const workspaceRoot = (
+        Array.isArray(workspaceHeader) ? workspaceHeader[0] : workspaceHeader
+      )?.trim();
+      if (!workspaceRoot || !path.isAbsolute(workspaceRoot)) {
+        return reply.status(400).send({ success: false, error: 'session has no bound workspace' });
+      }
+      let cwd: string;
+      try {
+        cwd = resolveCredentialRunCwd(input.cwd, workspaceRoot);
+      } catch (error) {
+        return reply.status(400).send({
+          success: false,
+          error: error instanceof Error ? error.message : 'invalid cwd',
+        });
+      }
+
+      // Deck membership before anything that could resolve secrets.
+      const assertOnDeck = async (): Promise<void> => {
+        try {
+          await fastify.credentialManager.assertCredentialsOnDeck(session.deckId, input.credentials);
+        } catch (error) {
+          fastify.auditStore?.append({
+            actor,
+            event: 'credential_run.denied',
+            targetId: auditDeckTarget(session.deckId),
+            outcome: 'denied',
+            reasonCode: 'resource_out_of_scope',
+          });
+          throw new TrustedAuthError(
+            'RESOURCE_OUT_OF_SCOPE',
+            error instanceof Error ? error.message : 'Credential is not on this deck',
+          );
+        }
+      };
+      await assertOnDeck();
+
+      const binding = canonicalCredentialRunBinding({
+        argv: input.argv,
+        credentials: input.credentials,
+        ...(input.env ? { env: input.env } : {}),
+        cwd,
+      });
+      const timeoutSec = input.timeoutSec ?? CREDENTIAL_RUN_TIMEOUT_SEC_DEFAULT;
+
+      const approved = store.findApprovedCredentialRunRequest({
+        runtimeSessionId: session.sessionId,
+        deckId: session.deckId,
+        binding,
+      });
+      if (approved) {
+        const consumed = store.consumeCredentialRunRequest(approved.requestId);
+        if (consumed) {
+          // Binding matched by construction; re-check deck membership
+          // immediately before resolving secrets.
+          await assertOnDeck();
+          const resolved = await fastify.credentialManager.resolveSecrets(input.credentials);
+          // Explicit aliases win; listed credentials without an alias keep
+          // their own envName.
+          const secrets: Record<string, string> = {};
+          for (const [target, id] of Object.entries(input.env ?? {})) {
+            secrets[target] = resolved.get(id)!.secret;
+          }
+          const aliased = new Set(Object.values(input.env ?? {}));
+          for (const [id, { envName, secret }] of resolved) {
+            if (!aliased.has(id) && !(envName in secrets)) {
+              secrets[envName] = secret;
+            }
+          }
+          let result;
+          try {
+            result = await executeCredentialRun({ argv: input.argv, cwd, timeoutSec, secrets });
+          } catch (error) {
+            fastify.auditStore?.append({
+              actor,
+              event: 'credential_run.finished',
+              targetId: consumed.requestId,
+              outcome: 'failed',
+              reasonCode: 'run_error',
+            });
+            return reply.status(500).send({
+              success: false,
+              error: error instanceof Error ? error.message : 'credential run failed',
+            });
+          }
+          fastify.auditStore?.append({
+            actor,
+            event: 'credential_run.finished',
+            targetId: consumed.requestId,
+            outcome: 'succeeded',
+            reasonCode: null,
+          });
+          // Metadata only: argv[0] plus counts — argv may carry sensitive
+          // arguments and secret values never reach logs.
+          fastify.log.info(
+            {
+              requestId: consumed.requestId,
+              runtimeSessionId: session.sessionId,
+              deckId: session.deckId,
+              credentialIds: input.credentials,
+              program: input.argv[0],
+              argvCount: input.argv.length,
+              exitCode: result.exitCode,
+              timedOut: result.timedOut,
+            },
+            'credential run executed',
+          );
+          return reply.send({
+            success: true,
+            data: {
+              requestId: consumed.requestId,
+              status: 'executed',
+              exitCode: result.exitCode,
+              timedOut: result.timedOut,
+              stdout: result.stdout,
+              stdoutTruncated: result.stdoutTruncated,
+              stderr: result.stderr,
+              stderrTruncated: result.stderrTruncated,
+            },
+          });
+        }
+        // Lost the single-use race (or it expired mid-call): fall through
+        // to a fresh pending request needing new approval.
+      }
+
+      const record = store.createCredentialRunRequest({
+        runtimeSessionId: session.sessionId,
+        ...(row?.mcp_session_id ? { mcpSessionId: row.mcp_session_id } : {}),
+        deckId: session.deckId,
+        binding,
+        timeoutSec,
+      });
+      fastify.auditStore?.append({
+        actor,
+        event: 'credential_run.requested',
+        targetId: record.requestId,
+        outcome: 'succeeded',
+        reasonCode: null,
+      });
+      const approvalUrl = credentialRunApprovalUrl(record.requestId, session.sessionId);
+      return reply.send({
+        success: true,
+        data: {
+          requestId: record.requestId,
+          status: record.status,
+          createdAt: record.createdAt,
+          expiresAt: record.expiresAt,
+          approvalUrl,
+          message: credentialRunPendingMessage(approvalUrl, record.requestId),
+          presentation: {
+            kind: 'credential_run_request',
+            title: `Run "${input.argv[0]}" with deck credentials?`,
+            body:
+              `Agent requested a daemon-side run of "${input.argv[0]}" ` +
+              `(${input.argv.length} argument${input.argv.length === 1 ? '' : 's'}) with ` +
+              `${input.credentials.length} deck credential${input.credentials.length === 1 ? '' : 's'}. ` +
+              'Nothing has executed; secrets resolve only after a human approves this exact command.',
+            status: record.status,
+            expiresAt: record.expiresAt,
+            channels: ['host-elicitation', 'browser'],
+          },
+        },
+      });
+    } catch (error) {
+      if (error instanceof TrustedAuthError) {
+        return sendTrustedAuthError(reply, error);
+      }
+      throw error;
+    }
+  });
+
+  // Menubar approval inbox for credential runs. Mirrors the deck-switch
+  // pending endpoint; the owner-trusted surface shows the full binding.
+  fastify.get('/credential-run/pending', async (_request, reply) => {
+    const pending = store.listPendingCredentialRunRequests();
+    const data = await Promise.all(
+      pending.map(async (record) => {
+        const deck = await fastify.db.getDeck(record.deckId);
+        const approvalPath = credentialRunApprovalPath(record.requestId, record.runtimeSessionId);
+        const approvalUrl = credentialRunApprovalUrl(record.requestId, record.runtimeSessionId);
+        return {
+          requestId: record.requestId,
+          runtimeSessionId: record.runtimeSessionId,
+          status: record.status,
+          createdAt: record.createdAt,
+          expiresAt: record.expiresAt,
+          deckId: record.deckId,
+          ...(deck ? { deckName: deck.name } : {}),
+          argv: record.binding.argv,
+          credentialIds: record.binding.credentials,
+          ...(record.binding.env ? { env: record.binding.env } : {}),
+          ...(record.binding.cwd ? { cwd: record.binding.cwd } : {}),
+          timeoutSec: record.timeoutSec,
+          approvalPath,
+          approvalUrl,
+          message: credentialRunPendingMessage(approvalUrl, record.requestId),
+        };
+      }),
+    );
+    return reply.send({ success: true, data });
+  });
+
+  fastify.get<{ Params: { requestId: string } }>(
+    '/credential-run/:requestId',
+    async (request, reply) => {
+      try {
+        const requestId = request.params.requestId?.trim();
+        if (!requestId) {
+          return reply.status(400).send({ success: false, error: 'requestId required' });
+        }
+
+        const record = store.getCredentialRunRequest(requestId);
+        if (!record) {
+          return reply.status(404).send({ success: false, error: 'Credential-run request not found' });
+        }
+
+        const principal = request.requestPrincipal;
+        if (principal?.kind === 'agent' && principal.session.sessionId !== record.runtimeSessionId) {
+          throw new TrustedAuthError(
+            'RESOURCE_OUT_OF_SCOPE',
+            'Credential-run request belongs to a different session',
+          );
+        }
+
+        const pendingLink =
+          record.status === 'pending'
+            ? (() => {
+                const approvalUrl = credentialRunApprovalUrl(record.requestId, record.runtimeSessionId);
+                return { approvalUrl, message: credentialRunPendingMessage(approvalUrl, record.requestId) };
+              })()
+            : {};
+
+        if (principal?.kind !== 'dashboard') {
+          return reply.send({
+            success: true,
+            data: {
+              requestId: record.requestId,
+              status: record.status,
+              createdAt: record.createdAt,
+              expiresAt: record.expiresAt,
+              ...pendingLink,
+            },
+          });
+        }
+
+        const deck = await fastify.db.getDeck(record.deckId);
+        return reply.send({
+          success: true,
+          data: {
+            requestId: record.requestId,
+            status: record.status,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            resolvedAt: record.resolvedAt,
+            runtimeSessionId: record.runtimeSessionId,
+            deckId: record.deckId,
+            ...(deck ? { deckName: deck.name } : {}),
+            argv: record.binding.argv,
+            credentialIds: record.binding.credentials,
+            ...(record.binding.env ? { env: record.binding.env } : {}),
+            ...(record.binding.cwd ? { cwd: record.binding.cwd } : {}),
+            timeoutSec: record.timeoutSec,
+            ...pendingLink,
+          },
+        });
+      } catch (error) {
+        if (error instanceof TrustedAuthError) {
+          return sendTrustedAuthError(reply, error);
+        }
+        throw error;
+      }
+    },
+  );
+
+  fastify.post<{ Params: { requestId: string } }>(
+    '/credential-run/:requestId/resolve',
+    async (request, reply) => {
+      try {
+        const requestId = request.params.requestId?.trim();
+        if (!requestId) {
+          return reply.status(400).send({ success: false, error: 'requestId required' });
+        }
+
+        const parsed = CredentialRunResolveBodySchema.safeParse(request.body);
+        if (!parsed.success) {
+          return reply.status(400).send({
+            success: false,
+            error: parsed.error.issues.map((issue) => issue.message).join('; '),
+          });
+        }
+        const { runtimeSessionId, decision, approvedVia } = parsed.data;
+
+        // Ownership is established by matching the body-supplied
+        // runtimeSessionId against the request's owner (dashboard-only
+        // route, like deck-switch resolve).
+        const sessionRow = store.getRuntimeSessionRow(runtimeSessionId.trim());
+        const grantId = sessionRow?.grant_id ?? null;
+        // A client-approved commit is only ever an approval for a local,
+        // bearer-less session. Grant sessions keep the human approval
+        // surfaces, whatever the caller claims.
+        if (approvedVia === 'client') {
+          if (decision !== 'approve') {
+            return reply.status(400).send({
+              success: false,
+              error: 'Client approval only approves a credential run',
+            });
+          }
+          if (!sessionRow || grantId) {
+            throw new TrustedAuthError(
+              'RESOURCE_OUT_OF_SCOPE',
+              'Client approval is only available to local sessions',
+            );
+          }
+        }
+        const result = store.resolveCredentialRunRequest(
+          requestId,
+          runtimeSessionId.trim(),
+          decision,
+        );
+
+        switch (result.outcome) {
+          case 'not-found':
+            return reply.status(404).send({ success: false, error: 'Credential-run request not found' });
+          case 'unauthorized':
+            throw new TrustedAuthError(
+              'RESOURCE_OUT_OF_SCOPE',
+              'Credential-run request belongs to a different session',
+            );
+          case 'expired':
+            throw new TrustedAuthError('CREDENTIAL_RUN_EXPIRED', 'Credential-run request expired');
+          case 'already-resolved':
+            return reply.status(409).send({
+              success: false,
+              error: `Credential-run request already resolved (status=${result.request.status})`,
+              error_code: 'CREDENTIAL_RUN_CONSUMED',
+              status: result.request.status,
+            });
+          case 'declined':
+            fastify.auditStore?.append({
+              actor: 'owner',
+              event: 'credential_run.denied',
+              targetId: requestId,
+              outcome: 'denied',
+              reasonCode: 'owner_denied',
+            });
+            return reply.send({
+              success: true,
+              data: { requestId, decision, status: 'declined' },
+            });
+          case 'approved': {
+            fastify.auditStore?.append({
+              actor: 'owner',
+              event: 'credential_run.approved',
+              targetId: requestId,
+              outcome: 'succeeded',
+              reasonCode: approvedVia === 'client' ? 'client_approved' : null,
+            });
+            if (approvedVia === 'client') {
+              fastify.log.info(
+                {
+                  requestId,
+                  runtimeSessionId: result.request.runtimeSessionId,
+                  deckId: result.request.deckId,
+                  approvedVia: 'client',
+                },
+                'credential run approved via client permission prompt (AGENT_DECK_DECK_SWITCH_APPROVAL=client)',
+              );
+            }
+            return reply.send({
+              success: true,
+              data: {
+                requestId,
+                decision,
+                status: 'approved',
                 ...(approvedVia === 'client' ? { approvedVia } : {}),
               },
             });

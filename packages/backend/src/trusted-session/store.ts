@@ -268,6 +268,84 @@ export function toDeckSwitchRequestSummary(request: DeckSwitchRequest): DeckSwit
   };
 }
 
+/** Default validity of a credential-run approval (single-use, 10 minutes). */
+export const CREDENTIAL_RUN_REQUEST_TTL_MS = 10 * 60 * 1000;
+
+export type CredentialRunRequestStatus = 'pending' | 'approved' | 'declined' | 'expired' | 'consumed';
+
+/**
+ * Exact approval binding: the argv spawned, the credential ids resolved, the
+ * env alias map (null when the default envName mapping applies), and the
+ * resolved cwd (null for the session workspace default).
+ */
+export type CredentialRunBinding = {
+  argv: string[];
+  credentials: string[];
+  env: Record<string, string> | null;
+  cwd: string | null;
+};
+
+export type CredentialRunRequestRow = {
+  id: string;
+  runtime_session_id: string;
+  mcp_session_id: string | null;
+  deck_id: string;
+  binding_json: string;
+  timeout_sec: number;
+  status: CredentialRunRequestStatus;
+  created_at: string;
+  expires_at: string;
+  resolved_at: string | null;
+};
+
+/**
+ * Server-side credential-run approval request. The binding stays server-side
+ * until approval; agent-facing readers get status only, the dashboard owner
+ * sees the full binding to decide.
+ */
+export type CredentialRunRequest = {
+  requestId: string;
+  runtimeSessionId: string;
+  mcpSessionId?: string;
+  deckId: string;
+  binding: CredentialRunBinding;
+  timeoutSec: number;
+  status: CredentialRunRequestStatus;
+  createdAt: string;
+  expiresAt: string;
+  resolvedAt: string | null;
+};
+
+export type CredentialRunResolutionOutcome =
+  | { outcome: 'not-found' }
+  | { outcome: 'unauthorized' }
+  | { outcome: 'expired'; request: CredentialRunRequest }
+  | { outcome: 'already-resolved'; request: CredentialRunRequest }
+  | { outcome: 'declined'; request: CredentialRunRequest }
+  | { outcome: 'approved'; request: CredentialRunRequest };
+
+/**
+ * Canonical binding form: credential ids sorted, env alias keys sorted, so
+ * two calls approve/execute against each other regardless of key order while
+ * any value change (argv, ids, alias, cwd) is a different binding.
+ */
+export function canonicalCredentialRunBinding(input: {
+  argv: string[];
+  credentials: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+}): CredentialRunBinding {
+  const env = input.env
+    ? Object.fromEntries(Object.entries(input.env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    : null;
+  return {
+    argv: [...input.argv],
+    credentials: [...input.credentials].sort(),
+    env,
+    cwd: input.cwd ?? null,
+  };
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -432,6 +510,22 @@ export class TrustedSessionStore {
 
       CREATE INDEX IF NOT EXISTS deck_assignment_requests_pending_idx
         ON deck_assignment_requests (mcp_session_id, status, expires_at);
+
+      CREATE TABLE IF NOT EXISTS credential_run_requests (
+        id TEXT PRIMARY KEY,
+        runtime_session_id TEXT NOT NULL,
+        mcp_session_id TEXT,
+        deck_id TEXT NOT NULL,
+        binding_json TEXT NOT NULL,
+        timeout_sec INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'declined', 'expired', 'consumed')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        resolved_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS credential_run_requests_session_idx
+        ON credential_run_requests (runtime_session_id, status, expires_at);
 
       CREATE TABLE IF NOT EXISTS session_deck_overrides (
         origin_mcp_session_id TEXT PRIMARY KEY,
@@ -1562,6 +1656,259 @@ export class TrustedSessionStore {
       currentDeckId: row.current_deck_id,
       requestedDeckId: row.requested_deck_id,
       workspaceRoot: row.workspace_root ?? undefined,
+      status: row.status,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      resolvedAt: row.resolved_at,
+    };
+  }
+
+  /**
+   * Request-only creation for one credential run. Idempotent per session and
+   * exact binding: a retry returns the existing pending request as-is, so the
+   * owner approves one request per distinct command. Never resolves secrets.
+   */
+  createCredentialRunRequest(input: {
+    runtimeSessionId: string;
+    mcpSessionId?: string;
+    deckId: string;
+    binding: CredentialRunBinding;
+    timeoutSec: number;
+    ttlMs?: number;
+  }): CredentialRunRequest {
+    const bindingJson = JSON.stringify(input.binding);
+    const ttlMs = input.ttlMs ?? CREDENTIAL_RUN_REQUEST_TTL_MS;
+    let result: CredentialRunRequest | null = null;
+    const tx = this.db.transaction(() => {
+      this.expireCredentialRunRequests();
+      const existing = this.db
+        .prepare(
+          `SELECT id, runtime_session_id, mcp_session_id, deck_id,
+                  binding_json, timeout_sec, status,
+                  created_at, expires_at, resolved_at
+           FROM credential_run_requests
+           WHERE runtime_session_id = ? AND deck_id = ? AND binding_json = ?
+             AND status = 'pending' AND expires_at > ?
+           ORDER BY created_at ASC
+           LIMIT 1`,
+        )
+        .get(input.runtimeSessionId, input.deckId, bindingJson, nowIso()) as
+        | CredentialRunRequestRow
+        | undefined;
+      if (existing) {
+        result = this.toCredentialRunRequest(existing);
+        return;
+      }
+
+      const id = prefixTrustedId('crn', randomUUID());
+      const createdAt = nowIso();
+      const expiresAt = addMs(createdAt, ttlMs);
+      this.db
+        .prepare(
+          `INSERT INTO credential_run_requests
+           (id, runtime_session_id, mcp_session_id, deck_id,
+            binding_json, timeout_sec, status, created_at, expires_at, resolved_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)`,
+        )
+        .run(
+          id,
+          input.runtimeSessionId,
+          input.mcpSessionId ?? null,
+          input.deckId,
+          bindingJson,
+          input.timeoutSec,
+          createdAt,
+          expiresAt,
+        );
+      result = this.toCredentialRunRequest(this.getCredentialRunRequestRow(id)!);
+    });
+    tx();
+    return result!;
+  }
+
+  private getCredentialRunRequestRow(requestId: string): CredentialRunRequestRow | null {
+    return (
+      (this.db
+        .prepare(
+          `SELECT id, runtime_session_id, mcp_session_id, deck_id,
+                  binding_json, timeout_sec, status,
+                  created_at, expires_at, resolved_at
+           FROM credential_run_requests WHERE id = ?`,
+        )
+        .get(requestId) as CredentialRunRequestRow | undefined) ?? null
+    );
+  }
+
+  /**
+   * Read a request, lazily marking it expired past TTL. Unlike deck-switch,
+   * an approval can sit between resolve and the agent's execute retry, so
+   * both `pending` and `approved` expire on read — never executable after.
+   */
+  getCredentialRunRequest(requestId: string): CredentialRunRequest | null {
+    const row = this.getCredentialRunRequestRow(requestId);
+    if (!row) {
+      return null;
+    }
+    if (
+      (row.status === 'pending' || row.status === 'approved') &&
+      Date.parse(row.expires_at) <= Date.now()
+    ) {
+      this.markCredentialRunRequestExpired(requestId);
+      return this.toCredentialRunRequest(this.getCredentialRunRequestRow(requestId)!);
+    }
+    return this.toCredentialRunRequest(row);
+  }
+
+  /**
+   * The live approval for this exact session + deck + binding, if any: one
+   * unexpired `approved` request. Any binding change (argv, ids, alias, cwd)
+   * or a deck/session move matches nothing, so execution needs fresh approval.
+   */
+  findApprovedCredentialRunRequest(input: {
+    runtimeSessionId: string;
+    deckId: string;
+    binding: CredentialRunBinding;
+  }): CredentialRunRequest | null {
+    this.expireCredentialRunRequests();
+    const row = this.db
+      .prepare(
+        `SELECT id, runtime_session_id, mcp_session_id, deck_id,
+                binding_json, timeout_sec, status,
+                created_at, expires_at, resolved_at
+         FROM credential_run_requests
+         WHERE runtime_session_id = ? AND deck_id = ? AND binding_json = ?
+           AND status = 'approved' AND expires_at > ?
+         ORDER BY created_at ASC
+         LIMIT 1`,
+      )
+      .get(
+        input.runtimeSessionId,
+        input.deckId,
+        JSON.stringify(input.binding),
+        nowIso(),
+      ) as CredentialRunRequestRow | undefined;
+    return row ? this.toCredentialRunRequest(row) : null;
+  }
+
+  /**
+   * Single-use consume: `approved` → `consumed`, conditional on the expected
+   * status so exactly one concurrent executor wins. Returns null when the
+   * request is missing, expired, or already used.
+   */
+  consumeCredentialRunRequest(requestId: string): CredentialRunRequest | null {
+    const row = this.getCredentialRunRequestRow(requestId);
+    if (!row || row.status !== 'approved') {
+      return null;
+    }
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      this.markCredentialRunRequestExpired(requestId);
+      return null;
+    }
+    const changed = this.db
+      .prepare(
+        `UPDATE credential_run_requests
+         SET status = 'consumed'
+         WHERE id = ? AND status = 'approved'`,
+      )
+      .run(requestId);
+    if (changed.changes === 0) {
+      return null;
+    }
+    return this.toCredentialRunRequest(this.getCredentialRunRequestRow(requestId)!);
+  }
+
+  /** Dashboard-only decision: `pending` → `approved` or `declined`. */
+  resolveCredentialRunRequest(
+    requestId: string,
+    runtimeSessionId: string,
+    decision: 'approve' | 'decline',
+  ): CredentialRunResolutionOutcome {
+    const row = this.getCredentialRunRequestRow(requestId);
+    if (!row) {
+      return { outcome: 'not-found' };
+    }
+    if (row.runtime_session_id !== runtimeSessionId) {
+      return { outcome: 'unauthorized' };
+    }
+    if (row.status !== 'pending') {
+      if (row.status === 'expired') {
+        return { outcome: 'expired', request: this.toCredentialRunRequest(row) };
+      }
+      return { outcome: 'already-resolved', request: this.toCredentialRunRequest(row) };
+    }
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      this.markCredentialRunRequestExpired(requestId);
+      return {
+        outcome: 'expired',
+        request: this.toCredentialRunRequest(this.getCredentialRunRequestRow(requestId)!),
+      };
+    }
+    const now = nowIso();
+    const changed = this.db
+      .prepare(
+        `UPDATE credential_run_requests
+         SET status = ?, resolved_at = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(decision === 'approve' ? 'approved' : 'declined', now, requestId);
+    if (changed.changes === 0) {
+      return {
+        outcome: 'already-resolved',
+        request: this.toCredentialRunRequest(this.getCredentialRunRequestRow(requestId)!),
+      };
+    }
+    const request = this.toCredentialRunRequest(this.getCredentialRunRequestRow(requestId)!);
+    return decision === 'approve'
+      ? { outcome: 'approved', request }
+      : { outcome: 'declined', request };
+  }
+
+  listPendingCredentialRunRequests(): CredentialRunRequest[] {
+    this.expireCredentialRunRequests();
+    const rows = this.db
+      .prepare(
+        `SELECT id, runtime_session_id, mcp_session_id, deck_id,
+                binding_json, timeout_sec, status,
+                created_at, expires_at, resolved_at
+         FROM credential_run_requests
+         WHERE status = 'pending' AND expires_at > ?
+         ORDER BY created_at ASC`,
+      )
+      .all(nowIso()) as CredentialRunRequestRow[];
+    return rows.map((row) => this.toCredentialRunRequest(row));
+  }
+
+  expireCredentialRunRequests(): number {
+    const now = nowIso();
+    const result = this.db
+      .prepare(
+        `UPDATE credential_run_requests
+         SET status = 'expired', resolved_at = ?
+         WHERE status IN ('pending', 'approved') AND expires_at <= ?`,
+      )
+      .run(now, now);
+    return result.changes;
+  }
+
+  private markCredentialRunRequestExpired(requestId: string): void {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `UPDATE credential_run_requests
+         SET status = 'expired', resolved_at = ?
+         WHERE id = ? AND status IN ('pending', 'approved')`,
+      )
+      .run(now, requestId);
+  }
+
+  private toCredentialRunRequest(row: CredentialRunRequestRow): CredentialRunRequest {
+    return {
+      requestId: row.id,
+      runtimeSessionId: row.runtime_session_id,
+      mcpSessionId: row.mcp_session_id ?? undefined,
+      deckId: row.deck_id,
+      binding: JSON.parse(row.binding_json) as CredentialRunBinding,
+      timeoutSec: row.timeout_sec,
       status: row.status,
       createdAt: row.created_at,
       expiresAt: row.expires_at,

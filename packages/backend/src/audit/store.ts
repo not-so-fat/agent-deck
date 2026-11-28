@@ -34,6 +34,11 @@ export const AUDIT_EVENTS = [
   // NOT-632: a deck switch committed without a server-side approval surface
   // (reasonCode client_approved: the MCP client's permission prompt).
   'deck_switch.approved',
+  // Owner-approved credential runs: request id as target, never secrets.
+  'credential_run.requested',
+  'credential_run.approved',
+  'credential_run.denied',
+  'credential_run.finished',
 ] as const;
 
 export type AuditEvent = (typeof AUDIT_EVENTS)[number];
@@ -81,7 +86,9 @@ export type AuditReasonCode =
   | 'finalization_failed'
   | 'replayed'
   // NOT-632: the MCP client's own permission prompt was the human approval.
-  | 'client_approved';
+  | 'client_approved'
+  // Credential runs: a worker-profile caller reached the execute route.
+  | 'profile_denied';
 
 /**
  * NOT-486: typed, identifier-only finalization facts. Every field is an

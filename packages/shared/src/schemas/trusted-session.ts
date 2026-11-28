@@ -18,6 +18,8 @@ export const TrustedSessionErrorCodeSchema = z.enum([
   'DECK_SWITCH_EXPIRED',
   /** Deck-switch request already resolved; repeat resolution is a no-op (NOT-207). */
   'DECK_SWITCH_CONSUMED',
+  /** Credential-run request past its TTL. */
+  'CREDENTIAL_RUN_EXPIRED',
   /** Grant lacks the explicit agent-run capability (NOT-480). */
   'RUN_CAPABILITY_REQUIRED',
   /** Grant lacks the explicit run-finalization capability (NOT-486). */
@@ -118,6 +120,7 @@ export function httpStatusForTrustedError(code: TrustedSessionErrorCode): number
       return 409;
     case 'ADMIN_CHALLENGE_EXPIRED':
     case 'DECK_SWITCH_EXPIRED':
+    case 'CREDENTIAL_RUN_EXPIRED':
       return 410;
     default:
       return 500;

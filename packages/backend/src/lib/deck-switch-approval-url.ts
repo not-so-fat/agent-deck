@@ -61,3 +61,29 @@ export function deckSwitchPendingMessage(approvalUrl: string): string {
     `The human can approve or decline it at ${approvalUrl} or from the menubar pending-requests inbox.`
   );
 }
+
+/**
+ * The browser approval page for one pending credential-run request,
+ * relative to the dashboard origin. Same origin rules as deck-switch links.
+ */
+export function credentialRunApprovalPath(requestId: string, runtimeSessionId: string): string {
+  return `/credential-run/approve?request=${encodeURIComponent(requestId)}&session=${encodeURIComponent(runtimeSessionId)}`;
+}
+
+/** Absolute browser approval link for one pending credential-run request. */
+export function credentialRunApprovalUrl(
+  requestId: string,
+  runtimeSessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return `${resolveApprovalBaseUrl(env)}${credentialRunApprovalPath(requestId, runtimeSessionId)}`;
+}
+
+/** Human-readable pointer to the approval link for a still-pending run. */
+export function credentialRunPendingMessage(approvalUrl: string, requestId: string): string {
+  return (
+    `Credential run ${requestId} is pending human approval; nothing has executed and no secrets were resolved. ` +
+    `The human can approve or decline it at ${approvalUrl} or from the menubar pending-requests inbox. ` +
+    `After approval, call run_with_credentials again with identical input to execute.`
+  );
+}

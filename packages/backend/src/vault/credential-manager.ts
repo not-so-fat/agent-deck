@@ -296,6 +296,32 @@ export class CredentialManager {
     return env;
   }
 
+  /**
+   * Resolve secrets keyed by credential id (never by env name, which need
+   * not be unique). Used by daemon-side credential runs to place each
+   * secret under its approved target env name.
+   */
+  async resolveSecrets(
+    credentialIds: string[],
+  ): Promise<Map<string, { envName: string; secret: string }>> {
+    const resolved = new Map<string, { envName: string; secret: string }>();
+    for (const credentialId of credentialIds) {
+      if (resolved.has(credentialId)) {
+        continue;
+      }
+      const credential = await this.db.getCredential(credentialId);
+      if (!credential) {
+        throw new Error(`Credential not found: ${credentialId}`);
+      }
+      const secret = await this.secretStore.get(credential.keychainAccount);
+      if (!secret) {
+        throw new Error(`Secret not found in vault for credential: ${credentialId}`);
+      }
+      resolved.set(credentialId, { envName: credential.envName, secret });
+    }
+    return resolved;
+  }
+
   async addToDeck(input: AddCredentialToDeckInput): Promise<void> {
     const credential = await this.db.getCredential(input.credentialId);
     if (!credential) {
