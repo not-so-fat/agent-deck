@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type {
   LiveBinding,
   PendingAdminChallenge,
+  PendingCredentialRunRequest,
   PendingDeckSwitchRequest,
 } from '@agent-deck/shared';
 import {
   MENUBAR_STOP_SOURCE,
   buildApprovalHref,
+  buildCredentialRunApprovalHref,
+  buildCredentialRunApprovalLine,
   buildDeckSwitchApprovalHref,
   buildDeckSwitchApprovalLine,
   buildStopDeckMenubarArgs,
@@ -190,6 +193,75 @@ describe('deck-switch approval inbox (NOT-212)', () => {
     );
     expect(line).toContain('current deck');
     expect(line).toContain('requested deck');
+    expect(line).toContain('expires in 4m');
+  });
+});
+
+describe('credential-run approval inbox', () => {
+  function pendingRun(overrides: Partial<PendingCredentialRunRequest> = {}): PendingCredentialRunRequest {
+    return {
+      requestId: 'crn_inbox_1',
+      runtimeSessionId: 'ses_inbox_1',
+      status: 'pending',
+      deckName: 'Product Design',
+      argv: ['/usr/local/bin/hf', 'jobs', 'run', '--secrets', 'HF_TOKEN'],
+      credentialIds: ['cred_huggingface'],
+      expiresAt: '2026-07-03T12:04:00.000Z',
+      approvalPath: '/credential-run/approve?request=crn_inbox_1&session=ses_inbox_1',
+      ...overrides,
+    };
+  }
+
+  it('shows a Pending credential runs entry with the program and credential count', () => {
+    const output = renderMenubar([], NOW, [], 'http://127.0.0.1:1111', [], [], [pendingRun()]);
+    expect(output.split('\n')[0]).toBe('◆ ⚠ 1');
+    expect(output).toContain('Pending credential runs (1)');
+    expect(output).toContain('Run hf with 1 credential');
+    expect(output).toContain(
+      `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent('/credential-run/approve?request=crn_inbox_1&session=ses_inbox_1')}`,
+    );
+  });
+
+  it('pluralizes credentials and counts all inboxes together in the title', () => {
+    const admin: PendingAdminChallenge = {
+      challengeId: 'adm_test',
+      runtimeSessionId: 'ses_test',
+      deckId: '11111111-1111-4111-8111-111111111111',
+      expiresAt: '2026-07-03T12:04:00.000Z',
+      approvalPath: '/admin/approve?challenge=adm_test&session=ses_test',
+    };
+    const output = renderMenubar(
+      [],
+      NOW,
+      [admin],
+      'http://127.0.0.1:1111',
+      [],
+      [],
+      [pendingRun({ credentialIds: ['cred_a', 'cred_b'] })],
+    );
+    expect(output.split('\n')[0]).toBe('◆ ⚠ 2');
+    expect(output).toContain('Run hf with 2 credentials');
+  });
+
+  it('omits the inbox section when nothing is pending', () => {
+    const output = renderMenubar([binding({})], NOW);
+    expect(output).not.toContain('Pending credential runs');
+  });
+
+  it('reopens the approval page through agent-deck open, never a bare URL', () => {
+    const href = buildCredentialRunApprovalHref(pendingRun(), 'http://127.0.0.1:1111');
+    expect(href).toBe(
+      `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent('/credential-run/approve?request=crn_inbox_1&session=ses_inbox_1')}`,
+    );
+    expect(href).not.toContain('bootstrap=');
+  });
+
+  it('falls back to a generic label when argv is empty', () => {
+    const line = buildCredentialRunApprovalLine(
+      pendingRun({ argv: [] as unknown as string[] }),
+      NOW,
+    );
+    expect(line).toContain('Run command with 1 credential');
     expect(line).toContain('expires in 4m');
   });
 });

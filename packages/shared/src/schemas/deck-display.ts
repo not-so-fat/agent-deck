@@ -122,6 +122,25 @@ export const PendingDeckAssignmentRequestSchema = z.object({
 });
 
 export type PendingDeckAssignmentRequest = z.infer<typeof PendingDeckAssignmentRequestSchema>;
+
+/**
+ * A pending credential-run request as the local menubar inbox sees it. The
+ * command and credential ids are display-safe for the owner's own menu bar;
+ * the approval still commits through the dashboard-only resolve route, and
+ * secret values never appear here (they resolve daemon-side after approval).
+ */
+export const PendingCredentialRunRequestSchema = z.object({
+  requestId: z.string().min(1),
+  runtimeSessionId: z.string().min(1),
+  status: z.literal('pending'),
+  deckName: z.string().min(1).optional(),
+  argv: z.array(z.string()).min(1),
+  credentialIds: z.array(z.string().min(1)).min(1),
+  expiresAt: z.string().datetime(),
+  approvalPath: z.string().min(1),
+});
+
+export type PendingCredentialRunRequest = z.infer<typeof PendingCredentialRunRequestSchema>;
 export type DeckDisplay = z.infer<typeof DeckDisplaySchema>;
 export type StatusLinePayload = z.infer<typeof StatusLinePayloadSchema>;
 
