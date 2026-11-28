@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_DECK_SESSION_HEADER,
+  AGENT_DECK_WORKER_PROFILE_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
 } from '@agent-deck/shared';
 import {
@@ -563,5 +564,44 @@ describe('McpSessionBindingStore worker identity (NOT-669, NOT-672)', () => {
 
     store.markUnassigned('mcp-2');
     expect(store.getWorkerSession('mcp-2')).toBeUndefined();
+  });
+
+  it('marks worker sessions in agent headers and omits the marker for leaders', () => {
+    const store = new McpSessionBindingStore();
+    store.setTrustedSession('leader', {
+      runtimeSessionId: 'ses_leader',
+      deckId: 'deck-a',
+      workspaceRoot: '/tmp/work',
+    });
+    store.setTrustedSession('worker-ro', {
+      runtimeSessionId: 'ses_ro',
+      deckId: 'deck-a',
+      workspaceRoot: '/tmp/work',
+    });
+    store.setTrustedSession('worker-edit', {
+      runtimeSessionId: 'ses_edit',
+      deckId: 'deck-a',
+      workspaceRoot: '/tmp/work',
+    });
+    store.setWorkerSession('worker-ro', {
+      runId: 'run-ro',
+      profile: 'readonly',
+      client: 'claude',
+      metaPath: '/tmp/meta-ro.json',
+    });
+    store.setWorkerSession('worker-edit', {
+      runId: 'run-edit',
+      profile: 'edit',
+      client: 'codex',
+      metaPath: '/tmp/meta-edit.json',
+    });
+
+    expect(store.getAgentHeaders('leader')[AGENT_DECK_WORKER_PROFILE_HEADER]).toBeUndefined();
+    expect(store.getAgentHeaders('worker-ro')[AGENT_DECK_WORKER_PROFILE_HEADER]).toBe('readonly');
+    expect(store.getAgentHeaders('worker-edit')[AGENT_DECK_WORKER_PROFILE_HEADER]).toBe('edit');
+
+    // Clearing the session drops the marker with the identity.
+    store.clearSession('worker-ro');
+    expect(store.getAgentHeaders('worker-ro')[AGENT_DECK_WORKER_PROFILE_HEADER]).toBeUndefined();
   });
 });

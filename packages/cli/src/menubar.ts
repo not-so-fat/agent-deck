@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {
   LiveBinding,
   PendingAdminChallenge,
+  PendingCredentialRunRequest,
   PendingDeckAssignmentRequest,
   PendingDeckSwitchRequest,
 } from '@agent-deck/shared';
@@ -121,6 +122,31 @@ export function buildDeckAssignmentApprovalLine(
   return `⧉ Assign deck to ${folder}/ — ${meta} | ${href} terminal=false`;
 }
 
+/** Reopen one pending credential run in the trusted browser flow. */
+export function buildCredentialRunApprovalHref(
+  pending: PendingCredentialRunRequest,
+  _dashboardBaseUrl: string,
+): string {
+  const pathPart = pending.approvalPath.startsWith('/')
+    ? pending.approvalPath
+    : `/${pending.approvalPath}`;
+  return `bash=agent-deck param1=open param2=--path param3=${encodeURIComponent(pathPart)}`;
+}
+
+/** One inbox row naming the program and credential count — never secret values. */
+export function buildCredentialRunApprovalLine(
+  pending: PendingCredentialRunRequest,
+  now: Date,
+): string {
+  const program = truncateName(path.basename(pending.argv[0] ?? '') || 'command');
+  const count = pending.credentialIds.length;
+  const creds = `${count} credential${count === 1 ? '' : 's'}`;
+  const age = formatTimeUntil(pending.expiresAt, now);
+  const meta = age ? `expires in ${age}` : 'pending';
+  const href = buildCredentialRunApprovalHref(pending, resolveDashboardBaseUrl());
+  return `⧉ Run ${program} with ${creds} — ${meta} | ${href} terminal=false`;
+}
+
 /** How the menu bar names itself when it stops the deck. */
 export const MENUBAR_STOP_SOURCE = 'menubar';
 
@@ -152,13 +178,17 @@ export function renderMenubar(
   dashboardBaseUrl = resolveDashboardBaseUrl(),
   pendingDeckSwitches: PendingDeckSwitchRequest[] = [],
   pendingDeckAssignments: PendingDeckAssignmentRequest[] = [],
+  pendingCredentialRuns: PendingCredentialRunRequest[] = [],
 ): string {
   if (bindings === null) {
     return ['◆ off | color=gray', '---', 'Agent Deck offline | color=gray', ''].join('\n');
   }
 
   const pendingCount =
-    pendingApprovals.length + pendingDeckSwitches.length + pendingDeckAssignments.length;
+    pendingApprovals.length +
+    pendingDeckSwitches.length +
+    pendingDeckAssignments.length +
+    pendingCredentialRuns.length;
   const title =
     pendingCount > 0
       ? `◆ ⚠ ${pendingCount}`
@@ -208,6 +238,17 @@ export function renderMenubar(
     lines.push(`Pending assignments (${pendingDeckAssignments.length}) | size=11 color=orange`);
     for (const pending of pendingDeckAssignments) {
       lines.push(buildDeckAssignmentApprovalLine(pending, now));
+    }
+    lines.push('---');
+  }
+
+  // Credential-run approval inbox. Same recovery contract: a closed or
+  // failed auto-open tab stays recoverable here — each row reopens its
+  // approval page through `agent-deck open`.
+  if (pendingCredentialRuns.length > 0) {
+    lines.push(`Pending credential runs (${pendingCredentialRuns.length}) | size=11 color=orange`);
+    for (const pending of pendingCredentialRuns) {
+      lines.push(buildCredentialRunApprovalLine(pending, now));
     }
     lines.push('---');
   }
@@ -312,6 +353,12 @@ export async function runMenubar(): Promise<number> {
           '/api/trusted-session/deck-assignment/pending',
           timeoutMs,
         )) ?? [];
+      const pendingCredentialRuns =
+        (await fetchJson<PendingCredentialRunRequest[]>(
+          backendUrl,
+          '/api/trusted-session/credential-run/pending',
+          timeoutMs,
+        )) ?? [];
       process.stdout.write(
         renderMenubar(
           bindings,
@@ -320,6 +367,7 @@ export async function runMenubar(): Promise<number> {
           resolveDashboardBaseUrl(),
           pendingDeckSwitches,
           pendingDeckAssignments,
+          pendingCredentialRuns,
         ),
       );
       return 0;

@@ -27,6 +27,7 @@ import { SWITCH_BEFORE_BIND_MESSAGE, mcpPolicyError, mcpPolicyErrorWithMessage, 
 import { BackendApiError, parseBackendErrorBody } from '../lib/backend-api-error';
 import { unassignedDeckBinding, type UnassignedDefaultDeckIssue } from '../mcp-unassigned';
 import { registerRunTools } from './run-tools';
+import { registerCredentialRunTools } from './run-with-credentials';
 
 /** A raw Zod shape, or a whole object schema (`.strict()` rejects unknown fields; NOT-539). */
 export type McpToolInputSchema = Record<string, z.ZodTypeAny> | z.AnyZodObject;
@@ -206,6 +207,7 @@ export function registerMcpTools(host: McpToolHost): void {
   }
   registerRuntimeTools(host);
   registerRunTools(host);
+  registerCredentialRunTools(host);
   if (profileIncludes(host.profile, 'editing')) {
     registerEditingTools(host);
   }

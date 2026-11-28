@@ -4,6 +4,7 @@ import {
   AGENT_DECK_CLIENT_HEADER,
   AGENT_DECK_CORRELATION_HEADER,
   AGENT_DECK_SESSION_HEADER,
+  AGENT_DECK_WORKER_PROFILE_HEADER,
   AGENT_DECK_WORKSPACE_HEADER,
   normalizeCorrelationId,
   normalizeHostSessionId,
@@ -630,6 +631,14 @@ export class McpSessionBindingStore {
     const correlationId = this.getCorrelationId(sessionId);
     if (correlationId) {
       headers[AGENT_DECK_CORRELATION_HEADER] = correlationId;
+    }
+
+    // Worker identity marker for daemon-side execution routes
+    // (`run_with_credentials`): derived from the server-side worker session,
+    // never from agent input. Leaders (no worker session) send no marker.
+    const worker = this.getWorkerSession(sessionId);
+    if (worker && (worker.profile === 'readonly' || worker.profile === 'edit')) {
+      headers[AGENT_DECK_WORKER_PROFILE_HEADER] = worker.profile;
     }
 
     return headers;

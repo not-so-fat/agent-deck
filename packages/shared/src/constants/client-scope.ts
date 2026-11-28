@@ -71,3 +71,12 @@ export const AGENT_DECK_HOST_SESSION_ID_HEADER = 'x-agent-deck-host-session-id';
  * participates in authorization: an invalid or expired token is rejected.
  */
 export const AGENT_DECK_RUN_TOKEN_HEADER = 'x-agent-deck-run-token';
+
+/**
+ * Worker profile marker the MCP server sets from its server-side session
+ * state on daemon-side execution calls (`run_with_credentials`): `readonly`
+ * or `edit` when the MCP session is a worker session, absent otherwise.
+ * The value never comes from agent input — the backend denies any execution
+ * call carrying it, before resolving secrets.
+ */
+export const AGENT_DECK_WORKER_PROFILE_HEADER = 'x-agent-deck-worker-profile';

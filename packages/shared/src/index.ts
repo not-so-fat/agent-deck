@@ -15,6 +15,7 @@ export * from './schemas/trusted-session';
 export * from './schemas/card-usage';
 export * from './schemas/agent-run';
 export * from './schemas/playbook-pin';
+export * from './schemas/credential-run';
 
 // Additional types not covered by schemas
 export * from './types/api';
@@ -51,6 +52,7 @@ export {
   AGENT_DECK_HOST_SESSION_ID_HEADER,
   AGENT_DECK_PLAYBOOK_PIN_HEADER,
   AGENT_DECK_RUN_TOKEN_HEADER,
+  AGENT_DECK_WORKER_PROFILE_HEADER,
 } from './constants/client-scope';
 export {
   AGENT_DECK_SESSION_HEADER,

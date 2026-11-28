@@ -187,6 +187,14 @@ Sensitive values use the same **OS secret store** as API keys (macOS Keychain by
 
 **Performance:** Keychain reads are typically **sub‑millisecond to a few ms** on macOS — negligible next to MCP network calls (tens–hundreds of ms). Tokens are resolved when opening an MCP connection (cached for that session); refresh hits Keychain only when a token expires. You should not notice this in normal use. See [ARCHITECTURE.md — Secret storage](./ARCHITECTURE.md#secret-storage) for implementation detail.
 
+### Running commands with deck credentials (`run_with_credentials`)
+
+A leader agent that needs a real secret in a child process (for example `hf jobs run … --secrets HF_TOKEN`) calls the `run_with_credentials` MCP tool instead of reading the credential: the daemon resolves the secrets from its own vault, spawns `argv` directly with no shell, and returns the output with every secret value (raw, base64, and URL-encoded) replaced by `[REDACTED]`. The agent never sees the values. Each listed credential must sit on the session's deck; `env` optionally renames targets (`{"HF_TOKEN":"cred_huggingface"}`, otherwise each credential keeps its own `envName`); `cwd` must stay inside the session workspace.
+
+Every call needs a fresh owner approval through the same flow as `switch_deck`: the client's permission prompt on hosts that opt into client approval, else the host approval form, else a pending request approved in the dashboard. Approvals are single-use, expire after 10 minutes, and bind the exact argv, env aliases, cwd, credential ids, deck, and session — after a dashboard approval the leader retries with identical input to execute. Headless `start_run` workers (readonly and edit) are denied the tool; only interactive leaders may call it.
+
+**Known limitation:** the daemon and agents currently share one Linux user, so there is no OS-level isolation between the daemon's vault and a process the agent runs — a leader that can already run arbitrary host commands could read daemon memory or files outside this tool's sandbox. Host/user isolation is tracked separately (NOT-674).
+
 Legacy reference:
 
 | Port | Service |

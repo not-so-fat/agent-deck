@@ -88,7 +88,9 @@ export const WORKER_LEGACY_READ_MCP_TOOLS: readonly string[] = [
  * worker), `start_run` (workers must not re-delegate),
  * `request_deck_assignment` (the unassigned-session counterpart of
  * `switch_deck` — it opens a pending human approval, and a headless worker
- * must never wait on one), and the legacy deck-card mutators.
+ * must never wait on one), `run_with_credentials` (owner-approved
+ * credential use is interactive-leader only), and the legacy deck-card
+ * mutators.
  */
 export const WORKER_SHARED_DENY_MCP_TOOLS: readonly string[] = [
   ...WORKER_ADMIN_ONLY_MCP_TOOLS,
@@ -96,6 +98,9 @@ export const WORKER_SHARED_DENY_MCP_TOOLS: readonly string[] = [
   'switch_bound_deck',
   'start_run',
   'request_deck_assignment',
+  // Owner-approved credential runs are interactive-leader only: a headless
+  // worker must never open a human approval or execute with deck secrets.
+  'run_with_credentials',
   ...WORKER_LEGACY_DECK_CARD_MUTATING_MCP_TOOLS,
 ];
 

@@ -62,6 +62,23 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+$/,
     policy: 'requireAgentOrDashboard',
   },
+  // Owner-approved credential runs: creation/execution on the session's
+  // own deck; static inbox path wins over the :requestId pattern below.
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/trusted-session\/credential-run$/,
+    policy: 'requireAgentResource',
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/trusted-session\/credential-run\/pending$/,
+    policy: 'allowPublic',
+  },
+  {
+    methods: ['GET'],
+    pattern: /^\/api\/trusted-session\/credential-run\/[^/]+$/,
+    policy: 'requireAgentOrDashboard',
+  },
   // NOT-597: static assignment paths must win over the :requestId
   // pattern below ("pending" would otherwise parse as a request id).
   // The MCP promotion poll (`by-mcp`) is loopback-public: the MCP
@@ -172,6 +189,11 @@ export const HTTP_ROUTE_POLICIES: RoutePolicyRule[] = [
   {
     methods: ['POST'],
     pattern: /^\/api\/trusted-session\/deck-switch\/[^/]+\/resolve$/,
+    policy: 'requireDashboard',
+  },
+  {
+    methods: ['POST'],
+    pattern: /^\/api\/trusted-session\/credential-run\/[^/]+\/resolve$/,
     policy: 'requireDashboard',
   },
   // NOT-597: human-approved assignment for unassigned folders. Creation

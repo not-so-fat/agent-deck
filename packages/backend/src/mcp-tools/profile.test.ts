@@ -29,8 +29,11 @@ describe('tool tiers by profile', () => {
     // bound-deck-scoped usage read for the coordinator, no dashboard auth.
     // NOT-539: start_run / get_run / cancel_run ride the runtime tier (15-17)
     // so a Dealer-launched agent can delegate host-local runs through MCP.
-    expect(names.length).toBeLessThanOrEqual(17);
+    // run_with_credentials rides the runtime tier (18): like start_run it
+    // executes host-side, but each call needs a fresh owner approval.
+    expect(names.length).toBeLessThanOrEqual(18);
     expect(names).toEqual(expect.arrayContaining(['start_run', 'get_run', 'cancel_run']));
+    expect(names).toContain('run_with_credentials');
     expect(names).toContain('get_card_usage_events');
     expect(names).toContain('bind_workspace');
     expect(names).toContain('switch_deck');
@@ -51,9 +54,10 @@ describe('tool tiers by profile', () => {
     expect(names).not.toContain('add_service_to_bound_deck');
     expect(names).not.toContain('list_playbooks');
     // NOT-304: get_card_usage_events rides the runtime tier, so standard
-    // grows from 20 to 21 with it; NOT-539's three run tools take it to 24.
+    // grows from 20 to 21 with it; NOT-539's three run tools take it to 24;
+    // run_with_credentials takes it to 25.
     expect(names).toContain('get_card_usage_events');
-    expect(names.length).toBeLessThanOrEqual(24);
+    expect(names.length).toBeLessThanOrEqual(25);
   });
 
   it('legacy adds deprecated aliases', () => {
