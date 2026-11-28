@@ -1065,6 +1065,8 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
           try {
             result = await executeCredentialRun({ argv: input.argv, cwd, timeoutSec, secrets });
           } catch (error) {
+            // Persist the failure outcome on the consumed row (never secrets).
+            store.recordCredentialRunOutcome(consumed.requestId, { exitCode: null, timedOut: false });
             fastify.auditStore?.append({
               actor,
               event: 'credential_run.finished',
@@ -1077,6 +1079,12 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
               error: error instanceof Error ? error.message : 'credential run failed',
             });
           }
+          // Persist the outcome (exit code, timeout, finish time) on the
+          // consumed row — the durable audit trail beside the audit event.
+          store.recordCredentialRunOutcome(consumed.requestId, {
+            exitCode: result.exitCode,
+            timedOut: result.timedOut,
+          });
           fastify.auditStore?.append({
             actor,
             event: 'credential_run.finished',
@@ -1254,6 +1262,9 @@ export async function registerTrustedSessionRoutes(fastify: FastifyInstance) {
             ...(record.binding.env ? { env: record.binding.env } : {}),
             ...(record.binding.cwd ? { cwd: record.binding.cwd } : {}),
             timeoutSec: record.timeoutSec,
+            exitCode: record.exitCode,
+            timedOut: record.timedOut,
+            finishedAt: record.finishedAt,
             ...pendingLink,
           },
         });

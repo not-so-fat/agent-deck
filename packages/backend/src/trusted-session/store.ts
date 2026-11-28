@@ -296,12 +296,18 @@ export type CredentialRunRequestRow = {
   created_at: string;
   expires_at: string;
   resolved_at: string | null;
+  /** Persisted execution outcome (null until the run finishes). */
+  exit_code: number | null;
+  /** 1 when the child was killed at the timeout, 0 when it exited, null until finished. */
+  timed_out: number | null;
+  finished_at: string | null;
 };
 
 /**
  * Server-side credential-run approval request. The binding stays server-side
  * until approval; agent-facing readers get status only, the dashboard owner
- * sees the full binding to decide.
+ * sees the full binding to decide. The execution outcome (exit code, timeout,
+ * finish time) is persisted on completion — never secret values.
  */
 export type CredentialRunRequest = {
   requestId: string;
@@ -314,6 +320,9 @@ export type CredentialRunRequest = {
   createdAt: string;
   expiresAt: string;
   resolvedAt: string | null;
+  exitCode: number | null;
+  timedOut: boolean | null;
+  finishedAt: string | null;
 };
 
 export type CredentialRunResolutionOutcome =
@@ -521,7 +530,10 @@ export class TrustedSessionStore {
         status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'declined', 'expired', 'consumed')),
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
-        resolved_at TEXT
+        resolved_at TEXT,
+        exit_code INTEGER,
+        timed_out INTEGER,
+        finished_at TEXT
       );
 
       CREATE INDEX IF NOT EXISTS credential_run_requests_session_idx
@@ -543,6 +555,7 @@ export class TrustedSessionStore {
     this.ensureGrantColumn();
     this.ensureExecutionWorkspaceColumn();
     this.ensureDashboardAbsoluteExpiryColumn();
+    this.ensureCredentialRunOutcomeColumns();
     if (needsSessionDeckOverrideBackfill) {
       this.backfillSessionDeckOverrides();
     }
@@ -632,6 +645,24 @@ export class TrustedSessionStore {
     const cols = this.db.pragma('table_info(dashboard_sessions)') as Array<{ name: string }>;
     if (!cols.some((col) => col.name === 'absolute_expires_at')) {
       this.db.exec(`ALTER TABLE dashboard_sessions ADD COLUMN absolute_expires_at TEXT`);
+    }
+  }
+
+  /**
+   * Persisted execution outcome on credential-run requests. Added after
+   * table creation so pre-existing databases migrate with plain ALTERs.
+   */
+  private ensureCredentialRunOutcomeColumns(): void {
+    const cols = this.db.pragma('table_info(credential_run_requests)') as Array<{ name: string }>;
+    const names = new Set(cols.map((col) => col.name));
+    if (!names.has('exit_code')) {
+      this.db.exec(`ALTER TABLE credential_run_requests ADD COLUMN exit_code INTEGER`);
+    }
+    if (!names.has('timed_out')) {
+      this.db.exec(`ALTER TABLE credential_run_requests ADD COLUMN timed_out INTEGER`);
+    }
+    if (!names.has('finished_at')) {
+      this.db.exec(`ALTER TABLE credential_run_requests ADD COLUMN finished_at TEXT`);
     }
   }
 
@@ -1685,7 +1716,8 @@ export class TrustedSessionStore {
         .prepare(
           `SELECT id, runtime_session_id, mcp_session_id, deck_id,
                   binding_json, timeout_sec, status,
-                  created_at, expires_at, resolved_at
+                  created_at, expires_at, resolved_at,
+                  exit_code, timed_out, finished_at
            FROM credential_run_requests
            WHERE runtime_session_id = ? AND deck_id = ? AND binding_json = ?
              AND status = 'pending' AND expires_at > ?
@@ -1732,7 +1764,8 @@ export class TrustedSessionStore {
         .prepare(
           `SELECT id, runtime_session_id, mcp_session_id, deck_id,
                   binding_json, timeout_sec, status,
-                  created_at, expires_at, resolved_at
+                  created_at, expires_at, resolved_at,
+                  exit_code, timed_out, finished_at
            FROM credential_run_requests WHERE id = ?`,
         )
         .get(requestId) as CredentialRunRequestRow | undefined) ?? null
@@ -1774,7 +1807,8 @@ export class TrustedSessionStore {
       .prepare(
         `SELECT id, runtime_session_id, mcp_session_id, deck_id,
                 binding_json, timeout_sec, status,
-                created_at, expires_at, resolved_at
+                created_at, expires_at, resolved_at,
+                exit_code, timed_out, finished_at
          FROM credential_run_requests
          WHERE runtime_session_id = ? AND deck_id = ? AND binding_json = ?
            AND status = 'approved' AND expires_at > ?
@@ -1869,7 +1903,8 @@ export class TrustedSessionStore {
       .prepare(
         `SELECT id, runtime_session_id, mcp_session_id, deck_id,
                 binding_json, timeout_sec, status,
-                created_at, expires_at, resolved_at
+                created_at, expires_at, resolved_at,
+                exit_code, timed_out, finished_at
          FROM credential_run_requests
          WHERE status = 'pending' AND expires_at > ?
          ORDER BY created_at ASC`,
@@ -1901,6 +1936,26 @@ export class TrustedSessionStore {
       .run(now, requestId);
   }
 
+  /**
+   * Persist the execution outcome on a consumed request: exit code (null when
+   * the child never exited — timeout or spawn failure), whether the timeout
+   * killed it, and when it finished. Metadata only; secret values are never
+   * stored here. Returns false when the request id is unknown.
+   */
+  recordCredentialRunOutcome(
+    requestId: string,
+    outcome: { exitCode: number | null; timedOut: boolean },
+  ): boolean {
+    const changed = this.db
+      .prepare(
+        `UPDATE credential_run_requests
+         SET exit_code = ?, timed_out = ?, finished_at = ?
+         WHERE id = ?`,
+      )
+      .run(outcome.exitCode, outcome.timedOut ? 1 : 0, nowIso(), requestId);
+    return changed.changes > 0;
+  }
+
   private toCredentialRunRequest(row: CredentialRunRequestRow): CredentialRunRequest {
     return {
       requestId: row.id,
@@ -1913,6 +1968,9 @@ export class TrustedSessionStore {
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       resolvedAt: row.resolved_at,
+      exitCode: row.exit_code ?? null,
+      timedOut: row.timed_out === null || row.timed_out === undefined ? null : row.timed_out === 1,
+      finishedAt: row.finished_at ?? null,
     };
   }
 

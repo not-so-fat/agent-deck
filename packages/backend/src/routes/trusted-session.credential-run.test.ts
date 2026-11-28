@@ -443,6 +443,80 @@ describe('trusted-session credential-run routes', () => {
     expect(executed.json().data).toMatchObject({ status: 'executed', timedOut: true, exitCode: null });
   });
 
+  it('persists the execution outcome on the request row without secret values', async () => {
+    const app = await buildApp();
+    const assertNoSecrets = (value: unknown): void => {
+      const json = JSON.stringify(value);
+      expect(json).not.toContain(SECRET);
+      expect(json).not.toContain(SECRET_B64);
+      expect(json).not.toContain(SECRET_URL);
+    };
+
+    // Success.
+    const successBody = { argv: [NODE, '-e', 'process.exit(0)'], credentials: ['cred_huggingface'] };
+    const successPending = await app.postRun(successBody);
+    const successId = successPending.json().data.requestId as string;
+    expect(app.store.getCredentialRunRequest(successId)).toMatchObject({
+      exitCode: null,
+      timedOut: null,
+      finishedAt: null,
+    });
+    await app.resolve(successId, 'approve');
+    const successExec = await app.postRun(successBody);
+    expect(successExec.json().data).toMatchObject({ status: 'executed', exitCode: 0, timedOut: false });
+    const successRow = app.store.getCredentialRunRequest(successId)!;
+    expect(successRow.status).toBe('consumed');
+    expect(successRow.exitCode).toBe(0);
+    expect(successRow.timedOut).toBe(false);
+    expect(typeof successRow.finishedAt).toBe('string');
+    assertNoSecrets(successRow);
+
+    // The dashboard view exposes the persisted outcome.
+    const dashboardView = await app.fastify.inject({
+      method: 'GET',
+      url: `/api/trusted-session/credential-run/${successId}`,
+      headers: dashboardAuthHeaders(app.store),
+    });
+    expect(dashboardView.json().data).toMatchObject({
+      requestId: successId,
+      exitCode: 0,
+      timedOut: false,
+    });
+    expect(typeof dashboardView.json().data.finishedAt).toBe('string');
+    assertNoSecrets(dashboardView.json());
+
+    // Timeout.
+    const timeoutBody = {
+      argv: [NODE, '-e', 'setTimeout(() => {}, 30000)'],
+      credentials: ['cred_huggingface'],
+      timeoutSec: 1,
+    };
+    const timeoutPending = await app.postRun(timeoutBody);
+    const timeoutId = timeoutPending.json().data.requestId as string;
+    await app.resolve(timeoutId, 'approve');
+    const timeoutExec = await app.postRun(timeoutBody);
+    expect(timeoutExec.json().data).toMatchObject({ status: 'executed', exitCode: null, timedOut: true });
+    const timeoutRow = app.store.getCredentialRunRequest(timeoutId)!;
+    expect(timeoutRow.exitCode).toBeNull();
+    expect(timeoutRow.timedOut).toBe(true);
+    expect(typeof timeoutRow.finishedAt).toBe('string');
+    assertNoSecrets(timeoutRow);
+
+    // Spawn failure.
+    const failBody = { argv: ['/nonexistent-program-xyz-12345'], credentials: ['cred_huggingface'] };
+    const failPending = await app.postRun(failBody);
+    const failId = failPending.json().data.requestId as string;
+    await app.resolve(failId, 'approve');
+    const failExec = await app.postRun(failBody);
+    expect(failExec.statusCode).toBe(500);
+    const failRow = app.store.getCredentialRunRequest(failId)!;
+    expect(failRow.status).toBe('consumed');
+    expect(failRow.exitCode).toBeNull();
+    expect(failRow.timedOut).toBe(false);
+    expect(typeof failRow.finishedAt).toBe('string');
+    assertNoSecrets(failRow);
+  });
+
   it('shows agents status only and the dashboard the full binding', async () => {
     const app = await buildApp();
     const body = {
