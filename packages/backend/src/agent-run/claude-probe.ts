@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { workerEnv } from './worker-env';
+
 /** Outcome of the Claude Code client probe: installed and signed in, or why not. */
 export type ClaudeClientStatus =
   | { ok: true }
@@ -73,6 +75,7 @@ export async function defaultClaudeClientProbe(): Promise<ClaudeClientStatus> {
       encoding: 'utf8',
       timeout: 15_000,
       stdio: ['ignore', 'pipe', 'ignore'],
+      env: workerEnv(),
     });
     return claudeAuthStatusShowsLogin(out)
       ? { ok: true }

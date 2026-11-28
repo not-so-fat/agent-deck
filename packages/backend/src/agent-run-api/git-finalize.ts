@@ -5,6 +5,8 @@ import path from 'node:path';
 
 import type { FinalizationFileMode, FinalizationManifestEntry } from '@agent-deck/shared';
 
+import { workerEnv } from '../agent-run/worker-env';
+
 /**
  * NOT-486: the Git mechanism behind run finalization.
  *
@@ -124,8 +126,8 @@ const BLOCKED_GIT_ENV = [
 export const defaultGitRunner: GitRunner = (args, options) =>
   new Promise((resolve) => {
     const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value !== undefined && !BLOCKED_GIT_ENV.includes(key)) {
+    for (const [key, value] of Object.entries(workerEnv())) {
+      if (!BLOCKED_GIT_ENV.includes(key)) {
         env[key] = value;
       }
     }

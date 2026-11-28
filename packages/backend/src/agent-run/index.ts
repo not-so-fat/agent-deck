@@ -13,6 +13,7 @@ export * from './muse';
 export * from './provenance';
 export * from './records';
 export * from './service';
+export * from './worker-env';
 // Named (not `export *`): `RUN_TOOL_PROFILES`/`RunToolsProfile` already come
 // through `./adapter`'s re-export, and a second star-export would shadow them.
 export {

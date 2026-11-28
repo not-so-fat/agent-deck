@@ -87,6 +87,7 @@ import {
   type RunProcessControl,
   type RunToolsProfile,
 } from './adapter';
+import { workerEnv } from './worker-env';
 
 export const CURSOR_JSON_VERSION_NOTE = 'cursor-agent 2026.10.01';
 
@@ -243,6 +244,7 @@ export function defaultCursorSandboxProbe(bin: string): CursorSandboxProbeResult
       encoding: 'utf8',
       timeout: CURSOR_SANDBOX_PROBE_TIMEOUT_MS,
       cwd: os.tmpdir(),
+      env: workerEnv(),
     });
     if (probed.error) {
       return { ok: false, detail: probed.error.message };
@@ -630,7 +632,7 @@ export type CursorProbe = (bin: string, argv: string[]) => CursorProbeResult;
 
 export function defaultCursorProbe(bin: string, argv: string[]): CursorProbeResult {
   try {
-    const probed = spawnSync(bin, argv, { encoding: 'utf8', timeout: 15000 });
+    const probed = spawnSync(bin, argv, { encoding: 'utf8', timeout: 15000, env: workerEnv() });
     return { code: probed.status ?? 1, stdout: probed.stdout ?? '', stderr: probed.stderr ?? '' };
   } catch {
     return { code: 127, stdout: '', stderr: '' };
@@ -1268,7 +1270,7 @@ export function createCursorAdapter(deps: CursorAdapterDeps = {}): ClientAdapter
         }
         throw wrapSpawnError(error);
       }
-      const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: workerHome };
+      const childEnv: NodeJS.ProcessEnv = { ...workerEnv(), HOME: workerHome };
       if (process.platform === 'win32') {
         // Node's homedir() (which cursor-agent uses to locate `.cursor`)
         // reads USERPROFILE on Windows, HOME everywhere else.

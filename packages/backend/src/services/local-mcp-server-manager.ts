@@ -3,6 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { Service, LocalMCPServerProcess } from '@agent-deck/shared';
 import { generateId } from '@agent-deck/shared';
+import { workerEnv } from '../agent-run/worker-env';
 
 export class LocalMCPServerManager {
   private processes = new Map<string, LocalMCPServerProcess>();
@@ -21,14 +22,8 @@ export class LocalMCPServerManager {
 
     try {
       // Prepare environment variables
-      const env: Record<string, string> = {};
-      
-      // Copy process.env, filtering out undefined values
-      for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined) {
-          env[key] = value;
-        }
-      }
+      // Inherited env minus daemon-only secrets (vault key etc.).
+      const env: Record<string, string> = workerEnv();
       
       // Add service-specific environment variables
       if (service.localEnv) {
